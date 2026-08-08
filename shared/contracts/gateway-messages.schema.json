@@ -121,7 +121,31 @@
               "properties": {
                 "kind": { "const": "audio" },
                 "mime": { "type": "string" },
-                "dataBase64": { "type": "string" }
+                "dataBase64": { "type": "string" },
+                "intent": {
+                  "type": "object",
+                  "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
+                  "properties": {
+                    "schemaVersion": { "type": "string", "const": "1.0" },
+                    "domain": { "type": "string" },
+                    "intent": { "type": "string" },
+                    "slots": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": ["type", "value"],
+                        "properties": {
+                          "type": { "enum": ["number", "enum", "string", "boolean"] },
+                          "value": {},
+                          "unit": { "type": "string" }
+                        }
+                      }
+                    },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "source": { "type": "string" },
+                    "rawSemantic": { "type": "string" }
+                  }
+                }
               },
               "required": ["kind", "mime", "dataBase64"]
             },

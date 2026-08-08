@@ -166,8 +166,15 @@
 最终的回复，按 `kind` 分三种形态：
 
 - `text`：纯文本回复（可含 `speakText` 供 TTS 朗读）。
-- `audio`：音频回复，携带 `mime` 与 `dataBase64`。
+- `audio`：音频回复，携带 `mime` 与 `dataBase64`（网关下行主形态，另携带 `speakText` 与可选 `intent`）。
 - `action`：动作意图回复，携带结构化 `intent`（可执行动作 + 槽位）与 `speakText`。
+
+> **下行收敛（网关）**：云端网关对 `text` / `action` 回复统一合成音频并下行 **`kind=audio`**，
+> payload 携带 `mime` / `dataBase64` / `speakText` / `intent`——`intent` 为 null 时省略字段（不发送 null），
+> `speakText` 为 null 时同样省略；`audio` 形态（TTS 链路直接产物）则 `dataBase64` 直通。
+> 音频超过 64KB 的 Base64 也一次消息下发，不分帧。
+> **唯一例外（降级路径，spec §7.2）**：TTS 合成失败（或 ASR 失败兜底）时下行降级为 `kind=text`
+> （仅 `speakText`，无 `text` / `mime` / `dataBase64` 字段），客户端按屏幕显示文本处理。
 
 `reply/text`：
 
@@ -223,10 +230,10 @@
 | --- | --- | --- |
 | `kind` | string（必填） | `text` / `audio` / `action` |
 | `text` | string | 仅 `text`：回复文本 |
-| `speakText` | string | 供 TTS 朗读的文本（`text` 与 `action` 必填） |
+| `speakText` | string | 供 TTS 朗读的文本（`text` 与 `action` 必填；网关下行的 `audio` 亦携带，`audio` 形态本身无） |
 | `mime` | string | 仅 `audio`：媒体类型，如 `audio/wav` |
 | `dataBase64` | string | 仅 `audio`：音频数据的 Base64 编码 |
-| `intent` | object | 仅 `action`：结构化意图，字段见下 |
+| `intent` | object | `action` 必填；网关下行的 `audio` 可选携带（为 null 时省略字段，不发送 null），字段见下 |
 
 `intent` 对象字段（与 `shared/contracts/intent.schema.json` 一致）：
 
@@ -350,6 +357,8 @@
 | `nlu_rejected_use_llm` | NLU 先返回但被拒绝（置信度过低或意图不在白名单），改用 LLM（`llm`） |
 | `llm_first_wait_timeout` | LLM 先返回，等待 NLU 超时，采用 LLM（`llm`） |
 | `safety_timeout` | 安全超时兜底：整体处理超时，采用当时已产生的可用结果 |
+| `asr_failed_fallback` | ASR 识别失败（或识别结果为空），走兜底话术，不合成音频（`cloud`） |
+| `arbitration_failed_fallback` | 仲裁调用异常，走兜底话术，不合成音频（`cloud`） |
 
 ### 6.2 端侧仲裁（arbiter = `on-device`）的 reason 取值
 
