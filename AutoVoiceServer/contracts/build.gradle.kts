@@ -7,7 +7,9 @@ java {
 }
 
 dependencies {
+    api(libs.jackson.databind)
     testImplementation(libs.junit)
+    testImplementation(libs.jackson.datatype.jsr310)
 }
 
 sourceSets.test { resources.srcDir("../../shared/fixtures") }
