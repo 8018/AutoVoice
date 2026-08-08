@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autovoice/shared/gateway-messages.schema.json",
+  "title": "GatewayMessage",
+  "description": "端云网关统一消息信封：{\"type\": \"...\", \"payload\": {...}}。type 决定 payload 形状（oneOf 分支）。各消息字段含义与示例以 shared/protocol.md 为准。additionalProperties 放开，不做过严校验。",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "error", "bye"]
+    }
+  },
+  "oneOf": [
+    {
+      "title": "hello (client -> server)",
+      "properties": {
+        "type": { "const": "hello" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "client": { "type": "string" },
+            "protocolVersion": { "type": "string" },
+            "sessionId": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "audio_start (client -> server)",
+      "properties": {
+        "type": { "const": "audio_start" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "sampleRate": { "type": "integer" },
+            "channels": { "type": "integer" },
+            "encoding": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "audio_end (client -> server)",
+      "properties": {
+        "type": { "const": "audio_end" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "durationMs": { "type": "integer" }
+          }
+        }
+      }
+    },
+    {
+      "title": "ready (server -> client)",
+      "properties": {
+        "type": { "const": "ready" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "language": { "type": "string" },
+            "protocolVersion": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "decision (server -> client, 决策日志事件)",
+      "properties": {
+        "type": { "const": "decision" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "arbiter": { "type": "string", "enum": ["on-device", "cloud"] },
+            "route": { "type": "string", "enum": ["local", "cloud", "nlu-traditional", "llm"] },
+            "reason": { "type": "string" },
+            "utteranceId": { "type": "string" },
+            "timestampMs": { "type": "integer" }
+          }
+        }
+      }
+    },
+    {
+      "title": "asr_partial (server -> client, 云端 ASR 中间结果)",
+      "properties": {
+        "type": { "const": "asr_partial" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "text": { "type": "string" },
+            "isFinal": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "title": "reply (server -> client)",
+      "properties": {
+        "type": { "const": "reply" },
+        "payload": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["text", "audio", "action"] },
+            "speakText": { "type": "string" },
+            "text": { "type": "string" }
+          },
+          "oneOf": [
+            {
+              "title": "reply/text",
+              "properties": {
+                "kind": { "const": "text" }
+              }
+            },
+            {
+              "title": "reply/audio",
+              "properties": {
+                "kind": { "const": "audio" },
+                "mime": { "type": "string" },
+                "dataBase64": { "type": "string" }
+              },
+              "required": ["kind", "mime", "dataBase64"]
+            },
+            {
+              "title": "reply/action",
+              "properties": {
+                "kind": { "const": "action" },
+                "intent": {
+                  "type": "object",
+                  "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
+                  "properties": {
+                    "schemaVersion": { "type": "string", "const": "1.0" },
+                    "domain": { "type": "string" },
+                    "intent": { "type": "string" },
+                    "slots": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": ["type", "value"],
+                        "properties": {
+                          "type": { "enum": ["number", "enum", "string", "boolean"] },
+                          "value": {},
+                          "unit": { "type": "string" }
+                        }
+                      }
+                    },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "source": { "type": "string" },
+                    "rawSemantic": { "type": "string" }
+                  }
+                },
+                "speakText": { "type": "string" }
+              },
+              "required": ["kind", "intent", "speakText"]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "title": "error (server -> client)",
+      "properties": {
+        "type": { "const": "error" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "code": { "type": "string" },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "bye (server -> client)",
+      "properties": {
+        "type": { "const": "bye" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "type": "hello",
+  "payload": {
+    "client": "autovoice-android",
+    "protocolVersion": "1.0",
+    "sessionId": "demo-1"
+  }
+}

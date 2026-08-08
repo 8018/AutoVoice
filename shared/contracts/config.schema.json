@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autovoice/shared/config.schema.json",
+  "title": "DemoConfig",
+  "description": "demo 单文件配置（assets/demo-full.json / assets/demo-offline.json），字段与 voice-core 的 DemoConfig 数据类一一对应。",
+  "type": "object",
+  "required": ["mode", "cloud", "local"],
+  "properties": {
+    "mode": { "type": "string", "enum": ["full", "offline"] },
+    "vad": {
+      "type": "object",
+      "properties": {
+        "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minSpeechMs": { "type": "integer", "minimum": 0 },
+        "minSilenceMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ecnr": { "type": "string" },
+    "local": {
+      "type": "object",
+      "required": ["asr", "nlu"],
+      "properties": {
+        "asr": { "type": "string" },
+        "nlu": { "type": "string" }
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "required": ["enabled", "waitMs", "gatewayUrl"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "waitMs": { "type": "integer", "minimum": 0 },
+        "gatewayUrl": { "type": "string" }
+      }
+    },
+    "mock": {
+      "type": "object",
+      "properties": {
+        "executor": { "type": "boolean" }
+      }
+    }
+  }
+}

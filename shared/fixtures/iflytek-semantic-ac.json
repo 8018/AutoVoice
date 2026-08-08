@@ -1,0 +1,23 @@
+{
+  "code": "0",
+  "data": {
+    "result": {
+      "intent": {
+        "service": "空调",
+        "intent": "调节温度",
+        "answer": "好的，已为您设置",
+        "slots": [
+          {
+            "name": "温度",
+            "value": "24",
+            "normValue": "24"
+          },
+          {
+            "name": "对象",
+            "value": "主驾"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "climate",
+      "intent": "set_temperature",
+      "slots": {
+        "temperature": {
+          "type": "number",
+          "value": 24
+        },
+        "zone": {
+          "type": "enum",
+          "value": "driver"
+        }
+      },
+      "confidence": 0.95,
+      "source": "nlu.iflytek.api"
+    },
+    "speakText": "已为您把空调调到24度"
+  }
+}
