@@ -15,11 +15,12 @@ autovoice:
   providers:
     nlu: iflytek        # iflytek | fake
     llm: deepseek
-    asr: aliyun
+    asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）
     tts: aliyun
   secrets:
     xfyun-appid: ${XFYUN_APPID:}
     xfyun-api-key: ${XFYUN_API_KEY:}
+    xfyun-api-secret: ${XFYUN_API_SECRET:}
     deepseek-api-key: ${DEEPSEEK_API_KEY:}
     aliyun-ak: ${ALIYUN_AK:}
     aliyun-sk: ${ALIYUN_SK:}

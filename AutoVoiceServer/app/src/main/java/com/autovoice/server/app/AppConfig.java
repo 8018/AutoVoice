@@ -2,6 +2,7 @@ package com.autovoice.server.app;
 
 import com.autovoice.server.asrgateway.AliyunAsrProvider;
 import com.autovoice.server.asrgateway.AliyunTokenClient;
+import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NluProvider;
@@ -24,8 +25,9 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  *
  * <p>provider 选择（application.yml {@code autovoice.providers.*}）：nlu 支持
  * {@code iflytek}（secrets 装配 {@link IflytekNluProvider}，默认）与 {@code fake}
- * （{@link FakeNluProvider}，仅配置显式指定时装配）；llm=deepseek、asr=aliyun、
- * tts=aliyun。secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
+ * （{@link FakeNluProvider}，仅配置显式指定时装配）；llm=deepseek、asr 支持
+ * {@code iflytek}（讯飞在线听写，默认）与 {@code aliyun}（一句话识别）、tts=aliyun。
+ * secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
  */
 @Configuration
 @EnableConfigurationProperties(AppConfig.AutovoiceProperties.class)
@@ -42,9 +44,9 @@ public class AppConfig {
         }
 
         /** secrets 全部 ${VAR:} 空默认：不写入任何 secret 字面值。 */
-        public record Secrets(String xfyunAppid, String xfyunApiKey, String deepseekApiKey,
-                              String aliyunAk, String aliyunSk, String aliyunNlsAppkey,
-                              String dashscopeApiKey) {
+        public record Secrets(String xfyunAppid, String xfyunApiKey, String xfyunApiSecret,
+                              String deepseekApiKey, String aliyunAk, String aliyunSk,
+                              String aliyunNlsAppkey, String dashscopeApiKey) {
         }
     }
 
@@ -99,14 +101,24 @@ public class AppConfig {
         return new AliyunTokenClient(client, props.secrets().aliyunAk(), props.secrets().aliyunSk());
     }
 
+    /** 听写鉴权时间源（签名 date 字段）。 */
     @Bean
-    public AsrProvider asrProvider(OkHttpClient client, AliyunTokenClient tokenClient, AutovoiceProperties props) {
-        if (!"aliyun".equals(props.providers().asr())) {
-            throw new IllegalArgumentException(
-                    "unknown providers.asr: " + props.providers().asr() + " (aliyun)");
-        }
-        return new AliyunAsrProvider(client, props.secrets().aliyunNlsAppkey(),
-                AliyunAsrProvider.DEFAULT_ENDPOINT, tokenClient::token);
+    public java.time.Clock clock() {
+        return java.time.Clock.systemUTC();
+    }
+
+    @Bean
+    public AsrProvider asrProvider(OkHttpClient client, AliyunTokenClient tokenClient,
+                                   java.time.Clock clock, AutovoiceProperties props) {
+        return switch (props.providers().asr()) {
+            case "iflytek" -> new IflytekIatAsrProvider(client, props.secrets().xfyunAppid(),
+                    props.secrets().xfyunApiKey(), props.secrets().xfyunApiSecret(),
+                    IflytekIatAsrProvider.DEFAULT_ENDPOINT, clock);
+            case "aliyun" -> new AliyunAsrProvider(client, props.secrets().aliyunNlsAppkey(),
+                    AliyunAsrProvider.DEFAULT_ENDPOINT, tokenClient::token);
+            default -> throw new IllegalArgumentException(
+                    "unknown providers.asr: " + props.providers().asr() + " (iflytek | aliyun)");
+        };
     }
 
     @Bean
