@@ -23,6 +23,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okio.ByteString
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -136,7 +137,7 @@ class GatewayClientTest {
             val received = mutableListOf<GatewayMessage>()
             val collector = launch { client.messages.collect { received.add(it) } }
 
-            client.sendAudioStart("srv-sess-1")
+            client.sendAudioStart("srv-sess-1", "seg-1")
             client.sendAudioChunk(pcm)
             client.sendAudioEnd("srv-sess-1")
 
@@ -183,6 +184,7 @@ class GatewayClientTest {
             assertEquals(16000, startPayload.get("sampleRate").asInt)
             assertEquals(1, startPayload.get("channels").asInt)
             assertEquals("pcm_s16le", startPayload.get("encoding").asString)
+            assertEquals("seg-1", startPayload.get("segmentId").asString, "audio_start 应携带 segmentId")
             val endPayload = gateway.frames[2].payload
             assertEquals("srv-sess-1", endPayload.get("sessionId").asString)
             assertEquals(50L, endPayload.get("durationMs").asLong, "1600 字节 @16kHz/S16LE = 50ms")
@@ -228,6 +230,25 @@ class GatewayClientTest {
             assertEquals(fixtureBase64, Base64.getEncoder().encodeToString(reply.data))
 
             collector.cancel()
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `audio start omits segmentId when not provided`() = runBlocking {
+        // segmentId 为可选字段（protocol.md §3.2）：null 时不得出现在 audio_start payload 中
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendAudioStart("srv-sess-1")
+            assertTrue(awaitTrue { gateway.frames.any { it.type == "audio_start" } }, "应收到 audio_start")
+            val startPayload = gateway.frames.first { it.type == "audio_start" }.payload
+            assertFalse(startPayload.has("segmentId"), "segmentId 为 null 时不得发送该字段")
         } finally {
             gateway.closeAll(client, okHttp)
         }

@@ -118,21 +118,24 @@ class GatewayClient(
     }
 
     /**
-     * 声明一段录音流开始（protocol.md §3.2）。demo 为单段会话，segmentId 即会话内使用的
-     * sessionId（来自 ready 回执）。此后发送二进制 PCM 帧直到 [sendAudioEnd]。
+     * 声明一段录音流开始（protocol.md §3.2）。
+     *
+     * @param sessionId 会话 ID（服务端权威，来自 ready 回执）
+     * @param segmentId 可选：每轮话语的唯一 ID（客户端生成，如 UUID），服务端在 reply/error
+     *                  中原样回显（§3.2 关联语义），端侧据此丢弃上一轮迟到的消息。非空才发送。
+     * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
-    fun sendAudioStart(segmentId: String) {
-        sendFrame(
-            mapOf(
-                "type" to "audio_start",
-                "payload" to mapOf(
-                    "sessionId" to segmentId,
-                    "sampleRate" to sampleRate,
-                    "channels" to channels,
-                    "encoding" to encoding,
-                ),
-            ),
+    fun sendAudioStart(sessionId: String, segmentId: String? = null) {
+        val payload = linkedMapOf<String, Any>(
+            "sessionId" to sessionId,
+            "sampleRate" to sampleRate,
+            "channels" to channels,
+            "encoding" to encoding,
         )
+        if (segmentId != null) {
+            payload["segmentId"] = segmentId
+        }
+        sendFrame(mapOf("type" to "audio_start", "payload" to payload))
         pcmBytesInSegment = 0
     }
 

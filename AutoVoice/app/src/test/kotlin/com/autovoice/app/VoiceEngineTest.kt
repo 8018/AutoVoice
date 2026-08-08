@@ -67,7 +67,10 @@ class VoiceEngineTest {
             source = "test.local",
         )
 
-    /** 测试装配：真实 VoiceSession + 真实仲裁器，注入 fake 链与出口。 */
+    /**
+     * 测试装配：真实 VoiceSession + 真实仲裁器，注入 fake 链与出口。
+     * JVM 单测里 BuildConfig.DEBUG 恒为 false，弱网延迟 hook 需显式传 debugBuild=true 才生效。
+     */
     private fun engine(
         scope: CoroutineScope,
         local: LocalChainRunner,
@@ -78,6 +81,7 @@ class VoiceEngineTest {
         sink: DecisionSink = DecisionSink {},
         player: AudioPlayer = AudioPlayer {},
         speaker: TextSpeaker = TextSpeaker {},
+        debugBuild: Boolean = true,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
         val engine = VoiceEngine(
@@ -96,6 +100,7 @@ class VoiceEngineTest {
             speaker = speaker,
             vehicle = vehicle,
             scope = scope,
+            debugBuild = debugBuild,
         )
         return engine to vehicle
     }
@@ -259,12 +264,15 @@ class VoiceEngineTest {
     }
 
     /**
-     * 云端链 ready 后故障（Task 15 M1）：CloudRunner 抛 CloudUnavailableException 且
-     * latch 不可达 → 本轮转本地（cloud_unreachable）；第二句仍只跑本地（latch 生效）。
+     * 云端链 ready 后故障（Task 15 M1）：CloudRunner 抛 CloudUnavailableException 且 latch 不可达
+     * → 本轮转本地兜底（cloud_unreachable）。故障按【轮次】重试而非跨轮 latch：下一轮
+     * onListeningStart 网络可用即重新启用云端路由（onCloudAvailable），云端链再次启动并再次失败
+     * → 两轮都记录 cloud_unreachable、云端链共被调用 2 次。
      */
     @Test
-    fun `mid-turn cloud failure falls back to local and latches for next utterance`() {
+    fun `mid-turn cloud failure falls back to local per turn and retries cloud next utterance`() {
         val entries = mutableListOf<DecisionEntry>()
+        var cloudCalls = 0
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
         runBlocking {
@@ -272,6 +280,7 @@ class VoiceEngineTest {
                 scope = this,
                 local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner {
+                    cloudCalls++
                     // 与生产 GatewayCloudRunner 相同语义：ready 后故障先 latch 再抛
                     engine.session.onCloudUnavailable()
                     throw CloudUnavailableException("网关中途断开")
@@ -281,16 +290,47 @@ class VoiceEngineTest {
             engine = pair.first
             vehicle = pair.second
 
-            // 第一句：云端故障 → 本地单链兜底
+            // 第一句：云端故障 → 本轮转本地兜底
             utter(engine)
             awaitIdle(engine)
 
-            // 第二句：latch 生效，仍只跑本地
+            // 第二句：重新尝试云端路由（不继承上一轮的 latch），故障再次回落本地
             utter(engine)
             awaitIdle(engine)
         }
+        assertEquals(2, cloudCalls, "第二句应重新尝试云端路由（按轮次重试，非跨轮 latch）")
         assertEquals(listOf("cloud_unreachable", "cloud_unreachable"), entries.map { it.reason })
         assertTrue(vehicle.isAcOn, "两轮都应由本地链执行")
+    }
+
+    @Test
+    fun `weakNetwork hook is inert in release build`() {
+        // release 构建（debugBuild=false）：weakNetwork=true 也不人为延迟，云端照常先赢
+        val entries = mutableListOf<DecisionEntry>()
+        val played = mutableListOf<AudioReply>()
+        val audio =
+            AudioReply(
+                mime = "audio/wav",
+                data = ByteArray(4),
+                speakText = "已为您打开空调",
+                intent = powerOnIntent(),
+            )
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { delay(300); powerOnIntent() },
+                cloud = CloudRunner { delay(5); audio },
+                debugBuild = false,
+                sink = DecisionSink { entries.add(it) },
+                player = AudioPlayer { played.add(it) },
+            )
+            engine = pair.first
+            engine.weakNetwork = true
+            utter(engine)
+        }
+        assertEquals(listOf("cloud_won"), entries.map { it.reason }, "release 下 weakNetwork 不应改变竞速")
+        assertEquals(1, played.size, "云端音频应正常播放")
     }
 
     /** 等一轮话语收敛完毕（状态回到 IDLE）——多轮用例在 runBlocking 内串行推进。 */

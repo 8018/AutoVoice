@@ -4,6 +4,7 @@
     "kind": "audio",
     "mime": "audio/wav",
     "dataBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
-    "speakText": "已为您把空调调到24度"
+    "speakText": "已为您把空调调到24度",
+    "segmentId": "seg-1"
   }
 }

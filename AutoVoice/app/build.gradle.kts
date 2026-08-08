@@ -30,6 +30,8 @@ android {
     testOptions {
         // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
         unitTests.all { it.useJUnitPlatform() }
+        // android.jar 方法默认抛 "not mocked"；bridge 的 Log.d 弃帧路径在 JVM 单测里必须可用
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -54,4 +56,6 @@ dependencies {
     implementation(libs.gson)
 
     testImplementation(libs.junit)
+    // 桥接对账测试：MockWebServer 假扮网关推送 reply/error（Task 20 fix round）
+    testImplementation(libs.mockwebserver)
 }

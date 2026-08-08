@@ -41,6 +41,15 @@ class GatewayCodecTest {
     }
 
     @Test
+    void decodesAudioStartCarryingSegmentId() {
+        // segmentId（可选）：客户端每轮话语生成的唯一 ID，服务端在 reply/error 中原样回显
+        Map<String, Object> msg = GatewayCodec.decode("""
+                {"type":"audio_start","payload":{"sessionId":"demo-1","sampleRate":16000,"channels":1,"encoding":"pcm_s16le","segmentId":"seg-1"}}
+                """);
+        assertEquals("seg-1", ((Map<?, ?>) msg.get("payload")).get("segmentId"));
+    }
+
+    @Test
     void decodesValidAudioEnd() {
         Map<String, Object> msg = GatewayCodec.decode("""
                 {"type":"audio_end","payload":{"sessionId":"demo-1","durationMs":2340}}
@@ -143,6 +152,34 @@ class GatewayCodecTest {
         assertEquals("set_temperature", p.get("intent").get("intent").asText());
         assertEquals("1.0", p.get("intent").get("schemaVersion").asText());
         assertEquals("climate", p.get("intent").get("domain").asText());
+    }
+
+    @Test
+    void encodeReplyAndErrorEchoSegmentIdWhenPresentAndOmitWhenAbsent() {
+        // reply：audio_start 携带 segmentId 时原样回显；未携带时省略（可选字段）
+        Map<String, Object> audio = new LinkedHashMap<>();
+        audio.put("kind", "audio");
+        audio.put("mime", "audio/wav");
+        audio.put("dataBase64", "AAAA");
+        audio.put("speakText", "已为您把空调调到24度");
+        audio.put("segmentId", "seg-1");
+        JsonNode p = read(GatewayCodec.encode("reply", audio)).get("payload");
+        assertEquals("seg-1", p.get("segmentId").asText());
+
+        Map<String, Object> audioNoSeg = new LinkedHashMap<>(audio);
+        audioNoSeg.remove("segmentId");
+        assertFalse(read(GatewayCodec.encode("reply", audioNoSeg)).get("payload").has("segmentId"),
+                "无 segmentId 时 reply 不得发送该字段");
+
+        // error：同样支持 segmentId 回显（连接内多轮往返时据此对账）
+        Map<String, Object> err = new LinkedHashMap<>();
+        err.put("sessionId", "demo-1");
+        err.put("code", "INTERNAL");
+        err.put("message", "boom");
+        err.put("segmentId", "seg-1");
+        JsonNode ep = read(GatewayCodec.encode("error", err)).get("payload");
+        assertEquals("seg-1", ep.get("segmentId").asText());
+        assertEquals("demo-1", ep.get("sessionId").asText());
     }
 
     @Test

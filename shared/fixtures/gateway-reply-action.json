@@ -19,6 +19,7 @@
       "confidence": 0.95,
       "source": "nlu.iflytek.api"
     },
-    "speakText": "已为您把空调调到24度"
+    "speakText": "已为您把空调调到24度",
+    "segmentId": "seg-1"
   }
 }

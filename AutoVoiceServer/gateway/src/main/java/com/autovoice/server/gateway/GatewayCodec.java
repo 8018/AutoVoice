@@ -38,13 +38,13 @@ public final class GatewayCodec {
     /** 每类消息 payload 允许输出的字段白名单（encode 只输出白名单字段）。 */
     private static final Map<String, Set<String>> FIELD_WHITELIST = Map.of(
             "hello", Set.of("client", "protocolVersion", "sessionId"),
-            "audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding"),
+            "audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId"),
             "audio_end", Set.of("sessionId", "durationMs"),
             "ready", Set.of("sessionId", "language", "protocolVersion"),
             "decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs"),
             "asr_partial", Set.of("sessionId", "text", "isFinal"),
-            "reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent"),
-            "error", Set.of("sessionId", "code", "message"),
+            "reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId"),
+            "error", Set.of("sessionId", "code", "message", "segmentId"),
             "bye", Set.of("sessionId", "reason"));
 
     /** 按 protocol.md §3 校验的 C→S 消息必需字段。 */

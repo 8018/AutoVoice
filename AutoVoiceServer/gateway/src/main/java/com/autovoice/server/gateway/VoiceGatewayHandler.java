@@ -124,7 +124,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         }
         switch ((String) msg.get("type")) {
             case "hello" -> onHello(session, st, castPayload(msg));
-            case "audio_start" -> onAudioStart(st);
+            case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
             default -> {
                 // ready/decision/reply/error/bye 为服务端消息，客户端不应发送，忽略
@@ -164,8 +164,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         send(session, "ready", ready);
     }
 
-    /** audio_start：未握手不处理；开始累积，记录 utteranceId。 */
-    private void onAudioStart(ConnectionState st) {
+    /** audio_start：未握手不处理；开始累积，记录 utteranceId 与可选 segmentId（reply/error 原样回显）。 */
+    private void onAudioStart(ConnectionState st, Map<String, Object> payload) {
         if (st.ctx == null) {
             return; // 未收到合法 hello 前不处理后续音频
         }
@@ -173,6 +173,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         st.pcm.reset();
         st.pendingDecisions.clear();
         st.utteranceId = "u-" + ++st.segmentSeq;
+        st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
     }
 
     /** audio_end：同步执行流水线 → 先逐条下发 decision 事件，再下发 reply（协议 §5 时序）。 */
@@ -196,11 +197,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
             }));
         }
-        sendReply(session, result);
+        sendReply(session, st, result);
     }
 
     /** 下行收敛：恒 kind=audio（mime/dataBase64/speakText/intent，null 省略）；wavAudio 为 null 时降级 kind=text（仅 speakText）。 */
-    private void sendReply(WebSocketSession session, SegmentPipeline.SegmentResult result) {
+    private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (result.wavAudio() != null) {
             payload.put("kind", "audio");
@@ -217,6 +218,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             payload.put("kind", "text");
             payload.put("speakText", result.speakText());
         }
+        if (st.segmentId != null) {
+            payload.put("segmentId", st.segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
+        }
         send(session, "reply", payload);
     }
 
@@ -224,6 +228,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (st.ctx != null) {
             payload.put("sessionId", st.ctx.sessionId());
+        }
+        if (st.segmentId != null) {
+            payload.put("segmentId", st.segmentId); // 回显当前话语的 segmentId，供端侧丢弃他轮的 error
         }
         payload.put("code", code);
         payload.put("message", message);
@@ -267,6 +274,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String utteranceId;
+        String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
         boolean audioActive;
         long segmentSeq;
     }

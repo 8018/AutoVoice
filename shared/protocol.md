@@ -69,7 +69,8 @@
     "sessionId": "demo-1",
     "sampleRate": 16000,
     "channels": 1,
-    "encoding": "pcm_s16le"
+    "encoding": "pcm_s16le",
+    "segmentId": "seg-1"
   }
 }
 ```
@@ -80,6 +81,11 @@
 | `sampleRate` | integer | 采样率，固定 `16000` |
 | `channels` | integer | 声道数，固定 `1` |
 | `encoding` | string | 编码，固定 `"pcm_s16le"` |
+| `segmentId` | string（可选） | 每轮话语的唯一 ID（客户端生成，如 UUID）。demo 单连接多轮往返时，服务端无法凭 `sessionId` 区分话语，客户端需以此关联 `reply` / `error`（服务端原样回显） |
+
+> **关联语义**：`segmentId` 由客户端生成、每轮话语唯一、不重复使用。服务端收到后记录为该话语的标识，
+> 在随后的 `reply` 与 `error` payload 中原样回显（未携带时下行省略该字段）。客户端据此丢弃
+> 上一轮的迟到 `reply` / `error`，避免串话。服务端侧字段：见 §4.4 / §4.5。
 
 ### 3.3 audio_end
 
@@ -198,7 +204,8 @@
     "kind": "audio",
     "mime": "audio/wav",
     "dataBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
-    "speakText": "已为您把空调调到24度"
+    "speakText": "已为您把空调调到24度",
+    "segmentId": "seg-1"
   }
 }
 ```
@@ -221,7 +228,8 @@
       "confidence": 0.95,
       "source": "nlu.iflytek.api"
     },
-    "speakText": "已为您把空调调到24度"
+    "speakText": "已为您把空调调到24度",
+    "segmentId": "seg-1"
   }
 }
 ```
@@ -234,6 +242,7 @@
 | `mime` | string | 仅 `audio`：媒体类型，如 `audio/wav` |
 | `dataBase64` | string | 仅 `audio`：音频数据的 Base64 编码 |
 | `intent` | object | `action` 必填；网关下行的 `audio` 可选携带（为 null 时省略字段，不发送 null），字段见下 |
+| `segmentId` | string（可选） | 回显对应 `audio_start` 携带的 `segmentId`（§3.2）；未携带时省略，三种 `kind` 均可带 |
 
 `intent` 对象字段（与 `shared/contracts/intent.schema.json` 一致）：
 
@@ -257,16 +266,18 @@
   "payload": {
     "sessionId": "demo-1",
     "code": "ASR_FAILED",
-    "message": "云端语音识别服务不可用"
+    "message": "云端语音识别服务不可用",
+    "segmentId": "seg-1"
   }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `sessionId` | string | 会话 ID |
+| `sessionId` | string | 会话 ID（已握手时） |
 | `code` | string | 机器可读错误码（如 `BAD_HELLO` / `ASR_FAILED` / `NLU_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
 | `message` | string | 人类可读错误说明 |
+| `segmentId` | string（可选） | 回显当前话语的 `segmentId`（§3.2）；`audio_start` 未携带时省略。端侧据此丢弃他轮（上一轮）迟到的 `error` |
 
 ### 4.6 bye
 

@@ -81,7 +81,8 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(hello()));
         String sid = parse(s.sent.get(0)).get("payload").get("sessionId").asText();
 
-        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        // audio_start 携带客户端生成的 segmentId（每轮话语唯一，reply/error 原样回显）
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1, 2}));
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
@@ -102,6 +103,7 @@ class VoiceGatewayHandlerTest {
         assertArrayEquals(WAV, Base64.getDecoder().decode(p.get("dataBase64").asText()));
         assertEquals("已为您执行空调指令", p.get("speakText").asText());
         assertEquals("set_temperature", p.get("intent").get("intent").asText());
+        assertEquals("seg-1", p.get("segmentId").asText(), "reply 应回显 audio_start 的 segmentId");
 
         // 二进制帧已按序累积为完整 PCM 交给 ASR
         assertArrayEquals(new byte[]{1, 2, 3, 4}, asrReceived[0]);
@@ -126,6 +128,7 @@ class VoiceGatewayHandlerTest {
         assertEquals("audio", p.get("kind").asText());
         assertEquals("LLM回答", p.get("speakText").asText());
         assertFalse(p.has("intent"), "intent 为 null 时省略字段，不发送 null");
+        assertFalse(p.has("segmentId"), "audio_start 未携带 segmentId 时 reply 不得发送该字段");
     }
 
     // ---------- 降级路径 ----------
@@ -188,6 +191,25 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void errorEchoesSegmentIdWhenAudioStartCarriedOne() {
+        // 连接内多轮往返时 error 需携带本话语的 segmentId，端侧才能准确对账（丢弃他轮的 error）
+        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new TextMessage("not json"));
+
+        assertEquals(2, s.sent.size(), "ready + error");
+        JsonNode error = parse(s.sent.get(1));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("INTERNAL", error.get("payload").get("code").asText());
+        assertEquals("seg-1", error.get("payload").get("segmentId").asText(),
+                "error 应回显当前话语的 segmentId");
+        assertEquals(sid, error.get("payload").get("sessionId").asText());
+    }
+
+    @Test
     void malformedHelloSendsBadHelloError() {
         VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
         StubSession s = open(h);
@@ -239,7 +261,14 @@ class VoiceGatewayHandlerTest {
     }
 
     private static String audioStart(String sessionId) {
-        return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\"}}";
+        return audioStart(sessionId, null);
+    }
+
+    /** segmentId（可选，protocol.md §3.2）：客户端每轮话语生成的唯一 ID，非空时随 audio_start 发送。 */
+    private static String audioStart(String sessionId, String segmentId) {
+        String seg = segmentId == null ? "" : ",\"segmentId\":\"" + segmentId + "\"";
+        return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId
+                + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\"" + seg + "}}";
     }
 
     private static String audioEnd(String sessionId) {

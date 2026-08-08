@@ -26,6 +26,7 @@ import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
 import com.autovoice.voicecore.session.VoiceSession
 import com.google.gson.JsonObject
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,9 @@ fun interface TextSpeaker {
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
 private const val CLOUD_CHUNK_BYTES = 16_384
 
+/** 网关事件桥日志 TAG。 */
+private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
+
 /**
  * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
  *
@@ -60,7 +64,7 @@ private const val CLOUD_CHUNK_BYTES = 16_384
  *  - [RaceWinner.Local]：`vehicle.apply(intent)` 成功 → 播报其返回文本（未知意图不播报）；
  *  - [RaceWinner.Failed]：播报兜底话术 [FALLBACK_PHRASE]。
  *
- * 弱网调试 hook（调试构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
+ * 弱网调试 hook（仅 debug 构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
  * 云端赶不上 cloudWaitMs → 仲裁回落到本地（reason `cloud_timeout_use_local`）。
  *
  * 生产装配走 [create]（真实本地链 + GatewayClient 云端链 + ConnectivityManager 网络检查）；
@@ -78,9 +82,10 @@ class VoiceEngine(
     val vehicle: MockVehicleState,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onVehicleApplied: () -> Unit = {},
+    private val debugBuild: Boolean = BuildConfig.DEBUG,
 ) {
 
-    /** 弱网调试 hook（调试构建的 UI 开关）：true 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
+    /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
     @Volatile
     var weakNetwork: Boolean = false
 
@@ -94,8 +99,8 @@ class VoiceEngine(
             sink = sink,
             local = local,
             cloud = CloudRunner { segment ->
-                // 弱网调试：云端链启动前人为延迟，让云端错过 cloudWaitMs
-                if (weakNetwork) delay(WEAK_NETWORK_DELAY_MS)
+                // 弱网调试（仅 debug 构建）：云端链启动前人为延迟，让云端错过 cloudWaitMs
+                if (weakNetwork && debugBuild) delay(WEAK_NETWORK_DELAY_MS)
                 cloud.run(segment)
             },
             scope = scope,
@@ -278,7 +283,9 @@ private class GatewayCloudRunner(
     lateinit var onCloudUnavailable: () -> Unit
 
     override suspend fun run(segment: ByteArray): Reply {
-        val replySlot = bridge.newReplySlot()
+        // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
+        val segmentId = UUID.randomUUID().toString()
+        val replySlot = bridge.newReplySlot(segmentId)
         try {
             if (!readyReceived) {
                 client.connect() // 失败（重试耗尽）抛 GatewayException
@@ -289,7 +296,7 @@ private class GatewayCloudRunner(
                     ?: throw GatewayException("ready 事件缺少 sessionId")
                 readyReceived = true
             }
-            client.sendAudioStart(sessionId)
+            client.sendAudioStart(sessionId, segmentId)
             var offset = 0
             while (offset < segment.size) {
                 val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
@@ -315,14 +322,21 @@ private class GatewayCloudRunner(
  * 网关事件桥：构造时一次性订阅 [GatewayClient.messages]（SharedFlow replay=1），
  * 把 decision 事件透传进 sink、reply 事件投递到当前话语的等待槽、
  * error 事件让等待中的回复立即失败（提前暴露故障，不必等仲裁超时）。
+ *
+ * 消息关联（protocol.md §3.2）：reply / error 按 payload 中的 `segmentId` 与当前话语的等待槽对账——
+ * 携带的 segmentId 与本轮不一致（上一轮迟到的消息）→ 丢弃并 Log.d；未携带 segmentId（服务端
+ * 合成的传输错误 / 旧版服务端）→ 无法对账，按当前槽处理（保留快速失败语义）。同一时刻至多一个
+ * 等待槽，跨轮消息天然按 segmentId 隔离。
  */
-private class GatewayBridge(
+internal class GatewayBridge(
     private val client: GatewayClient,
     private val sink: DecisionSink,
     scope: CoroutineScope,
 ) {
 
-    private val pendingReply = AtomicReference<CompletableDeferred<Reply>?>(null)
+    private class PendingSlot(val segmentId: String, val deferred: CompletableDeferred<Reply>)
+
+    private val pendingReply = AtomicReference<PendingSlot?>(null)
 
     init {
         scope.launch {
@@ -331,26 +345,46 @@ private class GatewayBridge(
     }
 
     /** 注册当前话语的回复等待槽（先于发送注册，避免 reply 先到被丢）。 */
-    fun newReplySlot(): CompletableDeferred<Reply> {
+    fun newReplySlot(segmentId: String): CompletableDeferred<Reply> {
         val deferred = CompletableDeferred<Reply>()
-        pendingReply.set(deferred)
+        pendingReply.set(PendingSlot(segmentId, deferred))
         return deferred
     }
 
     fun clearReplySlot(deferred: CompletableDeferred<Reply>) {
-        pendingReply.compareAndSet(deferred, null)
+        pendingReply.get()?.takeIf { it.deferred === deferred }?.let { pendingReply.compareAndSet(it, null) }
     }
 
     private fun handle(msg: GatewayMessage) {
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
-            "reply" -> client.parseReply(msg.payload)?.let { pendingReply.get()?.complete(it) }
+            "reply" -> {
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                client.parseReply(msg.payload)?.let { slot.deferred.complete(it) }
+            }
             "error" -> {
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
                 val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
-                pendingReply.get()?.completeExceptionally(GatewayException("网关传输错误：$code"))
+                slot.deferred.completeExceptionally(GatewayException("网关传输错误：$code"))
             }
             else -> Unit // ready / asr_partial / bye 当前不消费
         }
+    }
+
+    /**
+     * 按 segmentId 对账（protocol.md §3.2）：消息携带的 segmentId 与当前话语不一致 → 他轮迟到的
+     * 消息，丢弃（Log.d）；未携带（服务端合成错误 / 旧版服务端）→ 无从对账，按当前话语处理。
+     */
+    private fun isForCurrentUtterance(payload: JsonObject, slot: PendingSlot): Boolean {
+        val msgSegmentId = payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString
+        if (msgSegmentId == null) return true
+        if (msgSegmentId != slot.segmentId) {
+            Log.d(GATEWAY_BRIDGE_TAG, "丢弃不属于当前话语的消息（segmentId=$msgSegmentId, 期望=${slot.segmentId}）")
+            return false
+        }
+        return true
     }
 
     /** 网关 decision 事件 → DecisionEntry（字段缺失则忽略该条，防御）。 */

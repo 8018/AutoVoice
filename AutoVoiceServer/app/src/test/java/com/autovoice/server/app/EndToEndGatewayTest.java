@@ -110,9 +110,9 @@ class EndToEndGatewayTest {
             assertEquals("zh-CN", readyPayload.get("language"));
             assertEquals("1.0", readyPayload.get("protocolVersion"));
 
-            // audio_start → 二进制 PCM → audio_end
+            // audio_start → 二进制 PCM → audio_end（携带客户端生成的 segmentId，reply 应回显）
             send(ws, "audio_start", Map.of("sessionId", sessionId, "sampleRate", 16000,
-                    "channels", 1, "encoding", "pcm_s16le"));
+                    "channels", 1, "encoding", "pcm_s16le", "segmentId", "seg-e2e-1"));
             assertTrue(ws.send(ByteString.of(PCM_16K)), "二进制 PCM 帧应发送成功");
             send(ws, "audio_end", Map.of("sessionId", sessionId, "durationMs", 1000));
 
@@ -166,6 +166,8 @@ class EndToEndGatewayTest {
             assertNotNull(intent, "kind=audio 下行应携带 intent");
             assertEquals("climate", intent.get("domain"));
             assertEquals("set_temperature", intent.get("intent"));
+            // segmentId 端到端回显：客户端可据此将 reply 对账到具体话语
+            assertEquals("seg-e2e-1", p.get("segmentId"), "reply 应回显 audio_start 的 segmentId");
         } finally {
             ws.close(1000, "test done");
             client.dispatcher().executorService().shutdown();
