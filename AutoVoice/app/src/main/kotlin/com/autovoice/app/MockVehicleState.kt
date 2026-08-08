@@ -44,7 +44,7 @@ class MockVehicleState(
                     val number = intent.slots[RuleNluProvider.TEMPERATURE_SLOT]
                     val temperature = (number as? SlotValue.Number)?.v ?: return null
                     acTemperatureC = temperature
-                    return "已为您把空调调到${formatTemperature(temperature)}度"
+                    return "已为您把空调调到${temperature.toDigitsString()}度"
                 }
             }
             DOMAIN_WINDOW -> when (intent.intent) {
@@ -60,10 +60,6 @@ class MockVehicleState(
         }
         return null // 未知意图：保持现状，不播报
     }
-
-    /** 温度数字直书（非中文数字）：24.0 → "24"，25.5 → "25.5"。 */
-    private fun formatTemperature(v: Double): String =
-        if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
 
     private companion object {
         const val DEFAULT_TEMPERATURE = 24.0

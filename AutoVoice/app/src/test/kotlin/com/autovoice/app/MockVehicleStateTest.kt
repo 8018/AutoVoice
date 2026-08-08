@@ -129,4 +129,12 @@ class MockVehicleStateTest {
         assertTrue(state.isAcOn) // 空调保持开
         assertEquals(24.0, state.acTemperature)
     }
+
+    @Test
+    fun `digits string renders whole and fractional temperatures verbatim`() {
+        // 共享展示规则（MockVehicleState 播报文案与 VehiclePanel 面板共用）
+        assertEquals("24", 24.0.toDigitsString())
+        assertEquals("25.5", 25.5.toDigitsString())
+        assertEquals("0", 0.0.toDigitsString())
+    }
 }

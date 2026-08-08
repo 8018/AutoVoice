@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.autovoice.app.VehicleUiState
+import com.autovoice.app.toDigitsString
 
 /**
  * 车辆状态面板：空调（开关 + 温度）与车窗（开/关）以 AssistChip 呈现。
@@ -35,7 +36,7 @@ fun VehiclePanel(vehicle: VehicleUiState, modifier: Modifier = Modifier) {
                     onClick = {},
                     label = {
                         Text(
-                            if (vehicle.acOn) "空调：开 · ${formatDigits(vehicle.acTemperature)}°C"
+                            if (vehicle.acOn) "空调：开 · ${vehicle.acTemperature.toDigitsString()}°C"
                             else "空调：关",
                         )
                     },
@@ -48,7 +49,3 @@ fun VehiclePanel(vehicle: VehicleUiState, modifier: Modifier = Modifier) {
         }
     }
 }
-
-/** 温度数字直书：24.0 → "24"、25.5 → "25.5"（与播报文案一致）。 */
-private fun formatDigits(v: Double): String =
-    if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
