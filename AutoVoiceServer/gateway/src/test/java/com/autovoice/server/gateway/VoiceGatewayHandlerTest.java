@@ -55,7 +55,7 @@ class VoiceGatewayHandlerTest {
     void helloGetsReadyWithAdoptedSession() {
         VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
         StubSession s = open(h);
-        h.handleMessage(s, new TextMessage(hello("demo-1")));
+        h.handleMessage(s, new TextMessage(hello()));
 
         assertEquals(1, s.sent.size());
         JsonNode ready = parse(s.sent.get(0));
@@ -78,7 +78,7 @@ class VoiceGatewayHandlerTest {
             return "把空调调到二十四度";
         }, nluOk(), llm("LLM"), ttsOk());
         StubSession s = open(h);
-        h.handleMessage(s, new TextMessage(hello("demo-1")));
+        h.handleMessage(s, new TextMessage(hello()));
         String sid = parse(s.sent.get(0)).get("payload").get("sessionId").asText();
 
         h.handleMessage(s, new TextMessage(audioStart(sid)));
@@ -211,7 +211,7 @@ class VoiceGatewayHandlerTest {
 
     /** hello → 返回服务端采纳的 sessionId。 */
     private static String handshake(VoiceGatewayHandler h, StubSession s) {
-        h.handleMessage(s, new TextMessage(hello("demo-1")));
+        h.handleMessage(s, new TextMessage(hello()));
         return parse(s.sent.get(0)).get("payload").get("sessionId").asText();
     }
 
@@ -233,8 +233,9 @@ class VoiceGatewayHandlerTest {
         return (text, ctx) -> Reply.ofAudio("audio/wav", WAV);
     }
 
-    private static String hello(String sessionId) {
-        return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\",\"protocolVersion\":\"1.0\",\"sessionId\":\"" + sessionId + "\"}}";
+    /** 直接复用共享 fixture（shared/fixtures/gateway-hello.json，sessionId=demo-1），禁止复制粘贴。 */
+    private static String hello() {
+        return TestFixtures.HELLO_JSON;
     }
 
     private static String audioStart(String sessionId) {

@@ -22,9 +22,8 @@ class GatewayCodecTest {
 
     @Test
     void decodesValidHello() {
-        Map<String, Object> msg = GatewayCodec.decode("""
-                {"type":"hello","payload":{"client":"autovoice-android","protocolVersion":"1.0","sessionId":"demo-1"}}
-                """);
+        // 直接复用共享 fixture（shared/fixtures/gateway-hello.json），禁止复制粘贴
+        Map<String, Object> msg = GatewayCodec.decode(TestFixtures.HELLO_JSON);
         assertEquals("hello", msg.get("type"));
         Map<?, ?> payload = (Map<?, ?>) msg.get("payload");
         assertEquals("demo-1", payload.get("sessionId"));
