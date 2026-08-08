@@ -51,3 +51,5 @@ captures/
 .env
 *.jks
 SDK/
+# 讯飞离线命令词 SDK（AIKit.aar + 离线模型资源，本地文件不入库）
+AutoVoice/adapter-iflytek/libs/

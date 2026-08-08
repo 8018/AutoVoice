@@ -1,18 +1,44 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
+}
+
+android {
+    namespace = "com.autovoice.adapteriflytek"
+    compileSdk = 34
+
+    defaultConfig {
+        minSdk = 26
+
+        ndk {
+            // 与讯飞 demo 对齐：离线命令词 so（arm64-v8a）即可
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    testOptions {
+        // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
+        unitTests.all { it.useJUnitPlatform() }
+    }
 }
 
 kotlin {
-    jvmToolchain(21)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
 }
 
 dependencies {
     implementation(project(":voice-core"))
     implementation(libs.coroutines.core)
     implementation(libs.okhttp)
+    // 讯飞离线命令词 AIKit AEE SDK（aar 内含 jni so），经 settings 的 flatDir 仓库解析；
+    // 本地文件不入库（见 .gitignore）。库模块不能用 files() 直引 aar（AGP 打包限制）
+    implementation(mapOf("name" to "AIKit", "ext" to "aar"))
     testImplementation(libs.junit)
-}
-
-tasks.test {
-    useJUnitPlatform()
 }
