@@ -105,13 +105,13 @@ class TtsPlayer(
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
                 if (token == playToken) onCompleted?.invoke()
-                cleanup()
+                finishPlayback(token, mp)
             }
             mp.setOnErrorListener { _, what, extra ->
                 val err = IllegalStateException("MediaPlayer error what=$what extra=$extra")
                 Log.w(TAG, "playback failed, degraded silently", err)
                 if (token == playToken) onError?.invoke(err)
-                cleanup()
+                finishPlayback(token, mp)
                 true // 事件已消费
             }
             mp.prepare()
@@ -119,7 +119,7 @@ class TtsPlayer(
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
             if (token == playToken) onError?.invoke(t)
-            cleanup()
+            finishPlayback(token, mp)
         }
     }
 
@@ -163,9 +163,23 @@ class TtsPlayer(
         mime.startsWith("audio/pcm") || mime.startsWith("audio/l16") ||
             mime.startsWith("audio/raw") || mime.startsWith("audio/x-raw")
 
-    private fun cleanup() {
-        player = null
-        deleteCurrentFile()
+    /**
+     * 播放结束统一收尾（除 [stop] 外的唯一释放点）：
+     * - 本代播放（token 匹配）：清空 player/currentFile 并删除临时文件；
+     * - 过期回调（token 不匹配，实例已被 [stop]/新 [play] 处理）：只释放本地 mp，
+     *   不触碰当前代状态（修复陈旧回调误清新播放的竞态）。
+     * [MediaPlayer.release] 幂等（AOSP 对已 release 实例的 reset 异常有捕获），
+     * 与 [stop] 并发/重复调用安全。
+     */
+    private fun finishPlayback(token: Int, mp: MediaPlayer) {
+        if (token == playToken) {
+            if (player === mp) player = null
+            deleteCurrentFile()
+        }
+        try {
+            mp.release()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun deleteCurrentFile() {
