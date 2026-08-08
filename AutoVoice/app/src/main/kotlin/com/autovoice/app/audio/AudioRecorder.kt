@@ -1,14 +1,10 @@
 package com.autovoice.app.audio
 
-import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import com.autovoice.adapterlocal.ecnr.RnnoiseProcessor
-import com.autovoice.adapterlocal.vad.SileroVad
-import com.autovoice.adapterlocal.vad.VadEvent
-import com.autovoice.adapterlocal.vad.VoiceActivityGate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
@@ -30,7 +26,7 @@ object AudioFormat {
     const val BITS_PER_SAMPLE = 16
     const val BYTES_PER_SAMPLE = BITS_PER_SAMPLE / 8 // 2
 
-    /** Silero VAD 帧：512 samples = 32ms @16k = 1024 字节（与 [VoiceActivityGate] 帧周期一致）。 */
+    /** 读取块：512 samples = 32ms @16k = 1024 字节。 */
     const val BLOCK_SAMPLES = 512
     const val BLOCK_BYTES = BLOCK_SAMPLES * BYTES_PER_SAMPLE // 1024
 
@@ -72,36 +68,25 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
 }
 
 /**
- * 录音通道（SOURCE_MIC 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → 双网格。
+ * 录音通道（SOURCE_MIC 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → RNNoise 降噪 → 960B/块流。
  *
- * - VAD 网格（512 samples/块，与 [VoiceActivityGate] 帧周期 32ms 一致）：
- *   原始 1024B 块 → [SileroVad.feed] → 概率 → [VoiceActivityGate.feed] → [VadEvent]（[vadEvents]）。
- * - RNNoise 网格（480 samples/帧，独立于 VAD 网格）：块内切 480 帧、尾 32 samples 丢弃
- *   （Task 16 chunk 语义），降噪后 960B/块进 [pcmBlocks]。
- *
- * 段 PCM 装配（SpeechStart→SpeechEnd 之间收集 pcmBlocks）在 Task 20（engine），
- * recorder 保持哑通道，只出 PCM 流 + VAD 事件流。
+ * Task 34 起端点检测由录音生命周期承担（按住说话 → 抬手 = 段尾），不再有独立 VAD 分帧：
+ * 讯飞离线命令词引擎内部 VAD（vadOn/vadEndGap）负责段内子句分割，外部 VAD（silero_vad）
+ * 已从管线退役。语音段 PCM 的装配（SpeechStart→SpeechEnd 之间收集 pcmBlocks）由
+ * MainViewModel 按按下/抬手驱动，recorder 保持哑通道，只出降噪 PCM 流。
  *
  * RECORD_AUDIO 权限由 Activity（Task 19）申请；recorder 只管录音，未授权/创建失败时
  * [start] 返回 false 并静默降级（Log.w，不抛到 UI）。
  */
 class AudioRecorder(
-    context: Context,
-    private val vad: SileroVad = SileroVad(context, SILERO_VAD_ASSET),
-    private val gate: VoiceActivityGate = VoiceActivityGate(),
     private val denoiser: RnnoiseProcessor = RnnoiseProcessor(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : AutoCloseable {
 
     private val _pcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
 
-    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；段装配在 Task 20。 */
+    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；段装配在 MainViewModel。 */
     val pcmBlocks: SharedFlow<ByteArray> = _pcmBlocks.asSharedFlow()
-
-    private val _vadEvents = MutableSharedFlow<VadEvent>(extraBufferCapacity = BUFFER_CAPACITY)
-
-    /** VAD 事件流（SpeechStart / SpeechEnd）。 */
-    val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
 
     @Volatile
     private var record: AudioRecord? = null
@@ -143,13 +128,9 @@ class AudioRecorder(
         audioRecord?.release()
     }
 
-    /** 释放 VAD / RNNoise / 协程 scope（释放后不可再 [start]）。 */
+    /** 释放 RNNoise / 协程 scope（释放后不可再 [start]）。 */
     override fun close() {
         stop()
-        try {
-            vad.close()
-        } catch (_: Throwable) {
-        }
         try {
             denoiser.close()
         } catch (_: Throwable) {
@@ -162,11 +143,13 @@ class AudioRecorder(
     private suspend fun readLoop(audioRecord: AudioRecord) {
         val block = ByteArray(AudioFormat.BLOCK_BYTES)
         while (currentCoroutineContext().isActive) {
-            if (!readFully(audioRecord, block)) break // 停止 / 读错误
+            if (!readFully(audioRecord, block)) {
+                break // 停止 / 读错误
+            }
             try {
                 processBlock(block)
             } catch (t: Throwable) {
-                // 单块处理失败（VAD/RNNoise 异常）不中断录音，静默降级
+                // 单块处理失败（RNNoise 异常）不中断录音，静默降级
                 Log.w(TAG, "block processing failed, degraded silently", t)
             }
         }
@@ -188,12 +171,8 @@ class AudioRecorder(
         return true
     }
 
-    /** 单块双网格处理：VAD 事件 + RNNoise 降噪 → pcmBlocks（960B/块）。 */
+    /** 单块处理：RNNoise 帧网格（块内切 480 帧，尾 32 samples 丢弃）→ 降噪 → 960B 块。 */
     private fun processBlock(block: ByteArray) {
-        // VAD 网格：原始块直喂 Silero（512 samples），概率 → 门控事件
-        val probability = vad.feed(block)
-        gate.feed(probability)?.let { _vadEvents.tryEmit(it) }
-        // RNNoise 网格：块内切 480 帧（尾 32 samples 丢弃）→ 降噪 → 960B
         val denoised = denoiser.process(first480Frame(pcm16BytesToShorts(block)))
         _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
     }
@@ -225,10 +204,7 @@ class AudioRecorder(
     private companion object {
         const val TAG = "AudioRecorder"
 
-        /** 模型随 adapter-local 的 assets 并入 APK。 */
-        const val SILERO_VAD_ASSET = "silero_vad.onnx"
-
-        /** SharedFlow 缓冲（块：不阻塞读取循环；事件：不丢边界事件）。 */
+        /** SharedFlow 缓冲（块：不阻塞读取循环）。 */
         const val BUFFER_CAPACITY = 16
     }
 }

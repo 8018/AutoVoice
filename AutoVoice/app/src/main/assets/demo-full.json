@@ -7,7 +7,7 @@
   },
   "ecnr": "rnnoise",
   "local": {
-    "asr": "iflytek.fake-cmd",
+    "asr": "iflytek.offline",
     "nlu": "rule.nlu"
   },
   "cloud": {

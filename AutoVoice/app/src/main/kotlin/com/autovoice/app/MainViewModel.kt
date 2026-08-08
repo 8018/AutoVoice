@@ -4,7 +4,6 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.audio.SystemTtsFallback
 import com.autovoice.app.audio.TtsPlayer
@@ -66,6 +65,8 @@ data class UiState(
     val mode: DemoMode = DemoMode.DEMO_OFFLINE,
     val weakNetwork: Boolean = false,
     val permissionHint: Boolean = false,
+    /** 最近一次本地 ASR 识别文本（Task 34 接线后可见识别结果，null = 尚未识别）。 */
+    val lastRecognizedText: String? = null,
 )
 
 /**
@@ -74,8 +75,9 @@ data class UiState(
  *
  * Task 20 接线：
  *  - 录音开始 → [VoiceEngine.onListeningStart]（网络可用则恢复云端路由）；
- *  - VAD SpeechEnd → 拼接 SpeechStart 至 SpeechEnd 的降噪 pcmBlocks（960B/块，Task 18）
- *    为段 PCM → [VoiceEngine.onVadSegment]；
+ *  - 抬手（录音停止）→ 拼接录音期间的降噪 pcmBlocks（960B/块，Task 18）为段 PCM
+ *    → [VoiceEngine.onVadSegment]；Task 34 起段边界由按住/抬手决定（独立 VAD 退役，
+ *    讯飞 ESR 引擎内部 VAD 负责段内子句分割，见 AudioRecorder 类注释）；
  *  - 用户抬手/中止 → [VoiceEngine.onListeningStop] + recorder.stop()；
  *  - 会话状态 → [UiState.sessionState]；决策 sink → [MainViewModel.addDecision]；
  *  - 弱网开关 → engine.weakNetwork（云端人为延迟 3s，debug 构建）；
@@ -87,7 +89,7 @@ data class UiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 录音器（Task 19 由 UI 驱动；Task 20 的 VoiceSession 消费其 [AudioRecorder.pcmBlocks]）。 */
-    private val recorder = AudioRecorder(application)
+    private val recorder = AudioRecorder()
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -104,18 +106,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    /** VAD 段装配缓冲：SpeechStart 到 SpeechEnd 之间收集的 960B 降噪块（Task 18 块格式）。 */
+    /** 段装配缓冲：按住录音到抬手之间收集的 960B 降噪块（Task 18 块格式）。 */
     private val segmentBlocks = mutableListOf<ByteArray>()
 
-    /** 当前是否在收集段 PCM（SpeechStart 置 true，SpeechEnd/中止置 false）。 */
+    /** 当前是否在收集段 PCM（按下置 true，抬手/中止置 false）。 */
     private var speechActive = false
 
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产
         engine = buildEngine(loadConfig(DemoMode.DEMO_OFFLINE))
-        viewModelScope.launch {
-            recorder.vadEvents.collect { onVadEvent(it) }
-        }
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
                 if (speechActive) segmentBlocks.add(block)
@@ -133,16 +132,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(permissionHint = true) }
             return
         }
+        // Task 34：按下即开始收集段 PCM（段边界 = 按住/抬手，独立 VAD 退役）
+        speechActive = true
+        segmentBlocks.clear()
         setRecording(true)
         engine.onListeningStart()
     }
 
-    /** 停止录音（松开按钮触发；幂等）。 */
+    /** 停止录音（松开按钮触发；幂等）。段 PCM 在抬手时装配并交给引擎竞速。 */
     fun stopRecording() {
         recorder.stop()
         setRecording(false)
         speechActive = false
+        val segment = concatBlocks(segmentBlocks)
         segmentBlocks.clear()
+        if (segment.isNotEmpty()) {
+            engine.onVadSegment(segment)
+        }
         engine.onListeningStop()
     }
 
@@ -166,9 +172,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
-        if (_uiState.value.recording || _uiState.value.sessionState != SessionState.IDLE) {
-            stopRecording()
-        }
         engine.close()
         engine = buildEngine(loadConfig(mode))
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
@@ -195,26 +198,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
     // ------------------------------------------------------------------ 内部
-
-    private fun onVadEvent(event: VadEvent) {
-        when (event) {
-            VadEvent.SpeechStart -> {
-                // 段起点：开始收集降噪 PCM 块（Task 20）
-                speechActive = true
-                segmentBlocks.clear()
-            }
-            // VAD 自动结束：UI 状态回 IDLE，段 PCM 拼接后交给引擎竞速（Task 20）
-            VadEvent.SpeechEnd -> {
-                setRecording(false)
-                speechActive = false
-                val segment = concatBlocks(segmentBlocks)
-                segmentBlocks.clear()
-                if (segment.isNotEmpty()) {
-                    engine.onVadSegment(segment)
-                }
-            }
-        }
-    }
 
     /** 拼接段内 960B 降噪块为一段 PCM（16k 单声道 PCM16，云端/本地链的输入边界）。 */
     private fun concatBlocks(blocks: List<ByteArray>): ByteArray {
@@ -254,6 +237,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             vehicle = vehicleState,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
+            onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },
         )
         engine.session.onState { state ->
             _uiState.update { it.copy(sessionState = state) }

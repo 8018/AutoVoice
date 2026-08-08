@@ -1,8 +1,19 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
 }
+
+// 讯飞离线命令词 AIKit 授权凭据：从 local.properties（gitignored，不入库）注入 BuildConfig。
+// 未配置时为空字符串 → 引擎侧 SDK 未配置降级 fake-cmd（runbook §1.2/§5.1），功能不中断。
+val xfyunProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) FileInputStream(f).use { load(it) }
+}
+fun xfyunProp(key: String): String = "\"" + (xfyunProps.getProperty(key, "")) + "\""
 
 android {
     namespace = "com.autovoice.app"
@@ -14,6 +25,11 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        // 讯飞离线命令词凭据（Task 34 接线；空串时 VoiceEngine 降级 fake-cmd）
+        buildConfigField("String", "XFYUN_APPID", xfyunProp("xfyun.appid"))
+        buildConfigField("String", "XFYUN_API_KEY", xfyunProp("xfyun.apiKey"))
+        buildConfigField("String", "XFYUN_API_SECRET", xfyunProp("xfyun.apiSecret"))
     }
 
     compileOptions {

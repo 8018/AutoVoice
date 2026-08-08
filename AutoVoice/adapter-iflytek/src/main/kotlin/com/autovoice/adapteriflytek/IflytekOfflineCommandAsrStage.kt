@@ -66,6 +66,10 @@ class IflytekOfflineCommandAsrStage(
     @Volatile
     private var initialized = false
 
+    /** FSA 是否已装载到引擎缓存（demo isLoadData 语义：仅已装载时卸载）。 */
+    @Volatile
+    private var fsaLoaded = false
+
     @Volatile
     private var authCode = -1
 
@@ -126,20 +130,12 @@ class IflytekOfflineCommandAsrStage(
                     NOT_CONFIGURED_MSG,
             )
         }
+        // 与 demo initEngine() 一致：只初始化引擎；FSA 装载在每次会话前（reloadFsa）
         val engineBuilder = AiRequest.builder()
         engineBuilder.param("decNetType", "fsa")
         engineBuilder.param("punishCoefficient", 0.0)
         engineBuilder.param("wfst_addType", languageType) // 0 中文，1 英文
-        var ret = AiHelper.getInst().engineInit(ABILITY_ID, engineBuilder.build())
-        if (ret != 0) return ret
-        // FSA 命令词文件不存在则按词表自动生成（GBK 编码，与 SDK 样例格式一致）
-        ensureCommandWordFile()
-        val customBuilder = AiRequest.builder()
-        customBuilder.customText("FSA", fsaPath, 0)
-        ret = AiHelper.getInst().loadData(ABILITY_ID, customBuilder.build())
-        if (ret != 0) return ret
-        val dataSetIndex = intArrayOf(0)
-        return AiHelper.getInst().specifyDataSet(ABILITY_ID, "FSA", dataSetIndex)
+        return AiHelper.getInst().engineInit(ABILITY_ID, engineBuilder.build())
     }
 
     // ------------------------------------------------------------------ 识别
@@ -155,12 +151,20 @@ class IflytekOfflineCommandAsrStage(
         return runOnEngine { runSession(pcm) }
     }
 
-    /** 单次识别会话：start → write(BEGIN/CONTINUE/END) → read → 等结果 → end。 */
+    /** 单次识别会话：装载 FSA → start → write(BEGIN/CONTINUE/END) → read → 等结果 → end。 */
     private fun runSession(pcm: ByteArray): String? {
         resultLatch.reset()
         pendingResult.set(null)
         lastError.set(null)
 
+        // 与 demo start() 对齐：每次会话前重新装载 FSA（end() 会清空引擎侧资源，
+        // 否则第二次会话 start 报 10017 "fsa resource count should not be 0"）。
+        // 注意：本方法由 runOnEngine 提交到引擎线程执行，内部直接调用引擎 API，
+        // 不可再嵌套 runOnEngine（单线程 executor 自提交会死锁 → 30s 超时）。
+        val loadRet = reloadFsa()
+        if (loadRet != 0) {
+            throw IllegalStateException("讯飞引擎 FSA 装载失败：code=$loadRet")
+        }
         val handle = startSession()
         try {
             feedPcm(handle, pcm)
@@ -173,6 +177,31 @@ class IflytekOfflineCommandAsrStage(
         } finally {
             endSession(handle)
         }
+    }
+
+    /**
+     * 重新装载 FSA 命令词（demo start() 语义）：仅已装载时先卸载（demo isLoadData 检查），
+     * 再 loadData + specifyDataSet。文件缺失时按词表自动生成。
+     * 仅在引擎线程上调用（runSession 内直接调，不得再经 runOnEngine）。
+     */
+    private fun reloadFsa(): Int {
+        if (fsaLoaded) {
+            AiHelper.getInst().unLoadData(ABILITY_ID, "FSA", 0)
+            fsaLoaded = false
+        }
+        ensureCommandWordFile()
+        val customBuilder = AiRequest.builder()
+        customBuilder.customText("FSA", fsaPath, 0)
+        var ret = AiHelper.getInst().loadData(ABILITY_ID, customBuilder.build())
+        if (ret != 0) {
+            // 引擎残留自愈：卸载（即使标志为 false，如模式切换后旧实例残留）后重试一次
+            AiHelper.getInst().unLoadData(ABILITY_ID, "FSA", 0)
+            ret = AiHelper.getInst().loadData(ABILITY_ID, customBuilder.build())
+        }
+        if (ret != 0) return ret
+        ret = AiHelper.getInst().specifyDataSet(ABILITY_ID, "FSA", intArrayOf(0))
+        if (ret == 0) fsaLoaded = true
+        return ret
     }
 
     private fun startSession(): AiHandle {
@@ -240,7 +269,10 @@ class IflytekOfflineCommandAsrStage(
         if (initialized) {
             try {
                 runOnEngine {
-                    AiHelper.getInst().unLoadData(ABILITY_ID, "FSA", 0)
+                    if (fsaLoaded) {
+                        AiHelper.getInst().unLoadData(ABILITY_ID, "FSA", 0)
+                        fsaLoaded = false
+                    }
                     AiHelper.getInst().engineUnInit(ABILITY_ID)
                 }
             } catch (t: Throwable) {

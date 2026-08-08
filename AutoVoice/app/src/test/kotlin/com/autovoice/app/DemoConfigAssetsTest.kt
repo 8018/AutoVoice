@@ -34,7 +34,8 @@ class DemoConfigAssetsTest {
             cfg.cloud.gatewayUrl.isNotBlank(),
             "demo-full 的 gatewayUrl 不得为空（占位符 ws://10.0.2.2:8080/ws，真机演示时改网关地址）",
         )
-        assertEquals("iflytek.fake-cmd", cfg.local.asr)
+        // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
+        assertEquals("iflytek.offline", cfg.local.asr)
         assertEquals("rule.nlu", cfg.local.nlu)
         assertEquals("rnnoise", cfg.ecnr)
         assertFalse(cfg.mock.executor)
@@ -47,7 +48,8 @@ class DemoConfigAssetsTest {
         assertFalse(cfg.cloud.enabled, "demo-offline 仅本地：cloud.enabled 必须为 false")
         assertEquals(2000L, cfg.cloud.waitMs)
         assertEquals("", cfg.cloud.gatewayUrl)
-        assertEquals("iflytek.fake-cmd", cfg.local.asr)
+        // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
+        assertEquals("iflytek.offline", cfg.local.asr)
         assertEquals("rule.nlu", cfg.local.nlu)
         assertEquals("rnnoise", cfg.ecnr)
         assertFalse(cfg.mock.executor)

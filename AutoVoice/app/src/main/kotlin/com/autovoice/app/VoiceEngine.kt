@@ -83,6 +83,8 @@ class VoiceEngine(
     val vehicle: MockVehicleState,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onVehicleApplied: () -> Unit = {},
+    /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
+    private val onLocalRecognized: (String?) -> Unit = {},
     private val debugBuild: Boolean = BuildConfig.DEBUG,
     /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
     private val onClose: () -> Unit = {},
@@ -137,7 +139,9 @@ class VoiceEngine(
     fun onVadSegment(segment: ByteArray) = session.onVadSegment(segment)
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
-    fun onListeningStop() = session.onListeningStop()
+    fun onListeningStop() {
+        session.onListeningStop()
+    }
 
     // ------------------------------------------------------------------ 结果路由
 
@@ -204,8 +208,12 @@ class VoiceEngine(
             vehicle: MockVehicleState,
             scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             onVehicleApplied: () -> Unit = {},
+            onLocalRecognized: (String?) -> Unit = {},
         ): VoiceEngine {
             val cloudRunner = GatewayCloudRunner(cfg.cloud, sink, scope)
+            // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
+            // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
+            val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
             val engine = VoiceEngine(
                 cfg = cfg,
                 arbiter = OnDeviceRaceArbiter(
@@ -216,27 +224,61 @@ class VoiceEngine(
                 ),
                 sink = sink,
                 networkAvailable = networkAvailable,
-                local = buildLocalChain(cfg),
+                local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef),
                 cloud = cloudRunner,
                 player = player,
                 speaker = speaker,
                 vehicle = vehicle,
                 scope = scope,
                 onVehicleApplied = onVehicleApplied,
-                onClose = { cloudRunner.close() }, // Task 21：模式切换时断开网关
+                onLocalRecognized = onLocalRecognized,
+                onClose = {
+                    cloudRunner.close() // Task 21：模式切换时断开网关
+                    offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
+                },
             )
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
             return engine
         }
 
-        /** 本地链装配：命令词 ASR（真实/降级 fake）→ 规则 NLU；绝不抛出。 */
-        private fun buildLocalChain(cfg: DemoConfig): LocalChainRunner {
+        /**
+         * 本地链装配：命令词 ASR（真实/降级 fake）→ 规则 NLU；绝不抛出。
+         *
+         * Task 34 接线：`local.asr=iflytek.offline` 时构造真实 [IflytekOfflineCommandAsrStage]
+         * 并在引擎后台协程里 [IflytekOfflineCommandAsrStage.init]（首次联网授权 + 引擎初始化 +
+         * 命令词加载）。init 阻塞最长 20s（授权超时），放后台不卡装配；就绪前 recognize 抛
+         * NOT_CONFIGURED → 本次降级 [FakeCommandAsrProvider]（runbook §5.1），授权完成后自动
+         * 切换真实引擎，无需重启。
+         */
+        private fun buildLocalChain(
+            cfg: DemoConfig,
+            context: Context,
+            scope: CoroutineScope,
+            onLocalRecognized: (String?) -> Unit,
+            /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
+            offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
+        ): LocalChainRunner {
             val offlineStage = if (cfg.local.asr == "iflytek.offline") {
-                // 凭据由用户侧配置（SDK 授权）；demo 未配置时 recognize 抛 NOT_CONFIGURED → 降级
-                IflytekOfflineCommandAsrStage(appId = "", apiKey = "", apiSecret = "")
+                // 凭据来自 local.properties（BuildConfig 注入，不入库）
+                IflytekOfflineCommandAsrStage(
+                    appId = BuildConfig.XFYUN_APPID,
+                    apiKey = BuildConfig.XFYUN_API_KEY,
+                    apiSecret = BuildConfig.XFYUN_API_SECRET,
+                ).also { offlineStageRef.set(it) }
             } else {
                 null
+            }
+            if (offlineStage != null) {
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        offlineStage.init(context)
+                        Log.i(TAG, "讯飞离线命令词初始化完成（授权通过）")
+                    } catch (t: Throwable) {
+                        // 授权失败/资源缺失等：本次及后续识别保持 fake 降级（§5.1 预期内）
+                        Log.w(TAG, "讯飞离线命令词初始化失败，保持 FakeCommandAsrProvider 降级", t)
+                    }
+                }
             }
             return LocalChainRunner { segment ->
                 try {
@@ -245,7 +287,7 @@ class VoiceEngine(
                             offlineStage.recognize(segment)
                         } catch (e: IllegalStateException) {
                             if (e.message?.contains(IflytekOfflineCommandAsrStage.NOT_CONFIGURED_MSG) == true) {
-                                Log.w(TAG, "讯飞离线命令词未配置，本次降级 FakeCommandAsrProvider", e)
+                                Log.w(TAG, "讯飞离线命令词未就绪（授权中/失败），本次降级 FakeCommandAsrProvider", e)
                                 FakeCommandAsrProvider.recognize(segment)
                             } else {
                                 throw e
@@ -253,7 +295,11 @@ class VoiceEngine(
                         }
                         else -> FakeCommandAsrProvider.recognize(segment) // local.asr=iflytek.fake-cmd
                     }
-                    RuleNluProvider.understand(command ?: "")
+                    Log.i(TAG, "本地 ASR 识别文本: ${command ?: "(无结果)"}")
+                    onLocalRecognized(command)
+                    val intent = RuleNluProvider.understand(command ?: "")
+                    Log.i(TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
+                    intent
                 } catch (t: Throwable) {
                     // 本地链绝不抛出：任何 SDK 异常 → unknown 意图（不执行、不播报）
                     Log.w(TAG, "本地链路异常，降级 unknown 意图", t)

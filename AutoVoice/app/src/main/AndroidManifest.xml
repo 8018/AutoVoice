@@ -6,9 +6,20 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 网络可用性检查（Task 20 engine 的 ConnectivityManager 判定） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 讯飞离线命令词 workDir=/sdcard/iflytek/（Task 34）：AIKit 运行时直写外部存储，
+         targetSdk 34 需 MANAGE_EXTERNAL_STORAGE（adb appops 或系统设置"所有文件访问"授予）；
+         ≤32 用经典读写权限 + legacy 豁免（与讯飞 demo targetSdk 30 配置对齐） -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
         android:label="AutoVoice"
+        android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"

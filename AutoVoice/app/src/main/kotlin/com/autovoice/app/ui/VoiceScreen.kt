@@ -23,7 +23,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,9 +53,25 @@ fun VoiceScreen(
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
+        // Task 34：最新一条 ASR 识别结果（醒目卡片，置于仲裁日志上方）
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
+            Text(
+                text = state.lastRecognizedText?.let { "识别: $it" } ?: "识别: (尚未识别)",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        // 仲裁日志：缩小区域（识别结果上移后给主内容让位）
         DecisionLog(
             entries = state.decisionLog,
-            modifier = Modifier.fillMaxWidth().weight(1f),
+            modifier = Modifier.fillMaxWidth().weight(0.6f),
         )
         Spacer(Modifier.height(12.dp))
         SettingsSection(
