@@ -24,6 +24,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
+        unitTests.all { it.useJUnitPlatform() }
+    }
 }
 
 kotlin {
@@ -39,4 +44,7 @@ dependencies {
     implementation(project(":adapter-iflytek"))
     implementation(platform(libs.compose.bom))
     implementation(libs.activity.compose)
+    implementation(libs.coroutines.core)
+
+    testImplementation(libs.junit)
 }
