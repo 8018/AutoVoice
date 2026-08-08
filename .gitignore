@@ -35,3 +35,18 @@ google-services.json
 
 # macOS
 .DS_Store
+
+# Gradle
+.gradle/
+build/
+# Android
+local.properties
+*.apk
+*.aab
+captures/
+# IDE
+.idea/
+*.iml
+# 密钥
+.env
+*.jks
