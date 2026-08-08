@@ -16,6 +16,8 @@ dependencies {
     testImplementation(libs.coroutines.test)
 }
 
+sourceSets.test { resources.srcDir("../../shared/fixtures") }
+
 tasks.test {
     useJUnitPlatform()
 }
