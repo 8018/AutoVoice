@@ -23,6 +23,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 调试构建开关（BuildConfig.DEBUG）——弱网调试 hook 仅 debug 暴露（Task 20 裁定）
+        buildConfig = true
     }
 
     testOptions {
@@ -47,6 +49,9 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.coroutines.core)
+    // 装配 GatewayClient 需要 okhttp 类型；网关 decision 事件解析需要 gson（Task 20）
+    implementation(libs.okhttp)
+    implementation(libs.gson)
 
     testImplementation(libs.junit)
 }
