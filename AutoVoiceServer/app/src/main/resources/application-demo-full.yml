@@ -1,0 +1,22 @@
+# demo-full profile：完整云端 demo 配置（端口 8080，WS 端点 /ws）。
+# secrets 从环境变量注入（XFYUN_APPID / XFYUN_API_KEY / DEEPSEEK_API_KEY /
+# ALIYUN_AK / ALIYUN_SK / ALIYUN_NLS_APPKEY / DASHSCOPE_API_KEY）。
+server:
+  port: 8080
+autovoice:
+  arbitration:
+    nlu-grace-ms: 1500
+    safety-timeout-ms: 6500
+  providers:
+    nlu: iflytek        # iflytek | fake
+    llm: deepseek
+    asr: aliyun
+    tts: aliyun
+  secrets:
+    xfyun-appid: ${XFYUN_APPID:}
+    xfyun-api-key: ${XFYUN_API_KEY:}
+    deepseek-api-key: ${DEEPSEEK_API_KEY:}
+    aliyun-ak: ${ALIYUN_AK:}
+    aliyun-sk: ${ALIYUN_SK:}
+    aliyun-nls-appkey: ${ALIYUN_NLS_APPKEY:}
+    dashscope-api-key: ${DASHSCOPE_API_KEY:}

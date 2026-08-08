@@ -17,7 +17,11 @@ dependencies {
     implementation(project(":asr-gateway"))
     implementation(project(":tts-gateway"))
     implementation(project(":gateway"))
-    testImplementation(libs.junit)
+    implementation(libs.spring.boot.starter.web)
+    implementation(libs.spring.boot.starter.websocket)
+    implementation(libs.okhttp)
+    testImplementation(libs.spring.boot.starter.test)
+    testImplementation(libs.okhttp)
 }
 
 tasks.test {

@@ -1,0 +1,133 @@
+package com.autovoice.server.app;
+
+import com.autovoice.server.asrgateway.AliyunAsrProvider;
+import com.autovoice.server.asrgateway.AliyunTokenClient;
+import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.NluProvider;
+import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.gateway.VoiceGatewayHandler;
+import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.nlutraditional.IflytekNluProvider;
+import com.autovoice.server.session.SessionRegistry;
+import com.autovoice.server.ttsgateway.AliyunTtsProvider;
+import okhttp3.OkHttpClient;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
+
+/**
+ * 云端 app 装配：按 {@code autovoice.*} 配置选择 provider 实现并注入
+ * {@link VoiceGatewayHandler}（每连接 pipeline + RaceArbiter 由 handler 内部构建）。
+ *
+ * <p>provider 选择（application.yml {@code autovoice.providers.*}）：nlu 支持
+ * {@code iflytek}（secrets 装配 {@link IflytekNluProvider}，默认）与 {@code fake}
+ * （{@link FakeNluProvider}，仅配置显式指定时装配）；llm=deepseek、asr=aliyun、
+ * tts=aliyun。secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
+ */
+@Configuration
+@EnableConfigurationProperties(AppConfig.AutovoiceProperties.class)
+public class AppConfig {
+
+    /** {@code autovoice.*} 配置（constructor binding）。 */
+    @ConfigurationProperties(prefix = "autovoice")
+    public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets) {
+
+        public record Arbitration(long nluGraceMs, long safetyTimeoutMs) {
+        }
+
+        public record Providers(String nlu, String llm, String asr, String tts) {
+        }
+
+        /** secrets 全部 ${VAR:} 空默认：不写入任何 secret 字面值。 */
+        public record Secrets(String xfyunAppid, String xfyunApiKey, String deepseekApiKey,
+                              String aliyunAk, String aliyunSk, String aliyunNlsAppkey,
+                              String dashscopeApiKey) {
+        }
+    }
+
+    @Bean
+    public OkHttpClient okHttpClient() {
+        return new OkHttpClient();
+    }
+
+    /**
+     * Tomcat JSR-356 容器缓冲：Tomcat 默认消息缓冲仅 8192 字节，整帧（Whole handler）
+     * 超过即关连接（1009 buffer too small）。调大到 256KB：16KB 单帧 PCM 与
+     * protocol.md §4.4 约定的一次下发的超大 base64 reply（64KB 音频 ≈ 87KB base64）都放得下。
+     */
+    @Bean
+    public ServletServerContainerFactoryBean webSocketContainerFactoryBean() {
+        ServletServerContainerFactoryBean factory = new ServletServerContainerFactoryBean();
+        factory.setMaxTextMessageBufferSize(256 * 1024);
+        factory.setMaxBinaryMessageBufferSize(256 * 1024);
+        factory.setMaxSessionIdleTimeout(30 * 60 * 1000L);
+        return factory;
+    }
+
+    @Bean
+    public SessionRegistry sessionRegistry() {
+        return new SessionRegistry();
+    }
+
+    @Bean
+    public NluProvider nluProvider(OkHttpClient client, AutovoiceProperties props) {
+        return switch (props.providers().nlu()) {
+            case "fake" -> new FakeNluProvider();
+            case "iflytek" -> new IflytekNluProvider(client, props.secrets().xfyunAppid(),
+                    props.secrets().xfyunApiKey(), IflytekNluProvider.DEFAULT_ENDPOINT);
+            default -> throw new IllegalArgumentException(
+                    "unknown providers.nlu: " + props.providers().nlu() + " (iflytek | fake)");
+        };
+    }
+
+    @Bean
+    public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props) {
+        if (!"deepseek".equals(props.providers().llm())) {
+            throw new IllegalArgumentException(
+                    "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
+        }
+        return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
+                DeepSeekLlmProvider.DEFAULT_ENDPOINT);
+    }
+
+    /** NLS token 接口的 AK/SK 以明文 query 出现（该 API 设计固有，URL 会进代理日志）。 */
+    @Bean
+    public AliyunTokenClient aliyunTokenClient(OkHttpClient client, AutovoiceProperties props) {
+        return new AliyunTokenClient(client, props.secrets().aliyunAk(), props.secrets().aliyunSk());
+    }
+
+    @Bean
+    public AsrProvider asrProvider(OkHttpClient client, AliyunTokenClient tokenClient, AutovoiceProperties props) {
+        if (!"aliyun".equals(props.providers().asr())) {
+            throw new IllegalArgumentException(
+                    "unknown providers.asr: " + props.providers().asr() + " (aliyun)");
+        }
+        return new AliyunAsrProvider(client, props.secrets().aliyunNlsAppkey(),
+                AliyunAsrProvider.DEFAULT_ENDPOINT, tokenClient::token);
+    }
+
+    @Bean
+    public TtsProvider ttsProvider(OkHttpClient client, AutovoiceProperties props) {
+        if (!"aliyun".equals(props.providers().tts())) {
+            throw new IllegalArgumentException(
+                    "unknown providers.tts: " + props.providers().tts() + " (aliyun)");
+        }
+        return new AliyunTtsProvider(client, props.secrets().dashscopeApiKey(),
+                AliyunTtsProvider.DEFAULT_ENDPOINT);
+    }
+
+    /**
+     * 网关 WS 处理器：仲裁参数来自配置（nluGraceMs/safetyTimeoutMs）；每连接的
+     * RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出，无需 app 级关闭）。
+     */
+    @Bean
+    public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, NluProvider nlu, LlmProvider llm,
+                                                   TtsProvider tts, SessionRegistry registry,
+                                                   AutovoiceProperties props) {
+        return new VoiceGatewayHandler(asr, nlu, llm, tts, registry,
+                props.arbitration().nluGraceMs(), props.arbitration().safetyTimeoutMs());
+    }
+}
