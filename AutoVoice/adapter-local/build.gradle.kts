@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.autovoice.adapter.local"
+    namespace = "com.autovoice.adapterlocal"
     compileSdk = 34
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 26
     }
 
     compileOptions {
