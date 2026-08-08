@@ -577,6 +577,8 @@ git commit -m "feat: session registry with LRU eviction"
 
 **归一化映射表（demo 版，fixture 驱动）**：service="空调" → domain=climate；intent 映射：{"调节温度"→set_temperature, "开启"→power_on, "关闭"→power_off}；槽位：{温度→temperature(number), 对象→zone(enum: 主驾→driver/副驾→passenger/全车→all)}；未知 service/intent → unknown。**映射表集中在一个 `Map<String, DomainMapping>` 常量里，新增意图只加表项。**
 
+**讯飞语义能力来源（重要）**：讯飞的在线 NLU 在 **AIUI 开放平台**（aiui.xfyun.cn，独立于 xfyun.cn 主站）——文本语义 WebAPI `https://api.xfyun.cn/v1/aiui/v1/text_ai`，请求头 `X-Appid`/`X-CurTime`/`X-Param`（base64 JSON，含 `nlp_version=3.0`、`scene=main`）/`X-CheckSum`（base64(HMAC-MD5(apiKey, curTime+param+body))）。开通：AIUI 平台创建应用 → **"我的应用"里显式开启语义理解**（默认关闭，报 14002）→ 配语义场景。`scene=main` 对车控句大概率拒识——**验收剧本 2 需要先在技能工作室配置车控技能**（意图：调节温度/开关空调，实体：温度），或剧本 2 改用 AIUI 内置可解析句（如"今天是几号"）。端点和签名以实施时 AIUI 文档为准，集中定义在 provider 常量区。
+
 - [ ] **Step 1: 写失败测试（normalizer，用 shared fixture）**
 
 ```java
@@ -610,7 +612,7 @@ class IflytekSemanticNormalizerTest {
 - [ ] **Step 3: 实现 normalizer**——解析 `data.result.intent.{service,intent,slots[]}`（用 Jackson `JsonNode`），按映射表转 Canonical；解析失败/异常一律返回 `Intent.unknown(source)`（归一化永不抛异常——这是适配器边界的铁律）
 - [ ] **Step 4: 运行确认通过**
 - [ ] **Step 5: Provider 测试（MockWebServer 模拟讯飞接口 + 签名校验）**——`IflytekNluProviderTest`：MockWebServer 返回 fixture 响应，断言请求头含 `x-appid` 与签名头、请求体为 JSON、`understand()` 返回 canonical Intent；错误码响应 → unknown
-- [ ] **Step 6: 实现 Provider**——HTTP 请求按讯飞开放平台"语义理解"webapi 文档（POST + `x-appid`/`x-ca-key`/`x-ca-signature-headers` 头 + HMAC-SHA256 或文档指定签名算法；**端点与签名字段以实施时讯飞控制台文档为准，provider 内常量集中定义便于修改**）；`endpoint` 默认 `https://api.xfyun.cn/v1/aiui/v1/intent`（实施时核对）
+- [ ] **Step 6: 实现 Provider**——HTTP 请求按 **AIUI 文本语义 WebAPI**（POST `https://api.xfyun.cn/v1/aiui/v1/text_ai`，头 `X-Appid`/`X-CurTime`/`X-Param`（base64 的 JSON：`{"nlp_version":"3.0","scene":"main"}`）/`X-CheckSum`（base64(HMAC-MD5(apiKey, curTime + param + body))），Content-Type `text/plain`，body=文本；**端点和签名以实施时 AIUI 文档为准，provider 内常量集中定义便于修改**；接口返回 `data.result` 语义 JSON 交给 normalizer）
 - [ ] **Step 7: 运行确认通过**（MockWebServer 测试不需真实密钥）
 - [ ] **Step 8: Commit**
 
