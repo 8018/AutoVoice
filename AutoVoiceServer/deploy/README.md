@@ -3,7 +3,7 @@
 ## 服务器侧布局
 
 - `/opt/autovoice/app.jar` — 可执行 jar（`./gradlew :app:bootJar` 产出）
-- `/etc/autovoice/.env` — 7 个密钥环境变量（**不入库**；按 `env.example` 建模板，
+- `/etc/autovoice/.env` — 8 个密钥环境变量（**不入库**；按 `env.example` 建模板，
   真实值由服务器管理员填写；改后 `systemctl restart autovoice-gateway`）
 - `/etc/systemd/system/autovoice-gateway.service` — systemd 服务（本目录同名文件），
   开机自启 + 崩溃自动重启（Restart=on-failure）
