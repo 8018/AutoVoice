@@ -12,7 +12,7 @@
 
 **Demo 成功标准**：三条链路全通 + 双仲裁工作 + 决策日志可见：
 
-1. 端侧传统语音：讯飞离线 ASR + 讯飞离线 NLU
+1. 端侧传统语音：讯飞离线命令词识别（体验版 SDK）+ 自研规则语义映射（RuleNluProvider）
 2. 云端传统语音：阿里云 Paraformer → 讯飞传统 NLU（供应商 API，适配器可插拔）
 3. 云端大模型：阿里云 Paraformer → DeepSeek 对话
 
@@ -46,7 +46,7 @@
 应用层    语音 Demo App（会话 UI + 决策日志展示）
 引擎内核  会话状态机 · 端侧仲裁器 · 执行分发器（自研，供应商无关）
 SPI 层    Stage 接口：Ecnr/Vad/Asr/Nlu/Tts/Executor
-适配器层  讯飞离线 ASR·NLU | RNNoise | Silero | 云端网关客户端 | mock 执行器
+适配器层  讯飞离线命令词 ASR + 规则语义 | RNNoise | Silero | 云端网关客户端 | mock 执行器
 设备层    麦克风采集 · 音频播放 · 音频焦点（自研 HAL，8155 上替换为车载音频 HAL）
 ```
 
@@ -100,10 +100,10 @@ interface Stage<IN, OUT> {
 **原则：内部只认一套意图格式（OEM 自研），供应商格式只存在于适配器内部。**
 
 ```
-讯飞离线NLU ─→ 讯飞语义JSON ─┐
-讯飞语义API ─→ 讯飞语义JSON ─┤
-                            ├─→ 适配器内归一化 →→ Canonical Intent
-其他供应商  ─→ 各家语义格式 ─┘     (domain/intent/slots/confidence)
+讯飞离线命令词 ─→ 命令词文本 ────┐
+                              ├─→ 适配器内映射 →→ Canonical Intent
+讯飞语义API ─→ 讯飞语义JSON ──┘      (domain/intent/slots/confidence)
+其他供应商  ─→ 各家语义格式
 ```
 
 ```json
@@ -240,7 +240,9 @@ AutoVoice/            ← git 仓库根（monorepo）
 - shared 用 JSON Schema + 文档，两端各自生成/手写类；demo 阶段加契约测试（两端 mock 消息互认）
 - monorepo 单仓库；将来拆库则 shared 升级为版本化发布
 
-**供应商选型（demo）**：讯飞（端侧离线 SDK 走传统链路 + 云端语义理解 API 走云端传统链路，开放平台申请；两处语义结果统一在适配器内归一化）；阿里云 Paraformer/CosyVoice（用户已有阿里云服务）；DeepSeek API（仅云端大模型链路：LLM 对话，OpenAI 兼容）；RNNoise（ECNR 降噪）；Silero VAD。
+**供应商选型（demo）**：讯飞（端侧用离线命令词识别 SDK——体验版 3 装机量/35 天，开放平台自助申请；输出命令词文本由端侧规则映射表（RuleNluProvider）转为 Canonical Intent。云端用语义理解 API——在线服务个人开发者可用。两处都收敛到 Canonical Intent）；阿里云 Paraformer/CosyVoice（用户已有阿里云服务）；DeepSeek API（仅云端大模型链路：LLM 对话，OpenAI 兼容）；RNNoise（ECNR 降噪）；Silero VAD。
+
+**背景说明**：讯飞开放平台的离线语义理解无个人开发者自助 SDK（走企业私有化商务渠道），离线命令词识别为收费服务但有体验版可申请——端侧"离线语义"由自研规则映射承担，符合量产"端侧传统语音=命令词场景"的真实形态；将来接入企业版离线语义，只需替换 RuleNluProvider 内部实现。
 
 **传统 NLU 可插拔**：`nlu-traditional` 模块内部定义 `NluProvider` 接口（输入文本 → 归一化 Intent），讯飞语义 API 只是第一个实现；换思必驰/其他供应商 = 新增一个 Provider 实现 + 配置切换，云端仲裁与下游零改动。
 
@@ -254,7 +256,7 @@ AutoVoice/            ← git 仓库根（monorepo）
 |---|---|
 | 录音、播放（Android） | 真做 |
 | ECNR（RNNoise）/ VAD（Silero） | 真做 |
-| 讯飞离线 ASR+NLU | 真做（试用授权） |
+| 讯飞离线命令词识别 + 规则语义映射 | 真做（体验版自助申请） |
 | AutoVoiceServer（网关/仲裁/NLU/LLM；传统 NLU=讯飞语义 API，LLM=DeepSeek） | 真做；demo 期跑在开发机，手机经局域网访问；阿里云部署是量产子项目 |
 | Paraformer / CosyVoice 代理 | 真做（经云端网关） |
 | 竞速仲裁（端云） | 真做，参数从配置读 |
@@ -263,7 +265,7 @@ AutoVoice/            ← git 仓库根（monorepo）
 
 ### 9.2 测试策略
 
-1. **归一化层单测**——讯飞语义 JSON fixture（离线 SDK 与云端语义 API 两种格式）→ Canonical Intent 映射表测试；unknown 拒识映射测试
+1. **归一化层单测**——端侧命令词→意图规则映射表测试；云端讯飞语义 API fixture → Canonical Intent 映射测试；unknown 拒识映射测试
 2. **仲裁收敛单测**——假 Stage + 可控延迟：云端先到即用、LLM 先到等 1500ms、2000ms 超时用本地、拒识走 LLM；时间可注入，不依赖真网络
 3. **配置校验测试**——裁剪规则违反 → 构建期报错
 4. **契约测试**——端云 mock 消息互认

@@ -23,7 +23,7 @@
 1. **阿里云 ASR 用一句话识别**（每 VAD 段一次 HTTP 调用）代替流式 WebSocket——网关接口（Android 只传段音频）不变，流式是后续升级
 2. **TTS 用 DashScope sambert-zhichu-v1（HTTP 同步）**代替 CosyVoice 流式——同理由
 3. **本地链路播报用 Android 系统 TTS**（离线可用），云端播报用阿里云 TTS
-4. **讯飞离线 SDK 若授权/下载受阻** → 同一 SPI 下的 `FakeIflytekProvider`（固定映射表）兜底，demo 仍可跑通，验收剧本 1 不阻塞
+4. **讯飞离线命令词 SDK 用体验版**（3 装机量 / 35 天，开放平台控制台自助申请开通）；若申请/下载受阻 → 同一 SPI 下的 `FakeCommandAsrProvider`（模拟命令词识别）兜底，demo 仍可跑通，验收剧本 1 不阻塞。讯飞无个人可用的离线语义 SDK → 端侧语义由自研 `RuleNluProvider`（命令词→Canonical Intent 规则映射）承担
 5. 配置系统：demo 用单文件 JSON（`demo-full.json` / `demo-offline.json`），三层继承引擎不做（spec §9.1 已排除）
 6. 验收剧本 3 的"讯飞拒识"依赖讯飞语义 API 对测试句的返回：若讯飞对"明天上海天气怎么样"返回了非 unknown 结果，runbook 已给出替代测试句（"讲个笑话"）
 
@@ -48,7 +48,7 @@ AutoVoice/                          ← 仓库根（现有：README/License/docs
 │   ├── voice-core/                 纯 JVM Kotlin 库：消息模型 + Stage SPI + 端侧仲裁 + 状态机 + 配置加载
 │   ├── gateway-client/             AutoVoiceServer WS 客户端（OkHttp，可测）
 │   ├── adapter-local/              RNNoise(JNI) + SileroVAD(onnxruntime) + 能量VAD兜底
-│   ├── adapter-iflytek/            讯飞离线 ASR/NLU 适配器 + FakeIflytekProvider 兜底
+│   ├── adapter-iflytek/            讯飞离线命令词 ASR 适配器 + RuleNluProvider（规则语义）+ FakeCommandAsrProvider 兜底
 │   └── app/                        Compose UI：状态/决策日志/模拟车控/TTS播放/录音
 └── AutoVoiceServer/                ← 云端 Java 项目（Gradle multi-module）
     ├── settings.gradle.kts / build.gradle.kts / gradle/libs.versions.toml
@@ -805,7 +805,7 @@ class ConfigTest {
     @Test fun `parses demo full config`() {
         val json = """
             {"mode":"full","vad":{"threshold":0.5,"minSpeechMs":64,"minSilenceMs":960},
-             "ecnr":"rnnoise","local":{"asr":"iflytek.offline","nlu":"iflytek.offline"},
+             "ecnr":"rnnoise","local":{"asr":"iflytek.offline-cmd","nlu":"rule"},
              "cloud":{"enabled":true,"gatewayUrl":"ws://192.168.1.1:8080/ws","waitMs":2000},
              "mock":{"executor":true}}""".trimIndent()
         val cfg = DemoConfig.fromJson(json)
@@ -814,7 +814,7 @@ class ConfigTest {
     }
     @Test fun `parses demo offline config`() {
         val json = """{"mode":"offline","vad":{"threshold":0.5,"minSpeechMs":64,"minSilenceMs":960},
-             "ecnr":"rnnoise","local":{"asr":"iflytek.offline","nlu":"iflytek.offline"},
+             "ecnr":"rnnoise","local":{"asr":"iflytek.offline-cmd","nlu":"rule"},
              "cloud":{"enabled":false,"gatewayUrl":"","waitMs":2000},
              "mock":{"executor":true}}""".trimIndent()
         val cfg = DemoConfig.fromJson(json)
@@ -1006,44 +1006,52 @@ git add AutoVoice/adapter-local
 git commit -m "feat: local vad (silero+gate), rnnoise ecnr with jni"
 ```
 
-### Task 17: adapter-iflytek——归一化 + 离线 SDK 接入 + Fake 兜底
+### Task 17: adapter-iflytek——离线命令词 ASR 接入 + 规则语义映射（RuleNluProvider）
 
 **Files:**
-- Create: `AutoVoice/adapter-iflytek/src/main/kotlin/com/autovoice/adapteriflytek/IflytekSemanticNormalizer.kt`（纯 Kotlin，与云端 Task 7 同映射表）、`IflytekOfflineAsrStage.kt`、`IflytekOfflineNluStage.kt`、`FakeIflytekProvider.kt`
-- Test: `AutoVoice/adapter-iflytek/src/test/kotlin/.../IflytekSemanticNormalizerTest.kt`、`FakeIflytekProviderTest.kt`
-- Create: `AutoVoice/adapter-iflytek/libs/`（讯飞 MSC SDK：Msc.jar/aar + so + 离线语义资源；**SDK 文件不提交 git，加入 .gitignore，实施时从讯飞开放平台下载**）
+- Create: `AutoVoice/adapter-iflytek/src/main/kotlin/com/autovoice/adapteriflytek/RuleNluProvider.kt`（纯 Kotlin：命令词→Canonical Intent 规则映射）、`IflytekOfflineCommandAsrStage.kt`（讯飞离线命令词识别）、`FakeCommandAsrProvider.kt`
+- Test: `AutoVoice/adapter-iflytek/src/test/kotlin/.../RuleNluProviderTest.kt`、`FakeCommandAsrProviderTest.kt`
+- Create: `AutoVoice/adapter-iflytek/libs/`（讯飞 MSC 离线命令词 SDK：jar/aar + so + 授权文件；**SDK 文件不提交 git，加入 .gitignore，实施时从讯飞开放平台下载**）
 
 **Interfaces:**
-- Consumes: Task 12（`Intent`/`Stage`）、shared fixtures、讯飞开放平台账号（appid/离线授权）
+- Consumes: Task 12（`Intent`/`Stage`）、讯飞开放平台账号（appid + 离线命令词体验版授权）
 - Produces:
-  - `IflytekSemanticNormalizer.normalize(vendorJson, source): Intent`——与云端同款映射表（空调→climate 等），复用相同 fixture
-  - `FakeIflytekProvider`：`fun understand(text): Intent`——包含"空调"→climate/set_temperature(+温度槽位若含数字)；含"车窗"→window/power_off|on；否则 unknown；**与真实适配器同一 Stage 边界，配置 `local.asr=iflytek.fake` 时使用**
-  - `IflytekOfflineNluStage : Stage<TextResult, Intent>`——MSC `SpeechUnderstander` 离线语义（appid 初始化 + 离线授权文件）；**若 SDK/授权未就绪，抛出明确错误"讯飞离线 SDK 未配置，请切换 local.asr=iflytek.fake"**
+  - `object RuleNluProvider`：`fun understand(command: String): Intent`——规则映射表（常量 `Map`）：含"空调"→climate，含"车窗"→window；意图规则："打开"+空调→`power_on`、"关闭"+空调→`power_off`、含"调到/调至"→`set_temperature`（正则提取数字→`temperature` 槽位）；未命中 → `Intent.unknown("rule.nlu")`；**映射表集中定义，新增命令只加表项**
+  - `FakeCommandAsrProvider`：`fun recognize(pcm: ByteArray): String`——模拟命令词识别：返回固定文本"打开空调"（或按内置微型能量检测返回 null）；**与真实 ASR 同一 Stage 边界，配置 `local.asr=iflytek.fake-cmd` 时使用**
+  - `IflytekOfflineCommandAsrStage : Stage<AudioStream, TextResult>`——讯飞离线命令词识别引擎（词表 = 车控命令集合：打开空调/关闭空调/空调调到X度/打开车窗/关闭车窗…）；**若 SDK/授权未就绪，抛出明确错误"讯飞离线命令词 SDK 未配置，请切换 local.asr=iflytek.fake-cmd"**
 
-- [ ] **Step 1: 写失败测试（normalizer + fake，host 可测）**
+- [ ] **Step 1: 写失败测试（RuleNluProvider + fake，host 可测）**
 
 ```kotlin
-class FakeIflytekProviderTest {
-    @Test fun `ac command maps to climate`() {
-        val i = FakeIflytekProvider.understand("打开空调")
+class RuleNluProviderTest {
+    @Test fun `ac on command maps to climate power on`() {
+        val i = RuleNluProvider.understand("打开空调")
         assertEquals("climate", i.domain)
         assertEquals("power_on", i.intent)
     }
+    @Test fun `temperature command extracts slot`() {
+        val i = RuleNluProvider.understand("空调调到24度")
+        assertEquals("set_temperature", i.intent)
+        assertEquals(24.0, (i.slots["temperature"] as SlotValue.Number).v, 0.001)
+    }
+    @Test fun `window command maps to window`() {
+        assertEquals("window", RuleNluProvider.understand("打开车窗").domain)
+    }
     @Test fun `unknown for out-of-scope`() {
-        assertTrue(FakeIflytekProvider.understand("讲个笑话").isUnknown())
+        assertTrue(RuleNluProvider.understand("讲个笑话").isUnknown())
     }
 }
 ```
 
 - [ ] **Step 2: 运行确认失败**
-- [ ] **Step 3: 实现 normalizer + fake**
+- [ ] **Step 3: 实现 RuleNluProvider + FakeCommandAsrProvider**（规则表 + 正则提取；fake 返回固定文本）
 - [ ] **Step 4: 运行确认通过**
-- [ ] **Step 5: 真实讯飞离线 SDK 接入**——按 MSC 文档：`SpeechUtility.createUtility(context, "appid=...")` + 离线语法/语义资源部署 + `SpeechUnderstander` 语义识别（`setParameter(SpeechConstant.ENGINE_TYPE, "local")` + 语义理解参数）；**此步为"凭据就绪才做"的任务**：若周末拿不到授权，`app/src/main/assets/demo-full.json` 的 `local.asr` 配 `iflytek.fake`，本步跳过并在 commit message 注明
+- [ ] **Step 5: 真实讯飞离线命令词 SDK 接入**——开放平台控制台开通"离线命令词识别"体验版（3 装机量/35 天）→ 下载 MSC SDK + 授权 → `SpeechUtility.createUtility(context, "appid=...")` + 离线命令词引擎（`SpeechRecognizer`，`ENGINE_TYPE=local` 命令词模式，词表见 Interfaces）→ 输出命令词文本 → `RuleNluProvider.understand(command)` 映射为 Intent；**此步为"凭据就绪才做"的任务**：若周末拿不到体验版，`app/src/main/assets/demo-full.json` 的 `local.asr` 配 `iflytek.fake-cmd`，本步跳过并在 commit message 注明
 - [ ] **Step 6: Commit**
 
 ```bash
 git add AutoVoice/adapter-iflytek
-git commit -m "feat: iflytek offline adapters with semantic normalization and fake fallback"
+git commit -m "feat: iflytek offline command-word asr with rule-based nlu and fake fallback"
 ```
 
 ---
@@ -1111,7 +1119,7 @@ git commit -m "feat: compose voice demo ui with decision log and mock vehicle pa
 - Consumes: Task 12-19
 - Produces: `VoiceEngine(cfg, context, networkAvailable: () -> Boolean)`：`onUtterance(pcm: ByteArray)` ——
   1. 网络检查：不可用或 `cfg.cloud.enabled=false` → 只跑本地链（reason `cloud_unreachable`）
-  2. 本地链：VAD 段音频 → 讯飞离线 ASR/NLU（或 fake）→ Intent
+  2. 本地链：VAD 段音频 → 讯飞离线命令词 ASR（或 fake-cmd）→ `RuleNluProvider.understand(command)` → Intent
   3. 云端链：`gateway.sendAudioStart → 分块发送 → sendAudioEnd` → 收 reply
   4. `OnDeviceRaceArbiter.race(cloud, local)` → Winner：Cloud → `TtsPlayer.play(audio)` + `MockVehicleState.apply(action.intent)`；Local → `SystemTtsFallback.speak(speakText)` + `apply(intent)`
   5. "模拟弱网"开关 → gateway-client 响应前人为 delay 3000ms（调试 hook，仅 debug 构建）
@@ -1138,7 +1146,7 @@ git commit -m "feat: wire dual-route race engine with playback and execution"
 - Consumes: Task 12/20
 - Produces: 两种可运行模式；`demo-offline.json`：`cloud.enabled=false`
 
-- [ ] **Step 1: 写两份配置 asset 文件**（字段与 `DemoConfig` 一一对应；`demo-full.json` 的 `local.asr` 视讯飞 SDK 状态填 `iflytek.offline` 或 `iflytek.fake`）
+- [ ] **Step 1: 写两份配置 asset 文件**（字段与 `DemoConfig` 一一对应；`local.nlu` 恒为 `rule`；`local.asr` 视讯飞 SDK 状态填 `iflytek.offline-cmd` 或 `iflytek.fake-cmd`）
 - [ ] **Step 2: 真机验证剧本 1（断网本地兜底）**——手机开飞行模式 → 切 `demo-offline` 配置 → 长按说话"打开空调" → 期望：决策日志显示本地链路 reason、模拟车控"空调开启"、系统 TTS 播报
 - [ ] **Step 3: 真机验证剧本 4（云端超时用本地）**——`demo-full` + 弱网开关 → "打开车窗" → 期望：决策日志 `cloud_timeout_use_local`、本地结果执行
 - [ ] **Step 4: Commit**
@@ -1174,7 +1182,7 @@ git commit -m "docs: acceptance runbook and demo results"
 ## Self-Review 记录（实施前检查项）
 
 - [ ] Spec §3 统一网关 → Task 3/10/15/20
-- [ ] Spec §4 消息模型/Stage SPI/归一化 → Task 4/7/12/17（双端同映射表 + 共享 fixtures）
+- [ ] Spec §4 消息模型/Stage SPI/归一化 → Task 4/7/12/17（云端讯飞语义归一化 fixture 测试 + 端侧规则映射测试，均收敛到 Canonical Intent）
 - [ ] Spec §5 竞速仲裁（2000/1500/拒识/单赢家/决策日志）→ Task 5/13
 - [ ] Spec §6 配置与裁剪（demo-full/demo-offline + 校验）→ Task 12/21（三层继承不在 demo 范围，Global Constraints 5）
 - [ ] Spec §7 状态机 + 错误处理 → Task 14/20（兜底话术在 Task 5 safety timeout）
