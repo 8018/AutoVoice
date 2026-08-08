@@ -149,13 +149,13 @@ class GatewayClient(
     }
 
     /** 结束录音段（protocol.md §3.3）：durationMs 由已发送字节数换算（bytes / (2·rate) · 1000）。 */
-    fun sendAudioEnd(segmentId: String) {
+    fun sendAudioEnd(sessionId: String) {
         val durationMs = pcmBytesInSegment * 1000 / (2L * sampleRate)
         sendFrame(
             mapOf(
                 "type" to "audio_end",
                 "payload" to mapOf(
-                    "sessionId" to segmentId,
+                    "sessionId" to sessionId,
                     "durationMs" to durationMs,
                 ),
             ),

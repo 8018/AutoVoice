@@ -24,7 +24,13 @@ Headless 侧的自动化验证记录见仓库根 `ACCEPTANCE.md`。
 | `ALIYUN_NLS_APPKEY` | 阿里云智能语音交互 AppKey——云端 ASR/TTS | 阿里云 NLS（智能语音交互）控制台 |
 | `DASHSCOPE_API_KEY` | 阿里云百炼 DashScope Key（CosyVoice 等 TTS 相关） | 阿里云百炼（Model Studio）控制台 |
 
-### 1.2 讯飞离线命令词体验版账号（可选增强，零代码改动）
+### 1.2 讯飞离线命令词体验版账号（可选增强，凭据需接线）
+
+> **现状**：本构建离线命令词 ASR 为 fake（凭据未接线）——`VoiceEngine.buildLocalChain`
+> 以空凭据构造 `IflytekOfflineCommandAsrStage`（`appId=""`/`apiKey=""`/`apiSecret=""`），
+> SDK 抛 `NOT_CONFIGURED` 即降级 fake（Log.w 后回退 fake-cmd），未走真实 SDK。
+> 拿到体验版授权后需在 `buildLocalChain` 接线 appId/apiKey/apiSecret（一行改动，
+> stage 已注入就绪）→ 届时改 `local.asr="iflytek.offline"` + 推送模型即生效。
 
 demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线可演示）；
 若已申请到**讯飞开放平台「离线命令词」体验版授权**（3 台设备 / 35 天有效期）：
@@ -32,12 +38,15 @@ demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线�
 1. 将讯飞 SDK 归档（`AIKit.aar` + `resource/` 离线资源）放入
    `AutoVoice/adapter-iflytek/libs/`（本地文件不入库，见 `.gitignore`；缺失时
    用 fake-cmd 默认链路即可，不影响其余验收）。
-2. 改配置（**零代码改动**）：编辑 `AutoVoice/app/src/main/assets/demo-full.json`，
+2. 接线凭据（一行改动）：`VoiceEngine.buildLocalChain` 中
+   `IflytekOfflineCommandAsrStage(appId = "", apiKey = "", apiSecret = "")`
+   填入体验版 appid / apiKey / apiSecret。
+3. 改配置：编辑 `AutoVoice/app/src/main/assets/demo-full.json`，
    把 `local.asr` 从 `"iflytek.fake-cmd"` 改为 `"iflytek.offline"`。
-3. 把离线资源推送到手机：`adb push <SDK>/resource/CNENESR /sdcard/iflytek/`
+4. 把离线资源推送到手机：`adb push <SDK>/resource/CNENESR /sdcard/iflytek/`
    （引擎读取目录硬编码为 `/sdcard/iflytek/`，含 `e75f07b62_*.bin` 模型与 `fsa/cn_fsa.txt`）。
 
-未配置时切 `iflytek.offline` 会看到「讯飞离线命令词 SDK 未配置」降级提示（预期内，
+未接线时切 `iflytek.offline` 会看到「讯飞离线命令词 SDK 未配置」降级提示（预期内，
 见 §5.1），链路自动回退 fake-cmd，功能不中断。
 
 ### 1.3 AIUI 平台配置
@@ -81,9 +90,10 @@ export XFYUN_APPID=... XFYUN_API_KEY=... DEEPSEEK_API_KEY=... \
 ./gradlew :app:bootRun --args='--spring.profiles.active=demo-full'
 ```
 
-**期望**：监听 `0.0.0.0:8080`，WS 端点为 `ws://<开发机IP>:8080/ws`；日志出现
-`Tomcat started` 与各 provider 初始化行；此时若手机 App 已连接，`hello` 会收到
-`ready`（带 `sessionId` / `protocolVersion=1.0` / `language=zh-CN`）。
+**期望**：监听 `0.0.0.0:8080`，WS 端点为 `ws://<开发机IP>:8080/ws`；等待日志出现
+`Tomcat started on port(s): 8080`（Spring Boot 默认输出）即服务就绪；此时若手机
+App 已连接，`hello` 会收到 `ready`（带 `sessionId` / `protocolVersion=1.0` /
+`language=zh-CN`）。
 
 > 注意：`bootRun` 走真实 provider（讯飞语义 / DeepSeek / 阿里云 ASR/TTS），
 > 密钥未配齐时对应调用会报错——先核对 §1.1。

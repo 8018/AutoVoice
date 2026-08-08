@@ -22,7 +22,7 @@ AutoVoice/                      Android 端（Kotlin）
                                 TtsPlayer（WAV）/SystemTtsFallback（TextToSpeech）、
                                 VoiceEngine 装配接线、demo-full/demo-offline 配置资产
 
-AutoVoiceServer/                云端（Java 17 / Spring Boot）——见 ../AutoVoiceServer/README 约定
+AutoVoiceServer/                云端（Java 21 / Spring Boot）——见 ../docs/runbook.md 约定
 ├── contracts/                  端云共享契约（Intent / Reply / Asr|Nlu|Llm|Tts Provider SPI）
 ├── arbitration/                RaceArbiter（1500ms NLU 宽限 + LLM 兜底 + safety 期限）
 ├── session/                    SessionRegistry（会话管理）
