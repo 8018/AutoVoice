@@ -44,6 +44,13 @@ fun interface ResultListener {
 }
 
 /**
+ * 云端链路故障（Task 15 M1）：连接失败 / ready 后中途断开时由云端链实现抛出。
+ * 会话捕获后转本地单链兜底路径（写 `cloud_unreachable` 决策 + [RaceWinner.Local]），
+ * 不外抛、不中断状态机。是否 latch 不可达由云端链实现决定（见 [VoiceSession.onCloudUnavailable]）。
+ */
+class CloudUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
  * 语音会话：状态机（spec §7.1）+ 本地/云端双路由编排（spec §5.1）。
  *
  * 一轮话语的编排：
@@ -55,11 +62,14 @@ fun interface ResultListener {
  *     直接回调后回 IDLE（兜底话术归应用层）。
  *
  * 云端链启动条件：`cfg.cloud.enabled && cloudAvailable`；[onCloudUnavailable] 置
- * cloudAvailable=false 后只跑本地链，且每次话语写一条 `cloud_unreachable` 决策日志。
+ * cloudAvailable=false 后只跑本地链，且每次话语写一条 `cloud_unreachable` 决策日志；
+ * [onCloudAvailable] 恢复（Task 20 engine 在话语开始、网络可用时调用）。
  *
- * 防御：所有入口在非法状态调用时忽略并返回，不抛。
+ * 防御：所有入口在非法状态调用时忽略并返回，不抛；runTurn 以 try/finally 收尾，
+ * 任何异常/取消下状态都回 IDLE（不冻结在 UNDERSTANDING，Task 14 M1）。
  *
- * 协程语义：链内异常不吞，按协程语义传播（demo 阶段链实现自身不抛）。
+ * 协程语义：链内异常不吞，按协程语义传播；唯一特例是云端链的 [CloudUnavailableException]
+ * ——会话捕获后转本地单链兜底路径（`cloud_unreachable` 决策 + [RaceWinner.Local]，Task 15 M1）。
  * 轮次内用 coroutineScope + async 并发启动，输家 Deferred 在收敛后立即取消。
  */
 class VoiceSession(
@@ -78,7 +88,11 @@ class VoiceSession(
 
     private val stateListeners = CopyOnWriteArrayList<(SessionState) -> Unit>()
 
-    /** 云端可达性（spec §5.1）：`onCloudUnavailable()` 置 false 后不再启动云端链。 */
+    /** 云端可达性（spec §5.1）：`onCloudUnavailable()` 置 false 后不再启动云端链；
+     *  `onCloudAvailable()` 恢复（Task 20 engine 在话语开始时按网络状态调用）。
+     *  @Volatile：会话协程写（onCloudUnavailable/onCloudAvailable），
+     *  runTurn 协程读（cloudRouteActive），跨线程可见（Task 14 M2）。 */
+    @Volatile
     private var cloudAvailable = true
 
     /**
@@ -118,22 +132,45 @@ class VoiceSession(
         cloudAvailable = false
     }
 
-    private suspend fun runTurn(segment: ByteArray) {
-        val winner = if (cloudRouteActive()) {
-            raceCloudVsLocal(segment)
-        } else {
-            // 云端链不启动（配置关闭或不可达）：每次话语写一条 cloud_unreachable 决策日志，只跑本地链
-            sink.onDecision(cloudUnreachable())
-            RaceWinner.Local(local.run(segment))
-        }
+    /** 云端可达性恢复（Task 20）：engine 在话语开始且网络可用时调用，重新启用云端链。 */
+    fun onCloudAvailable() {
+        cloudAvailable = true
+    }
 
-        when (winner) {
-            is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
-            is RaceWinner.Local -> transition(SessionState.EXECUTING)
-            is RaceWinner.Failed -> Unit // 全败：不置执行/播报，直接回调后回 IDLE
+    /**
+     * 一轮话语编排。防御（Task 14 M1）：try/finally 保证无论链内发生什么
+     * （含 [CloudUnavailableException]、意外异常、取消），状态都回到 IDLE——
+     * 状态机绝不冻结在 UNDERSTANDING。意外异常不吞，按协程语义继续传播；
+     * [CloudUnavailableException]（云端链路故障）转本地单链兜底路径。
+     */
+    private suspend fun runTurn(segment: ByteArray) {
+        try {
+            val winner = if (cloudRouteActive()) {
+                try {
+                    raceCloudVsLocal(segment)
+                } catch (e: CloudUnavailableException) {
+                    // 云端链故障（连接失败/ready 后中断，Task 15 M1）：转本地兜底路径
+                    localOnly(segment)
+                }
+            } else {
+                localOnly(segment)
+            }
+
+            when (winner) {
+                is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
+                is RaceWinner.Local -> transition(SessionState.EXECUTING)
+                is RaceWinner.Failed -> Unit // 全败：不置执行/播报，直接回调后回 IDLE
+            }
+            resultListener.onResult(winner)
+        } finally {
+            transition(SessionState.IDLE)
         }
-        resultListener.onResult(winner)
-        transition(SessionState.IDLE)
+    }
+
+    /** 云端链不启动（配置关闭/不可达/链路故障）：写一条 cloud_unreachable 决策日志，只跑本地链。 */
+    private suspend fun localOnly(segment: ByteArray): RaceWinner {
+        sink.onDecision(cloudUnreachable())
+        return RaceWinner.Local(local.run(segment))
     }
 
     private suspend fun raceCloudVsLocal(segment: ByteArray): RaceWinner =

@@ -12,10 +12,13 @@ import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -246,6 +249,90 @@ class VoiceSessionTest {
             listOf(SessionState.IDLE, SessionState.LISTENING, SessionState.IDLE),
             states,
         )
+        assertEquals(SessionState.IDLE, session.state.value)
+    }
+
+    /**
+     * Task 14 M1 加固：链内异常（非 CloudUnavailableException）仍要回 IDLE——
+     * 状态机绝不冻结在 UNDERSTANDING。异常不吞，按协程语义从 runBlocking 重抛，
+     * 测试 catch 后断言状态与阶段序列。
+     */
+    @Test
+    fun `exception in runTurn still returns to IDLE`() {
+        val states = mutableListOf<SessionState>()
+        val results = mutableListOf<RaceWinner>()
+        val sessionRef = AtomicReference<VoiceSession>()
+        val thrown = try {
+            runBlocking {
+                val session = VoiceSession(
+                    cfg = cfg(cloudEnabled = true, cloudWaitMs = 100),
+                    arbiter = arbiter(100, 10_000, DecisionSink {}),
+                    sink = DecisionSink {},
+                    local = LocalChainRunner { error("local chain boom") },
+                    cloud = CloudRunner { delay(500); TextReply("hi") },
+                    scope = this,
+                    resultListener = ResultListener { results.add(it) },
+                )
+                sessionRef.set(session)
+                session.onState { states.add(it) }
+                session.onListeningStart()
+                session.onVadSegment(segment)
+                null
+            }
+        } catch (t: Throwable) {
+            t
+        }
+        assertNotNull(thrown, "链内异常应按协程语义传播")
+        assertEquals("local chain boom", thrown?.message)
+        val session = sessionRef.get()!!
+        assertEquals(SessionState.IDLE, session.state.value, "异常后必须回 IDLE，不冻结")
+        assertEquals(
+            listOf(
+                SessionState.IDLE, SessionState.LISTENING, SessionState.UNDERSTANDING,
+                SessionState.IDLE,
+            ),
+            states,
+        )
+        assertTrue(results.isEmpty(), "异常路径不回调结果")
+    }
+
+    /**
+     * 网络恢复（Task 20）：onCloudUnavailable 后调用 onCloudAvailable()，
+     * 云端路由重新启用——下一轮话语回到竞速（cloud_won）。
+     */
+    @Test
+    fun `onCloudAvailable re-enables cloud route after unavailable`() = runBlocking {
+        val entries = mutableListOf<DecisionEntry>()
+        val results = mutableListOf<RaceWinner>()
+        var signal = CompletableDeferred<Unit>()
+        val session = VoiceSession(
+            cfg = cfg(),
+            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
+            sink = DecisionSink { entries.add(it) },
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner { delay(10); TextReply("hi") },
+            scope = this,
+            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+        )
+
+        // 第一轮：云端不可达 → 只跑本地
+        session.onCloudUnavailable()
+        session.onListeningStart()
+        session.onVadSegment(segment)
+        signal.await()
+        assertTrue(results.single() is RaceWinner.Local)
+        assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
+
+        // 网络恢复：onCloudAvailable 重新启用云端路由 → 云端赢
+        results.clear()
+        entries.clear()
+        signal = CompletableDeferred()
+        session.onCloudAvailable()
+        session.onListeningStart()
+        session.onVadSegment(segment)
+        signal.await()
+        assertTrue(results.single() is RaceWinner.Cloud)
+        assertEquals(listOf("cloud_won"), entries.map { it.reason })
         assertEquals(SessionState.IDLE, session.state.value)
     }
 }
