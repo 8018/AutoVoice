@@ -13,7 +13,7 @@
 **Demo 成功标准**：三条链路全通 + 双仲裁工作 + 决策日志可见：
 
 1. 端侧传统语音：讯飞离线 ASR + 讯飞离线 NLU
-2. 云端传统语音：阿里云 Paraformer → 自研云端中间件传统 NLU（DeepSeek 结构化抽取）
+2. 云端传统语音：阿里云 Paraformer → 讯飞传统 NLU（供应商 API，适配器可插拔）
 3. 云端大模型：阿里云 Paraformer → DeepSeek 对话
 
 外加端侧仲裁（云端优先，2000ms 兜底本地）与云端仲裁（传统优先，LLM 兜底）都真实生效，验收 = 四个演示剧本跑通（见 §9）。
@@ -23,7 +23,7 @@
 **本次 spec 范围内（周末 demo）**：
 
 - 端侧 Android 工程：语音采集、ECNR、VAD、讯飞离线链路、端侧仲裁、mock 执行器、播报
-- 云端 Java 工程：统一网关、云端仲裁、传统 NLU（DeepSeek）、LLM（DeepSeek）、Paraformer/CosyVoice 代理
+- 云端 Java 工程：统一网关、云端仲裁、传统 NLU（讯飞语义理解 API，可插拔）、LLM（DeepSeek）、Paraformer/CosyVoice 代理
 - 端云契约（shared）与配置矩阵的最小形态
 - 单轮对话；中文（zh-CN）
 
@@ -55,7 +55,7 @@ SPI 层    Stage 接口：Ecnr/Vad/Asr/Nlu/Tts/Executor
 ```
 gateway/        车辆长连接网关（WebSocket，每车会话，音频流上下行）
 arbitration/    云端仲裁（竞速收敛）
-nlu-traditional/ 传统 NLU（DeepSeek 结构化意图抽取）
+nlu-traditional/ 传统 NLU（讯飞语义理解 API，NluProvider 可插拔，归一化到 Canonical Intent）
 llm/            LLM 对话（DeepSeek）
 asr-gateway/    Paraformer 流式代理
 tts-gateway/    CosyVoice 代理
@@ -101,10 +101,9 @@ interface Stage<IN, OUT> {
 
 ```
 讯飞离线NLU ─→ 讯飞语义JSON ─┐
+讯飞语义API ─→ 讯飞语义JSON ─┤
                             ├─→ 适配器内归一化 →→ Canonical Intent
 其他供应商  ─→ 各家语义格式 ─┘     (domain/intent/slots/confidence)
-                            ↑
-DeepSeek 意图抽取 ─→ 直接输出 Canonical Intent（prompt 定义 JSON Schema）
 ```
 
 ```json
@@ -152,7 +151,7 @@ DeepSeek 意图抽取 ─→ 直接输出 Canonical Intent（prompt 定义 JSON 
 ### 5.2 云端仲裁（传统优先，1500ms 兜底 LLM）
 
 ```
-收到文本 → 并发启动：传统 NLU（DeepSeek 抽取）+ LLM 对话
+收到文本 → 并发启动：传统 NLU（讯飞语义理解 API）+ LLM 对话（DeepSeek）
 传统先出结果（非拒识）→ 直接用传统
 LLM 先出结果 → 等待传统最多 nluGraceMs（=1500，配置）
   ├─ 传统 1500ms 内到达 → 用传统（LLM 丢弃）
@@ -227,7 +226,7 @@ AutoVoice/            ← git 仓库根（monorepo）
 ├── AutoVoiceServer/  云端 Java 项目（Spring Boot，Gradle multi-module）
 │   ├── gateway/      车辆长连接网关（WebSocket，每车会话）
 │   ├── arbitration/  云端仲裁（竞速收敛）
-│   ├── nlu-traditional/  传统 NLU（DeepSeek 结构化抽取）
+│   ├── nlu-traditional/  传统 NLU（讯飞语义 API，NluProvider 可插拔）
 │   ├── llm/          LLM 对话（DeepSeek）
 │   ├── asr-gateway/  Paraformer 流式代理
 │   ├── tts-gateway/  CosyVoice 代理
@@ -241,7 +240,9 @@ AutoVoice/            ← git 仓库根（monorepo）
 - shared 用 JSON Schema + 文档，两端各自生成/手写类；demo 阶段加契约测试（两端 mock 消息互认）
 - monorepo 单仓库；将来拆库则 shared 升级为版本化发布
 
-**供应商选型（demo）**：讯飞离线 SDK（端侧传统链路，开放平台申请试用授权）；阿里云 Paraformer/CosyVoice（用户已有阿里云服务）；DeepSeek API（云端传统 NLU 抽取 + LLM 对话，OpenAI 兼容）；RNNoise（ECNR 降噪）；Silero VAD。
+**供应商选型（demo）**：讯飞（端侧离线 SDK 走传统链路 + 云端语义理解 API 走云端传统链路，开放平台申请；两处语义结果统一在适配器内归一化）；阿里云 Paraformer/CosyVoice（用户已有阿里云服务）；DeepSeek API（仅云端大模型链路：LLM 对话，OpenAI 兼容）；RNNoise（ECNR 降噪）；Silero VAD。
+
+**传统 NLU 可插拔**：`nlu-traditional` 模块内部定义 `NluProvider` 接口（输入文本 → 归一化 Intent），讯飞语义 API 只是第一个实现；换思必驰/其他供应商 = 新增一个 Provider 实现 + 配置切换，云端仲裁与下游零改动。
 
 **云端语言**：Java（Spring Boot）。负载特征为每车一路长连接流式音频 + 低延迟仲裁，Java 21 虚拟线程 + Spring Boot 生态可满足；与端侧语言统一心智。
 
@@ -254,7 +255,7 @@ AutoVoice/            ← git 仓库根（monorepo）
 | 录音、播放（Android） | 真做 |
 | ECNR（RNNoise）/ VAD（Silero） | 真做 |
 | 讯飞离线 ASR+NLU | 真做（试用授权） |
-| AutoVoiceServer（网关/仲裁/NLU/LLM，DeepSeek 接入） | 真做；demo 期跑在开发机，手机经局域网访问；阿里云部署是量产子项目 |
+| AutoVoiceServer（网关/仲裁/NLU/LLM；传统 NLU=讯飞语义 API，LLM=DeepSeek） | 真做；demo 期跑在开发机，手机经局域网访问；阿里云部署是量产子项目 |
 | Paraformer / CosyVoice 代理 | 真做（经云端网关） |
 | 竞速仲裁（端云） | 真做，参数从配置读 |
 | mock 执行器 | 简化：模拟空调/车窗状态，UI 显示 |
@@ -262,7 +263,7 @@ AutoVoice/            ← git 仓库根（monorepo）
 
 ### 9.2 测试策略
 
-1. **归一化层单测**——讯飞语义 JSON fixture → Canonical Intent 映射表测试；unknown 拒识映射测试
+1. **归一化层单测**——讯飞语义 JSON fixture（离线 SDK 与云端语义 API 两种格式）→ Canonical Intent 映射表测试；unknown 拒识映射测试
 2. **仲裁收敛单测**——假 Stage + 可控延迟：云端先到即用、LLM 先到等 1500ms、2000ms 超时用本地、拒识走 LLM；时间可注入，不依赖真网络
 3. **配置校验测试**——裁剪规则违反 → 构建期报错
 4. **契约测试**——端云 mock 消息互认
@@ -271,8 +272,8 @@ AutoVoice/            ← git 仓库根（monorepo）
 ### 9.3 验收剧本（四个，每个结果确定、与 §5 竞速规则一致）
 
 1. **断网本地兜底**：飞行模式（云端链路不可达）→ "打开空调" → 端侧仲裁云端不可达 → 讯飞离线链路 → mock 执行 + 播报。**验证端侧仲裁 + 端侧传统语音链路**
-2. **在线车控走云端传统 NLU**：在线 → "空调调到24度" → 端侧竞速云端先到 → 云端仲裁车控白名单 → 传统 NLU → mock 执行 + TTS 播报。**验证云端仲裁传统分支 + 云端传统语音链路**
-3. **闲聊拒识走 LLM**：在线 → "明天上海天气怎么样" → 端侧上云 → 云端仲裁：传统 NLU 拒识（白名单外返回 unknown）→ LLM 兜底回答。**验证云端仲裁 LLM 兜底 + 云端大模型链路**
+2. **在线车控走云端传统 NLU**：在线 → "空调调到24度" → 端侧竞速云端先到 → 云端仲裁 → 讯飞语义 API → mock 执行 + TTS 播报。**验证云端仲裁传统分支 + 云端传统语音链路**
+3. **闲聊拒识走 LLM**：在线 → "明天上海天气怎么样" → 端侧上云 → 云端仲裁：讯飞语义拒识（无匹配意图/置信度低）→ DeepSeek LLM 兜底回答。**验证云端仲裁 LLM 兜底 + 云端大模型链路**
 4. **云端超时用本地**：弱网（限速）→ "打开车窗" → 端侧仲裁本地先到 → 等云端 2000ms 超时 → 用本地讯飞离线结果。**验证 2000ms 超时收敛**
 
 （演示 1500ms 窗口需控制"LLM 先于传统到达"，时序不可控，不作为必验项；由 §9.2 仲裁收敛单测覆盖。）
