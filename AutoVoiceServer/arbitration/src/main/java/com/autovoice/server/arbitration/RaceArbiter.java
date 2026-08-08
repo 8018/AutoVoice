@@ -30,6 +30,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>并发实现：{@link AtomicBoolean} 作单赢家守卫（首个 CAS 成功者 complete 结果并写日志），
  * grace/safety 计时用 {@link ScheduledExecutorService} 的 schedule 任务，
  * 计时任务触发时再查 {@code nluF.isDone()} 防双写。</p>
+ *
+ * <p>期限守卫：safety 期限（{@code safetyTimeoutMs}）后只允许兜底收敛——nlu/llm 回调与
+ * grace 定时器在 CAS/settle 前都检查期限，超期一律让位 safety 定时器，保证决策日志恰一条。</p>
  */
 public final class RaceArbiter {
 
@@ -79,7 +82,8 @@ public final class RaceArbiter {
             }
         });
         llmF.whenComplete((reply, err) -> {
-            if (err != null || settled.get()) return;
+            // 与 nlu 守卫对称：safety 期限后 llm 迟到，一律让位 safety 定时器兜底收敛。
+            if (err != null || settled.get() || System.currentTimeMillis() >= safetyDeadlineMs) return;
             if (nluF.isDone()) { // nlu 已有结论
                 try { Intent i = nluF.get();
                     if (i == null || i.isUnknown()) {
@@ -90,13 +94,19 @@ public final class RaceArbiter {
             }
             // llm 先到，给 nlu 宽限期
             scheduler.schedule(() -> {
-                if (settled.get()) return;
+                // 超期或已被其他分支 settle 一律让位：先查期限，再 CAS 收敛（杜绝双写窗口）。
+                if (settled.get() || System.currentTimeMillis() >= safetyDeadlineMs) return;
                 if (nluF.isDone()) {
                     try { Intent i = nluF.get();
-                        if (i == null || i.isUnknown()) { settled.set(true); sink.log(entry(ctx, "nlu_rejected_use_llm")); out.complete(reply); }
-                        else { settled.set(true); sink.log(entry(ctx, "llm_first_wait_nlu_arrived")); out.complete(Reply.ofAction(i, intentToSpeak(i))); }
-                    } catch (Exception e) { settled.set(true); out.complete(reply); }
-                } else { settled.set(true); sink.log(entry(ctx, "llm_first_wait_timeout")); out.complete(reply); }
+                        if (i == null || i.isUnknown()) {
+                            if (settled.compareAndSet(false, true)) { sink.log(entry(ctx, "nlu_rejected_use_llm")); out.complete(reply); }
+                        } else {
+                            if (settled.compareAndSet(false, true)) { sink.log(entry(ctx, "llm_first_wait_nlu_arrived")); out.complete(Reply.ofAction(i, intentToSpeak(i))); }
+                        }
+                    } catch (Exception e) { if (settled.compareAndSet(false, true)) out.complete(reply); }
+                } else {
+                    if (settled.compareAndSet(false, true)) { sink.log(entry(ctx, "llm_first_wait_timeout")); out.complete(reply); }
+                }
             }, nluGraceMs, TimeUnit.MILLISECONDS);
         });
         scheduler.schedule(() -> { if (settled.compareAndSet(false, true)) { sink.log(entry(ctx, "safety_timeout")); out.complete(Reply.ofText(SAFETY_TEXT)); } }, safetyTimeoutMs, TimeUnit.MILLISECONDS);

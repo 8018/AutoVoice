@@ -46,25 +46,37 @@ class RaceArbiterTest {
     @Test void nluFirstWins() {
         Reply r = arbiter.decide("x", nlu("x", 10, false), llm("x", 300), ctx).join();
         assertEquals("action", r.kind()); // nlu 非拒识 → ofAction
+        assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("nlu_first", log.get(log.size()-1).reason());
     }
     @Test void llmFirstWaitsForNluWithinGrace() {
         Reply r = arbiter.decide("x", nlu("x", 60, false), llm("x", 5), ctx).join();
+        assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("nlu_first", log.get(log.size()-1).reason()); // nlu 60ms < GRACE 100ms
     }
     @Test void llmFirstNluRejectedThenLlm() {
         Reply r = arbiter.decide("x", nlu("x", 60, true), llm("x", 5), ctx).join();
         assertEquals("LLM回答", r.text());
+        assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("nlu_rejected_use_llm", log.get(log.size()-1).reason());
     }
     @Test void llmFirstNluTimeoutThenLlm() {
         Reply r = arbiter.decide("x", nlu("x", 500, false), llm("x", 5), ctx).join();
         assertEquals("LLM回答", r.text());
+        assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("llm_first_wait_timeout", log.get(log.size()-1).reason());
     }
     @Test void bothSlowSafetyFallback() {
         Reply r = arbiter.decide("x", nlu("x", 5000, false), llm("x", 5000), ctx).join();
         assertTrue(r.text().contains("网络开小差"));
+        assertEquals(1, log.size()); // 恰一条决策日志
+        assertEquals("safety_timeout", log.get(log.size()-1).reason());
+    }
+    @Test void lateLlmDoesNotStealFromSafetyFallback() {
+        // nlu 迟到拒识 + llm 在 safety 期限后 4 秒才完成：llm 回调不得 CAS 抢赢，兜底必须胜出
+        Reply r = arbiter.decide("x", nlu("x", 5000, true), llm("x", 5000), ctx).join();
+        assertTrue(r.text().contains("网络开小差"));
+        assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("safety_timeout", log.get(log.size()-1).reason());
     }
 }
