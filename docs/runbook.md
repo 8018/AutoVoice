@@ -59,15 +59,20 @@ demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线�
 - 手机与开发机**同一局域网**（开发机直连网线/同一 Wi-Fi）。
 - 手机系统时间准确（云端鉴权对时间敏感）。
 
-### 1.5 网关地址配置（必改）
+### 1.5 网关地址配置
 
-`AutoVoice/app/src/main/assets/demo-full.json` 中云端网关默认是模拟器占位地址：
+`AutoVoice/app/src/main/assets/demo-full.json` 的云端网关**默认已指向已部署的
+云服务器**（`AutoVoiceServer` 已部署在公网 `47.94.4.204:8080`，systemd 服务
+`autovoice-gateway` 管理）：
 
 ```json
-"cloud": { "enabled": true, "gatewayUrl": "ws://10.0.2.2:8080/ws", "waitMs": 2000 }
+"cloud": { "enabled": true, "gatewayUrl": "ws://47.94.4.204:8080/ws", "waitMs": 2000 }
 ```
 
-真机验收前**必须**把 `gatewayUrl` 改为开发机局域网 IP：
+- 使用已部署的服务端：**无需修改**，手机联网即可（不要求同一局域网；需云服务器
+  安全组放行 TCP 8080）。
+- 自建服务端（开发机跑 `bootRun`）：把 `gatewayUrl` 改为开发机局域网 IP，手机与
+  开发机同一局域网：
 
 ```json
 "gatewayUrl": "ws://192.168.x.x:8080/ws"

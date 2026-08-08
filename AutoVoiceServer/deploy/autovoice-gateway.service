@@ -1,0 +1,16 @@
+[Unit]
+Description=AutoVoice Gateway Server (demo-full)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/autovoice/.env
+ExecStart=/usr/bin/java -jar /opt/autovoice/app.jar --spring.profiles.active=demo-full
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
