@@ -32,6 +32,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -80,9 +81,11 @@ class VoiceEngine(
     private val player: AudioPlayer,
     private val speaker: TextSpeaker,
     val vehicle: MockVehicleState,
-    scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onVehicleApplied: () -> Unit = {},
     private val debugBuild: Boolean = BuildConfig.DEBUG,
+    /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
+    private val onClose: () -> Unit = {},
 ) {
 
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
@@ -106,6 +109,17 @@ class VoiceEngine(
             scope = scope,
             resultListener = ResultListener { onTurnResult(it) },
         )
+    }
+
+    /**
+     * 释放引擎（Task 21 模式切换 / ViewModel 销毁）：断开网关连接（[onClose] 钩子）
+     * + 取消引擎协程作用域（在途竞速、网关事件桥收集全部终止）。幂等；关闭后
+     * [session] 不再产生状态回调/结果路由，装配时传入的 [scope] 不可复用
+     * （生产装配每次重建引擎时新建专属 scope，不复用 viewModelScope）。
+     */
+    fun close() {
+        runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
+        scope.cancel()
     }
 
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
@@ -209,6 +223,7 @@ class VoiceEngine(
                 vehicle = vehicle,
                 scope = scope,
                 onVehicleApplied = onVehicleApplied,
+                onClose = { cloudRunner.close() }, // Task 21：模式切换时断开网关
             )
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
@@ -281,6 +296,11 @@ private class GatewayCloudRunner(
 
     /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
+
+    /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
+    fun close() {
+        client.disconnect()
+    }
 
     override suspend fun run(segment: ByteArray): Reply {
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）

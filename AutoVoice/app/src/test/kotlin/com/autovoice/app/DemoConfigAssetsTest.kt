@@ -1,0 +1,55 @@
+package com.autovoice.app
+
+import com.autovoice.voicecore.DemoConfig
+import java.io.File
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+
+/**
+ * Task 21 配置资产漂移守卫：`src/main/assets/demo-full.json` / `demo-offline.json`
+ * 必须能按 [DemoConfig.fromJson] 解析，且关键字段符合双模式约定（与 config.schema.json
+ * 对齐，不重复契约文件，仅在配置漂移时红灯）。纯 JVM：Gradle 测试任务工作目录 = 模块目录，
+ * 相对路径即模块内路径（与 voice-core 的 fixtures 读取模式同理）。
+ */
+class DemoConfigAssetsTest {
+
+    private fun readAsset(name: String): String {
+        val file = File("src/main/assets/$name")
+        assertTrue(
+            file.isFile,
+            "缺失配置资产 src/main/assets/$name（工作目录=${System.getProperty("user.dir")}）",
+        )
+        return file.readText()
+    }
+
+    @Test
+    fun `demo-full parses to full-mode cloud-first config`() {
+        val cfg = DemoConfig.fromJson(readAsset("demo-full.json"))
+        assertEquals("full", cfg.mode)
+        assertTrue(cfg.cloud.enabled, "demo-full 云端优先：cloud.enabled 必须为 true")
+        assertEquals(2000L, cfg.cloud.waitMs)
+        assertTrue(
+            cfg.cloud.gatewayUrl.isNotBlank(),
+            "demo-full 的 gatewayUrl 不得为空（占位符 ws://10.0.2.2:8080/ws，真机演示时改网关地址）",
+        )
+        assertEquals("iflytek.fake-cmd", cfg.local.asr)
+        assertEquals("rule.nlu", cfg.local.nlu)
+        assertEquals("rnnoise", cfg.ecnr)
+        assertFalse(cfg.mock.executor)
+    }
+
+    @Test
+    fun `demo-offline parses to offline-mode local-only config`() {
+        val cfg = DemoConfig.fromJson(readAsset("demo-offline.json"))
+        assertEquals("offline", cfg.mode)
+        assertFalse(cfg.cloud.enabled, "demo-offline 仅本地：cloud.enabled 必须为 false")
+        assertEquals(2000L, cfg.cloud.waitMs)
+        assertEquals("", cfg.cloud.gatewayUrl)
+        assertEquals("iflytek.fake-cmd", cfg.local.asr)
+        assertEquals("rule.nlu", cfg.local.nlu)
+        assertEquals("rnnoise", cfg.ecnr)
+        assertFalse(cfg.mock.executor)
+    }
+}

@@ -1,0 +1,21 @@
+{
+  "mode": "full",
+  "vad": {
+    "threshold": 0.5,
+    "minSpeechMs": 64,
+    "minSilenceMs": 960
+  },
+  "ecnr": "rnnoise",
+  "local": {
+    "asr": "iflytek.fake-cmd",
+    "nlu": "rule.nlu"
+  },
+  "cloud": {
+    "enabled": true,
+    "gatewayUrl": "ws://10.0.2.2:8080/ws",
+    "waitMs": 2000
+  },
+  "mock": {
+    "executor": false
+  }
+}

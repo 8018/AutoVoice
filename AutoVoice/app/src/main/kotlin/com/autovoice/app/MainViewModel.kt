@@ -17,6 +17,9 @@ import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.SessionState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,19 +111,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var speechActive = false
 
     init {
-        engine = VoiceEngine.create(
-            cfg = loadConfig(),
-            context = getApplication(),
-            sink = DecisionSink { addDecision(it) },
-            player = AudioPlayer { ttsPlayer.play(it) },
-            speaker = TextSpeaker { text -> ttsFallback.speak(text) {} },
-            vehicle = vehicleState,
-            scope = viewModelScope,
-            onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
-        )
-        engine.session.onState { state ->
-            _uiState.update { it.copy(sessionState = state) }
-        }
+        // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产
+        engine = buildEngine(loadConfig(DemoMode.DEMO_OFFLINE))
         viewModelScope.launch {
             recorder.vadEvents.collect { onVadEvent(it) }
         }
@@ -164,10 +156,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(permissionHint = false) }
     }
 
-    // ------------------------------------------------------------------ 设置（Task 19 纯 UI 状态）
+    // ------------------------------------------------------------------ 设置
 
-    /** demo-full / demo-offline 切换；配置加载是 Task 21，这里只存 UI 状态。 */
+    /**
+     * demo-full / demo-offline 切换（Task 21）：加载对应配置资产并重建引擎。
+     * 切换安全策略：录音/竞速进行中先中止（松开按钮语义），再释放旧引擎
+     * （断开网关 + 取消其协程作用域）、装配新引擎；弱网开关状态跨引擎保持。
+     * 重复点击当前模式为 no-op。
+     */
     fun setMode(mode: DemoMode) {
+        if (_uiState.value.mode == mode) return
+        if (_uiState.value.recording || _uiState.value.sessionState != SessionState.IDLE) {
+            stopRecording()
+        }
+        engine.close()
+        engine = buildEngine(loadConfig(mode))
+        engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         _uiState.update { it.copy(mode = mode) }
     }
 
@@ -235,35 +239,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 配置：assets/demo-full.json（Task 21 落地）存在则解析，否则内置默认（Task 20 明文）。 */
-    private fun loadConfig(): DemoConfig {
+    /**
+     * 单一引擎装配点（Task 21）：init 与 [setMode] 共用。引擎使用专属协程作用域
+     * （不复用 viewModelScope），由 [VoiceEngine.close] 在切换/销毁时取消——旧引擎的
+     * 在途竞速与网关桥接收集随作用域一并终止，不殃及 ViewModel 自己的收集器。
+     */
+    private fun buildEngine(cfg: DemoConfig): VoiceEngine {
+        val engine = VoiceEngine.create(
+            cfg = cfg,
+            context = getApplication(),
+            sink = DecisionSink { addDecision(it) },
+            player = AudioPlayer { ttsPlayer.play(it) },
+            speaker = TextSpeaker { text -> ttsFallback.speak(text) {} },
+            vehicle = vehicleState,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
+        )
+        engine.session.onState { state ->
+            _uiState.update { it.copy(sessionState = state) }
+        }
+        return engine
+    }
+
+    /** 配置：按模式加载 assets 资产（demo-full.json / demo-offline.json），缺失或解析失败用内置默认。 */
+    private fun loadConfig(mode: DemoMode): DemoConfig {
+        val asset = if (mode == DemoMode.DEMO_FULL) ASSET_DEMO_FULL else ASSET_DEMO_OFFLINE
         val json = runCatching {
-            getApplication<Application>().assets.open(CONFIG_ASSET).bufferedReader().use { it.readText() }
+            getApplication<Application>().assets.open(asset).bufferedReader().use { it.readText() }
         }.getOrNull()
         if (json != null) {
             runCatching { DemoConfig.fromJson(json) }.onSuccess { return it }.onFailure {
-                Log.w(TAG, "demo-full.json 解析失败，使用内置默认配置", it)
+                Log.w(TAG, "$asset 解析失败，使用内置默认配置", it)
             }
         }
-        return defaultConfig()
+        return defaultConfig(mode)
     }
 
-    /** 内置默认配置（brief 明文）：demo-full，云端优先，本地 fake-cmd 链路。 */
-    private fun defaultConfig(): DemoConfig =
-        DemoConfig(
-            mode = "full",
-            vad = VadConfig(),
-            ecnr = "rnnoise",
-            local = LocalConfig(asr = "iflytek.fake-cmd", nlu = "rule.nlu"),
-            cloud = CloudConfig(
-                enabled = true,
-                gatewayUrl = "ws://10.0.2.2:8080/ws",
-                waitMs = 2000,
-            ),
-            mock = MockConfig(),
-        )
+    /**
+     * 内置默认配置（防御兜底，Task 20 明文 + Task 21 模式化）：demo-full 云端优先；
+     * demo-offline 仅本地（cloud 关闭、无网关地址）——资产缺失时模式语义仍正确。
+     */
+    private fun defaultConfig(mode: DemoMode): DemoConfig {
+        val full =
+            DemoConfig(
+                mode = "full",
+                vad = VadConfig(),
+                ecnr = "rnnoise",
+                local = LocalConfig(asr = "iflytek.fake-cmd", nlu = "rule.nlu"),
+                cloud = CloudConfig(
+                    enabled = true,
+                    gatewayUrl = "ws://10.0.2.2:8080/ws",
+                    waitMs = 2000,
+                ),
+                mock = MockConfig(),
+            )
+        return if (mode == DemoMode.DEMO_FULL) full
+        else full.copy(mode = "offline", cloud = full.cloud.copy(enabled = false, gatewayUrl = ""))
+    }
 
     override fun onCleared() {
+        engine.close() // 断开网关 + 取消引擎作用域（Task 21）
         recorder.close()
         ttsPlayer.release()
         ttsFallback.shutdown()
@@ -273,7 +308,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val TAG = "MainViewModel"
 
-        /** 全模式配置资产（Task 21 落地；缺失时用 [defaultConfig]）。 */
-        const val CONFIG_ASSET = "demo-full.json"
+        /** 双模式配置资产（Task 21 落地；缺失时用 [defaultConfig] 兜底）。 */
+        const val ASSET_DEMO_FULL = "demo-full.json"
+        const val ASSET_DEMO_OFFLINE = "demo-offline.json"
     }
 }

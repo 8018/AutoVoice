@@ -15,11 +15,17 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
+import com.autovoice.voicecore.session.SessionState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -335,8 +341,56 @@ class VoiceEngineTest {
 
     /** 等一轮话语收敛完毕（状态回到 IDLE）——多轮用例在 runBlocking 内串行推进。 */
     private suspend fun awaitIdle(engine: VoiceEngine) {
-        while (engine.session.state.value != com.autovoice.voicecore.session.SessionState.IDLE) {
+        while (engine.session.state.value != SessionState.IDLE) {
             delay(10)
         }
+    }
+
+    // ------------------------------------------------------------------ Task 21：close()
+
+    /**
+     * Task 21 模式切换释放语义：close() 取消引擎协程作用域（会话竞速/网关桥接收集全部
+     * 终止），在途竞速被取消后状态回 IDLE、不发结果回调。引擎用独立 scope 装配（生产由
+     * MainViewModel 每次重建时新建专属 scope），close() 不殃及外部作用域。
+     */
+    @Test
+    fun `close cancels engine scope and returns in-flight turn to IDLE without result`() {
+        val spoken = mutableListOf<String>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val cloudStarted = CompletableDeferred<Unit>()
+        val engine = VoiceEngine(
+            cfg = cfg(cloudWaitMs = 10_000),
+            arbiter = OnDeviceRaceArbiter(
+                cloudWaitMs = 10_000,
+                localFallbackMs = 10_000,
+                clock = System::currentTimeMillis,
+                sink = DecisionSink {},
+            ),
+            sink = DecisionSink {},
+            networkAvailable = { true },
+            local = LocalChainRunner { awaitCancellation() },
+            cloud = CloudRunner {
+                cloudStarted.complete(Unit)
+                awaitCancellation()
+            },
+            player = AudioPlayer {},
+            speaker = TextSpeaker { spoken.add(it) },
+            vehicle = MockVehicleState(),
+            scope = scope,
+        )
+        runBlocking {
+            engine.onListeningStart()
+            engine.onVadSegment(segment)
+            withTimeout(2_000) { cloudStarted.await() } // 确保竞速已启动后才 close
+        }
+        assertEquals(SessionState.UNDERSTANDING, engine.session.state.value)
+
+        engine.close()
+
+        assertFalse(scope.coroutineContext.isActive, "close 应取消引擎协程作用域")
+        runBlocking {
+            withTimeout(2_000) { engine.session.state.first { it == SessionState.IDLE } }
+        }
+        assertTrue(spoken.isEmpty(), "取消的竞速不得产生播报")
     }
 }
