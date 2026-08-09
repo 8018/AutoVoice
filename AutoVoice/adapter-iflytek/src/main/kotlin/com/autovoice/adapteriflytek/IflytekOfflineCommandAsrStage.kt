@@ -54,8 +54,12 @@ class IflytekOfflineCommandAsrStage(
     val apiSecret: String,
     /** SDK 工作目录，存放离线资源（CNENESR 模型）与日志，需有读写权限。 */
     val workDir: String = DEFAULT_WORK_DIR,
-    /** FSA 命令词文件路径；不存在时按 [COMMAND_WORDS] 自动生成。 */
-    val fsaPath: String = DEFAULT_WORK_DIR + "fsa/cn_fsa.txt",
+    /**
+     * FSA 命令词文件路径（Task 54 对齐官方布局：readme 要求把 SDK 归档
+     * resource/ 内容导入 workDir，故 fsa 在 CNENESR/fsa/ 下）；不存在时
+     * 按 [COMMAND_WORDS] 自动生成。
+     */
+    val fsaPath: String = DEFAULT_WORK_DIR + "CNENESR/fsa/cn_fsa.txt",
     /** 0=中文（demo 默认），1=英文。 */
     val languageType: Int = LANGUAGE_CN,
 ) {
@@ -123,11 +127,18 @@ class IflytekOfflineCommandAsrStage(
     }
 
     private fun initEngine(): Int {
+        // Task 54 对齐官方 readme 布局：resource/CNENESR 整体导入 workDir。
+        // 文件级校验（目录存在不等于 bin 完整）：按语言列出引擎解码必需的模型，
+        // 缺任何一个都明确报错并给出推送命令，避免引擎侧"静默缺资源→FSA 装载失败"。
         val resourceDir = File(workDir, "CNENESR")
-        if (!resourceDir.isDirectory) {
+        val requiredModels = if (languageType == LANGUAGE_CN) CN_MODELS else EN_MODELS
+        val missing = requiredModels.filter { !File(resourceDir, it).isFile }
+        if (!resourceDir.isDirectory || missing.isNotEmpty()) {
             throw IllegalStateException(
-                "讯飞离线命令词离线资源缺失：请将 SDK 归档 resource/CNENESR 推送到 $workDir（含 e75f07b62_*.bin 模型），" +
-                    NOT_CONFIGURED_MSG,
+                "讯飞离线命令词离线资源缺失${if (missing.isNotEmpty()) "：${missing.joinToString()} " else ""}" +
+                    "（workDir=$workDir，SDK 归档 resource/CNENESR）。推送命令：\n" +
+                    "adb shell mkdir -p $workDir && adb push <SDK>/resource/CNENESR $workDir/\n" +
+                    "（需先授予 app 所有文件访问：adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow）",
             )
         }
         // 与 demo initEngine() 一致：只初始化引擎；FSA 装载在每次会话前（reloadFsa）
@@ -163,7 +174,9 @@ class IflytekOfflineCommandAsrStage(
         // 不可再嵌套 runOnEngine（单线程 executor 自提交会死锁 → 30s 超时）。
         val loadRet = reloadFsa()
         if (loadRet != 0) {
-            throw IllegalStateException("讯飞引擎 FSA 装载失败：code=$loadRet")
+            // Task 54 诊断增强：引擎自身日志（setLogInfo 写到 workDir/aikit/aeeLog.txt）
+            // 会记录装载失败的具体原因，一并带出，避免只有错误码 18301 无从排查
+            throw IllegalStateException("讯飞引擎 FSA 装载失败：code=$loadRet${engineLogTail()}")
         }
         val handle = startSession()
         try {
@@ -295,7 +308,7 @@ class IflytekOfflineCommandAsrStage(
     }
 
     private val abilityListener = object : AiListener {
-        override fun onResult(handleID: Int, outputData: List<AiResponse>, usrContext: Any?) {
+        override fun onResult(handleID: Int, outputData: List<AiResponse>?, usrContext: Any?) {
             if (outputData == null || outputData.isEmpty()) return
             for (response in outputData) {
                 val key = response.key
@@ -356,8 +369,27 @@ class IflytekOfflineCommandAsrStage(
         val file = File(fsaPath)
         if (!file.exists()) {
             file.parentFile?.mkdirs()
-            file.writeBytes(fsaContent().toByteArray(GBK))
+            runCatching { file.writeBytes(fsaContent().toByteArray(GBK)) }
+                .onFailure {
+                    // Task 54：重装后 MANAGE_EXTERNAL_STORAGE 授权丢失时写 /sdcard 报 EPERM，
+                    // 给出明确修复命令而非裸 FileNotFoundException 栈
+                    throw IllegalStateException(
+                        "无法写入 FSA 命令词文件 $fsaPath（${it.message}）：app 缺所有文件访问权限，" +
+                            "请执行 adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow 后重启 app",
+                        it,
+                    )
+                }
         }
+    }
+
+    /** 引擎日志尾部（setLogInfo 输出文件 workDir/aikit/aeeLog.txt），失败排查用；读不到时返回空串。 */
+    private fun engineLogTail(): String {
+        val log = File(workDir, "aikit/aeeLog.txt")
+        if (!log.isFile) return ""
+        return runCatching {
+            val tail = log.readLines().takeLast(ENGINE_LOG_TAIL_LINES).joinToString(" | ")
+            "\n引擎日志: $tail"
+        }.getOrDefault("")
     }
 
     companion object {
@@ -371,9 +403,28 @@ class IflytekOfflineCommandAsrStage(
         const val LANGUAGE_CN = 0
         const val LANGUAGE_EN = 1
 
+        /**
+         * 引擎解码必需模型（SDK 归档 resource/CNENESR/ 内，Task 54 文件级校验用）：
+         * WFST=解码网络、MLP_XN=声学、MLP_VAD=语音端点检测；缺任一都可能让
+         * 引擎侧 FSA 装载失败（18301 等），而非在 engineInit 时报错。
+         */
+        val CN_MODELS = listOf(
+            "e75f07b62_WFST_CN.bin_1.0.0.0",
+            "e75f07b62_MLP_XN_CN.bin_1.0.0.0",
+            "e75f07b62_MLP_VAD_CN.bin_1.0.0.0",
+        )
+        val EN_MODELS = listOf(
+            "e75f07b62_WFST_EN.bin_1.0.0.0",
+            "e75f07b62_MLP_XN_EN.bin_1.0.0.0",
+            "e75f07b62_MLP_VAD_EN.bin_1.0.0.0",
+        )
+
         private const val AUTH_TIMEOUT_MS = 20_000L
         private const val RECOGNIZE_TIMEOUT_MS = 15_000L
         private const val ENGINE_CALL_TIMEOUT_MS = 30_000L
+
+        /** 引擎日志尾部行数（Task 54 装载失败诊断）。 */
+        private const val ENGINE_LOG_TAIL_LINES = 30
 
         /** 结果结束状态（demo 中 AiStatus 值 2）。 */
         private const val RESULT_END_STATUS = 2

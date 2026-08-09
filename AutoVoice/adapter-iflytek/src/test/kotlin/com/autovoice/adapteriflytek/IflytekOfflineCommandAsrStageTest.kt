@@ -45,4 +45,14 @@ class IflytekOfflineCommandAsrStageTest {
         val bytes = content.toByteArray(gbk)
         assertEquals(content, String(bytes, gbk))
     }
+
+    @Test
+    fun `default fsa path follows official layout under CNENESR`() {
+        // Task 54：readme 要求 resource/ 整体导入 workDir，fsa 在 CNENESR/fsa/ 下
+        val stage = IflytekOfflineCommandAsrStage(appId = "a", apiKey = "b", apiSecret = "c")
+        assertTrue(
+            stage.fsaPath.startsWith("${IflytekOfflineCommandAsrStage.DEFAULT_WORK_DIR}CNENESR/fsa/"),
+            "fsaPath 应对齐官方布局: ${stage.fsaPath}",
+        )
+    }
 }
