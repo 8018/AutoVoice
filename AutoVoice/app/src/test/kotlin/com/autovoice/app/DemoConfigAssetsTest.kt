@@ -29,7 +29,8 @@ class DemoConfigAssetsTest {
         val cfg = DemoConfig.fromJson(readAsset("demo-full.json"))
         assertEquals("full", cfg.mode)
         assertTrue(cfg.cloud.enabled, "demo-full 云端优先：cloud.enabled 必须为 true")
-        assertEquals(2000L, cfg.cloud.waitMs)
+        // Task 58：waitMs 5000——ASR+LLM+TTS 云端链约 3.5s，2000ms 内云端必迟到
+        assertEquals(5000L, cfg.cloud.waitMs)
         assertTrue(
             cfg.cloud.gatewayUrl.isNotBlank(),
             "demo-full 的 gatewayUrl 不得为空（占位符 ws://10.0.2.2:8080/ws，真机演示时改网关地址）",
@@ -46,7 +47,7 @@ class DemoConfigAssetsTest {
         val cfg = DemoConfig.fromJson(readAsset("demo-offline.json"))
         assertEquals("offline", cfg.mode)
         assertFalse(cfg.cloud.enabled, "demo-offline 仅本地：cloud.enabled 必须为 false")
-        assertEquals(2000L, cfg.cloud.waitMs)
+        assertEquals(5000L, cfg.cloud.waitMs)
         assertEquals("", cfg.cloud.gatewayUrl)
         // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
         assertEquals("iflytek.offline", cfg.local.asr)

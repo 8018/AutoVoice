@@ -1,5 +1,6 @@
 {
   "mode": "full",
+  "testAudio": "cloud-test.pcm",
   "vad": {
     "threshold": 0.5,
     "minSpeechMs": 64,
@@ -13,7 +14,7 @@
   "cloud": {
     "enabled": true,
     "gatewayUrl": "ws://192.168.50.36:8080/ws",
-    "waitMs": 2000
+    "waitMs": 5000
   },
   "mock": {
     "executor": false

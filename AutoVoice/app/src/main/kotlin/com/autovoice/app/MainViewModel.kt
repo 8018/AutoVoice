@@ -1,6 +1,7 @@
 package com.autovoice.app
 
 import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -127,8 +128,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var recording = false
 
     init {
-        // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产
-        engine = buildEngine(loadConfig(DemoMode.DEMO_OFFLINE))
+        // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
+        // Task 58：模式持久化（SharedPreferences）——重启/安装后保持用户上次选择；
+        // 否则每次重启回 DEMO_OFFLINE（cloud.enabled=false），云端链关闭，表现为
+        // "重启后云端失联"（每轮 cloud_unreachable、服务器零流量）。
+        val mode = restoreMode()
+        _uiState.update { it.copy(mode = mode) }
+        engine = buildEngine(loadConfig(mode))
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
                 if (recording) denoisedBlocks.add(block)
@@ -213,6 +219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.close()
         engine = buildEngine(loadConfig(mode))
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
+        persistMode(mode) // Task 58：模式持久化，重启后保持
         _uiState.update { it.copy(mode = mode) }
     }
 
@@ -287,6 +294,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return engine
     }
 
+    /** 恢复上次选择的模式（Task 58 持久化）：prefs 缺失/损坏回退 DEMO_OFFLINE（默认语义）。 */
+    private fun restoreMode(): DemoMode {
+        val name = runCatching {
+            getApplication<Application>()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_MODE, null)
+        }.getOrNull()
+        return runCatching { DemoMode.valueOf(name ?: "") }.getOrDefault(DemoMode.DEMO_OFFLINE)
+    }
+
+    /** 持久化当前模式（Task 58：重启/安装后保持选择，防云端链静默失联）。 */
+    private fun persistMode(mode: DemoMode) {
+        runCatching {
+            getApplication<Application>()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_MODE, mode.name)
+                .apply()
+        }
+    }
+
     /** 配置：按模式加载 assets 资产（demo-full.json / demo-offline.json），缺失或解析失败用内置默认。 */
     private fun loadConfig(mode: DemoMode): DemoConfig {
         val asset = if (mode == DemoMode.DEMO_FULL) ASSET_DEMO_FULL else ASSET_DEMO_OFFLINE
@@ -337,6 +365,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 双模式配置资产（Task 21 落地；缺失时用 [defaultConfig] 兜底）。 */
         const val ASSET_DEMO_FULL = "demo-full.json"
         const val ASSET_DEMO_OFFLINE = "demo-offline.json"
+
+        /** 模式持久化存储（Task 58：重启保持用户选择，防云端链静默失联）。 */
+        const val PREFS_NAME = "autovoice_settings"
+        const val KEY_MODE = "demo_mode"
 
         /** 最小语音段字节数（300ms @16k 16bit = 9600B；瞬时误触发过滤）。 */
         const val MIN_SEGMENT_BYTES = 9_600

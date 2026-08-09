@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -33,6 +34,9 @@ object AudioFormat {
     /** 读取块：512 samples = 32ms @16k = 1024 字节。 */
     const val BLOCK_SAMPLES = 512
     const val BLOCK_BYTES = BLOCK_SAMPLES * BYTES_PER_SAMPLE // 1024
+
+    /** 单块时长 ms（测试音频源按此节流，与真实录音同速）。 */
+    const val BLOCK_MS = BLOCK_SAMPLES * 1000 / SAMPLE_RATE // 32
 
     /** RNNoise 帧：480 samples = 30ms @16k。 */
     const val RNN_FRAME_SAMPLES = RnnoiseProcessor.FRAME_SIZE // 480
@@ -81,6 +85,10 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
  *   （Task 18 chunk 语义），降噪后 960B/块进 [pcmBlocks]——本地路整段音频，
  *   由 MainViewModel 按"按住期间"收集。
  *
+ * 测试模式（Task 58 云端联调）：demo-full.json 声明 testAudio asset 时，输入源从
+ * 麦克风切换为预置语音（[TestAudioSource]），读循环按真实 32ms/块节奏喂同一双网格
+ * —— 除麦克风采集外整条端云链路可验证，且无需 RECORD_AUDIO 权限。
+ *
  * recorder 保持哑通道，只出 PCM 流 + VAD 事件流 + 抬手取段入口；
  * 段装配/双路送识别的编排在 MainViewModel。
  *
@@ -92,6 +100,8 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
  */
 class AudioRecorder(
     context: Context,
+    /** 测试音频源（demo-full.json 声明 testAudio 时自动启用）；null = 麦克风。 */
+    private val testAudioSource: TestAudioSource? = TestAudioSource.fromDemoConfig(context),
     private val vadSegmenter: VadSegmenter? = try {
         VadSegmenter(SileroVad(context, SILERO_VAD_ASSET))
     } catch (t: Throwable) {
@@ -126,6 +136,15 @@ class AudioRecorder(
     @Synchronized
     fun start(): Boolean {
         if (readJob?.isActive == true) return false
+        val source = testAudioSource
+        if (source != null) {
+            // 测试模式（Task 58）：屏蔽麦克风，预置语音按真实节奏喂双网格，无需录音权限
+            Log.i(TAG, "测试音频源模式：${source.describe()}")
+            source.reset() // 每轮从头播（游标跨轮不重置 → 段起点随机，Task 58 联调发现）
+            vadSegmenter?.resetForTurn()
+            readJob = scope.launch { testReadLoop(source) }
+            return true
+        }
         val audioRecord = createAudioRecord() ?: return false
         record = audioRecord
         try {
@@ -190,6 +209,21 @@ class AudioRecorder(
     }
 
     // ------------------------------------------------------------------ 读取循环
+
+    /** 测试模式读循环：预置语音按真实 32ms/块节奏循环喂双网格（VAD 切段 + RNNoise 降噪）。 */
+    private suspend fun testReadLoop(source: TestAudioSource) {
+        val block = ByteArray(AudioFormat.BLOCK_BYTES)
+        while (currentCoroutineContext().isActive) {
+            source.nextBlock(block)
+            try {
+                processBlock(block)
+            } catch (t: Throwable) {
+                // 单块处理失败（RNNoise 异常）不中断录音，静默降级
+                Log.w(TAG, "block processing failed, degraded silently", t)
+            }
+            delay(AudioFormat.BLOCK_MS.toLong())
+        }
+    }
 
     private suspend fun readLoop(audioRecord: AudioRecord) {
         val block = ByteArray(AudioFormat.BLOCK_BYTES)

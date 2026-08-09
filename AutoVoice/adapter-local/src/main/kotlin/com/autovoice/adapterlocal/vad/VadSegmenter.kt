@@ -63,7 +63,9 @@ class VadSegmenter(
             "vad segmenter expects 1024-byte PCM16 frames @16k, got ${block.size} bytes"
         }
         val event = gate.feed(vad.feed(block))
-        blocks.add(block)
+        // 存副本：调用方（AudioRecorder 读循环）复用同一数组逐块重填，
+        // 只存引用会让所有块指向同一数组的最终内容（段 = 最后一块重复，Task 58 联调发现）
+        blocks.add(block.copyOf())
         when (event) {
             VadEvent.SpeechStart -> {
                 speechStartEvents++

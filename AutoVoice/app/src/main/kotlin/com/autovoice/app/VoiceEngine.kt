@@ -320,8 +320,14 @@ class VoiceEngine(
 
         /** ConnectivityManager 网络检查：active network 非空即认为网络可用。 */
         private fun Context.hasActiveNetwork(): Boolean {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-            return cm.activeNetwork != null
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (cm == null) {
+                Log.w(TAG, "hasActiveNetwork: ConnectivityManager 服务不可用")
+                return false
+            }
+            val active = cm.activeNetwork
+            Log.d(TAG, "hasActiveNetwork: active=$active all=${cm.allNetworks.toList()}")
+            return active != null
         }
     }
 }

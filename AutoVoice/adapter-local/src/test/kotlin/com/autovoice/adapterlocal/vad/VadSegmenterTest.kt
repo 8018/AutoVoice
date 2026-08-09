@@ -87,6 +87,41 @@ class VadSegmenterTest {
     }
 
     @Test
+    fun `调用方复用同一数组喂块时段内容不被覆盖（数组引用回归）`() {
+        // 回归（Task 58 联调）：AudioRecorder 读循环复用同一 ByteArray 逐块重填，
+        // feed 若只存引用，段 = 最后一块重复（正弦波之谜根因）。修复后必须存副本。
+        val model = modelFile()
+        assumeTrue(model.exists(), "silero_vad.onnx 不在仓库中，跳过真实推理")
+
+        SileroVad(model.readBytes()).use { vad ->
+            val segmenter = VadSegmenter(vad)
+            // 真实语音开头若干块触发 SpeechStart
+            val frames = framesOf(wavDataBytes())
+            for (f in frames.take(8)) segmenter.feed(f)
+            // 复用同一数组交替填充两种内容喂 16 块（模拟读循环复用）
+            val reused = ByteArray(1024)
+            val contentA = ByteArray(1024) { 0x11 }
+            val contentB = ByteArray(1024) { 0x22 }
+            repeat(16) { i ->
+                val content = if (i % 2 == 0) contentA else contentB
+                content.copyInto(reused)
+                segmenter.feed(reused)
+            }
+            val segments = segmenter.finish()
+            assertTrue(segments.isNotEmpty(), "应有语音段")
+            val seg = segments.first()
+            // 段 = 语音尾块 + A/B 交替 16 块；bug 时所有块相同（不同块数 = 1）
+            val uniqueBlocks = (0 until seg.size / 1024).map { seg.sliceArray(it * 1024 until (it + 1) * 1024).toList() }.toSet()
+            assertTrue(uniqueBlocks.size > 1, "段内不同块数应 > 1（数组复用 bug 时 = 1），实际 ${uniqueBlocks.size}")
+            // 交替区断言：段尾部 16 块为 A/B 交替（第 8 块起每相邻两块内容不同）
+            val tailBlocks = (0 until seg.size / 1024).map { seg.sliceArray(it * 1024 until (it + 1) * 1024) }
+            for (i in 0 until tailBlocks.size - 1) {
+                assertTrue(!tailBlocks[i].contentEquals(tailBlocks[i + 1]), "相邻块应交替不同")
+            }
+        }
+    }
+
+    @Test
     fun `非 1024 字节帧被拒绝`() {
         val model = modelFile()
         assumeTrue(model.exists(), "silero_vad.onnx 不在仓库中，跳过真实推理")
