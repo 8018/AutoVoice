@@ -13,7 +13,7 @@
   "cloud": {
     "enabled": false,
     "gatewayUrl": "",
-    "waitMs": 5000
+    "waitMs": 2000
   },
   "mock": {
     "executor": false

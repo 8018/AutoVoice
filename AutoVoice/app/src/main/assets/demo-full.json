@@ -13,7 +13,7 @@
   "cloud": {
     "enabled": true,
     "gatewayUrl": "ws://192.168.50.36:8080/ws",
-    "waitMs": 5000
+    "waitMs": 2000
   },
   "mock": {
     "executor": false
