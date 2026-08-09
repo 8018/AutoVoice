@@ -8,6 +8,8 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
+import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.AliyunTtsProvider;
 import okhttp3.OkHttpClient;
@@ -118,14 +120,24 @@ public class AppConfig {
     }
 
     /**
+     * 离线命令链：S3 暂以 Noop 装配（离线未启用，与改造前行为一致）；
+     * S5 按 {@code autovoice.offline.enabled} 切换 Native/Noop。
+     */
+    @Bean
+    public OfflineCommandService offlineCommandService() {
+        return new OfflineCommandService(new NoopOfflineCommandProvider());
+    }
+
+    /**
      * 网关 WS 处理器：仲裁参数来自配置（safetyTimeoutMs）；每连接的
      * RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出，无需 app 级关闭）。
      */
     @Bean
     public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
-                                                   TtsProvider tts, SessionRegistry registry,
+                                                   TtsProvider tts, OfflineCommandService offline,
+                                                   SessionRegistry registry,
                                                    AutovoiceProperties props) {
-        return new VoiceGatewayHandler(asr, llm, tts, registry,
-                props.arbitration().safetyTimeoutMs());
+        return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
+                props.arbitration().safetyTimeoutMs(), 2000);
     }
 }

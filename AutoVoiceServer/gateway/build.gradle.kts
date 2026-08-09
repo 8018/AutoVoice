@@ -20,6 +20,7 @@ dependencies {
     implementation(project(":llm"))
     implementation(project(":asr-gateway"))
     implementation(project(":tts-gateway"))
+    implementation(project(":offline-command"))
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.spring.boot.starter.json)
     testImplementation(libs.junit)

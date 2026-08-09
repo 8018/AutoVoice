@@ -6,6 +6,8 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
+import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,7 +25,6 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.Principal;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -36,17 +37,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 处理器接线测试：手写 WebSocketSession stub 捕获下行消息，验证
- * 握手回调、二进制帧累积、decision→reply 下发顺序与下行 kind 收敛。
+ * 握手回调、二进制帧累积、decision→reply 下发顺序与下行 kind 收敛（TTS 解耦：
+ * reply 只携带语义，不再有 audio kind）。
  * 测试环境用极短仲裁参数（safety 1s），fake providers 同步就绪。
- * 语义由 LLM 承担（function calling 产出 action 回复），原 NLU 链路退役。
  */
 class VoiceGatewayHandlerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final byte[] WAV = {0x52, 0x49, 0x46, 0x46};
     private static final long SAFETY = 1000;
+    private static final long ASR_FAIL_WAIT = 100;
 
     private final SessionRegistry registry = new SessionRegistry();
+
+    private static OfflineCommandService noopOffline() {
+        return new OfflineCommandService(new NoopOfflineCommandProvider());
+    }
+
+    private static OfflineCommandService hitOffline(String text) {
+        return new OfflineCommandService((pcm, ctx) ->
+                java.util.concurrent.CompletableFuture.completedFuture(java.util.Optional.of(text)));
+    }
 
     // ---------- 接线：hello → ready ----------
 
@@ -62,15 +73,15 @@ class VoiceGatewayHandlerTest {
         JsonNode p = ready.get("payload");
         assertTrue(p.has("sessionId"));
         assertEquals("zh-CN", p.get("language").asText());
-        assertEquals("1.0", p.get("protocolVersion").asText());
+        assertEquals("1.1", p.get("protocolVersion").asText());
         // 会话已登记（demo-1 不存在 → 新建）
         assertNotNull(registry.get(p.get("sessionId").asText()));
     }
 
-    // ---------- 接线：完整段 → decision 先行 + reply(audio) ----------
+    // ---------- 接线：完整段 → decision 先行 + reply(action，无音频) ----------
 
     @Test
-    void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeAudioReply() {
+    void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeActionReply() {
         byte[][] asrReceived = new byte[1][];
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrReceived[0] = pcm;
@@ -94,14 +105,16 @@ class VoiceGatewayHandlerTest {
         assertEquals("llm_reply", decision.get("payload").get("reason").asText());
         assertEquals("cloud", decision.get("payload").get("arbiter").asText());
 
+        // TTS 解耦：reply 只携带语义（action + speakText），无 mime/dataBase64
         JsonNode reply = parse(s.sent.get(2));
         assertEquals("reply", reply.get("type").asText());
         JsonNode p = reply.get("payload");
-        assertEquals("audio", p.get("kind").asText(), "下行恒 kind=audio");
-        assertEquals("audio/wav", p.get("mime").asText());
-        assertArrayEquals(WAV, Base64.getDecoder().decode(p.get("dataBase64").asText()));
+        assertEquals("action", p.get("kind").asText());
+        assertFalse(p.has("mime"), "TTS 解耦后 reply 不得携带音频");
+        assertFalse(p.has("dataBase64"), "TTS 解耦后 reply 不得携带音频");
         assertEquals("已为您执行空调指令", p.get("speakText").asText());
         assertEquals("set_temperature", p.get("intent").get("intent").asText());
+        assertEquals("把空调调到二十四度", p.get("asrText").asText(), "reply 应携带 ASR 识别文本");
         assertEquals("seg-1", p.get("segmentId").asText(), "reply 应回显 audio_start 的 segmentId");
 
         // 二进制帧已按序累积为完整 PCM 交给 ASR
@@ -109,8 +122,8 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void textReplySpeakTextNullIntentOmitsIntentField() {
-        // LLM 文本回复（闲聊）：intent=null → 下行 audio 消息省略 intent 字段
+    void textReplyCarriesTextAndSpeakTextOmitsIntent() {
+        // LLM 文本回复（闲聊）：kind=text 且 text 与 speakText 同带（端侧 parseReply 强读 text）
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM回答"), ttsOk());
         StubSession s = open(h);
         String sid = handshake(h, s);
@@ -122,20 +135,19 @@ class VoiceGatewayHandlerTest {
         JsonNode reply = parse(s.sent.get(2));
         assertEquals("reply", reply.get("type").asText());
         JsonNode p = reply.get("payload");
-        assertEquals("audio", p.get("kind").asText());
+        assertEquals("text", p.get("kind").asText());
+        assertEquals("LLM回答", p.get("text").asText(), "kind=text 必须携带 text 字段");
         assertEquals("LLM回答", p.get("speakText").asText());
         assertFalse(p.has("intent"), "intent 为 null 时省略字段，不发送 null");
         assertFalse(p.has("segmentId"), "audio_start 未携带 segmentId 时 reply 不得发送该字段");
     }
 
-    // ---------- 降级路径 ----------
+    // ---------- 离线命令命中 ----------
 
     @Test
-    void ttsFailureDegradesToTextReply() {
-        VoiceGatewayHandler h = newHandler(asr("x"), llmAction(),
-                (text, ctx) -> {
-                    throw new RuntimeException("tts down");
-                });
+    void offlineHitEmitsOfflineWonActionReply() {
+        // 离线识别命中（"打开空调"）→ offline_won：decision 先行，reply=action（intent + speakText）
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk(), hitOffline("打开空调"));
         StubSession s = open(h);
         String sid = handshake(h, s);
 
@@ -143,14 +155,21 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
+        assertEquals(3, s.sent.size());
+        JsonNode decision = parse(s.sent.get(1));
+        assertEquals("offline_won", decision.get("payload").get("reason").asText());
+        assertEquals("nlu-traditional", decision.get("payload").get("route").asText());
+
         JsonNode reply = parse(s.sent.get(2));
-        assertEquals("reply", reply.get("type").asText());
         JsonNode p = reply.get("payload");
-        assertEquals("text", p.get("kind").asText(), "TTS 失败 → 降级 kind=text");
-        assertEquals("已为您执行空调指令", p.get("speakText").asText());
-        assertFalse(p.has("dataBase64"), "降级文本无音频");
-        assertFalse(p.has("mime"), "降级文本无音频");
+        assertEquals("action", p.get("kind").asText());
+        assertEquals("climate", p.get("intent").get("domain").asText());
+        assertEquals("power_on", p.get("intent").get("intent").asText());
+        assertEquals("好的，空调已打开", p.get("speakText").asText());
+        assertEquals("打开空调", p.get("asrText").asText(), "离线胜出时 asrText = 离线原文");
     }
+
+    // ---------- 降级路径 ----------
 
     @Test
     void asrFailureSendsFallbackDecisionAndTextReply() {
@@ -235,7 +254,12 @@ class VoiceGatewayHandlerTest {
     // ---------- helpers ----------
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts) {
-        return new VoiceGatewayHandler(asr, llm, tts, registry, SAFETY);
+        return newHandler(asr, llm, tts, noopOffline());
+    }
+
+    private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                                           OfflineCommandService offline) {
+        return new VoiceGatewayHandler(asr, llm, tts, offline, registry, SAFETY, ASR_FAIL_WAIT);
     }
 
     private static StubSession open(VoiceGatewayHandler h) {

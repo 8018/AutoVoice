@@ -5,6 +5,7 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
+import com.autovoice.server.contracts.SpeakTexts;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -62,7 +63,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     static final String INTENT_SOURCE = "llm.car_control";
 
     /** 槽位名（与端侧 RuleNluProvider / shared contracts 对齐）。 */
-    static final String SLOT_TEMPERATURE = "temperature";
+    static final String SLOT_TEMPERATURE = SpeakTexts.SLOT_TEMPERATURE;
 
     static final String HEADER_AUTHORIZATION = "Authorization";
 
@@ -179,32 +180,6 @@ public final class DeepSeekLlmProvider implements LlmProvider {
             slots.put(SLOT_TEMPERATURE, SlotValue.number(temperature.asDouble()));
         }
         Intent intent = Intent.of("1.0", domain, action, slots, 1.0, INTENT_SOURCE, arguments);
-        return Reply.ofAction(intent, speakTemplate(domain, action, slots));
-    }
-
-    /** 车控播报模板（与端侧 RuleNluProvider 意图对齐）；未知 domain/缺参数兜底。 */
-    private static String speakTemplate(String domain, String action, Map<String, SlotValue> slots) {
-        String device = switch (domain) {
-            case "climate" -> "空调";
-            case "window" -> "车窗";
-            default -> "设备";
-        };
-        SlotValue temperature = slots.get(SLOT_TEMPERATURE);
-        return switch (action) {
-            case "power_on" -> "好的，" + device + "已打开";
-            case "power_off" -> "好的，" + device + "已关闭";
-            case "set_temperature" -> temperature != null
-                    ? "好的，" + device + "温度已调到" + formatNumber(temperature.value()) + "度"
-                    : "好的，已为您调整" + device;
-            default -> "好的，已为您执行";
-        };
-    }
-
-    /** 温度数值展示：24.0 → "24"，24.5 → "24.5"。 */
-    private static String formatNumber(Object value) {
-        if (value instanceof Double d && d == Math.floor(d)) {
-            return String.valueOf(d.longValue());
-        }
-        return String.valueOf(value);
+        return Reply.ofAction(intent, SpeakTexts.speak(intent));
     }
 }

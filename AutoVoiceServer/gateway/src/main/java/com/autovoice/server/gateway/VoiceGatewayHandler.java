@@ -7,6 +7,7 @@ import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -39,12 +40,14 @@ import java.util.concurrent.ScheduledExecutorService;
  *   <li>{@code audio_start} → 记录 utteranceId（自增 {@code u-N}）并开始累积 PCM；</li>
  *   <li>二进制帧 → 累积 PCM（S16LE/16kHz/单声道，协议不校验内容）；</li>
  *   <li>{@code audio_end} → 同步执行每连接一份的 {@link SegmentPipeline#handleSegment} →
- *       先逐条下发 arbiter 的 {@code decision} 事件，再下发最终 {@code reply}（协议 §5 时序）。</li>
+ *       先逐条下发 arbiter 的 {@code decision} 事件，再下发最终 {@code reply}（协议 §5 时序）；</li>
+ *   <li>{@code tts_request} → 独立 TTS 链路（不依赖本轮的识别/仲裁）：合成文本 →
+ *       下发 {@code tts_response}；失败 → error（code TTS_FAILED）。</li>
  * </ul>
  *
- * <p>下行收敛：reply 恒为 kind=audio（payload 携带 mime/dataBase64/speakText/intent，
- * intent 为 null 时省略字段）；唯一例外——TTS 合成失败（或 ASR 兜底）时降级 kind=text（仅 speakText）。
- * 音频超 64KB base64 也一次消息下发，不分帧。</p>
+ * <p>下行收敛（TTS 解耦，协议 v1.1）：reply 只携带语义——有 intent 时 kind=action
+ * （intent + speakText），纯文本时 kind=text（text 与 speakText 同带）；<b>不再下发音频</b>，
+ * 播报由端侧按回复文本另发 tts_request 获取。</p>
  *
  * <p>每连接一个 {@link SegmentPipeline} 实例（含各自注入同一连接 {@link DecisionSink} 的
  * RaceArbiter）；demo 单线程同步处理段，吞吐不是目标。非法消息 → 下发 error（hello 类错误码 BAD_HELLO，
@@ -52,17 +55,19 @@ import java.util.concurrent.ScheduledExecutorService;
  */
 public final class VoiceGatewayHandler implements WebSocketHandler {
 
-    public static final String PROTOCOL_VERSION = "1.0";
+    public static final String PROTOCOL_VERSION = "1.1";
     public static final String DEFAULT_LANGUAGE = "zh-CN";
-    private static final String MIME_WAV = "audio/wav";
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
+    private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AsrProvider asr;
     private final LlmProvider llm;
     private final TtsProvider tts;
+    private final OfflineCommandService offline;
     private final SessionRegistry registry;
     private final long safetyTimeoutMs;
+    private final long asrFailWaitMs;
 
     /** 各连接共用的仲裁计时线程池（daemon，demo 规模足够）。 */
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
@@ -74,19 +79,22 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
-    /** demo 默认仲裁参数（安全兜底 4s）。 */
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm,
-                               TtsProvider tts, SessionRegistry registry) {
-        this(asr, llm, tts, registry, DEFAULT_SAFETY_TIMEOUT_MS);
+    /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s）。 */
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry) {
+        this(asr, llm, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS);
     }
 
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
-                               SessionRegistry registry, long safetyTimeoutMs) {
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs) {
         this.asr = asr;
         this.llm = llm;
         this.tts = tts;
+        this.offline = offline;
         this.registry = registry;
         this.safetyTimeoutMs = safetyTimeoutMs;
+        this.asrFailWaitMs = asrFailWaitMs;
     }
 
     @Override
@@ -195,28 +203,30 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     }
 
     /**
-     * 下行收敛：恒 kind=audio（mime/dataBase64/speakText/intent，null 省略）；wavAudio 为 null 时降级
-     * kind=text（仅 speakText）。asrText（Task 61：云端 ASR 识别文本，端侧云端胜出时写进识别区）非空时附带。
+     * 下行收敛（TTS 解耦，协议 v1.1）：reply 只携带语义——intent 非空 → kind=action
+     * （intent + speakText）；纯文本 → kind=text 且 <b>text 与 speakText 同带</b>
+     * （端侧 parseReply 对 kind=text 强读 text 字段，text 缺失会丢回复）。
+     * asrText（Task 61：识别文本，端侧云端胜出时写进识别区）非空时附带。
      */
     private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (result.asrText() != null && !result.asrText().isBlank()) {
             payload.put("asrText", result.asrText());
         }
-        if (result.wavAudio() != null) {
-            payload.put("kind", "audio");
-            payload.put("mime", MIME_WAV);
-            payload.put("dataBase64", Base64.getEncoder().encodeToString(result.wavAudio()));
+        if (result.intent() != null) {
+            payload.put("kind", "action");
+            payload.put("intent", result.intent());
             if (result.speakText() != null) {
                 payload.put("speakText", result.speakText());
             }
-            if (result.intent() != null) {
-                payload.put("intent", result.intent());
-            }
         } else {
-            // TTS 合成失败 / ASR 兜底：降级为屏幕显示文本（protocol.md §4.4）
             payload.put("kind", "text");
-            payload.put("speakText", result.speakText());
+            if (result.text() != null) {
+                payload.put("text", result.text());
+            }
+            if (result.speakText() != null) {
+                payload.put("speakText", result.speakText());
+            }
         }
         if (st.segmentId != null) {
             payload.put("segmentId", st.segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
@@ -270,7 +280,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         final List<DecisionEntry> pendingDecisions = new ArrayList<>();
         final DecisionSink sink = pendingDecisions::add;
         final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, scheduler, sink);
-        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, tts, sink);
+        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String utteranceId;

@@ -41,8 +41,8 @@ import static org.mockito.Mockito.when;
  * 三个 provider 用 @MockBean 替换为固定返回值（不真调云端 API）。
  *
  * <p>协议断言（shared/protocol.md §5）：hello → ready；audio_start → 二进制 PCM → audio_end →
- * 先收 decision（仲裁日志事件）再收 reply；reply 为 kind=audio 且携带 speakText 与
- * intent（domain=climate）—— LLM mock 模拟 function calling 产出 action 回复
+ * 先收 decision（仲裁日志事件）再收 reply；reply 为 kind=action（intent + speakText + asrText，
+ * 无音频——TTS 解耦）—— LLM mock 模拟 function calling 产出 action 回复
  * （语义已由模型工具调用承担，原 NLU 链路退役）。</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -105,7 +105,7 @@ class EndToEndGatewayTest {
             String sessionId = (String) readyPayload.get("sessionId");
             assertNotNull(sessionId, "ready 应带 sessionId");
             assertEquals("zh-CN", readyPayload.get("language"));
-            assertEquals("1.0", readyPayload.get("protocolVersion"));
+            assertEquals("1.1", readyPayload.get("protocolVersion"));
 
             // audio_start → 二进制 PCM → audio_end（携带客户端生成的 segmentId，reply 应回显）
             send(ws, "audio_start", Map.of("sessionId", sessionId, "sampleRate", 16000,
@@ -149,20 +149,20 @@ class EndToEndGatewayTest {
             assertNotNull(d.get("utteranceId"));
             assertInstanceOf(Number.class, d.get("timestampMs"));
 
-            // reply：kind=audio + speakText 非空 + intent.domain=climate（brief 断言）
+            // reply：kind=action（intent + speakText + asrText，无音频——TTS 解耦）
             Map<String, Object> p = payload(reply);
-            assertEquals("audio", p.get("kind"));
-            assertEquals("audio/wav", p.get("mime"));
-            String dataBase64 = (String) p.get("dataBase64");
-            assertNotNull(dataBase64);
-            assertFalse(dataBase64.isEmpty());
+            assertEquals("action", p.get("kind"));
+            assertFalse(p.containsKey("mime"), "TTS 解耦后 reply 不得携带音频");
+            assertFalse(p.containsKey("dataBase64"), "TTS 解耦后 reply 不得携带音频");
             String speakText = (String) p.get("speakText");
             assertNotNull(speakText);
             assertFalse(speakText.isBlank());
             Map<?, ?> intent = (Map<?, ?>) p.get("intent");
-            assertNotNull(intent, "kind=audio 下行应携带 intent");
+            assertNotNull(intent, "kind=action 下行应携带 intent");
             assertEquals("climate", intent.get("domain"));
             assertEquals("set_temperature", intent.get("intent"));
+            // asrText：LLM 路径 = ASR 识别文本（Task 61 语义，端侧云端胜出写识别区）
+            assertEquals("空调调到二十四度", p.get("asrText"));
             // segmentId 端到端回显：客户端可据此将 reply 对账到具体话语
             assertEquals("seg-e2e-1", p.get("segmentId"), "reply 应回显 audio_start 的 segmentId");
         } finally {
