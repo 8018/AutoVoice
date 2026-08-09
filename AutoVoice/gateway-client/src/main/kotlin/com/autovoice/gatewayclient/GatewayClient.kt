@@ -60,8 +60,8 @@ class GatewayClient(
         /** protocol.md §3.1 hello 的客户端标识。 */
         const val CLIENT_NAME = "autovoice-android"
 
-        /** protocol.md §3.1 hello 的协议版本。 */
-        const val PROTOCOL_VERSION = "1.0"
+        /** protocol.md §3.1 hello 的协议版本（v1.1：TTS 解耦）。 */
+        const val PROTOCOL_VERSION = "1.1"
     }
 
     private val events = MutableSharedFlow<GatewayMessage>(
@@ -159,6 +159,37 @@ class GatewayClient(
                     "durationMs" to durationMs,
                 ),
             ),
+        )
+    }
+
+    /**
+     * 独立 TTS 播报请求（protocol.md §3.4）：设备执行 intent 后按 speakText 调用。
+     * 回复经 [parseTtsResponse] 对账（同一 segmentId）；与录音段流程互不干扰。
+     */
+    fun sendTtsRequest(text: String, segmentId: String? = null) {
+        val payload = linkedMapOf<String, Any>("text" to text)
+        if (segmentId != null) {
+            payload["segmentId"] = segmentId
+        }
+        sendFrame(mapOf("type" to "tts_request", "payload" to payload))
+    }
+
+    /**
+     * 解析 tts_response payload（protocol.md §4.6）：mime / dataBase64 解码 →
+     * [AudioReply]（speakText=text 回显）。字段缺失 / base64 非法 → null（防御，不抛）。
+     */
+    fun parseTtsResponse(payload: JsonObject): AudioReply? {
+        val mime = payload.get("mime")?.stringOrNull() ?: return null
+        val dataBase64 = payload.get("dataBase64")?.stringOrNull() ?: return null
+        val data = try {
+            Base64.getDecoder().decode(dataBase64)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        return AudioReply(
+            mime = mime,
+            data = data,
+            speakText = payload.get("text")?.stringOrNull() ?: "",
         )
     }
 

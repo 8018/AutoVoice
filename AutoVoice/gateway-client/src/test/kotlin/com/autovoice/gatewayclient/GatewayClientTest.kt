@@ -51,10 +51,10 @@ class GatewayClientTest {
     }
 
     private fun readyFrame(sessionId: String) =
-        """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.0"}}"""
+        """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"}}"""
 
     private fun decisionFrame() =
-        """{"type":"decision","payload":{"arbiter":"cloud","route":"nlu-traditional","reason":"nlu_first","utteranceId":"u-1","timestampMs":1723104000000}}"""
+        """{"type":"decision","payload":{"arbiter":"cloud","route":"llm","reason":"llm_reply","utteranceId":"u-1","timestampMs":1723104000000}}"""
 
     /**
      * 假扮网关的 MockWebServer：记录服务端收到的帧与 PCM；[upgrade] 供多次连接复用。
@@ -150,11 +150,11 @@ class GatewayClientTest {
             // ready：sessionId 以服务端回执为准
             assertEquals("srv-sess-1", received[0].payload.get("sessionId").asString)
             assertEquals("zh-CN", received[0].payload.get("language").asString)
-            assertEquals("1.0", received[0].payload.get("protocolVersion").asString)
+            assertEquals("1.1", received[0].payload.get("protocolVersion").asString)
 
             // decision 事件原样透传
             assertEquals("cloud", received[1].payload.get("arbiter").asString)
-            assertEquals("nlu_first", received[1].payload.get("reason").asString)
+            assertEquals("llm_reply", received[1].payload.get("reason").asString)
 
             // reply(action)：按 fixture 解析
             val reply = client.parseReply(received[2].payload)
@@ -256,6 +256,58 @@ class GatewayClientTest {
 
     /** parseReply 纯函数单测用的客户端实例（url 不参与解析，不会发起连接）。 */
     private fun parseClient(): GatewayClient = GatewayClient("ws://localhost:1/", OkHttpClient(), gson)
+
+    @Test
+    fun `sendTtsRequest sends tts_request frame with text and segmentId`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendTtsRequest("好的，空调已打开", "tts-1")
+            client.sendTtsRequest("再播一条") // segmentId 为 null：不得出现在 payload 中
+
+            assertTrue(awaitTrue { gateway.frames.filter { it.type == "tts_request" }.size == 2 }, "应收到两条 tts_request")
+            val withSegment = gateway.frames.first { it.type == "tts_request" }.payload
+            assertEquals("好的，空调已打开", withSegment.get("text").asString)
+            assertEquals("tts-1", withSegment.get("segmentId").asString)
+            val withoutSegment = gateway.frames.last { it.type == "tts_request" }.payload
+            assertEquals("再播一条", withoutSegment.get("text").asString)
+            assertFalse(withoutSegment.has("segmentId"), "segmentId 为 null 时不得发送该字段")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `parseTtsResponse decodes fixture`() {
+        val client = parseClient()
+        val payload = gson.fromJson(fixture("gateway-tts-response.json"), JsonObject::class.java)
+            .getAsJsonObject("payload")
+        val reply = client.parseTtsResponse(payload)
+        assertNotNull(reply)
+        reply as AudioReply
+        assertEquals("audio/wav", reply.mime)
+        assertEquals("好的，空调已打开", reply.speakText, "tts_response.text 应映射到 speakText")
+        val fixtureBase64 = payload.get("dataBase64").asString
+        assertArrayEquals(Base64.getDecoder().decode(fixtureBase64), reply.data)
+    }
+
+    @Test
+    fun `parseTtsResponse invalid payload returns null`() {
+        val client = parseClient()
+        assertNull(client.parseTtsResponse(JsonObject()), "无 mime/dataBase64 应返回 null")
+        assertNull(
+            client.parseTtsResponse(gson.fromJson("""{"mime":"audio/wav"}""", JsonObject::class.java)),
+            "缺 dataBase64 应返回 null",
+        )
+        assertNull(
+            client.parseTtsResponse(gson.fromJson("""{"mime":"audio/wav","dataBase64":"!!!"}""", JsonObject::class.java)),
+            "base64 非法应返回 null",
+        )
+    }
 
     @Test
     fun `parseReply text kind`() {
