@@ -6,7 +6,7 @@
  *              → LoadData(cn_fsa.txt, index 0)
  *   recognize: UnLoadData + LoadData 重载（SDK 在 End 后清空引擎资源，不重载下次 Start
  *              报 10017）→ SpecifyDataSet(FSA, {0}) → Start → 320B 分帧 Write/Read → DataEnd
- *              → End → 取 status==2 节点（GBK 原始字节）
+ *              → End → 取 plain 节点（GBK 原始字节；Linux 引擎 status=1，不可用 status==2 门限）
  *
  * Java 侧调用方 NativeOfflineCommandProvider 保证单线程串行（SDK 引擎非线程安全）。
  * 凭据（appId/apiKey/apiSecret）仅用于联网激活（authType=0）；licenseFile 非空走
@@ -157,28 +157,33 @@ static jlong initEngine(const char* appId, const char* apiKey, const char* apiSe
     }
     g_fsaPath = fsaPath == nullptr ? "" : fsaPath;
 
-    // 5) 识别参数（每次 Start 复用；与真机验收一致的设备端参数）
+    // 5) 识别参数（每次 Start 复用；与官方 Linux sample（cnenesr_sample.cpp）逐项对齐。
+    //    注意：Android 真机标定的 vadEnergyThreshold/postprocOn/vadLinkOn 等值不适用
+    //    Linux 引擎（VAD 判全静音导致 no result），此处用 sample 默认值。）
     g_startParam = AIKIT_ParamBuilder::create();
     g_startParam->clear();
     g_startParam->param("languageType", 0);       // 0 中文 1 英文
     g_startParam->param("vadOn", true);           // 引擎内 VAD 开关
-    g_startParam->param("vadEndGap", 60);         // VAD 子句间隔（10ms 单位）
+    g_startParam->param("vadEndGap", 75);         // VAD 子句间隔（10ms 单位）
     g_startParam->param("vadSpeechEnd", 80);      // 80 = 800ms 尾音判定
-    g_startParam->param("vadEnergyThreshold", 9); // 能量门限（真机标定值）
     g_startParam->param("beamThreshold", 20);     // 解码门限
     g_startParam->param("hisGramThreshold", 3000);
-    g_startParam->param("postprocOn", true);
+    g_startParam->param("postprocOn", false);     // 后处理开关（sample 默认关）
     g_startParam->param("vadResponsetime", 1000);
-    g_startParam->param("vadLinkOn", true);
+    g_startParam->param("vadLinkOn", false);      // VAD 链接（sample 默认关）
 
     g_initialized = true;
     return (jlong)1; // 非 0 即成功
 }
 
 /*
- * Write + Read 一轮；output 节点中 status==2 的即最终识别结果（GBK 原始字节）。
- * 优先 key 含 "plain" 的节点，否则取第一个 status==2 节点；每个 Read 的结果覆盖
- * 上一次（DataEnd 后的 Read 通常才是最终结果）。
+ * Write + Read 一轮；识别文本在 key 含 "plain" 的节点（GBK 原始字节）。
+ * - 关键：Linux 引擎 plain 节点 status=1 而非 2（DataEnd 后随整链输出，
+ *   调试确认 len=8 即 "打开空调" GBK 4 字×2B），此前 status==2 门限把它
+ *   跳过、out 落成第一个 status==2 的 vad SpeechAutoFinish 尾标记 JSON
+ *   → Java 侧 GBK 解码出 {"sc":"0","ws":[...SpeechAutoFinish...]} 判 unknown。
+ * - 策略：plain 节点出现即采用（不限 status）；否则回退首个 status==2 节点
+ *   （历史行为，纯静音等无词场景 out 保持空 → Java 侧 Optional.empty）。
  */
 static int collectResult(AIKIT_HANDLE* srHandle, AIKIT_DataBuilder* dataBuilder, std::vector<char>* out) {
     AIKIT_InputData* input = AIKIT_Builder::build(dataBuilder);
@@ -196,25 +201,21 @@ static int collectResult(AIKIT_HANDLE* srHandle, AIKIT_DataBuilder* dataBuilder,
     if (output == nullptr || output->node == nullptr) {
         return 0;
     }
-    std::vector<char> fallback;
     AIKIT_BaseData* node = output->node;
     while (node != nullptr) {
-        if (node->status == 2 && node->value != nullptr && node->len > 0) {
+        if (node->value != nullptr && node->len > 0) {
             const char* key = node->key == nullptr ? "" : node->key;
             if (strstr(key, "plain") != nullptr) {
                 out->assign(static_cast<char*>(node->value),
                             static_cast<char*>(node->value) + node->len);
                 return 0;
             }
-            if (fallback.empty()) {
-                fallback.assign(static_cast<char*>(node->value),
-                                static_cast<char*>(node->value) + node->len);
+            if (node->status == 2 && out->empty()) {
+                out->assign(static_cast<char*>(node->value),
+                            static_cast<char*>(node->value) + node->len);
             }
         }
         node = node->next;
-    }
-    if (!fallback.empty()) {
-        out->assign(fallback.begin(), fallback.end());
     }
     return 0;
 }

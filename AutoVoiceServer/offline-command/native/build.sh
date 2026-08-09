@@ -57,5 +57,5 @@ g++ -std=c++11 -O2 -shared -fPIC \
     -o "$OUT"
 
 echo "OK: $OUT"
-echo "    （rpath 已指向 $SDK_DIR/libs，运行时无需 LD_LIBRARY_PATH；systemd unit 的")
-echo "    Environment=LD_LIBRARY_PATH=... 保留作双保险。）"
+echo "    （rpath 已指向 $SDK_DIR/libs，运行时无需 LD_LIBRARY_PATH；systemd unit 的）"
+echo "    Environment=LD_LIBRARY_PATH=... 保留作双保险。"
