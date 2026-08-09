@@ -25,6 +25,7 @@
          Android 9+ 默认禁 cleartext，okhttp 在 TCP 前即拒绝，manifest 必须显式放行 -->
     <application
         android:label="AutoVoice"
+        android:icon="@android:drawable/sym_def_app_icon"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
