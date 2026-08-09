@@ -7,28 +7,35 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 端侧竞速仲裁结果（spec §5.1）：云端回复 / 本地意图 / 双败。
+ * 端侧竞速仲裁结果（spec §5.1 修订，Task 64 本地优先）：本地意图 / 云端回复 / 双败。
  */
 sealed class RaceWinner {
-    /** 云端回复在 cloudWaitMs 内到达。 */
-    data class Cloud(val reply: Reply) : RaceWinner()
-
-    /** 云端超时后，本地意图在 localFallbackMs 内到达。 */
+    /** 本地链识别出命令词（非 unknown 意图），本地优先立即胜出。 */
     data class Local(val intent: Intent) : RaceWinner()
 
-    /** 云端与本地均超时。 */
+    /** 本地未命中（非命令词 → unknown）后，云端回复在 cloudWaitMs 内到达。 */
+    data class Cloud(val reply: Reply) : RaceWinner()
+
+    /** 本地未命中且云端超时。 */
     data object Failed : RaceWinner()
 }
 
 /**
- * 端侧竞速仲裁器（spec §5.1）：云端优先，超时后本地兜底。
+ * 端侧竞速仲裁器（spec §5.1 修订，Task 64 本地优先）：本地命令词命中即胜，云端语义兜底。
+ *
+ * 背景：云端优先（原实现）下离线命令词虽 1s 内识别出，云端 ASR+LLM+TTS 却在
+ * cloudWaitMs（5s）内先收敛 → 本地结果每次被云端覆盖，用户体感"本地链路没开"。
  *
  * 收敛规则：
- *  - `withTimeoutOrNull(cloudWaitMs) { cloud.await() }` 非空 → [RaceWinner.Cloud]
+ *  - `withTimeoutOrNull(cloudWaitMs) { local.await() }` 返回**非 unknown 意图** →
+ *    [RaceWinner.Local]（reason = `local_won`）：离线命令词立即生效，不等云端；
+ *  - 本地未命中（unknown 意图，非命令词属正常语义）或本地超时 → 等云端
+ *    `withTimeoutOrNull(cloudWaitMs) { cloud.await() }` → [RaceWinner.Cloud]
  *    （reason = `cloud_won`）；
- *  - 云端超时 → `withTimeoutOrNull(localFallbackMs) { local.await() }` 非空 →
- *    [RaceWinner.Local]（reason = `cloud_timeout_use_local`）；
- *  - 两者皆超时 → [RaceWinner.Failed]（reason = `both_failed`）。
+ *  - 本地未命中且云端超时 → [RaceWinner.Failed]（reason = `both_failed`）。
+ *
+ * 最坏收敛时长 = 2 × cloudWaitMs（本地窗口 + 云端窗口）；[localFallbackMs] 已废弃
+ * （本地未命中即转云端，不再等本地兜底），保留构造参数仅防外部调用方编译破坏。
  *
  * 决策日志经 [DecisionSink] 写出：arbiter = `on-device`，
  * utteranceId 当前无上游会话参数可取，填占位空串，timestampMs 用注入的 [clock]。
@@ -39,21 +46,24 @@ sealed class RaceWinner {
  */
 class OnDeviceRaceArbiter(
     private val cloudWaitMs: Long = 2000,
+    @Deprecated("Task 64 本地优先后不再等待本地兜底；保留参数防外部调用方编译破坏")
     private val localFallbackMs: Long = 10_000,
     private val clock: () -> Long = System::currentTimeMillis,
     private val sink: DecisionSink,
 ) {
     suspend fun race(cloud: Deferred<Reply>, local: Deferred<Intent>): RaceWinner {
+        // 本地优先：本地命令词命中（非 unknown）→ 立即胜出，不等云端
+        val localIntent = withTimeoutOrNull(cloudWaitMs) { local.await() }
+        if (localIntent != null && !localIntent.isUnknown()) {
+            sink.onDecision(decision(route = "local", reason = "local_won"))
+            return RaceWinner.Local(localIntent)
+        }
+
+        // 本地未命中/超时 → 云端语义兜底
         val reply = withTimeoutOrNull(cloudWaitMs) { cloud.await() }
         if (reply != null) {
             sink.onDecision(decision(route = "cloud", reason = "cloud_won"))
             return RaceWinner.Cloud(reply)
-        }
-
-        val intent = withTimeoutOrNull(localFallbackMs) { local.await() }
-        if (intent != null) {
-            sink.onDecision(decision(route = "local", reason = "cloud_timeout_use_local"))
-            return RaceWinner.Local(intent)
         }
 
         sink.onDecision(decision(route = "local", reason = "both_failed"))

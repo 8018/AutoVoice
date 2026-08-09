@@ -119,8 +119,12 @@ class VoiceSessionTest {
         assertEquals(SessionState.IDLE, t.session.state.value)
     }
 
+    /**
+     * Task 64 本地优先：本地链立即出命令词（非 unknown）→ 不等云端，立即胜出。
+     * （原 Task 14 语义是云端优先、超时后本地兜底 cloud_timeout_use_local，已废弃。）
+     */
     @Test
-    fun `cloud reachable but slow → Local winner, EXECUTING, cloud_timeout_use_local entry`() {
+    fun `cloud reachable but slow → local command word wins, EXECUTING, local_won entry`() {
         val t = turn(
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { delay(500); TextReply("慢") },
@@ -134,7 +138,7 @@ class VoiceSessionTest {
         )
         assertTrue(t.results.single() is RaceWinner.Local)
         assertEquals(localIntent(), (t.results.single() as RaceWinner.Local).intent)
-        assertEquals(listOf("cloud_timeout_use_local"), t.entries.map { it.reason })
+        assertEquals(listOf("local_won"), t.entries.map { it.reason })
         assertEquals(SessionState.IDLE, t.session.state.value)
     }
 
@@ -408,17 +412,25 @@ class VoiceSessionTest {
     /**
      * 网络恢复（Task 20）：onCloudUnavailable 后调用 onCloudAvailable()，
      * 云端路由重新启用——下一轮话语回到竞速（cloud_won）。
+     *
+     * Task 64 本地优先修订：第二轮本地链必须未命中（unknown），云端回复才浮出
+     * 水面——若云端路由未被重新启用（仍 latch），unknown 兜不住 → 收敛 Failed
+     * （both_failed），断言 Cloud 即证明竞速链路确实恢复。
      */
     @Test
     fun `onCloudAvailable re-enables cloud route after unavailable`() = runBlocking {
         val entries = mutableListOf<DecisionEntry>()
         val results = mutableListOf<RaceWinner>()
         var signal = CompletableDeferred<Unit>()
+        var localCalls = 0
         val session = VoiceSession(
             cfg = cfg(),
             arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
             sink = DecisionSink { entries.add(it) },
-            local = LocalChainRunner { localIntent() },
+            local = LocalChainRunner {
+                localCalls++
+                if (localCalls == 1) localIntent() else Intent.unknown("t")
+            },
             cloud = CloudRunner { delay(10); TextReply("hi") },
             scope = this,
             resultListener = ResultListener { results.add(it); signal.complete(Unit) },
