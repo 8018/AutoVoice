@@ -12,6 +12,7 @@ import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
@@ -23,10 +24,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * VoiceSession 状态机 + 双路由编排测试（spec §7.1 / §5.1）。
+ * VoiceSession 状态机 + 双路由编排测试（spec §7.1 / §5.1，Task 49 双路改造）。
  *
  * 全真实行为断言：fake runner 是 [LocalChainRunner]/[CloudRunner] 的接口实现，
  * 仲裁用真实 [OnDeviceRaceArbiter]（小 cloudWaitMs），时序用真实 delay 控制先后。
+ * 双路喂料顺序（Task 49 契约）：先 [VoiceSession.onCloudSegment]（VAD 段，0..n 个）
+ * 再 [VoiceSession.onTurnSegment]（本地整段）；倒序喂料时云端段被防御性丢弃。
  */
 class VoiceSessionTest {
 
@@ -63,9 +66,9 @@ class VoiceSessionTest {
     )
 
     /**
-     * 跑一轮完整话语：onListeningStart → VAD(×vadCalls) → 竞速收敛 → 结果回调 → IDLE。
-     * scope 注入为 runBlocking 自身，runBlocking 等本轮子协程全部完成后才返回，
-     * 故返回时结果已回调、状态已回 IDLE，断言可顺序读全。
+     * 跑一轮完整话语：onListeningStart → onCloudSegment(×cloudSegments) → onTurnSegment
+     * → 竞速收敛 → 结果回调 → IDLE。scope 注入为 runBlocking 自身，runBlocking 等本轮
+     * 子协程全部完成后才返回，故返回时结果已回调、状态已回 IDLE，断言可顺序读全。
      */
     private fun turn(
         local: LocalChainRunner,
@@ -73,8 +76,8 @@ class VoiceSessionTest {
         cloudEnabled: Boolean = true,
         cloudWaitMs: Long = 100,
         localFallbackMs: Long = 10_000,
-        vadCalls: Int = 1,
-        beforeVad: (VoiceSession) -> Unit = {},
+        cloudSegments: Int = 1,
+        beforeFeed: (VoiceSession) -> Unit = {},
     ): Turn = runBlocking {
         val entries = mutableListOf<DecisionEntry>()
         val states = mutableListOf<SessionState>()
@@ -89,9 +92,10 @@ class VoiceSessionTest {
             resultListener = ResultListener { results.add(it) },
         )
         session.onState { states.add(it) }
-        beforeVad(session)
+        beforeFeed(session)
         session.onListeningStart()
-        repeat(vadCalls) { session.onVadSegment(segment) }
+        repeat(cloudSegments) { session.onCloudSegment(segment) }
+        session.onTurnSegment(segment)
         Turn(session, states, results, entries)
     }
 
@@ -139,7 +143,7 @@ class VoiceSessionTest {
         val t = turn(
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { error("云端链不应被启动") },
-            beforeVad = { it.onCloudUnavailable() },
+            beforeFeed = { it.onCloudUnavailable() },
         )
         assertEquals(
             listOf(
@@ -172,6 +176,29 @@ class VoiceSessionTest {
         assertEquals(SessionState.IDLE, t.session.state.value)
     }
 
+    /**
+     * Task 49 新路径：VAD 未切出任何云端段（无语音/全被最小段阈值过滤）——
+     * 跳过竞速，本地整段直接赢，决策 reason = `no_cloud_segment`（区别于链路故障）。
+     */
+    @Test
+    fun `no cloud segment fed → local wins with no_cloud_segment entry`() {
+        val t = turn(
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner { error("云端链不应被启动") },
+            cloudSegments = 0,
+        )
+        assertTrue(t.results.single() is RaceWinner.Local)
+        assertEquals(listOf("no_cloud_segment"), t.entries.map { it.reason })
+        assertEquals(
+            listOf(
+                SessionState.IDLE, SessionState.LISTENING, SessionState.UNDERSTANDING,
+                SessionState.EXECUTING, SessionState.IDLE,
+            ),
+            t.states,
+        )
+        assertEquals(SessionState.IDLE, t.session.state.value)
+    }
+
     @Test
     fun `both routes fail → Failed result, straight back to IDLE`() {
         val t = turn(
@@ -193,7 +220,7 @@ class VoiceSessionTest {
     }
 
     @Test
-    fun `onVadSegment outside LISTENING is ignored`() = runBlocking {
+    fun `onTurnSegment outside LISTENING is ignored`() = runBlocking {
         val entries = mutableListOf<DecisionEntry>()
         val states = mutableListOf<SessionState>()
         val results = mutableListOf<RaceWinner>()
@@ -206,19 +233,54 @@ class VoiceSessionTest {
             scope = this,
         )
         session.onState { states.add(it) }
-        session.onVadSegment(segment) // IDLE 下调用 → 忽略，不抛
+        session.onTurnSegment(segment) // IDLE 下调用 → 忽略，不抛
         assertEquals(listOf(SessionState.IDLE), states)
         assertTrue(results.isEmpty())
         assertTrue(entries.isEmpty())
         assertEquals(SessionState.IDLE, session.state.value)
     }
 
+    /**
+     * Task 49 顺序契约防御：onTurnSegment 之后（UNDERSTANDING）再喂云端段被丢弃——
+     * 云端链不被启动，结果走本地。
+     */
     @Test
-    fun `duplicate onVadSegment during a turn is ignored`() {
+    fun `cloud segment fed after onTurnSegment is dropped`() = runBlocking {
+        val entries = mutableListOf<DecisionEntry>()
+        val states = mutableListOf<SessionState>()
+        val results = mutableListOf<RaceWinner>()
+        val cloudCalls = AtomicInteger(0)
+        val signal = CompletableDeferred<Unit>()
+        val session = VoiceSession(
+            cfg = cfg(),
+            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
+            sink = DecisionSink { entries.add(it) },
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner { cloudCalls.incrementAndGet(); TextReply("hi") },
+            scope = this,
+            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+        )
+        session.onState { states.add(it) }
+        session.onListeningStart()
+        session.onTurnSegment(segment)
+        session.onCloudSegment(segment) // 倒序喂料：UNDERSTANDING 下忽略
+        assertEquals(0, cloudCalls.get(), "云端链不应被启动")
+        signal.await() // 等本轮编排收敛（runTurn 协程已入队，尚未执行）
+        assertTrue(results.single() is RaceWinner.Local)
+        assertEquals(listOf("no_cloud_segment"), entries.map { it.reason })
+        assertEquals(SessionState.IDLE, session.state.value)
+    }
+
+    /**
+     * Task 49 双路：多个云端段严格串行（链式前驱等待），一轮只收敛一个结果。
+     * 云端慢 → 本地赢；慢云端段在轮次结束后被取消回收（runBlocking 不挂死）。
+     */
+    @Test
+    fun `multiple cloud segments → one result per turn with serial upload`() {
         val t = turn(
             local = LocalChainRunner { delay(20); localIntent() },
             cloud = CloudRunner { delay(500); TextReply("晚") },
-            vadCalls = 2,
+            cloudSegments = 2,
         )
         assertEquals(1, t.results.size)
         assertTrue(t.results.single() is RaceWinner.Local)
@@ -229,6 +291,52 @@ class VoiceSessionTest {
             ),
             t.states,
         )
+    }
+
+    /**
+     * Task 49 新路径 + Task 15 M1 语义：云端段上传中途抛 CloudUnavailableException →
+     * latch 云端不可达 + 转本地兜底（cloud_unreachable 决策），结果本地赢；
+     * 下一轮不再启动云端链。
+     */
+    @Test
+    fun `cloud chain exception during upload → local fallback with latch`() = runBlocking {
+        val entries = mutableListOf<DecisionEntry>()
+        val results = mutableListOf<RaceWinner>()
+        val cloudCalls = AtomicInteger(0)
+        // var + 每轮重赋值：listener 捕获变量槽，每轮 complete 的都是"当前"那个 deferred
+        var signal = CompletableDeferred<Unit>()
+        val session = VoiceSession(
+            cfg = cfg(),
+            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
+            sink = DecisionSink { entries.add(it) },
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner {
+                cloudCalls.incrementAndGet()
+                throw CloudUnavailableException("gateway down")
+            },
+            scope = this,
+            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+        )
+
+        // 第一轮：上传即炸 → 本地兜底
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+        signal.await()
+        assertTrue(results.single() is RaceWinner.Local)
+        assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
+        assertEquals(SessionState.IDLE, session.state.value)
+
+        // 第二轮：latch 生效，云端链不再启动
+        signal = CompletableDeferred()
+        session.onCloudAvailable() // 网络恢复（Task 20）：重新启用
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+        signal.await()
+        assertEquals(2, cloudCalls.get(), "恢复后云端链应重新启动")
+        assertTrue(results.last() is RaceWinner.Local)
+        assertEquals(SessionState.IDLE, session.state.value)
     }
 
     @Test
@@ -276,7 +384,8 @@ class VoiceSessionTest {
                 sessionRef.set(session)
                 session.onState { states.add(it) }
                 session.onListeningStart()
-                session.onVadSegment(segment)
+                session.onCloudSegment(segment)
+                session.onTurnSegment(segment)
                 null
             }
         } catch (t: Throwable) {
@@ -318,7 +427,8 @@ class VoiceSessionTest {
         // 第一轮：云端不可达 → 只跑本地
         session.onCloudUnavailable()
         session.onListeningStart()
-        session.onVadSegment(segment)
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
         signal.await()
         assertTrue(results.single() is RaceWinner.Local)
         assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
@@ -329,7 +439,8 @@ class VoiceSessionTest {
         signal = CompletableDeferred()
         session.onCloudAvailable()
         session.onListeningStart()
-        session.onVadSegment(segment)
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
         signal.await()
         assertTrue(results.single() is RaceWinner.Cloud)
         assertEquals(listOf("cloud_won"), entries.map { it.reason })

@@ -26,6 +26,9 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        // 真机 instrumented 测试（Task 48：Silero VAD 真机验证）
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // 讯飞离线命令词凭据（Task 34 接线；空串时 VoiceEngine 降级 fake-cmd）
         buildConfigField("String", "XFYUN_APPID", xfyunProp("xfyun.appid"))
         buildConfigField("String", "XFYUN_API_KEY", xfyunProp("xfyun.apiKey"))
@@ -74,4 +77,9 @@ dependencies {
     testImplementation(libs.junit)
     // 桥接对账测试：MockWebServer 假扮网关推送 reply/error（Task 20 fix round）
     testImplementation(libs.mockwebserver)
+
+    // 真机 instrumented 测试（Task 48：Silero VAD 真机验证，确定性 wav 输入不走麦克风）
+    androidTestImplementation(libs.junit4)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -17,8 +18,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autovoice.app.ui.VoiceScreen
 
 /**
- * 启动 Activity（Compose Material3）：RECORD_AUDIO 运行时权限在录音开始前申请——
- * 未授权时只显示提示，录音不开始（recorder 缺权限会静默创建失败）。
+ * 启动 Activity（Compose Material3）：Task 50 按钮录音——启动即申请 RECORD_AUDIO
+ * 权限（录音由底部按钮按住驱动，不自动开始）。未授权时只显示提示，
+ * 按下按钮时 recorder 缺权限会静默创建失败 → ViewModel 提示授权。
  */
 class MainActivity : ComponentActivity() {
 
@@ -33,9 +35,15 @@ class MainActivity : ComponentActivity() {
             ) { granted ->
                 if (granted) {
                     viewModel.clearPermissionHint()
-                    viewModel.startRecording()
                 } else {
                     viewModel.onPermissionDenied()
+                }
+            }
+
+            // 启动即申请权限（Task 50：授予后只清提示；录音由按钮驱动，不自动开始）
+            LaunchedEffect(Unit) {
+                if (!hasRecordAudioPermission()) {
+                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }
             }
 
@@ -43,15 +51,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     VoiceScreen(
                         state = state,
-                        onStartRecording = {
-                            // 权限未授予 → 弹系统请求；已授予 → 直接开始
-                            if (hasRecordAudioPermission()) {
-                                viewModel.clearPermissionHint()
-                                viewModel.startRecording()
-                            } else {
-                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        },
+                        onStartRecording = viewModel::startRecording,
                         onStopRecording = viewModel::stopRecording,
                         onModeChange = viewModel::setMode,
                         onWeakNetworkChange = viewModel::setWeakNetwork,

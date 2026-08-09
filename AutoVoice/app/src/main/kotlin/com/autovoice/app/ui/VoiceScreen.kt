@@ -53,25 +53,17 @@ fun VoiceScreen(
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
-        // Task 34：最新一条 ASR 识别结果（醒目卡片，置于仲裁日志上方）
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.primaryContainer,
-        ) {
-            Text(
-                text = state.lastRecognizedText?.let { "识别: $it" } ?: "识别: (尚未识别)",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            )
-        }
+        // Task 53 对话区：识别 + 回复各占一半主空间（仲裁结果只进 logcat，不再上屏）
+        AsrResultCard(
+            title = "识别",
+            text = state.lastRecognizedText,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        )
         Spacer(Modifier.height(12.dp))
-        // 仲裁日志：缩小区域（识别结果上移后给主内容让位）
-        DecisionLog(
-            entries = state.decisionLog,
-            modifier = Modifier.fillMaxWidth().weight(0.6f),
+        AsrResultCard(
+            title = "回复",
+            text = state.lastReplyText,
+            modifier = Modifier.fillMaxWidth().weight(1f),
         )
         Spacer(Modifier.height(12.dp))
         SettingsSection(
@@ -83,16 +75,91 @@ fun VoiceScreen(
         if (state.permissionHint) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "需要录音权限才能开始语音控制，请在系统弹窗中允许",
+                text = "需要录音权限才能使用语音控制，请在系统弹窗中允许",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (state.vadUnavailable) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "语音检测不可用（模型加载失败），语音控制失效",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
         }
         Spacer(Modifier.height(12.dp))
+        // Task 50 按钮回归：按住录音（VAD 保留，抬手后双路：云端段 + 本地整段）
         RecordButton(
             recording = state.recording,
             onStartRecording = onStartRecording,
             onStopRecording = onStopRecording,
+        )
+    }
+}
+
+/** 对话区卡片（Task 53）：识别/回复各一张，垂直平分主空间，等宽上下对齐。 */
+@Composable
+private fun AsrResultCard(
+    title: String,
+    text: String?,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = text ?: "(${title}内容待更新)",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+    }
+}
+
+/** 底部录音按钮：按住说话、松开停止（Task 50 按钮双路：抬手后音频分两路送识别）。 */
+@Composable
+private fun RecordButton(
+    recording: Boolean,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+) {
+    val container = if (recording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+    val content = if (recording) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
+    val ring = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+
+    Box(
+        modifier = Modifier
+            .size(88.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        onStartRecording()
+                        // 阻塞到抬手（含手势取消）；无论成败都停止录音
+                        tryAwaitRelease()
+                        onStopRecording()
+                    },
+                )
+            }
+            .background(container, CircleShape)
+            .border(2.dp, ring, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (recording) "松开" else "按住说话",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = content,
         )
     }
 }
@@ -164,43 +231,6 @@ private fun SettingsSection(
                 Switch(checked = weakNetwork, onCheckedChange = onWeakNetworkChange)
             }
         }
-    }
-}
-
-/** 底部录音按钮：按住说话、松开停止；VAD 自动结束后状态由 ViewModel 回 IDLE。 */
-@Composable
-private fun RecordButton(
-    recording: Boolean,
-    onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
-) {
-    val container = if (recording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
-    val content = if (recording) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
-    val ring = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-
-    Box(
-        modifier = Modifier
-            .size(88.dp)
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        onStartRecording()
-                        // 阻塞到抬手（含手势取消）；无论成败都停止录音
-                        tryAwaitRelease()
-                        onStopRecording()
-                    },
-                )
-            }
-            .background(container, CircleShape)
-            .border(2.dp, ring, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = if (recording) "松开" else "按住说话",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = content,
-        )
     }
 }
 

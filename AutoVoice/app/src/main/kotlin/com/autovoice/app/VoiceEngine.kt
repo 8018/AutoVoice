@@ -63,7 +63,8 @@ private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
  *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
  *    ActionReply → 执行 intent + 播报自带 speakText；
  *  - [RaceWinner.Local]：`vehicle.apply(intent)` 成功 → 播报其返回文本（未知意图不播报）；
- *  - [RaceWinner.Failed]：播报兜底话术 [FALLBACK_PHRASE]。
+ *  - [RaceWinner.Failed]：播报兜底话术「[FALLBACK_PHRASE]」（按钮录音模式下全败
+ *    需要明确反馈；决策日志已记录失败原因）。
  *
  * 弱网调试 hook（仅 debug 构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
  * 云端赶不上 cloudWaitMs → 仲裁回落到本地（reason `cloud_timeout_use_local`）。
@@ -135,8 +136,15 @@ class VoiceEngine(
         session.onListeningStart()
     }
 
-    /** 话语边界（VAD end）：装配好的段 PCM 交给会话并发竞速。 */
-    fun onVadSegment(segment: ByteArray) = session.onVadSegment(segment)
+    /**
+     * 云端路段（Task 49 双路：VAD 切出的语音段，按住期间每切出一段喂一段，
+     * 0..n 个）：入队串行上云，回复挂在会话的云端收敛点。
+     * 必须在 [onTurnSegment] 之前全部喂完（会话防御丢弃倒序段）。
+     */
+    fun onCloudSegment(segment: ByteArray) = session.onCloudSegment(segment)
+
+    /** 本地路整段音频（Task 49 双路：抬手后完整降噪段）：启动双路竞速收敛。 */
+    fun onTurnSegment(segment: ByteArray) = session.onTurnSegment(segment)
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
@@ -152,6 +160,8 @@ class VoiceEngine(
                 onVehicleApplied()
                 speaker.speak(text)
             }
+            // 全败：播报兜底话术（按钮录音模式下需要明确反馈；
+            // 决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
             is RaceWinner.Failed -> speaker.speak(FALLBACK_PHRASE)
         }
     }
@@ -182,11 +192,11 @@ class VoiceEngine(
         /** 本地兜底超时（spec §5.1）：云端超时后等本地 10s，仍无结果 → 全败。 */
         private const val LOCAL_FALLBACK_MS = 10_000L
 
+        /** 全败兜底话术（按钮录音模式：双路都失败时播报，不再静默）。 */
+        private const val FALLBACK_PHRASE = "网络开小差了，请稍后再试"
+
         /** 弱网调试 hook 的云端人为延迟（晚于 cloudWaitMs 即本地赢）。 */
         private const val WEAK_NETWORK_DELAY_MS = 3_000L
-
-        /** 双败兜底话术（brief 明文）。 */
-        const val FALLBACK_PHRASE = "网络开小差了，请稍后再试"
 
         /**
          * 生产装配：

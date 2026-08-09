@@ -16,6 +16,9 @@ import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.SessionState
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,45 +54,55 @@ data class VehicleUiState(
  * UI 状态（单一 StateFlow 来源）。
  *
  * - [sessionState]：会话阶段（Task 19 只在 IDLE ⇄ LISTENING；Task 20 接入 VoiceSession 后
- *   补 UNDERSTANDING/EXECUTING/SPEAKING）；
- * - [recording]：录音按钮态（按住录音 / 松开或 VAD 自动结束 → false）；
- * - [decisionLog]：决策日志（Task 19 种子为空，Task 20 仲裁器经 [MainViewModel.addDecision] 追加）；
+ *   补 UNDERSTANDING/EXECUTING/SPEAKING；Task 50 按钮模式：按下 → LISTENING，抬手 → 竞速）；
  * - [vehicle]：模拟车控面板快照；
- * - [mode] / [weakNetwork]：设置区纯 UI 状态。
+ * - [mode] / [weakNetwork]：设置区纯 UI 状态；
+ * - [recording]：按住录音中（按钮视觉，Task 50）；
+ * - [vadUnavailable]：Silero VAD 模型加载失败（云端路段切分不可用，仅提示不阻断，Task 44）；
+ * - [lastRecognizedText]：最近一次识别文本（Task 34）；[lastReplyText]：最近一次回复播报
+ *   文本（Task 53：仲裁结果不再上屏，logcat 打印，界面留给识别/回复对话区）。
  */
 data class UiState(
     val sessionState: SessionState = SessionState.IDLE,
-    val recording: Boolean = false,
-    val decisionLog: List<DecisionEntry> = emptyList(),
     val vehicle: VehicleUiState = VehicleUiState(),
     val mode: DemoMode = DemoMode.DEMO_OFFLINE,
     val weakNetwork: Boolean = false,
     val permissionHint: Boolean = false,
+    /** 按住录音中（Task 50 按钮模式；按钮视觉状态）。 */
+    val recording: Boolean = false,
+    /** Silero VAD 加载失败（云端路段切分不可用，仅提示不阻断）。 */
+    val vadUnavailable: Boolean = false,
     /** 最近一次本地 ASR 识别文本（Task 34 接线后可见识别结果，null = 尚未识别）。 */
     val lastRecognizedText: String? = null,
+    /** 最近一次回复播报文本（Task 53：云端 AudioReply.speakText 或本地文本播报）。 */
+    val lastReplyText: String? = null,
 )
 
 /**
- * 主 ViewModel（Task 19 + Task 20 接线）：持有 [AudioRecorder]（由 UI 驱动）+ 装配好的
- * [VoiceEngine]（双链路竞速 + 播报/执行路由）+ [MockVehicleState] + UI 状态。
+ * 主 ViewModel（Task 19 + Task 20 接线；Task 50 按钮录音双路）：持有 [AudioRecorder]
+ * （按住录音：VAD 切段 + 降噪整段）+ 装配好的 [VoiceEngine]（双链路竞速 + 播报/执行路由）
+ * + [MockVehicleState] + UI 状态。
  *
- * Task 20 接线：
- *  - 录音开始 → [VoiceEngine.onListeningStart]（网络可用则恢复云端路由）；
- *  - 抬手（录音停止）→ 拼接录音期间的降噪 pcmBlocks（960B/块，Task 18）为段 PCM
- *    → [VoiceEngine.onVadSegment]；Task 34 起段边界由按住/抬手决定（独立 VAD 退役，
- *    讯飞 ESR 引擎内部 VAD 负责段内子句分割，见 AudioRecorder 类注释）；
- *  - 用户抬手/中止 → [VoiceEngine.onListeningStop] + recorder.stop()；
+ * Task 50 按钮双路接线（按下录音，抬手双路送识别；VAD 保留用于云端路段切分）：
+ *  - 按下 → [startRecording]：清段缓冲 → 启动录音 → [VoiceEngine.onListeningStart]
+ *    （网络可用则恢复云端路由，否则挂起云端）；
+ *  - 按住期间：recorder 内部 [AudioRecorder.finishSegments] 实时切云端段（Silero VAD，
+ *    Task 49），pcmBlocks 收集器把降噪 960B/块攒进 [denoisedBlocks]（本地整段）；
+ *  - 抬手 → [stopRecording]：停止录音 → 先逐段 [VoiceEngine.onCloudSegment]（云端路），
+ *    再把整段降噪 PCM 送 [VoiceEngine.onTurnSegment]（本地路，启动竞速）；
+ *    整段 < 300ms（误触）丢弃不送识别，直接回 IDLE；
+ *  - 录音中切模式 → [cancelRecording]：停录音、不送识别（引擎随后释放/重建）；
  *  - 会话状态 → [UiState.sessionState]；决策 sink → [MainViewModel.addDecision]；
  *  - 弱网开关 → engine.weakNetwork（云端人为延迟 3s，debug 构建）；
  *  - [onCleared] → recorder.close() + 播报/播放资源释放。
  *
- * VAD 事件与 PCM 块在 [viewModelScope] 收集，所有 UI 状态一律走 [uiState] StateFlow——
+ * PCM 块在 [viewModelScope] 收集，所有 UI 状态一律走 [uiState] StateFlow——
  * 回调协程/线程里不碰任何 Android 视图。
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    /** 录音器（Task 19 由 UI 驱动；Task 20 的 VoiceSession 消费其 [AudioRecorder.pcmBlocks]）。 */
-    private val recorder = AudioRecorder()
+    /** 录音器（Task 19 由 UI 驱动；Task 50 按住录音：VAD 云端段 + RNNoise 降噪整段）。 */
+    private val recorder = AudioRecorder(getApplication())
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -106,49 +119,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    /** 段装配缓冲：按住录音到抬手之间收集的 960B 降噪块（Task 18 块格式）。 */
-    private val segmentBlocks = mutableListOf<ByteArray>()
+    /** 本地整段装配缓冲：按住期间收集的 960B 降噪块（Task 18 块格式；抬手后 concat）。 */
+    private val denoisedBlocks = mutableListOf<ByteArray>()
 
-    /** 当前是否在收集段 PCM（按下置 true，抬手/中止置 false）。 */
-    private var speechActive = false
+    /** 当前是否按住录音中（按下置 true，抬手/中止置 false；pcmBlocks 收集器据此攒块）。 */
+    @Volatile
+    private var recording = false
 
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产
         engine = buildEngine(loadConfig(DemoMode.DEMO_OFFLINE))
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
-                if (speechActive) segmentBlocks.add(block)
+                if (recording) denoisedBlocks.add(block)
             }
         }
     }
 
-    // ------------------------------------------------------------------ 录音
+    // ------------------------------------------------------------------ 按钮录音双路（Task 50）
 
-    /** 开始录音（Activity 已确保 RECORD_AUDIO 已授权；按住说话触发）。 */
+    /**
+     * 按住录音开始（RecordButton 按下；幂等）：清段缓冲 → 启动录音 → 会话进 LISTENING
+     * （engine 按网络状态恢复/挂起云端路由）。权限缺失时 recorder 静默失败 → 提示授权。
+     */
     fun startRecording() {
-        if (_uiState.value.recording) return
+        if (recording) return
         if (!recorder.start()) {
             // 缺权限/创建失败时 recorder 静默降级（Log.w），这里提示用户授权
             _uiState.update { it.copy(permissionHint = true) }
             return
         }
-        // Task 34：按下即开始收集段 PCM（段边界 = 按住/抬手，独立 VAD 退役）
-        speechActive = true
-        segmentBlocks.clear()
-        setRecording(true)
+        recording = true
+        denoisedBlocks.clear()
         engine.onListeningStart()
+        _uiState.update {
+            it.copy(permissionHint = false, vadUnavailable = !recorder.vadAvailable)
+        }
     }
 
-    /** 停止录音（松开按钮触发；幂等）。段 PCM 在抬手时装配并交给引擎竞速。 */
+    /**
+     * 抬手结束录音（RecordButton 松开；幂等）：停止录音 → 先逐段喂云端路
+     * （[AudioRecorder.finishSegments]：VAD 切段，时间顺序，必须先于本地路喂完）
+     * → 本地整段（concat 全部降噪块）送 [VoiceEngine.onTurnSegment] 启动双路竞速。
+     * 整段 < 300ms（瞬时噪声/误触）不送识别，直接回 IDLE。
+     */
     fun stopRecording() {
+        if (!recording) return
+        recording = false
         recorder.stop()
-        setRecording(false)
-        speechActive = false
-        val segment = concatBlocks(segmentBlocks)
-        segmentBlocks.clear()
-        if (segment.isNotEmpty()) {
-            engine.onVadSegment(segment)
+        val denoised = concatBlocks(denoisedBlocks)
+        denoisedBlocks.clear()
+        val cloudSegments = recorder.finishSegments()
+        for (seg in cloudSegments) engine.onCloudSegment(seg)
+        if (denoised.size >= MIN_SEGMENT_BYTES) {
+            engine.onTurnSegment(denoised)
+        } else {
+            // 瞬时噪声/误触：不送识别不打扰
+            Log.d(TAG, "录音过短（${denoised.size}B < ${MIN_SEGMENT_BYTES}B），丢弃不送识别")
+            engine.onListeningStop()
         }
+    }
+
+    /** 中止录音（模式切换）：停止录音、清缓冲，不送识别（引擎随后释放/重建，幂等）。 */
+    private fun cancelRecording() {
+        if (!recording) return
+        recording = false
+        recorder.stop()
+        denoisedBlocks.clear()
         engine.onListeningStop()
     }
 
@@ -172,6 +209,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
+        cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
         engine = buildEngine(loadConfig(mode))
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
@@ -186,9 +224,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ------------------------------------------------------------------ Task 20 接线点
 
-    /** 仲裁器 sink：追加一条决策日志（端侧 on-device 仲裁 + 网关 decision 透传）。 */
+    /**
+     * 仲裁器 sink：仲裁结果只打 logcat（Task 53：不再上屏，界面留给识别/回复）。
+     * 格式对齐原 UI 行：HH:mm:ss.SSS · 仲裁 arbiter → route: reason。
+     */
     internal fun addDecision(entry: DecisionEntry) {
-        _uiState.update { it.copy(decisionLog = it.decisionLog + entry) }
+        val time = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+            .format(Instant.ofEpochMilli(entry.timestampMs)
+                .atZone(ZoneId.systemDefault()).toLocalTime())
+        Log.i(TAG, "仲裁 ${entry.arbiter} → ${entry.route}: ${entry.reason} [$time utt=${entry.utteranceId}]")
     }
 
     /** 车控意图执行：apply 后把执行器状态快照进 UiState；返回播报文本（未知 → null）。 */
@@ -212,16 +256,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return out
     }
 
-    private fun setRecording(recording: Boolean) {
-        _uiState.update {
-            it.copy(
-                recording = recording,
-                sessionState = if (recording) SessionState.LISTENING else SessionState.IDLE,
-                permissionHint = if (recording) false else it.permissionHint,
-            )
-        }
-    }
-
     /**
      * 单一引擎装配点（Task 21）：init 与 [setMode] 共用。引擎使用专属协程作用域
      * （不复用 viewModelScope），由 [VoiceEngine.close] 在切换/销毁时取消——旧引擎的
@@ -232,8 +266,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cfg = cfg,
             context = getApplication(),
             sink = DecisionSink { addDecision(it) },
-            player = AudioPlayer { ttsPlayer.play(it) },
-            speaker = TextSpeaker { text -> ttsFallback.speak(text) {} },
+            player = AudioPlayer { reply ->
+                if (reply.speakText.isNotBlank()) {
+                    _uiState.update { s -> s.copy(lastReplyText = reply.speakText) }
+                }
+                ttsPlayer.play(reply)
+            },
+            speaker = TextSpeaker { text ->
+                _uiState.update { s -> s.copy(lastReplyText = text) }
+                ttsFallback.speak(text) {}
+            },
             vehicle = vehicleState,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
@@ -295,5 +337,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 双模式配置资产（Task 21 落地；缺失时用 [defaultConfig] 兜底）。 */
         const val ASSET_DEMO_FULL = "demo-full.json"
         const val ASSET_DEMO_OFFLINE = "demo-offline.json"
+
+        /** 最小语音段字节数（300ms @16k 16bit = 9600B；瞬时误触发过滤）。 */
+        const val MIN_SEGMENT_BYTES = 9_600
     }
 }

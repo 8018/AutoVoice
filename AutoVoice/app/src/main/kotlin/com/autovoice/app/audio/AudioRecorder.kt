@@ -1,10 +1,14 @@
 package com.autovoice.app.audio
 
+import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import com.autovoice.adapterlocal.ecnr.RnnoiseProcessor
+import com.autovoice.adapterlocal.vad.SileroVad
+import com.autovoice.adapterlocal.vad.VadEvent
+import com.autovoice.adapterlocal.vad.VadSegmenter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
@@ -68,25 +72,48 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
 }
 
 /**
- * 录音通道（SOURCE_MIC 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → RNNoise 降噪 → 960B/块流。
+ * 录音通道（SOURCE_MIC 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → 双网格。
  *
- * Task 34 起端点检测由录音生命周期承担（按住说话 → 抬手 = 段尾），不再有独立 VAD 分帧：
- * 讯飞离线命令词引擎内部 VAD（vadOn/vadEndGap）负责段内子句分割，外部 VAD（silero_vad）
- * 已从管线退役。语音段 PCM 的装配（SpeechStart→SpeechEnd 之间收集 pcmBlocks）由
- * MainViewModel 按按下/抬手驱动，recorder 保持哑通道，只出降噪 PCM 流。
+ * - VAD 网格（512 samples/块 = 32ms）：原始 1024B 块喂 [VadSegmenter]（Silero VAD +
+ *   门控切段，Task 49）——按住期间实时切出云端语音段；抬手后 [finishSegments]
+ *   取全部段（含强制切出的未闭合尾段）。
+ * - RNNoise 网格（480 samples/帧，独立于 VAD 网格）：块内切 480 帧、尾 32 samples 丢弃
+ *   （Task 18 chunk 语义），降噪后 960B/块进 [pcmBlocks]——本地路整段音频，
+ *   由 MainViewModel 按"按住期间"收集。
  *
- * RECORD_AUDIO 权限由 Activity（Task 19）申请；recorder 只管录音，未授权/创建失败时
+ * recorder 保持哑通道，只出 PCM 流 + VAD 事件流 + 抬手取段入口；
+ * 段装配/双路送识别的编排在 MainViewModel。
+ *
+ * SileroVad 模型加载失败（assets 缺失等）→ [vadEvents] 不产生事件、[finishSegments]
+ * 返回空（VAD 不可用，上层提示），录音降噪流不受影响。
+ *
+ * RECORD_AUDIO 权限由 Activity 申请；recorder 只管录音，未授权/创建失败时
  * [start] 返回 false 并静默降级（Log.w，不抛到 UI）。
  */
 class AudioRecorder(
+    context: Context,
+    private val vadSegmenter: VadSegmenter? = try {
+        VadSegmenter(SileroVad(context, SILERO_VAD_ASSET))
+    } catch (t: Throwable) {
+        Log.w(TAG, "Silero VAD 模型加载失败，VAD 不可用（语音检测失效）", t)
+        null
+    },
     private val denoiser: RnnoiseProcessor = RnnoiseProcessor(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : AutoCloseable {
 
     private val _pcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
 
-    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；段装配在 MainViewModel。 */
+    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；按住期间收集在 MainViewModel。 */
     val pcmBlocks: SharedFlow<ByteArray> = _pcmBlocks.asSharedFlow()
+
+    private val _vadEvents = MutableSharedFlow<VadEvent>(extraBufferCapacity = BUFFER_CAPACITY)
+
+    /** VAD 事件流（SpeechStart / SpeechEnd；模型加载失败时永不发射）。 */
+    val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
+
+    /** VAD 是否可用（模型加载成功）。 */
+    val vadAvailable: Boolean get() = vadSegmenter != null
 
     @Volatile
     private var record: AudioRecord? = null
@@ -113,6 +140,13 @@ class AudioRecorder(
         return true
     }
 
+    /**
+     * 抬手取段（Task 49 双路：云端路段的 VAD 切段，时间顺序）。
+     * 必须在 [stop] 之后调用（feed 已停，[VadSegmenter.finish] 与录音线程互斥安全）；
+     * VAD 不可用时返回空列表。
+     */
+    fun finishSegments(): List<ByteArray> = vadSegmenter?.finish() ?: emptyList()
+
     /** 停止录音并释放 AudioRecord（幂等）；scope 不取消，可再次 [start]。 */
     @Synchronized
     fun stop() {
@@ -128,9 +162,13 @@ class AudioRecorder(
         audioRecord?.release()
     }
 
-    /** 释放 RNNoise / 协程 scope（释放后不可再 [start]）。 */
+    /** 释放 VAD 切分器 / RNNoise / 协程 scope（释放后不可再 [start]）。 */
     override fun close() {
         stop()
+        try {
+            vadSegmenter?.close()
+        } catch (_: Throwable) {
+        }
         try {
             denoiser.close()
         } catch (_: Throwable) {
@@ -171,8 +209,9 @@ class AudioRecorder(
         return true
     }
 
-    /** 单块处理：RNNoise 帧网格（块内切 480 帧，尾 32 samples 丢弃）→ 降噪 → 960B 块。 */
+    /** 单块处理：VAD 网格（切段器实时切云端段）+ RNNoise 网格（降噪 → 960B 块）。 */
     private fun processBlock(block: ByteArray) {
+        vadSegmenter?.feed(block)?.let { _vadEvents.tryEmit(it) }
         val denoised = denoiser.process(first480Frame(pcm16BytesToShorts(block)))
         _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
     }
@@ -203,6 +242,9 @@ class AudioRecorder(
 
     private companion object {
         const val TAG = "AudioRecorder"
+
+        /** Silero VAD v5 模型资产（adapter-local assets，随 APK 打包）。 */
+        const val SILERO_VAD_ASSET = "silero_vad.onnx"
 
         /** SharedFlow 缓冲（块：不阻塞读取循环）。 */
         const val BUFFER_CAPACITY = 16

@@ -56,6 +56,26 @@ class SileroVadModelTest {
     }
 
     @Test
+    fun `real speech frames yield high probability`() {
+        // Task 48 回归：只喂 [1,512]（无 64-sample context）时概率恒 ~0；
+        // 修复后官方测试语音（test resources 切片）应产生远高于阈值的高概率帧。
+        val model = modelFile()
+        assumeTrue(model.exists(), "silero_vad.onnx 不在仓库中，跳过真实推理")
+        val speech = javaClass.getResourceAsStream("/silero_ref_speech.wav")!!.use { it.readBytes() }
+        val pcm = speech.copyOfRange(44, speech.size)
+
+        SileroVad(model.readBytes()).use { vad ->
+            var maxP = 0f
+            var offset = 0
+            while (offset < pcm.size - 1024) {
+                maxP = maxOf(maxP, vad.feed(pcm.copyOfRange(offset, offset + 1024)))
+                offset += 1024
+            }
+            assertTrue(maxP > 0.9f, "真实语音段应产生高语音概率，实际 max=$maxP")
+        }
+    }
+
+    @Test
     fun `feed rejects non-1024-byte frames`() {
         val model = modelFile()
         assumeTrue(model.exists(), "silero_vad.onnx 不在仓库中，跳过真实推理")

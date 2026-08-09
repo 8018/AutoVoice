@@ -111,10 +111,14 @@ class VoiceEngineTest {
         return engine to vehicle
     }
 
-    /** 一轮话语：onListeningStart → onVadSegment（在 runBlocking 内调用）。 */
-    private fun utter(engine: VoiceEngine) {
+    /**
+     * 一轮话语（Task 50 双路）：onListeningStart → onCloudSegment（云端路段，0..n 个）
+     * → onTurnSegment（本地整段，启动竞速）。在 runBlocking 内调用。
+     */
+    private fun utter(engine: VoiceEngine, cloudSegments: Int = 1) {
         engine.onListeningStart()
-        engine.onVadSegment(segment)
+        repeat(cloudSegments) { engine.onCloudSegment(segment) }
+        engine.onTurnSegment(segment)
     }
 
     // ------------------------------------------------------------------ 用例
@@ -380,7 +384,8 @@ class VoiceEngineTest {
         )
         runBlocking {
             engine.onListeningStart()
-            engine.onVadSegment(segment)
+            engine.onCloudSegment(segment)
+            engine.onTurnSegment(segment)
             withTimeout(2_000) { cloudStarted.await() } // 确保竞速已启动后才 close
         }
         assertEquals(SessionState.UNDERSTANDING, engine.session.state.value)

@@ -13,16 +13,20 @@ import java.nio.LongBuffer
 /**
  * Silero VAD v5 的 onnxruntime 封装（16k 单声道 PCM16，一次一帧）。
  *
- * 模型：`adapter-local/src/main/assets/silero_vad.onnx`（snakers4/silero-vad v5 导出，~2.3MB）。
- * 图结构（用 onnxruntime 读图 metadata 验证）：
- *  - input:  float32 [1, 512]，原始波形（一帧 512 samples = 32ms @16k），模型内部做 STFT/mel；
+ * 模型：`adapter-local/src/main/assets/silero_vad.onnx`（snakers4/silero-vad v5 导出，~2.3MB，
+ * 与官方仓库 `src/silero_vad/data/silero_vad.onnx` 逐字节一致）。
+ * 图结构（Task 48 对照官方 [OnnxWrapper](https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/utils_vad.py) 实测）：
+ *  - input:  float32 [1, 576]，**上一帧尾部 64 samples 的 context + 本帧 512 samples**——
+ *            官方 __call__ 先 `torch.cat([self._context, x])` 再喂模型；
  *  - state:  float32 [2, 1, 128]，LSTM (h,c) 拼接，跨帧携带上下文；
  *  - sr:     int64 scalar，音频采样率（16k）；
  *  - output: float32 [1, 1]，本帧语音概率；
  *  - stateN: float32 [2, 1, 128]，更新后的 state（喂回下一次推理）。
  *
- * 注意：v5 导出只接受 [1,512] 单窗口输入（[1,1024] 等多窗口会触发图内 If 分支的
- * LSTM 维度错误），因此 [feed] 强制 1024 字节（512 samples）一帧。
+ * 坑（Task 48 根因）：只喂 [1,512]（无 64-sample context）时模型概率恒压 ~0——官方导出
+ * 的 input 是 [None, None] 动态形状，onnxruntime 不校验宽度，静默吞掉截断窗口。
+ * [feed] 强制 1024 字节（512 samples）一帧并维护 64-sample context 跨帧携带。
+ * 多窗口（如 [1,1024]）仍会触发图内 If 分支的 LSTM 维度错误，勿用。
  */
 class SileroVad private constructor(
     private val env: OrtEnvironment,
@@ -50,12 +54,15 @@ class SileroVad private constructor(
     /** LSTM state（初始为零，首次推理由模型从静音基线起步）。 */
     private var state = FloatArray(256) // [2, 1, 128]
 
+    /** 跨帧 context（官方约定：上一帧尾部 64 samples，Task 48 修复前缺失导致概率恒 ~0）。 */
+    private var context = FloatArray(64)
+
     init {
         // 读图 metadata 校验输入形状：input 必须是 rank-2（[batch, samples]）
         val info = session.inputInfo[inputName]?.info as? TensorInfo
             ?: error("silero model: cannot read input metadata for '$inputName'")
         check(info.shape.size == 2) {
-            "silero model: unexpected input rank ${info.shape.size} (shape=${info.shape.contentToString()}), expected rank-2 [1, 512]"
+            "silero model: unexpected input rank ${info.shape.size} (shape=${info.shape.contentToString()}), expected rank-2"
         }
     }
 
@@ -70,10 +77,13 @@ class SileroVad private constructor(
         }
         val samples = ShortArray(512)
         ByteBuffer.wrap(pcm16k).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(samples)
-        val waveform = FloatArray(512)
-        for (i in samples.indices) waveform[i] = samples[i] / 32768.0f
+        // 官方约定：模型输入 = 上一帧尾部 64 samples context + 本帧 512 samples（[1, 576]）
+        val waveform = FloatArray(576)
+        context.copyInto(waveform, 0)
+        for (i in samples.indices) waveform[i + 64] = samples[i] / 32768.0f
+        context = waveform.copyOfRange(512, 576) // 更新 context：拼接窗口尾部 64 samples
 
-        val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(waveform), longArrayOf(1L, 512L))
+        val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(waveform), longArrayOf(1L, 576L))
         val stateTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(state), longArrayOf(2L, 1L, 128L))
         // sr：int64 scalar（[] shape），等价于 python 侧的 np.array(16000, dtype=np.int64)
         val srTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(16000L)), longArrayOf())
