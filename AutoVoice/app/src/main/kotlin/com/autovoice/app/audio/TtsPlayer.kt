@@ -83,6 +83,18 @@ class TtsPlayer(
     /** 播放代次：stop()/新 play() 使旧代次回调失效。 */
     private var playToken = 0
 
+    /** 播放中标志（回声抑制：播报期间按录音 → 端侧丢弃本轮，防扬声器回声被 ASR 当指令）。 */
+    @Volatile
+    private var isPlayingFlag = false
+
+    /** 最近一次播放结束时刻（毫秒）：播完即刻按住会录到残留回声，短窗口内同样抑制）。 */
+    @Volatile
+    private var lastPlayEndMs = 0L
+
+    /** 播报中（含刚播完的短回声窗口）？[windowMs] 内新发声被视为可能混入残留回声。 */
+    fun isSpeaking(windowMs: Long = 0L): Boolean =
+        isPlayingFlag || (windowMs > 0L && System.currentTimeMillis() - lastPlayEndMs < windowMs)
+
     /** 播放一段音频回复；自动中断上一段。失败静默降级。 */
     fun play(reply: AudioReply) {
         stop()
@@ -116,6 +128,7 @@ class TtsPlayer(
             }
             mp.prepare()
             mp.start()
+            isPlayingFlag = true
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
             if (token == playToken) onError?.invoke(t)
@@ -126,6 +139,8 @@ class TtsPlayer(
     /** 停止播放并释放（幂等）。 */
     fun stop() {
         playToken++
+        isPlayingFlag = false
+        lastPlayEndMs = System.currentTimeMillis()
         val mp = player
         player = null
         if (mp != null) {
@@ -174,6 +189,8 @@ class TtsPlayer(
     private fun finishPlayback(token: Int, mp: MediaPlayer) {
         if (token == playToken) {
             if (player === mp) player = null
+            isPlayingFlag = false
+            lastPlayEndMs = System.currentTimeMillis()
             deleteCurrentFile()
         }
         try {

@@ -175,11 +175,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * （[AudioRecorder.finishSegments]：VAD 切段，时间顺序，必须先于本地路喂完）
      * → 本地整段（concat 全部降噪块）送 [VoiceEngine.onTurnSegment] 启动双路竞速。
      * 整段 < 300ms（瞬时噪声/误触）不送识别，直接回 IDLE。
+     *
+     * 回声抑制（Task 62）：云端/本地播报中（或刚播完 [ECHO_GUARD_MS] 内）按住录音，
+     * 麦克风必然混入扬声器回声——整轮丢弃不送识别（回声会被云端 ASR 当成新指令，
+     * 触发新一轮播报，形成"一直播报"循环）。
      */
     fun stopRecording() {
         if (!recording) return
         recording = false
         recorder.stop()
+        if (ttsPlayer.isSpeaking(ECHO_GUARD_MS) || ttsFallback.isSpeaking) {
+            val dropped = denoisedBlocks.sumOf { it.size }
+            denoisedBlocks.clear()
+            Log.i(TAG, "播报中/刚播完，丢弃本轮录音（回声抑制，${dropped}B）")
+            engine.onListeningStop()
+            return
+        }
         val denoised = concatBlocks(denoisedBlocks)
         denoisedBlocks.clear()
         val cloudSegments = recorder.finishSegments()
@@ -408,5 +419,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 竞速胜出方 UI 标志文本（Task 61）。 */
         const val WINNER_LOCAL = "端侧"
         const val WINNER_CLOUD = "云端"
+
+        /** 回声抑制窗口（Task 62）：播报刚结束后此毫秒数内按录音也丢弃（残留回声）。 */
+        const val ECHO_GUARD_MS = 500L
     }
 }
