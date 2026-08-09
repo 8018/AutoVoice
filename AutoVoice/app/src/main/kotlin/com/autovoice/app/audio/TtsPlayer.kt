@@ -57,6 +57,29 @@ object WavHeader {
         b[offset + 2] = ((v shr 16) and 0xFF).toByte()
         b[offset + 3] = ((v shr 24) and 0xFF).toByte()
     }
+
+    private fun readU32(b: ByteArray, offset: Int): Long =
+        (b[offset].toLong() and 0xFF) or ((b[offset + 1].toLong() and 0xFF) shl 8) or
+            ((b[offset + 2].toLong() and 0xFF) shl 16) or ((b[offset + 3].toLong() and 0xFF) shl 24)
+
+    /**
+     * 校验并修复 wav 头尺寸字段。DashScope sambert 返回的 wav RIFF chunkSize/dataSize
+     * 声明 ~2GB（0x7FFFFFFF 附近）而实际仅几十 KB，MediaPlayer 按头读到 EOF 提前截断
+     * （播"好的"就断）。标准 44 字节头按实际数据长度重写两字段；非标准/非 wav 原样返回。
+     */
+    fun fix(data: ByteArray): ByteArray {
+        fun asciiAt(off: Int, expect: String): Boolean =
+            data.size >= off + expect.length && String(data, off, expect.length, Charsets.US_ASCII) == expect
+        if (data.size < 44 || !asciiAt(0, "RIFF") || !asciiAt(8, "WAVE") || !asciiAt(36, "data")) {
+            return data
+        }
+        val dataSize = data.size - 44L
+        if (dataSize == readU32(data, 40)) return data // 头已正确，原样
+        val fixed = data.copyOf()
+        writeU32(fixed, 4, 36L + dataSize) // RIFF chunkSize = fmt(24) + data 头(8) + data
+        writeU32(fixed, 40, dataSize)
+        return fixed
+    }
 }
 
 /**
@@ -184,8 +207,12 @@ class TtsPlayer(
         val bytes = if (isRawPcmMime(reply.mime)) {
             // 云端下行原始 PCM → 补 wav 头（16k 单声道 16bit，与录音格式一致）
             WavHeader.write(reply.data.size) + reply.data
+        } else if (reply.mime.startsWith("audio/wav")) {
+            // DashScope sambert 返回的 wav 头尺寸字段错误（RIFF chunkSize/dataSize 声明
+            // ~2GB，实际仅几十 KB，MediaPlayer 读到 EOF 提前截断播报）→ 按实际数据重写头
+            WavHeader.fix(reply.data)
         } else {
-            // audio/wav、audio/mpeg 等：原样写入，MediaPlayer 自解析
+            // audio/mpeg 等：原样写入，MediaPlayer 自解析
             reply.data
         }
         file.writeBytes(bytes)

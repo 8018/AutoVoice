@@ -105,7 +105,7 @@ public final class AliyunTtsProvider implements TtsProvider {
         WebSocket socket = client.newWebSocket(request, new Listener(audio, out, text));
         try {
             byte[] wav = audio.get(timeoutMs, TimeUnit.MILLISECONDS);
-            return Reply.ofAudio(OUTPUT_MIME, wav);
+            return Reply.ofAudio(OUTPUT_MIME, fixWavHeader(wav));
         } catch (TimeoutException e) {
             socket.close(1000, "timeout");
             throw new RuntimeException("aliyun tts timeout after " + timeoutMs + "ms", e);
@@ -118,6 +118,45 @@ public final class AliyunTtsProvider implements TtsProvider {
         } finally {
             socket.close(1000, "done");
         }
+    }
+
+    /**
+     * 校验并修复 wav 头尺寸字段。DashScope sambert 返回的 wav RIFF chunkSize/dataSize
+     * 声明 ~2GB（0x7FFFFFFF 附近）而实际仅几十 KB，MediaPlayer 按头读到 EOF 提前截断
+     * （端侧播"好的"就断）。标准 44 字节头按实际数据长度重写两字段；非标准原样返回。
+     */
+    static byte[] fixWavHeader(byte[] data) {
+        if (data.length < 44
+                || !asciiAt(data, 0, "RIFF") || !asciiAt(data, 8, "WAVE") || !asciiAt(data, 36, "data")) {
+            return data;
+        }
+        long dataSize = data.length - 44L;
+        if (dataSize == readU32(data, 40)) {
+            return data; // 头已正确
+        }
+        byte[] fixed = data.clone();
+        writeU32(fixed, 4, 36L + dataSize);
+        writeU32(fixed, 40, dataSize);
+        return fixed;
+    }
+
+    private static boolean asciiAt(byte[] b, int off, String expect) {
+        for (int i = 0; i < expect.length(); i++) {
+            if (b[off + i] != (byte) expect.charAt(i)) return false;
+        }
+        return true;
+    }
+
+    private static long readU32(byte[] b, int off) {
+        return (b[off] & 0xFFL) | ((b[off + 1] & 0xFFL) << 8)
+                | ((b[off + 2] & 0xFFL) << 16) | ((b[off + 3] & 0xFFL) << 24);
+    }
+
+    private static void writeU32(byte[] b, int off, long v) {
+        b[off] = (byte) (v & 0xFF);
+        b[off + 1] = (byte) ((v >> 8) & 0xFF);
+        b[off + 2] = (byte) ((v >> 16) & 0xFF);
+        b[off + 3] = (byte) ((v >> 24) & 0xFF);
     }
 
     /** WS 回调 → CompletableFuture 桥接（回调在 okhttp 线程，synthesize 同步等待）。 */

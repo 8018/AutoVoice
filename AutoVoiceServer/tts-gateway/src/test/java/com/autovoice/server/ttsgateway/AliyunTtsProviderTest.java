@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -182,5 +183,62 @@ class AliyunTtsProviderTest {
         AliyunTtsProvider broken = new AliyunTtsProvider(new OkHttpClient(), API_KEY, url, 5_000);
 
         assertThrows(RuntimeException.class, () -> broken.synthesize(TEXT, ctx("s5")));
+    }
+
+    /** 构造带坏尺寸字段的 wav：标准 44 字节头 + data，RIFF chunkSize/dataSize 篡改为
+     *  DashScope 实采垃圾值（0x7FFFFFBF / 0x7FFFFF9B，声明 ~2GB 而实际仅几十 KB）。 */
+    private static byte[] brokenHeaderWav(int dataLen) {
+        byte[] wav = new byte[44 + dataLen];
+        System.arraycopy("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, wav, 0, 4);
+        System.arraycopy("WAVE".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, wav, 8, 4);
+        System.arraycopy("data".getBytes(java.nio.charset.StandardCharsets.US_ASCII), 0, wav, 36, 4);
+        wav[4] = (byte) 0xBF; wav[5] = (byte) 0xFF; wav[6] = (byte) 0xFF; wav[7] = 0x7F;   // chunkSize=0x7FFFFFBF
+        wav[40] = (byte) 0x9B; wav[41] = (byte) 0xFF; wav[42] = (byte) 0xFF; wav[43] = 0x7F; // dataSize=0x7FFFFF9B
+        return wav;
+    }
+
+    private static long readU32(byte[] b, int off) {
+        return (b[off] & 0xFFL) | ((b[off + 1] & 0xFFL) << 8) | ((b[off + 2] & 0xFFL) << 16) | ((b[off + 3] & 0xFFL) << 24);
+    }
+
+    @Test
+    void fixWavHeaderRewritesBrokenSizes() {
+        byte[] broken = brokenHeaderWav(8000);
+        byte[] fixed = AliyunTtsProvider.fixWavHeader(broken);
+
+        assertEquals(8000L, readU32(fixed, 40), "dataSize 按实际数据长度重写");
+        assertEquals(36L + 8000, readU32(fixed, 4), "RIFF chunkSize = 36 + dataSize");
+        assertEquals(44 + 8000, fixed.length, "数据内容不动");
+    }
+
+    @Test
+    void fixWavHeaderPassesThroughValidAndNonWav() {
+        byte[] good = brokenHeaderWav(8000);
+        good[40] = 0x40; good[41] = 0x1F; good[42] = 0x00; good[43] = 0x00; // dataSize=8000
+        good[4] = 0x64; good[5] = 0x1F; good[6] = 0x00; good[7] = 0x00;     // chunkSize=8000+36=8036=0x1F64
+        assertSame(good, AliyunTtsProvider.fixWavHeader(good), "头已正确原样返回");
+
+        byte[] pcm = new byte[1000];
+        assertSame(pcm, AliyunTtsProvider.fixWavHeader(pcm), "非 wav 原样返回");
+        byte[] tiny = new byte[10];
+        assertSame(tiny, AliyunTtsProvider.fixWavHeader(tiny), "<44 字节原样返回");
+    }
+
+    @Test
+    void synthesizeFixesBrokenWavHeader() throws Exception {
+        byte[] broken = brokenHeaderWav(200);
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-started\",\"task_id\":\"t1\"},\"payload\":{}}");
+                ws.send(ByteString.of(broken));                       // 坏头音频分片
+                ws.send(finishedFrame("SUCCEEDED"));
+            }
+        }));
+
+        Reply reply = provider.synthesize(TEXT, ctx("s6"));
+
+        assertEquals(200L, readU32(reply.data(), 40), "synthesize 出口修复坏头");
+        assertEquals(44 + 200, reply.data().length);
     }
 }
