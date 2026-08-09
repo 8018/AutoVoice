@@ -12,7 +12,7 @@
   },
   "cloud": {
     "enabled": true,
-    "gatewayUrl": "ws://192.168.50.36:8080/ws",
+    "gatewayUrl": "ws://47.94.4.204:8080/ws",
     "waitMs": 3000
   },
   "mock": {
