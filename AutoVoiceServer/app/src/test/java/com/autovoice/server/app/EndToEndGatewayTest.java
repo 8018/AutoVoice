@@ -171,6 +171,49 @@ class EndToEndGatewayTest {
         }
     }
 
+    @Test
+    void ttsRequestRoundTripReturnsAudioResponse() throws Exception {
+        // TTS 解耦（协议 v1.1 §4.5）：tts_request → tts_response，独立于音频话语链路
+        OkHttpClient client = new OkHttpClient.Builder().readTimeout(20, TimeUnit.SECONDS).build();
+        LinkedBlockingQueue<String> inbox = new LinkedBlockingQueue<>();
+        CountDownLatch opened = new CountDownLatch(1);
+        WebSocket ws = client.newWebSocket(new Request.Builder().url(wsUrl()).build(), new WebSocketListener() {
+            @Override
+            public void onOpen(WebSocket webSocket, Response response) {
+                opened.countDown();
+            }
+
+            @Override
+            public void onMessage(WebSocket webSocket, String text) {
+                inbox.add(text);
+            }
+
+            @Override
+            public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                inbox.add("__transport_failure__: " + t);
+            }
+        });
+        try {
+            assertTrue(opened.await(10, TimeUnit.SECONDS), "ws 连接应建立");
+            send(ws, "hello", Map.of("client", "autovoice-android",
+                    "protocolVersion", "1.1", "sessionId", CLIENT_SESSION_ID));
+            await(inbox, "ready");
+
+            send(ws, "tts_request", Map.of("text", "好的，空调已打开", "segmentId", "tts-e2e-1"));
+            Map<String, Object> res = await(inbox, "tts_response");
+            Map<String, Object> p = payload(res);
+            assertEquals("audio/wav", p.get("mime"));
+            String dataBase64 = (String) p.get("dataBase64");
+            assertNotNull(dataBase64);
+            assertFalse(dataBase64.isEmpty());
+            assertEquals("好的，空调已打开", p.get("text"), "tts_response 应回显请求文本");
+            assertEquals("tts-e2e-1", p.get("segmentId"), "tts_response 应回显请求 segmentId");
+        } finally {
+            ws.close(1000, "test done");
+            client.dispatcher().executorService().shutdown();
+        }
+    }
+
     private String wsUrl() {
         return "ws://localhost:" + port + "/ws";
     }

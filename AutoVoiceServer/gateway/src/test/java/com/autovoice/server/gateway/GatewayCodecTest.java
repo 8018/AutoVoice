@@ -66,6 +66,21 @@ class GatewayCodecTest {
     }
 
     @Test
+    void decodesValidTtsRequestAndResponse() {
+        // TTS 解耦（协议 v1.1 §4.5）：tts_request → tts_response，独立于音频话语链路
+        Map<String, Object> req = GatewayCodec.decode(
+                "{\"type\":\"tts_request\",\"payload\":{\"text\":\"好的，空调已打开\",\"segmentId\":\"tts-1\"}}");
+        assertEquals("tts_request", req.get("type"));
+        Map<?, ?> rp = (Map<?, ?>) req.get("payload");
+        assertEquals("好的，空调已打开", rp.get("text"));
+
+        Map<String, Object> res = GatewayCodec.decode(
+                "{\"type\":\"tts_response\",\"payload\":{\"mime\":\"audio/wav\",\"dataBase64\":\"AAAA\",\"text\":\"好的，空调已打开\"}}");
+        assertEquals("tts_response", res.get("type"));
+        assertEquals("AAAA", ((Map<?, ?>) res.get("payload")).get("dataBase64"));
+    }
+
+    @Test
     void decodeIsLenientOnUnknownFields() {
         // 宽松解析：extra 字段透传，不拒绝
         Map<String, Object> msg = GatewayCodec.decode("""
@@ -110,6 +125,12 @@ class GatewayCodecTest {
         // hello 缺 client（protocol.md §3.1 字段必需；sessionId 可选、服务端采纳，不算缺）
         assertThrows(IllegalArgumentException.class,
                 () -> GatewayCodec.decode("{\"type\":\"hello\",\"payload\":{\"protocolVersion\":\"1.0\"}}"));
+        // tts_request 缺 text（protocol.md §4.5 字段必需）
+        assertThrows(IllegalArgumentException.class,
+                () -> GatewayCodec.decode("{\"type\":\"tts_request\",\"payload\":{}}"));
+        // tts_response 缺 dataBase64（schema 必需）
+        assertThrows(IllegalArgumentException.class,
+                () -> GatewayCodec.decode("{\"type\":\"tts_response\",\"payload\":{\"mime\":\"audio/wav\"}}"));
     }
 
     // ---------- encode ----------
@@ -201,6 +222,24 @@ class GatewayCodecTest {
         JsonNode dp = read(GatewayCodec.encode("decision", decision)).get("payload");
         assertEquals("llm_reply", dp.get("reason").asText());
         assertFalse(dp.has("evil"));
+    }
+
+    @Test
+    void encodeTtsResponseOmitsNullsAndFiltersUnknownFields() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("mime", "audio/wav");
+        payload.put("dataBase64", "AAAA");
+        payload.put("text", "好的，空调已打开");
+        payload.put("segmentId", "tts-1");
+        payload.put("evil", "x"); // 未知字段 → 绝不透传
+
+        JsonNode p = read(GatewayCodec.encode("tts_response", payload)).get("payload");
+        assertEquals("audio/wav", p.get("mime").asText());
+        assertEquals("AAAA", p.get("dataBase64").asText());
+        assertEquals("好的，空调已打开", p.get("text").asText());
+        assertEquals("tts-1", p.get("segmentId").asText());
+        assertFalse(p.has("evil"));
+        assertEquals(4, p.size());
     }
 
     @Test

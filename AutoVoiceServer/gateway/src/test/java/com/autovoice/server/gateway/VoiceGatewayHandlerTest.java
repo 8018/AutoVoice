@@ -25,6 +25,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.security.Principal;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -169,6 +170,57 @@ class VoiceGatewayHandlerTest {
         assertEquals("打开空调", p.get("asrText").asText(), "离线胜出时 asrText = 离线原文");
     }
 
+    // ---------- 独立 TTS 链路（tts_request/tts_response，TTS 解耦） ----------
+
+    @Test
+    void ttsRequestAfterHandshakeSendsTtsResponse() {
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(ttsRequest("好的，空调已打开", "tts-1")));
+
+        assertEquals(2, s.sent.size(), "ready + tts_response");
+        JsonNode res = parse(s.sent.get(1));
+        assertEquals("tts_response", res.get("type").asText());
+        JsonNode p = res.get("payload");
+        assertEquals("audio/wav", p.get("mime").asText());
+        assertArrayEquals(WAV, Base64.getDecoder().decode(p.get("dataBase64").asText()));
+        assertEquals("好的，空调已打开", p.get("text").asText(), "tts_response 应回显请求文本");
+        assertEquals("tts-1", p.get("segmentId").asText(), "tts_response 应回显请求 segmentId");
+    }
+
+    @Test
+    void ttsRequestBeforeHandshakeIgnored() {
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(ttsRequest("打开空调", null)));
+        assertEquals(0, s.sent.size(), "未握手时 tts_request 不处理");
+    }
+
+    @Test
+    void ttsFailureSendsTtsFailedErrorWithoutClosing() {
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"),
+                (text, ctx) -> {
+                    throw new RuntimeException("tts down");
+                });
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(ttsRequest("打开空调", "tts-9")));
+        JsonNode error = parse(s.sent.get(1));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("TTS_FAILED", error.get("payload").get("code").asText());
+        assertEquals("tts-9", error.get("payload").get("segmentId").asText(),
+                "TTS 错误应回显 tts_request 的 segmentId");
+
+        // 连接仍可用：错误不关连接，后续语音轮次照常
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertEquals(4, s.sent.size(), "TTS 失败后连接仍可继续语音轮次（ready+error+decision+reply）");
+    }
+
     // ---------- 降级路径 ----------
 
     @Test
@@ -311,6 +363,12 @@ class VoiceGatewayHandlerTest {
 
     private static String audioEnd(String sessionId) {
         return "{\"type\":\"audio_end\",\"payload\":{\"sessionId\":\"" + sessionId + "\",\"durationMs\":640}}";
+    }
+
+    /** tts_request（segmentId 可选，protocol.md §4.5）：text 必填。 */
+    private static String ttsRequest(String text, String segmentId) {
+        String seg = segmentId == null ? "" : ",\"segmentId\":\"" + segmentId + "\"";
+        return "{\"type\":\"tts_request\",\"payload\":{\"text\":\"" + text + "\"" + seg + "}}";
     }
 
     private static JsonNode parse(WebSocketMessage<?> m) {

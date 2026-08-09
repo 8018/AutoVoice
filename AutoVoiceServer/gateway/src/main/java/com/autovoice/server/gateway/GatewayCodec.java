@@ -30,28 +30,34 @@ public final class GatewayCodec {
 
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
-            "hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "error", "bye");
+            "hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "error", "bye",
+            "tts_request", "tts_response");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
 
     /** 每类消息 payload 允许输出的字段白名单（encode 只输出白名单字段）。 */
-    private static final Map<String, Set<String>> FIELD_WHITELIST = Map.of(
-            "hello", Set.of("client", "protocolVersion", "sessionId"),
-            "audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId"),
-            "audio_end", Set.of("sessionId", "durationMs"),
-            "ready", Set.of("sessionId", "language", "protocolVersion"),
-            "decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs"),
-            "asr_partial", Set.of("sessionId", "text", "isFinal"),
-            "reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText"),
-            "error", Set.of("sessionId", "code", "message", "segmentId"),
-            "bye", Set.of("sessionId", "reason"));
+    private static final Map<String, Set<String>> FIELD_WHITELIST = Map.ofEntries(
+            Map.entry("hello", Set.of("client", "protocolVersion", "sessionId")),
+            Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId")),
+            Map.entry("audio_end", Set.of("sessionId", "durationMs")),
+            Map.entry("ready", Set.of("sessionId", "language", "protocolVersion")),
+            Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
+            Map.entry("asr_partial", Set.of("sessionId", "text", "isFinal")),
+            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText")),
+            Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
+            Map.entry("bye", Set.of("sessionId", "reason")),
+            Map.entry("tts_request", Set.of("text", "segmentId")),
+            Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")));
 
-    /** 按 protocol.md §3 校验的 C→S 消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。 */
+    /** 按 protocol.md §3 校验的消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。
+     *  tts_response 虽是 S→C 消息，与 reply 一样按下行 schema 校验必需字段。 */
     private static final Map<String, List<String>> REQUIRED_FIELDS = Map.of(
             "hello", List.of("client", "protocolVersion"),
             "audio_start", List.of("sessionId", "sampleRate", "channels", "encoding"),
-            "audio_end", List.of("sessionId", "durationMs"));
+            "audio_end", List.of("sessionId", "durationMs"),
+            "tts_request", List.of("text"),
+            "tts_response", List.of("mime", "dataBase64"));
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 

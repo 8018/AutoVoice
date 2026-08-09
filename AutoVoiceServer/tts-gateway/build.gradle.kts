@@ -11,6 +11,7 @@ dependencies {
     api(project(":contracts"))
     implementation(libs.okhttp)
     implementation(libs.jackson.databind)
+    implementation(libs.slf4j.api)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
 }

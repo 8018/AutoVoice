@@ -5,6 +5,7 @@ import com.autovoice.server.arbitration.RaceArbiter;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
@@ -128,8 +129,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             case "hello" -> onHello(session, st, castPayload(msg));
             case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
+            case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
             default -> {
-                // ready/decision/reply/error/bye 为服务端消息，客户端不应发送，忽略
+                // ready/decision/reply/error/bye/tts_response 为服务端消息，客户端不应发送，忽略
             }
         }
     }
@@ -235,16 +237,50 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     }
 
     private void sendError(WebSocketSession session, ConnectionState st, String code, String message) {
+        sendError(session, st, code, message, st.segmentId);
+    }
+
+    private void sendError(WebSocketSession session, ConnectionState st, String code, String message,
+                           String segmentId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (st.ctx != null) {
             payload.put("sessionId", st.ctx.sessionId());
         }
-        if (st.segmentId != null) {
-            payload.put("segmentId", st.segmentId); // 回显当前话语的 segmentId，供端侧丢弃他轮的 error
+        if (segmentId != null) {
+            payload.put("segmentId", segmentId); // 回显本请求的 segmentId，供端侧对账
         }
         payload.put("code", code);
         payload.put("message", message);
         send(session, "error", payload);
+    }
+
+    /**
+     * tts_request：独立 TTS 链路（与识别/仲裁解耦，协议 v1.1 §4.5）——要求已握手；
+     * 同步合成文本 → 下发 {@code tts_response}{mime, dataBase64, text, segmentId}；
+     * 合成失败 → error(TTS_FAILED)，不关连接（与音频链路错误语义一致）。
+     */
+    private void onTtsRequest(WebSocketSession session, ConnectionState st, Map<String, Object> payload) {
+        if (st.ctx == null) {
+            return; // 未收到合法 hello 前不处理（与音频链路一致）
+        }
+        String text = String.valueOf(payload.get("text"));
+        String ttsSegmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        try {
+            Reply reply = tts.synthesize(text, st.ctx);
+            if (!"audio".equals(reply.kind()) || reply.data() == null || reply.data().length == 0) {
+                throw new IllegalStateException("tts returned non-audio reply: kind=" + reply.kind());
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("mime", reply.mime());
+            out.put("dataBase64", Base64.getEncoder().encodeToString(reply.data()));
+            out.put("text", text);
+            if (ttsSegmentId != null) {
+                out.put("segmentId", ttsSegmentId);
+            }
+            send(session, "tts_response", out);
+        } catch (Exception e) {
+            sendError(session, st, "TTS_FAILED", "tts failed: " + e.getMessage(), ttsSegmentId);
+        }
     }
 
     private static void send(WebSocketSession session, String type, Map<String, Object> payload) {
