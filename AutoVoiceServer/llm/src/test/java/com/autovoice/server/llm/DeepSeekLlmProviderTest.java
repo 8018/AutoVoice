@@ -71,11 +71,37 @@ class DeepSeekLlmProviderTest {
         assertTrue(body.path("messages").isArray());
         assertEquals(2, body.path("messages").size());
         assertEquals("system", body.path("messages").get(0).path("role").asText());
-        assertEquals("你是车载语音助手，回答简短口语化，不超过两句话。",
+        assertEquals(DeepSeekLlmProvider.SYSTEM_PROMPT,
                 body.path("messages").get(0).path("content").asText());
         assertEquals("user", body.path("messages").get(1).path("role").asText());
         assertEquals(USER_TEXT, body.path("messages").get(1).path("content").asText());
         assertTrue(body.path("stream").isBoolean()); // stream=false
+    }
+
+    @Test
+    void chatParsesToolCallIntoActionReply() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-tool-call.json")));
+
+        Reply reply = provider.chat("把空调调到二十四度", ctx("s1")).get(5, TimeUnit.SECONDS);
+
+        // tool_calls[0].function.arguments → car_control action 回复（speakText 模板生成）
+        assertEquals("action", reply.kind());
+        assertNotNull(reply.intent());
+        assertEquals("climate", reply.intent().domain());
+        assertEquals("set_temperature", reply.intent().intent());
+        assertEquals(24.0, (double) reply.intent().slots().get("temperature").value(), 0.001);
+        assertEquals("llm.car_control", reply.intent().source());
+        assertEquals("好的，空调温度已调到24度", reply.speakText());
+
+        // 请求体必须携带 tools（car_control skill 定义）
+        RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
+        JsonNode body = mapper.readTree(req.getBody().readUtf8());
+        JsonNode tools = body.path("tools");
+        assertTrue(tools.isArray());
+        assertEquals("car_control", tools.get(0).path("function").path("name").asText());
     }
 
     @Test

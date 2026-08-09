@@ -193,13 +193,13 @@ class GatewayCodecTest {
 
         Map<String, Object> decision = new LinkedHashMap<>();
         decision.put("arbiter", "cloud");
-        decision.put("route", "nlu-traditional");
-        decision.put("reason", "nlu_first");
+        decision.put("route", "llm");
+        decision.put("reason", "llm_reply");
         decision.put("utteranceId", "u-1");
         decision.put("timestampMs", 1723104000000L);
         decision.put("evil", 1);
         JsonNode dp = read(GatewayCodec.encode("decision", decision)).get("payload");
-        assertEquals("nlu_first", dp.get("reason").asText());
+        assertEquals("llm_reply", dp.get("reason").asText());
         assertFalse(dp.has("evil"));
     }
 

@@ -1,9 +1,7 @@
 package com.autovoice.server.arbitration;
 
 import com.autovoice.server.contracts.DecisionEntry;
-import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import org.junit.jupiter.api.AfterEach;
@@ -19,12 +17,16 @@ import java.util.concurrent.ScheduledExecutorService;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * 仲裁器测试（单路 LLM + safety 兜底）：原 NLU ∥ LLM 竞速已随 AIUI 下线退役，
+ * 现在只验证 llm_reply / safety_timeout 两条收敛路径与单赢家守卫。
+ */
 class RaceArbiterTest {
-    static final long GRACE = 100, SAFETY = 1000;
+    static final long SAFETY = 1000;
     final List<DecisionEntry> log = new ArrayList<>();
     final DecisionSink sink = log::add;
     final ScheduledExecutorService sched = Executors.newScheduledThreadPool(2);
-    final RaceArbiter arbiter = new RaceArbiter(GRACE, SAFETY, sched, sink);
+    final RaceArbiter arbiter = new RaceArbiter(SAFETY, sched, sink);
     final SessionContext ctx = new SessionContext("s1", "zh-CN", Map.of());
 
     @AfterEach
@@ -32,49 +34,42 @@ class RaceArbiterTest {
         sched.shutdownNow();
     }
 
-    NluProvider nlu(String text, long delayMs, boolean unknown) {
+    LlmProvider llm(String text, long delayMs) {
         return (t, c) -> CompletableFuture.supplyAsync(() -> {
             sleep(delayMs);
-            return unknown ? Intent.unknown("test") : Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "test", null);
+            return Reply.ofText(text);
         }, sched);
     }
-    LlmProvider llm(String text, long delayMs) {
-        return (t, c) -> CompletableFuture.supplyAsync(() -> { sleep(delayMs); return Reply.ofText("LLM回答"); }, sched);
+    LlmProvider llmError(long delayMs) {
+        return (t, c) -> CompletableFuture.supplyAsync(() -> {
+            sleep(delayMs);
+            throw new RuntimeException("llm down");
+        }, sched);
     }
     static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { throw new RuntimeException(e); } }
 
-    @Test void nluFirstWins() {
-        Reply r = arbiter.decide("x", nlu("x", 10, false), llm("x", 300), ctx).join();
-        assertEquals("action", r.kind()); // nlu 非拒识 → ofAction
-        assertEquals(1, log.size()); // 恰一条决策日志
-        assertEquals("nlu_first", log.get(log.size()-1).reason());
-    }
-    @Test void llmFirstWaitsForNluWithinGrace() {
-        Reply r = arbiter.decide("x", nlu("x", 60, false), llm("x", 5), ctx).join();
-        assertEquals(1, log.size()); // 恰一条决策日志
-        assertEquals("nlu_first", log.get(log.size()-1).reason()); // nlu 60ms < GRACE 100ms
-    }
-    @Test void llmFirstNluRejectedThenLlm() {
-        Reply r = arbiter.decide("x", nlu("x", 60, true), llm("x", 5), ctx).join();
+    @Test void llmWinsWithinSafety() {
+        Reply r = arbiter.decide("打开空调", llm("LLM回答", 10), ctx).join();
         assertEquals("LLM回答", r.text());
         assertEquals(1, log.size()); // 恰一条决策日志
-        assertEquals("nlu_rejected_use_llm", log.get(log.size()-1).reason());
+        assertEquals("llm_reply", log.get(log.size()-1).reason());
     }
-    @Test void llmFirstNluTimeoutThenLlm() {
-        Reply r = arbiter.decide("x", nlu("x", 500, false), llm("x", 5), ctx).join();
-        assertEquals("LLM回答", r.text());
-        assertEquals(1, log.size()); // 恰一条决策日志
-        assertEquals("llm_first_wait_timeout", log.get(log.size()-1).reason());
-    }
-    @Test void bothSlowSafetyFallback() {
-        Reply r = arbiter.decide("x", nlu("x", 5000, false), llm("x", 5000), ctx).join();
+    @Test void llmSlowSafetyFallback() {
+        Reply r = arbiter.decide("打开空调", llm("LLM回答", 5000), ctx).join();
         assertTrue(r.text().contains("网络开小差"));
         assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("safety_timeout", log.get(log.size()-1).reason());
     }
+    @Test void llmErrorFallsBackToSafety() {
+        // LLM 异常（如 401/超时）：留给 safety 兜底，不吞掉整条链路
+        Reply r = arbiter.decide("打开空调", llmError(10), ctx).join();
+        assertTrue(r.text().contains("网络开小差"));
+        assertEquals(1, log.size());
+        assertEquals("safety_timeout", log.get(log.size()-1).reason());
+    }
     @Test void lateLlmDoesNotStealFromSafetyFallback() {
-        // nlu 迟到拒识 + llm 在 safety 期限后 4 秒才完成：llm 回调不得 CAS 抢赢，兜底必须胜出
-        Reply r = arbiter.decide("x", nlu("x", 5000, true), llm("x", 5000), ctx).join();
+        // llm 在 safety 期限后 4 秒才完成：llm 回调不得 CAS 抢赢，兜底必须胜出
+        Reply r = arbiter.decide("打开空调", llm("LLM回答", 5000), ctx).join();
         assertTrue(r.text().contains("网络开小差"));
         assertEquals(1, log.size()); // 恰一条决策日志
         assertEquals("safety_timeout", log.get(log.size()-1).reason());

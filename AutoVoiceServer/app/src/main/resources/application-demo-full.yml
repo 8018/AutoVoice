@@ -5,11 +5,9 @@ server:
   port: 8080
 autovoice:
   arbitration:
-    nlu-grace-ms: 1500
     safety-timeout-ms: 6500
   providers:
-    nlu: iflytek        # iflytek | fake
-    llm: deepseek
+    llm: deepseek       # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）
     tts: aliyun
   secrets:

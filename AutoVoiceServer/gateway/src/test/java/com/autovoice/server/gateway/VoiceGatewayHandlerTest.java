@@ -4,9 +4,7 @@ import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.Reply;
-import com.autovoice.server.contracts.SlotValue;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.session.SessionRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -39,13 +37,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 处理器接线测试：手写 WebSocketSession stub 捕获下行消息，验证
  * 握手回调、二进制帧累积、decision→reply 下发顺序与下行 kind 收敛。
- * 测试环境用极短仲裁参数（grace 100ms / safety 1s），fake providers 同步就绪。
+ * 测试环境用极短仲裁参数（safety 1s），fake providers 同步就绪。
+ * 语义由 LLM 承担（function calling 产出 action 回复），原 NLU 链路退役。
  */
 class VoiceGatewayHandlerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final byte[] WAV = {0x52, 0x49, 0x46, 0x46};
-    private static final long GRACE = 100, SAFETY = 1000;
+    private static final long SAFETY = 1000;
 
     private final SessionRegistry registry = new SessionRegistry();
 
@@ -53,7 +52,7 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void helloGetsReadyWithAdoptedSession() {
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage(hello()));
 
@@ -76,7 +75,7 @@ class VoiceGatewayHandlerTest {
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrReceived[0] = pcm;
             return "把空调调到二十四度";
-        }, nluOk(), llm("LLM"), ttsOk());
+        }, llmAction(), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage(hello()));
         String sid = parse(s.sent.get(0)).get("payload").get("sessionId").asText();
@@ -92,7 +91,7 @@ class VoiceGatewayHandlerTest {
         // 顺序：decision（协议 §5 第 7 步）先于 reply（第 8 步）
         JsonNode decision = parse(s.sent.get(1));
         assertEquals("decision", decision.get("type").asText());
-        assertEquals("nlu_first", decision.get("payload").get("reason").asText());
+        assertEquals("llm_reply", decision.get("payload").get("reason").asText());
         assertEquals("cloud", decision.get("payload").get("arbiter").asText());
 
         JsonNode reply = parse(s.sent.get(2));
@@ -111,10 +110,8 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void textReplySpeakTextNullIntentOmitsIntentField() {
-        // LLM 文本回复（nlu 拒识 → LLM）：intent=null → 下行 audio 消息省略 intent 字段
-        VoiceGatewayHandler h = newHandler(asr("x"),
-                (t, ctx) -> CompletableFuture.completedFuture(Intent.unknown("test")),
-                llm("LLM回答"), ttsOk());
+        // LLM 文本回复（闲聊）：intent=null → 下行 audio 消息省略 intent 字段
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM回答"), ttsOk());
         StubSession s = open(h);
         String sid = handshake(h, s);
 
@@ -135,7 +132,7 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void ttsFailureDegradesToTextReply() {
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"),
+        VoiceGatewayHandler h = newHandler(asr("x"), llmAction(),
                 (text, ctx) -> {
                     throw new RuntimeException("tts down");
                 });
@@ -159,7 +156,7 @@ class VoiceGatewayHandlerTest {
     void asrFailureSendsFallbackDecisionAndTextReply() {
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             throw new AsrException("asr down");
-        }, nluOk(), llm("LLM"), ttsOk());
+        }, llm("LLM"), ttsOk());
         StubSession s = open(h);
         String sid = handshake(h, s);
 
@@ -182,7 +179,7 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void badJsonSendsError() {
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage("not json"));
         JsonNode error = parse(s.sent.get(0));
@@ -193,7 +190,7 @@ class VoiceGatewayHandlerTest {
     @Test
     void errorEchoesSegmentIdWhenAudioStartCarriedOne() {
         // 连接内多轮往返时 error 需携带本话语的 segmentId，端侧才能准确对账（丢弃他轮的 error）
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         String sid = handshake(h, s);
 
@@ -213,7 +210,7 @@ class VoiceGatewayHandlerTest {
     void helloWithoutSessionIdGetsReadyWithAdoptedSession() {
         // 协议意图：sessionId 服务端权威，客户端 hello 不预生成（gateway-client 按此发送）——
         // 缺 sessionId 是合法 hello，服务端采纳/生成 sessionId 并回 ready
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage("{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\",\"protocolVersion\":\"1.0\"}}"));
         assertEquals(1, s.sent.size());
@@ -227,7 +224,7 @@ class VoiceGatewayHandlerTest {
     @Test
     void helloMissingClientSendsBadHelloError() {
         // client 仍必填（协议 §3.1）：缺 client 的 hello 是非法握手
-        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage("{\"type\":\"hello\",\"payload\":{\"protocolVersion\":\"1.0\"}}"));
         JsonNode error = parse(s.sent.get(0));
@@ -237,8 +234,8 @@ class VoiceGatewayHandlerTest {
 
     // ---------- helpers ----------
 
-    private VoiceGatewayHandler newHandler(AsrProvider asr, NluProvider nlu, LlmProvider llm, TtsProvider tts) {
-        return new VoiceGatewayHandler(asr, nlu, llm, tts, registry, GRACE, SAFETY);
+    private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts) {
+        return new VoiceGatewayHandler(asr, llm, tts, registry, SAFETY);
     }
 
     private static StubSession open(VoiceGatewayHandler h) {
@@ -257,14 +254,15 @@ class VoiceGatewayHandlerTest {
         return (pcm, ctx) -> text;
     }
 
-    private static NluProvider nluOk() {
-        return (t, ctx) -> CompletableFuture.completedFuture(
-                Intent.of("1.0", "climate", "set_temperature",
-                        Map.of("temperature", SlotValue.number(24)), 0.95, "test", null));
-    }
-
     private static LlmProvider llm(String text) {
         return (t, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text));
+    }
+
+    /** LLM function calling 产出 action 回复（speakText 由服务端模板生成）。 */
+    private static LlmProvider llmAction() {
+        return (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
+                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.95, "llm.car_control", null),
+                "已为您执行空调指令"));
     }
 
     private static TtsProvider ttsOk() {

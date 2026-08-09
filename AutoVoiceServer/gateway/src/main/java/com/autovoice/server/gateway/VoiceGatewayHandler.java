@@ -5,7 +5,6 @@ import com.autovoice.server.arbitration.RaceArbiter;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.session.SessionRegistry;
@@ -56,16 +55,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     public static final String PROTOCOL_VERSION = "1.0";
     public static final String DEFAULT_LANGUAGE = "zh-CN";
     private static final String MIME_WAV = "audio/wav";
-    private static final long DEFAULT_NLU_GRACE_MS = 1500;
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AsrProvider asr;
-    private final NluProvider nlu;
     private final LlmProvider llm;
     private final TtsProvider tts;
     private final SessionRegistry registry;
-    private final long nluGraceMs;
     private final long safetyTimeoutMs;
 
     /** 各连接共用的仲裁计时线程池（daemon，demo 规模足够）。 */
@@ -78,20 +74,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
-    /** demo 默认仲裁参数（NLU 宽限 1.5s，安全兜底 4s）。 */
-    public VoiceGatewayHandler(AsrProvider asr, NluProvider nlu, LlmProvider llm,
+    /** demo 默认仲裁参数（安全兜底 4s）。 */
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm,
                                TtsProvider tts, SessionRegistry registry) {
-        this(asr, nlu, llm, tts, registry, DEFAULT_NLU_GRACE_MS, DEFAULT_SAFETY_TIMEOUT_MS);
+        this(asr, llm, tts, registry, DEFAULT_SAFETY_TIMEOUT_MS);
     }
 
-    public VoiceGatewayHandler(AsrProvider asr, NluProvider nlu, LlmProvider llm, TtsProvider tts,
-                               SessionRegistry registry, long nluGraceMs, long safetyTimeoutMs) {
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                               SessionRegistry registry, long safetyTimeoutMs) {
         this.asr = asr;
-        this.nlu = nlu;
         this.llm = llm;
         this.tts = tts;
         this.registry = registry;
-        this.nluGraceMs = nluGraceMs;
         this.safetyTimeoutMs = safetyTimeoutMs;
     }
 
@@ -269,8 +263,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private final class ConnectionState {
         final List<DecisionEntry> pendingDecisions = new ArrayList<>();
         final DecisionSink sink = pendingDecisions::add;
-        final RaceArbiter arbiter = new RaceArbiter(nluGraceMs, safetyTimeoutMs, scheduler, sink);
-        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, nlu, llm, tts, sink);
+        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, scheduler, sink);
+        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, tts, sink);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String utteranceId;

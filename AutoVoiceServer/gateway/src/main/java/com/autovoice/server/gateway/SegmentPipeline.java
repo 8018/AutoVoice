@@ -7,17 +7,16 @@ import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 
 /**
- * 云端语音段处理流水线（spec §5.2，cloud 链路）：
- * {@code ASR → RaceArbiter(NLU ∥ LLM) → TTS}。
+ * 云端语音段处理流水线（spec §5.2 修订，cloud 链路）：
+ * {@code ASR → RaceArbiter(LLM function calling) → TTS}。
  *
- * <p>接线（按 RaceArbiter 真实 API）：{@code arbiter.decide(text, nlu, llm, ctx).join()}——
- * arbiter 恒返回回复（nlu 非拒识 → action；拒识/超时 → LLM 回复；safety → 兜底文本），
+ * <p>接线（按 RaceArbiter 真实 API）：{@code arbiter.decide(text, llm, ctx).join()}——
+ * 语义结果由 LLM 的 car_control 工具调用产出（action 回复），闲聊/拒识回自由文本，
  * 决策日志由 arbiter 经注入的 {@link DecisionSink} 写出。文本抽取按回复 kind：
  * text → {@code reply.text()}；action → {@code reply.speakText()} + intent；
  * audio（demo 不出现）→ data 直通、不 TTS。</p>
@@ -27,7 +26,7 @@ import com.autovoice.server.contracts.TtsProvider;
  *   <li>ASR 失败（抛 {@link AsrException} 或返回空白文本）→ 兜底话术
  *       {@link #FALLBACK_TEXT}，不合成音频，经 sink 记一条决策事件（reason
  *       {@code asr_failed_fallback}）；</li>
- *   <li>arbiter 调用异常 → 同样走兜底话术（reason {@code arbitration_failed_fallback}）；</li>
+ *   <li>arbiter 调用异常/超时 → 同样走兜底话术（reason {@code arbitration_failed_fallback}）；</li>
  *   <li>TTS 合成失败 → 降级为屏幕显示文本：{@code wavAudio=null} 而 {@code speakText} 保留
  *       （网关据此下行 kind=text，见协议修订）。</li>
  * </ul>
@@ -48,18 +47,16 @@ public final class SegmentPipeline {
 
     private final AsrProvider asr;
     private final RaceArbiter arbiter;
-    private final NluProvider nlu;
     private final LlmProvider llm;
     private final TtsProvider tts;
     private final DecisionSink sink;
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SegmentPipeline.class);
 
-    public SegmentPipeline(AsrProvider asr, RaceArbiter arbiter, NluProvider nlu,
-                           LlmProvider llm, TtsProvider tts, DecisionSink sink) {
+    public SegmentPipeline(AsrProvider asr, RaceArbiter arbiter, LlmProvider llm,
+                           TtsProvider tts, DecisionSink sink) {
         this.asr = asr;
         this.arbiter = arbiter;
-        this.nlu = nlu;
         this.llm = llm;
         this.tts = tts;
         this.sink = sink;
@@ -113,6 +110,7 @@ public final class SegmentPipeline {
                 return null;
             }
             LOG.info("ASR ok: \"{}\" (utt={})", text, utteranceId);
+            dumpPcm(pcm, "ok-" + utteranceId); // 诊断：成功轮与失败轮音频对比
             return text;
         } catch (Exception e) {
             LOG.error("ASR failed (pcm={}B utt={}) → asr_failed_fallback", pcm.length, utteranceId, e);
@@ -122,11 +120,11 @@ public final class SegmentPipeline {
         }
     }
 
-    /** 诊断：ASR 失败段的 PCM 落盘 /tmp/asr-<kind>-<utt>-<ts>.pcm，回放分析音频内容。 */
-    private static void dumpPcm(byte[] pcm, String utteranceId) {
+    /** 诊断：ASR 段 PCM 落盘 /tmp/asr-<kind>-<utt>-<ts>.pcm，回放分析音频内容。 */
+    private static void dumpPcm(byte[] pcm, String kindAndUtt) {
         try {
             java.nio.file.Files.write(
-                    java.nio.file.Path.of("/tmp/asr-blank-" + utteranceId + "-" + System.currentTimeMillis() + ".pcm"),
+                    java.nio.file.Path.of("/tmp/asr-" + kindAndUtt + "-" + System.currentTimeMillis() + ".pcm"),
                     pcm);
         } catch (java.io.IOException ignored) {
             // 诊断辅助：落盘失败不影响主流程
@@ -136,7 +134,7 @@ public final class SegmentPipeline {
     /** 仲裁：decide 恒返回回复；仅当 decide 本身同步抛异常时兜底。返回 null 表示已兜底收敛。 */
     private Reply arbitrate(String text, SessionContext ctx, String utteranceId) {
         try {
-            return arbiter.decide(text, nlu, llm, ctx).join();
+            return arbiter.decide(text, llm, ctx).join();
         } catch (Exception e) {
             fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
             return null;

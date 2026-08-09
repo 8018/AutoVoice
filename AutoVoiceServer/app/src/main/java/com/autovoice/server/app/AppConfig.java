@@ -5,11 +5,9 @@ import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
-import com.autovoice.server.nlutraditional.IflytekNluProvider;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.AliyunTtsProvider;
 import okhttp3.OkHttpClient;
@@ -23,9 +21,8 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * 云端 app 装配：按 {@code autovoice.*} 配置选择 provider 实现并注入
  * {@link VoiceGatewayHandler}（每连接 pipeline + RaceArbiter 由 handler 内部构建）。
  *
- * <p>provider 选择（application.yml {@code autovoice.providers.*}）：nlu 支持
- * {@code iflytek}（secrets 装配 {@link IflytekNluProvider}，默认）与 {@code fake}
- * （{@link FakeNluProvider}，仅配置显式指定时装配）；llm=deepseek、asr 支持
+ * <p>provider 选择（application.yml {@code autovoice.providers.*}）：llm=deepseek
+ * （语义由 LLM function calling 承担，原 NLU 链路已随讯飞 AIUI 下线退役）、asr 支持
  * {@code iflytek}（讯飞在线听写，默认）与 {@code aliyun}（一句话识别）、tts=aliyun。
  * secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
  */
@@ -37,10 +34,10 @@ public class AppConfig {
     @ConfigurationProperties(prefix = "autovoice")
     public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets) {
 
-        public record Arbitration(long nluGraceMs, long safetyTimeoutMs) {
+        public record Arbitration(long safetyTimeoutMs) {
         }
 
-        public record Providers(String nlu, String llm, String asr, String tts) {
+        public record Providers(String llm, String asr, String tts) {
         }
 
         /** secrets 全部 ${VAR:} 空默认：不写入任何 secret 字面值。 */
@@ -72,17 +69,6 @@ public class AppConfig {
     @Bean
     public SessionRegistry sessionRegistry() {
         return new SessionRegistry();
-    }
-
-    @Bean
-    public NluProvider nluProvider(OkHttpClient client, AutovoiceProperties props) {
-        return switch (props.providers().nlu()) {
-            case "fake" -> new FakeNluProvider();
-            case "iflytek" -> new IflytekNluProvider(client, props.secrets().xfyunAppid(),
-                    props.secrets().xfyunApiKey(), IflytekNluProvider.DEFAULT_ENDPOINT);
-            default -> throw new IllegalArgumentException(
-                    "unknown providers.nlu: " + props.providers().nlu() + " (iflytek | fake)");
-        };
     }
 
     @Bean
@@ -132,14 +118,14 @@ public class AppConfig {
     }
 
     /**
-     * 网关 WS 处理器：仲裁参数来自配置（nluGraceMs/safetyTimeoutMs）；每连接的
+     * 网关 WS 处理器：仲裁参数来自配置（safetyTimeoutMs）；每连接的
      * RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出，无需 app 级关闭）。
      */
     @Bean
-    public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, NluProvider nlu, LlmProvider llm,
+    public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
                                                    TtsProvider tts, SessionRegistry registry,
                                                    AutovoiceProperties props) {
-        return new VoiceGatewayHandler(asr, nlu, llm, tts, registry,
-                props.arbitration().nluGraceMs(), props.arbitration().safetyTimeoutMs());
+        return new VoiceGatewayHandler(asr, llm, tts, registry,
+                props.arbitration().safetyTimeoutMs());
     }
 }

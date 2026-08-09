@@ -18,7 +18,7 @@ class IntentSerializationTest {
     void roundTripsCanonicalIntent() throws Exception {
         Intent i = Intent.of("1.0", "climate", "set_temperature",
             Map.of("temperature", SlotValue.number(24), "zone", SlotValue.enumValue("driver")),
-            0.95, "nlu.iflytek.api", null);
+            0.95, "llm.car_control", null);
         String json = MAPPER.writeValueAsString(i);
         Intent back = MAPPER.readValue(json, Intent.class);
         assertEquals("climate", back.domain());
@@ -29,7 +29,7 @@ class IntentSerializationTest {
 
     @Test
     void unknownIntentRoundTrip() throws Exception {
-        Intent u = Intent.unknown("nlu.iflytek.api");
+        Intent u = Intent.unknown("llm.car_control");
         Intent back = MAPPER.readValue(MAPPER.writeValueAsString(u), Intent.class);
         assertTrue(back.isUnknown());
     }

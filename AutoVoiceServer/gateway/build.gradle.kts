@@ -17,7 +17,6 @@ dependencies {
     api(project(":contracts"))
     implementation(project(":arbitration"))
     implementation(project(":session"))
-    implementation(project(":nlu-traditional"))
     implementation(project(":llm"))
     implementation(project(":asr-gateway"))
     implementation(project(":tts-gateway"))

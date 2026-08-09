@@ -3,7 +3,6 @@ package com.autovoice.server.app;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NluProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.gateway.GatewayCodec;
@@ -39,11 +38,12 @@ import static org.mockito.Mockito.when;
 /**
  * 端到端测试：启动完整 Spring 上下文（RANDOM_PORT 避开 8080 被占），真实
  * VoiceGatewayHandler / SegmentPipeline / RaceArbiter 走通 {@code /ws} 全链路，
- * 四个 provider 用 @MockBean 替换为固定返回值（不真调云端 API）。
+ * 三个 provider 用 @MockBean 替换为固定返回值（不真调云端 API）。
  *
  * <p>协议断言（shared/protocol.md §5）：hello → ready；audio_start → 二进制 PCM → audio_end →
  * 先收 decision（仲裁日志事件）再收 reply；reply 为 kind=audio 且携带 speakText 与
- * intent（domain=climate）。</p>
+ * intent（domain=climate）—— LLM mock 模拟 function calling 产出 action 回复
+ * （语义已由模型工具调用承担，原 NLU 链路退役）。</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class EndToEndGatewayTest {
@@ -60,8 +60,6 @@ class EndToEndGatewayTest {
     @MockBean
     private AsrProvider asr;
     @MockBean
-    private NluProvider nlu;
-    @MockBean
     private LlmProvider llm;
     @MockBean
     private TtsProvider tts;
@@ -69,10 +67,9 @@ class EndToEndGatewayTest {
     @BeforeEach
     void stubProviders() {
         when(asr.transcribe(any(), any())).thenReturn("空调调到二十四度");
-        when(nlu.understand(any(), any())).thenReturn(CompletableFuture.completedFuture(
-                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.95, "nlu.fake", null)));
-        when(llm.chat(any(), any())).thenReturn(
-                CompletableFuture.completedFuture(Reply.ofText("好的，已为您把空调调到24度")));
+        when(llm.chat(any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofAction(
+                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.95, "llm.car_control", null),
+                "好的，空调温度已调到24度")));
         when(tts.synthesize(any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
     }
 
@@ -147,8 +144,8 @@ class EndToEndGatewayTest {
                     "decision 应先于 reply 到达");
             Map<String, Object> d = payload(decisions.get(0));
             assertEquals("cloud", d.get("arbiter"));
-            assertEquals("nlu-traditional", d.get("route"));
-            assertEquals("nlu_first", d.get("reason"));
+            assertEquals("llm", d.get("route"));
+            assertEquals("llm_reply", d.get("reason"));
             assertNotNull(d.get("utteranceId"));
             assertInstanceOf(Number.class, d.get("timestampMs"));
 
