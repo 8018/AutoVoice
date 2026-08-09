@@ -1,8 +1,13 @@
 package com.autovoice.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,9 +23,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.autovoice.app.ui.VoiceScreen
 
 /**
- * 启动 Activity（Compose Material3）：Task 50 按钮录音——启动即申请 RECORD_AUDIO
- * 权限（录音由底部按钮按住驱动，不自动开始）。未授权时只显示提示，
- * 按下按钮时 recorder 缺权限会静默创建失败 → ViewModel 提示授权。
+ * 启动 Activity（Compose Material3）：
+ * - Task 50 按钮录音——启动即申请 RECORD_AUDIO（录音由底部按钮按住驱动，不自动开始）。
+ * - Task 55 对齐讯飞 demo 权限：Android 13+ 追加 READ_MEDIA_IMAGES/VIDEO（照片和视频），
+ *   并检查「所有文件访问」（MANAGE_EXTERNAL_STORAGE，非 runtime 权限，未授予时跳系统设置页）。
+ *   未授权只显示提示，不阻塞 UI。
  */
 class MainActivity : ComponentActivity() {
 
@@ -31,19 +38,30 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.uiState.collectAsState()
 
             val permissionLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.RequestPermission(),
-            ) { granted ->
-                if (granted) {
+                ActivityResultContracts.RequestMultiplePermissions(),
+            ) { result ->
+                if (result[Manifest.permission.RECORD_AUDIO] == true) {
                     viewModel.clearPermissionHint()
                 } else {
                     viewModel.onPermissionDenied()
                 }
             }
 
-            // 启动即申请权限（Task 50：授予后只清提示；录音由按钮驱动，不自动开始）
+            // 启动即申请权限：录音 + Android 13+ 媒体（照片/视频，等价 demo 的 XXPermissions 行为）
             LaunchedEffect(Unit) {
-                if (!hasRecordAudioPermission()) {
-                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                val permissions = buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        add(Manifest.permission.READ_MEDIA_IMAGES)
+                        add(Manifest.permission.READ_MEDIA_VIDEO)
+                    }
+                }
+                if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) {
+                    permissionLauncher.launch(permissions.toTypedArray())
+                }
+                // 所有文件访问（讯飞 AIKit 读写 workDir=/sdcard/iflytek/ 必需，非 runtime 权限只能跳系统设置）
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                    requestAllFilesAccess()
                 }
             }
 
@@ -61,6 +79,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun hasRecordAudioPermission(): Boolean =
-        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    /** 跳「所有文件访问」设置页；部分 ROM（荣耀 MagicOS）解析不了专用 action，兜底到应用详情页。 */
+    private fun requestAllFilesAccess() {
+        val settingsIntent = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:$packageName"),
+        )
+        startActivity(
+            if (settingsIntent.resolveActivity(packageManager) != null) {
+                settingsIntent
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            },
+        )
+    }
 }

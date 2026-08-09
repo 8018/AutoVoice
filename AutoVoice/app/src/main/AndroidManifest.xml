@@ -16,14 +16,22 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 媒体访问（对齐讯飞离线命令词 demo：Android 13+ READ_EXTERNAL_STORAGE 拆分为
+         READ_MEDIA_*，demo 的 XXPermissions 申请照片+视频，这里等价声明 + 运行时请求） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
+    <!-- usesCleartextTraffic：网关走明文 ws://（局域网/部署机，Task 51 真机验收修复）——
+         Android 9+ 默认禁 cleartext，okhttp 在 TCP 前即拒绝，manifest 必须显式放行 -->
     <application
         android:label="AutoVoice"
         android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
