@@ -108,6 +108,7 @@ public final class SegmentPipeline {
             String text = asr.transcribe(pcm, ctx);
             if (text == null || text.isBlank()) {
                 LOG.warn("ASR returned blank text (pcm={}B utt={}) → asr_failed_fallback", pcm.length, utteranceId);
+                dumpPcm(pcm, utteranceId); // 落盘空白段，回放定位音频内容问题（端侧双 ASR 全空）
                 fallback(ctx, utteranceId, REASON_ASR_FAILED);
                 return null;
             }
@@ -115,8 +116,20 @@ public final class SegmentPipeline {
             return text;
         } catch (Exception e) {
             LOG.error("ASR failed (pcm={}B utt={}) → asr_failed_fallback", pcm.length, utteranceId, e);
+            dumpPcm(pcm, utteranceId);
             fallback(ctx, utteranceId, REASON_ASR_FAILED);
             return null;
+        }
+    }
+
+    /** 诊断：ASR 失败段的 PCM 落盘 /tmp/asr-<kind>-<utt>-<ts>.pcm，回放分析音频内容。 */
+    private static void dumpPcm(byte[] pcm, String utteranceId) {
+        try {
+            java.nio.file.Files.write(
+                    java.nio.file.Path.of("/tmp/asr-blank-" + utteranceId + "-" + System.currentTimeMillis() + ".pcm"),
+                    pcm);
+        } catch (java.io.IOException ignored) {
+            // 诊断辅助：落盘失败不影响主流程
         }
     }
 
