@@ -186,12 +186,8 @@ class VoiceEngineTest {
         assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
     }
 
-    /**
-     * Task 64 本地优先：本地链出命令词即胜（local_won），与弱网/云端快慢无关——
-     * 弱网延迟只影响云端段，命令词不等云端。
-     */
     @Test
-    fun `weakNetwork on → local command word wins immediately, local_won entry`() {
+    fun `weakNetwork on → cloud delayed past cloudWaitMs → local wins with cloud_timeout_use_local`() {
         val entries = mutableListOf<DecisionEntry>()
         val played = mutableListOf<AudioReply>()
         lateinit var engine: VoiceEngine
@@ -209,9 +205,9 @@ class VoiceEngineTest {
             engine.weakNetwork = true
             utter(engine)
         }
-        assertEquals(listOf("local_won"), entries.map { it.reason })
-        assertTrue(vehicle.isAcOn, "本地意图应执行")
-        assertTrue(played.isEmpty(), "本地胜出，云端音频不应播放")
+        assertEquals(listOf("cloud_timeout_use_local"), entries.map { it.reason })
+        assertTrue(vehicle.isAcOn, "本地兜底意图应执行")
+        assertTrue(played.isEmpty(), "云端迟到，音频不应播放")
     }
 
     @Test
@@ -235,7 +231,6 @@ class VoiceEngineTest {
         assertEquals(listOf("网络开小差了，请稍后再试"), spoken)
     }
 
-    /** Task 64 本地优先：本地链未命中（unknown）→ 云端回复才浮出，验证文本路由。 */
     @Test
     fun `cloud text reply routes to speaker`() {
         val spoken = mutableListOf<String>()
@@ -243,7 +238,7 @@ class VoiceEngineTest {
         runBlocking {
             val pair = engine(
                 scope = this,
-                local = LocalChainRunner { Intent.unknown("t") },
+                local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner { TextReply("已为您把空调调到 24 度") },
                 speaker = TextSpeaker { spoken.add(it) },
             )
@@ -253,7 +248,6 @@ class VoiceEngineTest {
         assertEquals(listOf("已为您把空调调到 24 度"), spoken)
     }
 
-    /** Task 64 本地优先：本地链未命中（unknown）→ 云端 ActionReply 才浮出，验证 intent 执行。 */
     @Test
     fun `cloud action reply applies intent and speaks its speakText`() {
         val spoken = mutableListOf<String>()
@@ -262,7 +256,7 @@ class VoiceEngineTest {
         runBlocking {
             val pair = engine(
                 scope = this,
-                local = LocalChainRunner { Intent.unknown("t") },
+                local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner {
                     com.autovoice.voicecore.ActionReply(
                         intent = setTempIntent(24.0),
