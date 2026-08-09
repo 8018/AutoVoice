@@ -113,9 +113,11 @@ class TtsPlayer(
         currentFile = file
         val mp = MediaPlayer()
         player = mp
+        Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
         try {
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
+                Log.i(TAG, "play completed: data=${reply.data.size}B")
                 if (token == playToken) onCompleted?.invoke()
                 finishPlayback(token, mp)
             }
@@ -138,6 +140,7 @@ class TtsPlayer(
 
     /** 停止播放并释放（幂等）。 */
     fun stop() {
+        if (isPlayingFlag || player != null) Log.i(TAG, "play interrupted by stop()")
         playToken++
         isPlayingFlag = false
         lastPlayEndMs = System.currentTimeMillis()
@@ -210,5 +213,8 @@ class TtsPlayer(
 
     private companion object {
         const val TAG = "TtsPlayer"
+
+        /** 音频字节率（16k 单声道 16bit）：估算时长用，MediaPlayer 实际以文件头为准。 */
+        const val SAMPLE_RATE_BYTES_PER_SEC = 32_000
     }
 }
