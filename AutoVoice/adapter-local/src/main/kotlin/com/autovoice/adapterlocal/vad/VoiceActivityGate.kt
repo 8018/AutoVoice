@@ -61,4 +61,14 @@ class VoiceActivityGate(
 
     /** 是否处于语音段内。 */
     val isInSpeech: Boolean get() = inSpeech
+
+    /**
+     * 新一轮录音开始前重置门控状态（inSpeech 跨轮残留会吞掉新一轮的 SpeechStart：
+     * 上一轮 SpeechEnd 静音不足时 inSpeech 保持 true，下一轮语音被当作仍在说话）。
+     */
+    fun reset() {
+        inSpeech = false
+        hotFrames = 0
+        coldFrames = 0
+    }
 }

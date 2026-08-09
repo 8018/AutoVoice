@@ -16,6 +16,8 @@ import okio.ByteString
  * 职责：
  *  - 文本帧解析为 [GatewayMessage]（统一信封 `{"type":..., "payload":{...}}`）后 tryEmit 进事件流；
  *  - ready 帧同步完成 [connect] 等待的 [CompletableDeferred]；
+ *  - 服务端 error 帧（如 BAD_HELLO）在握手阶段出现 = 握手必然失败：立即让 deferred 失败，
+ *    不等 connectTimeoutMs（否则端侧把协议错误误判成超时，走降级路径）；
  *  - 传输失败（[onFailure]）/ 连接关闭（[onClosed]）时向事件流合成 error 事件
  *    （code=CONNECTION_FAILED / CONNECTION_CLOSED），并让等待 ready 的 deferred 立即失败
  *    —— 连接失败快速暴露，不必等超时。
@@ -35,6 +37,11 @@ class GatewayListener(
         if (emitted.type == "ready") {
             // connect 等待方可能已超时/取消：complete 返回 false 时忽略即可
             ready.complete(emitted)
+        } else if (emitted.type == "error") {
+            // 握手阶段的 error（BAD_HELLO 等）= 握手已失败，快速失败不等超时
+            ready.completeExceptionally(
+                GatewayException("handshake rejected: ${emitted.payload["code"]} ${emitted.payload["message"]}"),
+            )
         }
     }
 

@@ -57,6 +57,15 @@ class SileroVad private constructor(
     /** 跨帧 context（官方约定：上一帧尾部 64 samples，Task 48 修复前缺失导致概率恒 ~0）。 */
     private var context = FloatArray(64)
 
+    /** 本轮录音最高语音概率（诊断用：云端段为空时区分"模型概率低"与"未切段"）。 */
+    @Volatile
+    var maxProbability = 0f
+
+    /** 本轮录音开始前重置诊断峰值（maxProbability 跨轮累计会掩盖低概率轮）。 */
+    fun resetDiagnostics() {
+        maxProbability = 0f
+    }
+
     init {
         // 读图 metadata 校验输入形状：input 必须是 rank-2（[batch, samples]）
         val info = session.inputInfo[inputName]?.info as? TensorInfo
@@ -97,6 +106,7 @@ class SileroVad private constructor(
         )
         try {
             val prob = (result.get(outputName).get() as OnnxTensor).floatBuffer.get(0)
+            if (prob > maxProbability) maxProbability = prob
             val stateN = (result.get(stateNName).get() as OnnxTensor).floatBuffer
             val next = FloatArray(stateN.remaining())
             stateN.get(next)

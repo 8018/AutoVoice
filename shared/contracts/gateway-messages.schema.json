@@ -17,6 +17,7 @@
         "type": { "const": "hello" },
         "payload": {
           "type": "object",
+          "required": ["client", "protocolVersion"],
           "properties": {
             "client": { "type": "string" },
             "protocolVersion": { "type": "string" },

@@ -210,10 +210,26 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void malformedHelloSendsBadHelloError() {
+    void helloWithoutSessionIdGetsReadyWithAdoptedSession() {
+        // 协议意图：sessionId 服务端权威，客户端 hello 不预生成（gateway-client 按此发送）——
+        // 缺 sessionId 是合法 hello，服务端采纳/生成 sessionId 并回 ready
         VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
         StubSession s = open(h);
         h.handleMessage(s, new TextMessage("{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\",\"protocolVersion\":\"1.0\"}}"));
+        assertEquals(1, s.sent.size());
+        JsonNode ready = parse(s.sent.get(0));
+        assertEquals("ready", ready.get("type").asText());
+        String sid = ready.get("payload").get("sessionId").asText();
+        assertNotNull(sid);
+        assertNotNull(registry.get(sid), "服务端应已创建会话");
+    }
+
+    @Test
+    void helloMissingClientSendsBadHelloError() {
+        // client 仍必填（协议 §3.1）：缺 client 的 hello 是非法握手
+        VoiceGatewayHandler h = newHandler(asr("x"), nluOk(), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage("{\"type\":\"hello\",\"payload\":{\"protocolVersion\":\"1.0\"}}"));
         JsonNode error = parse(s.sent.get(0));
         assertEquals("error", error.get("type").asText());
         assertEquals("BAD_HELLO", error.get("payload").get("code").asText());

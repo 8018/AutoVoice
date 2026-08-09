@@ -107,9 +107,9 @@ class GatewayCodecTest {
         // reply/audio 缺 dataBase64（schema 必需）
         assertThrows(IllegalArgumentException.class,
                 () -> GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"audio\",\"mime\":\"audio/wav\"}}"));
-        // hello 缺 sessionId
+        // hello 缺 client（protocol.md §3.1 字段必需；sessionId 可选、服务端采纳，不算缺）
         assertThrows(IllegalArgumentException.class,
-                () -> GatewayCodec.decode("{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\",\"protocolVersion\":\"1.0\"}}"));
+                () -> GatewayCodec.decode("{\"type\":\"hello\",\"payload\":{\"protocolVersion\":\"1.0\"}}"));
     }
 
     // ---------- encode ----------

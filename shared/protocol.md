@@ -50,13 +50,13 @@
 }
 ```
 
-（与 `shared/fixtures/gateway-hello.json` 一致。）
+（与 `shared/fixtures/gateway-hello.json` 一致；示例中的 `sessionId` 仅为展示，客户端可不携带。）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `client` | string | 客户端标识，如 `autovoice-android` |
 | `protocolVersion` | string | 协议版本，当前 `"1.0"` |
-| `sessionId` | string | 会话 ID，本会话内所有消息复用 |
+| `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；携带时服务端优先采纳，未登记的会话自动创建 |
 
 ### 3.2 audio_start
 

@@ -18,7 +18,7 @@ import java.util.Set;
  * <ul>
  *   <li>{@link #decode}：宽松解析（extra 字段透传），但校验信封与协议必需字段——
  *       {@code type} 必填且为已知消息类型；C→S 消息按 protocol.md §3 校验必需字段
- *       （hello → client/protocolVersion/sessionId；audio_start → sessionId/sampleRate/channels/encoding；
+ *       （hello → client/protocolVersion，sessionId 由服务端采纳；audio_start → sessionId/sampleRate/channels/encoding；
  *       audio_end → sessionId/durationMs）；reply 按 schema 校验 kind 及其分支必需字段。</li>
  *   <li>{@link #encode}：只输出本 kind 白名单字段，绝不透传未知字段；null 值字段省略不发送。</li>
  * </ul>
@@ -47,9 +47,9 @@ public final class GatewayCodec {
             "error", Set.of("sessionId", "code", "message", "segmentId"),
             "bye", Set.of("sessionId", "reason"));
 
-    /** 按 protocol.md §3 校验的 C→S 消息必需字段。 */
+    /** 按 protocol.md §3 校验的 C→S 消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。 */
     private static final Map<String, List<String>> REQUIRED_FIELDS = Map.of(
-            "hello", List.of("client", "protocolVersion", "sessionId"),
+            "hello", List.of("client", "protocolVersion"),
             "audio_start", List.of("sessionId", "sampleRate", "channels", "encoding"),
             "audio_end", List.of("sessionId", "durationMs"));
 

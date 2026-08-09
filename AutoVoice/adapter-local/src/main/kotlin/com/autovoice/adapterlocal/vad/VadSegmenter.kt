@@ -29,6 +29,28 @@ class VadSegmenter(
     /** 已切出的语音段（SpeechEnd 时累积，finish 时取走）。 */
     private val segments = mutableListOf<ByteArray>()
 
+    /** 本段录音内 VAD 最高语音概率（诊断用，Task 55）。 */
+    val maxProbability: Float get() = vad.maxProbability
+
+    // ---- 诊断统计（Task 55：segments=0 但概率高，需要本轮事件明细）----
+    var speechStartEvents = 0
+        private set
+    var speechEndEvents = 0
+        private set
+    val blockCount: Int get() = blocks.size
+    val openStart: Int get() = openStartIndex
+
+    /** 本轮录音开始前调用：清空切段状态、重置门控并重置诊断（VadSegmenter 复用于多轮录音）。 */
+    fun resetForTurn() {
+        blocks.clear()
+        segments.clear()
+        openStartIndex = -1
+        speechStartEvents = 0
+        speechEndEvents = 0
+        gate.reset()
+        vad.resetDiagnostics()
+    }
+
     /**
      * 喂入一块原始 16k PCM16（必须 1024 字节），返回该块产生的 [VadEvent]（无则 null）。
      *
@@ -43,8 +65,14 @@ class VadSegmenter(
         val event = gate.feed(vad.feed(block))
         blocks.add(block)
         when (event) {
-            VadEvent.SpeechStart -> openStartIndex = blocks.size - 1
-            VadEvent.SpeechEnd -> closeOpenSegment()
+            VadEvent.SpeechStart -> {
+                speechStartEvents++
+                openStartIndex = blocks.size - 1
+            }
+            VadEvent.SpeechEnd -> {
+                speechEndEvents++
+                closeOpenSegment()
+            }
             null -> Unit
         }
         return event

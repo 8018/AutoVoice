@@ -136,6 +136,8 @@ class AudioRecorder(
             record = null
             return false
         }
+        // 本轮录音从干净状态起步（清上一轮段缓冲 + 重置 VAD 诊断峰值）
+        vadSegmenter?.resetForTurn()
         readJob = scope.launch { readLoop(audioRecord) }
         return true
     }
@@ -145,7 +147,18 @@ class AudioRecorder(
      * 必须在 [stop] 之后调用（feed 已停，[VadSegmenter.finish] 与录音线程互斥安全）；
      * VAD 不可用时返回空列表。
      */
-    fun finishSegments(): List<ByteArray> = vadSegmenter?.finish() ?: emptyList()
+    fun finishSegments(): List<ByteArray> {
+        val segments = vadSegmenter?.finish() ?: emptyList()
+        // Task 55 诊断：云端段为空时区分"VAD 未启用/概率过低/未切段"
+        val vs = vadSegmenter
+        Log.i(
+            TAG,
+            "VAD 诊断: vad=$vadAvailable segments=${segments.size} maxProb=${vs?.maxProbability} " +
+                "startEvt=${vs?.speechStartEvents} endEvt=${vs?.speechEndEvents} " +
+                "blocks=${vs?.blockCount} openStart=${vs?.openStart}",
+        )
+        return segments
+    }
 
     /** 停止录音并释放 AudioRecord（幂等）；scope 不取消，可再次 [start]。 */
     @Synchronized
