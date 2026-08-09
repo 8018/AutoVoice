@@ -87,6 +87,8 @@ class VoiceEngineTest {
         sink: DecisionSink = DecisionSink {},
         player: AudioPlayer = AudioPlayer {},
         speaker: TextSpeaker = TextSpeaker {},
+        /** A3 默认 TTS 失败（返回 null）→ speaker 兜底；用例可注入 fake 返回音频。 */
+        tts: TtsRequester = TtsRequester { null },
         debugBuild: Boolean = true,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
@@ -102,6 +104,7 @@ class VoiceEngineTest {
             networkAvailable = networkAvailable,
             local = local,
             cloud = cloud,
+            tts = tts,
             player = player,
             speaker = speaker,
             vehicle = vehicle,
@@ -270,7 +273,68 @@ class VoiceEngineTest {
             utter(engine)
         }
         assertEquals(24.0, vehicle.acTemperature, "ActionReply 的 intent 应执行")
-        assertEquals(listOf("已为您把空调调到24度"), spoken, "播报 ActionReply 自带的 speakText")
+        // A3 TTS 解耦：默认 tts 失败（null）→ 系统 TTS 兜底播报 speakText
+        assertEquals(listOf("已为您把空调调到24度"), spoken, "TTS 失败时兜底播报 ActionReply 的 speakText")
+    }
+
+    @Test
+    fun `cloud action reply requests tts audio and plays it instead of speaking`() {
+        val requested = mutableListOf<String>()
+        val played = mutableListOf<AudioReply>()
+        val spoken = mutableListOf<String>()
+        val ttsAudio =
+            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到24度")
+        lateinit var engine: VoiceEngine
+        lateinit var vehicle: MockVehicleState
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner {
+                    com.autovoice.voicecore.ActionReply(
+                        intent = setTempIntent(24.0),
+                        speakText = "已为您把空调调到24度",
+                    )
+                },
+                tts = TtsRequester {
+                    requested.add(it)
+                    ttsAudio
+                },
+                player = AudioPlayer { played.add(it) },
+                speaker = TextSpeaker { spoken.add(it) },
+            )
+            engine = pair.first
+            vehicle = pair.second
+            utter(engine)
+        }
+        assertEquals(24.0, vehicle.acTemperature, "ActionReply 的 intent 应执行")
+        assertEquals(listOf("已为您把空调调到24度"), requested, "TTS 请求文本 = ActionReply 的 speakText")
+        assertEquals(1, played.size, "TTS 返回音频 → 播放")
+        assertArrayEquals(ttsAudio.data, played[0].data)
+        assertTrue(spoken.isEmpty(), "TTS 成功时不得走系统播报兜底")
+    }
+
+    @Test
+    fun `cloud text reply falls back to speaker when tts times out`() {
+        val spoken = mutableListOf<String>()
+        var ttsCalled = false
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner { TextReply("已为您把空调调到 24 度") },
+                tts = TtsRequester {
+                    ttsCalled = true
+                    null // 模拟超时/合成失败
+                },
+                speaker = TextSpeaker { spoken.add(it) },
+            )
+            engine = pair.first
+            utter(engine)
+        }
+        assertTrue(ttsCalled, "TextReply 应先请求 TTS")
+        assertEquals(listOf("已为您把空调调到 24 度"), spoken, "TTS 失败 → 系统 TTS 兜底播报文本")
     }
 
     /**
@@ -378,6 +442,7 @@ class VoiceEngineTest {
                 awaitCancellation()
             },
             player = AudioPlayer {},
+            tts = TtsRequester { null },
             speaker = TextSpeaker { spoken.add(it) },
             vehicle = MockVehicleState(),
             scope = scope,

@@ -36,6 +36,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 
 /** 云端音频回复播放出口（应用层实现：TtsPlayer）。JVM 测试可注入 fake。 */
@@ -46,6 +47,15 @@ fun interface AudioPlayer {
 /** 本地播报出口（应用层实现：SystemTtsFallback）。JVM 测试可注入 fake。 */
 fun interface TextSpeaker {
     fun speak(text: String)
+}
+
+/**
+ * 独立 TTS 播报请求（TTS 解耦 v1.1）：设备执行 intent 后按 speakText 向服务端
+ * 请求合成音频；返回 null = 失败/超时（调用方以 [TextSpeaker] 兜底，不重试）。
+ * 生产实现：GatewayCloudRunner（tts_request/tts_response 独立槽）。
+ */
+fun interface TtsRequester {
+    suspend fun request(text: String): AudioReply?
 }
 
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
@@ -79,6 +89,7 @@ class VoiceEngine(
     private val networkAvailable: () -> Boolean,
     local: LocalChainRunner,
     cloud: CloudRunner,
+    private val tts: TtsRequester,
     private val player: AudioPlayer,
     private val speaker: TextSpeaker,
     val vehicle: MockVehicleState,
@@ -167,9 +178,12 @@ class VoiceEngine(
     }
 
     /**
-     * 云端回复路由（Task 61）：云端胜出时把语义结果携带的识别文本写进识别区
-     * （reply.asrText 非空才写，本地胜出/未携带时不覆盖本地识别文本）。
-     * 之后按 kind 分发：Audio → 播放 + 可选执行；Text → 播报；Action → 执行 + 播报。
+     * 云端回复路由（Task 61 + A3 TTS 解耦）：云端胜出时把语义结果携带的识别文本写进
+     * 识别区（reply.asrText 非空才写，本地胜出/未携带时不覆盖本地识别文本）。
+     * 之后按 kind 分发（v1.1 语义——回复不带音频，播报走独立 tts_request）：
+     *  - Audio → 播放（协议层防御保留：旧服务端/兼容下行）；
+     *  - Text → 按文本请求 TTS，失败/超时 → [speaker] 兜底；
+     *  - Action → 执行 intent + 按 speakText 请求 TTS（兜底同上）。
      */
     private fun routeCloudReply(reply: Reply) {
         if (reply.asrText.isNotBlank()) onLocalRecognized(reply.asrText)
@@ -178,11 +192,22 @@ class VoiceEngine(
                 player.play(reply)
                 reply.intent?.let(::applyAndNotify)
             }
-            is TextReply -> speaker.speak(reply.text)
+            is TextReply -> speakViaTts(reply.text)
             is ActionReply -> {
                 applyAndNotify(reply.intent)
-                speaker.speak(reply.speakText)
+                speakViaTts(reply.speakText)
             }
+        }
+    }
+
+    /**
+     * TTS 解耦播报（A3）：后台请求服务端合成音频 → 播放；失败/超时（null）→
+     * 系统 TTS 兜底（不静默）。本地胜出路径不动（保持 [speaker] 直接播报）。
+     */
+    private fun speakViaTts(text: String) {
+        if (text.isBlank()) return
+        scope.launch {
+            tts.request(text)?.let(player::play) ?: speaker.speak(text)
         }
     }
 
@@ -241,6 +266,7 @@ class VoiceEngine(
                 networkAvailable = networkAvailable,
                 local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef),
                 cloud = cloudRunner,
+                tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
                 player = player,
                 speaker = speaker,
                 vehicle = vehicle,
@@ -349,7 +375,7 @@ private class GatewayCloudRunner(
     private val cfg: CloudConfig,
     private val sink: DecisionSink,
     scope: CoroutineScope,
-) : CloudRunner {
+) : CloudRunner, TtsRequester {
 
     private val client = GatewayClient(url = cfg.gatewayUrl, okHttp = OkHttpClient())
     private val bridge = GatewayBridge(client, sink, scope)
@@ -403,7 +429,29 @@ private class GatewayCloudRunner(
             bridge.clearReplySlot(replySlot)
         }
     }
+
+    /**
+     * 独立 TTS 播报（A3，TTS 解耦）：发 tts_request 等 tts_response，5s 超时返回 null
+     * （调用方以系统 TTS 兜底），**不重试**。ready 未建立（会话从未连上）直接 null。
+     * 与 [run] 的 reply 槽互不干扰（bridge 独立 tts 槽，各自按 segmentId 对账）。
+     */
+    override suspend fun request(text: String): AudioReply? {
+        if (!readyReceived) return null
+        val ttsId = UUID.randomUUID().toString()
+        val ttsSlot = bridge.newTtsSlot(ttsId)
+        return try {
+            client.sendTtsRequest(text, ttsId)
+            withTimeoutOrNull(TTS_TIMEOUT_MS) { ttsSlot.await() }
+        } catch (e: GatewayException) {
+            null // 连接未就绪等发送失败：本次播报直接兜底
+        } finally {
+            bridge.clearTtsSlot(ttsSlot)
+        }
+    }
 }
+
+/** 独立 TTS 请求超时（A3）：超过即放弃合成音频，改用系统 TTS 兜底。 */
+private const val TTS_TIMEOUT_MS = 5_000L
 
 /**
  * 网关事件桥：构造时一次性订阅 [GatewayClient.messages]（SharedFlow replay=1），
@@ -414,6 +462,9 @@ private class GatewayCloudRunner(
  * 携带的 segmentId 与本轮不一致（上一轮迟到的消息）→ 丢弃并 Log.d；未携带 segmentId（服务端
  * 合成的传输错误 / 旧版服务端）→ 无法对账，按当前槽处理（保留快速失败语义）。同一时刻至多一个
  * 等待槽，跨轮消息天然按 segmentId 隔离。
+ *
+ * TTS 槽（A3）：tts_response 走独立的 [pendingTts] 槽，与 [pendingReply] 互不干扰
+ * （tts 播报与话语回复是两条独立时间线），各自按 segmentId 对账。
  */
 internal class GatewayBridge(
     private val client: GatewayClient,
@@ -421,9 +472,10 @@ internal class GatewayBridge(
     scope: CoroutineScope,
 ) {
 
-    private class PendingSlot(val segmentId: String, val deferred: CompletableDeferred<Reply>)
+    private class PendingSlot<T>(val segmentId: String, val deferred: CompletableDeferred<T>)
 
-    private val pendingReply = AtomicReference<PendingSlot?>(null)
+    private val pendingReply = AtomicReference<PendingSlot<Reply>?>(null)
+    private val pendingTts = AtomicReference<PendingSlot<AudioReply>?>(null)
 
     init {
         scope.launch {
@@ -434,12 +486,23 @@ internal class GatewayBridge(
     /** 注册当前话语的回复等待槽（先于发送注册，避免 reply 先到被丢）。 */
     fun newReplySlot(segmentId: String): CompletableDeferred<Reply> {
         val deferred = CompletableDeferred<Reply>()
-        pendingReply.set(PendingSlot(segmentId, deferred))
+        pendingReply.set(PendingSlot<Reply>(segmentId, deferred))
         return deferred
     }
 
     fun clearReplySlot(deferred: CompletableDeferred<Reply>) {
         pendingReply.get()?.takeIf { it.deferred === deferred }?.let { pendingReply.compareAndSet(it, null) }
+    }
+
+    /** 注册独立 TTS 播报槽（tts_response 对账用，与 reply 槽隔离）。 */
+    fun newTtsSlot(segmentId: String): CompletableDeferred<AudioReply> {
+        val deferred = CompletableDeferred<AudioReply>()
+        pendingTts.set(PendingSlot<AudioReply>(segmentId, deferred))
+        return deferred
+    }
+
+    fun clearTtsSlot(deferred: CompletableDeferred<AudioReply>) {
+        pendingTts.get()?.takeIf { it.deferred === deferred }?.let { pendingTts.compareAndSet(it, null) }
     }
 
     private fun handle(msg: GatewayMessage) {
@@ -449,6 +512,11 @@ internal class GatewayBridge(
                 val slot = pendingReply.get() ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 client.parseReply(msg.payload)?.let { slot.deferred.complete(it) }
+            }
+            "tts_response" -> {
+                val slot = pendingTts.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                client.parseTtsResponse(msg.payload)?.let { slot.deferred.complete(it) }
             }
             "error" -> {
                 val slot = pendingReply.get() ?: return
@@ -464,7 +532,7 @@ internal class GatewayBridge(
      * 按 segmentId 对账（protocol.md §3.2）：消息携带的 segmentId 与当前话语不一致 → 他轮迟到的
      * 消息，丢弃（Log.d）；未携带（服务端合成错误 / 旧版服务端）→ 无从对账，按当前话语处理。
      */
-    private fun isForCurrentUtterance(payload: JsonObject, slot: PendingSlot): Boolean {
+    private fun isForCurrentUtterance(payload: JsonObject, slot: PendingSlot<*>): Boolean {
         val msgSegmentId = payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString
         if (msgSegmentId == null) return true
         if (msgSegmentId != slot.segmentId) {
