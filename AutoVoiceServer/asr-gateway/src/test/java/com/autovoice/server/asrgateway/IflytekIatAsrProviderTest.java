@@ -141,7 +141,9 @@ class IflytekIatAsrProviderTest {
             public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
                 receivedFrames.add(message);
                 if (receivedFrames.size() == 1) ws.send(resultFrame(1, "打", "开")); // 中间结果
-                if (receivedFrames.size() == 2) ws.send(resultFrame(2, "空", "调")); // 终帧
+                // 终帧在尾帧（第 3 帧）到达后才回：客户端收到 status=2 即 close，
+                // 过早回终帧会让未送达的尾帧在关闭握手时被丢弃（ws.send 异步入队）
+                if (receivedFrames.size() == 3) ws.send(resultFrame(2, "空", "调")); // 终帧
             }
         }));
         IflytekIatAsrProvider provider = new IflytekIatAsrProvider(client, APP_ID, API_KEY, API_SECRET,

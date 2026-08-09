@@ -5,15 +5,21 @@ import com.autovoice.server.contracts.SessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
-import okio.Buffer;
+import okio.ByteString;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -22,11 +28,17 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * [AliyunTtsProvider] 协议测试（JUnit5 + MockWebServer WS 升级）：验证
+ * run-task 帧的完整 schema（task_group/task/function/model/input/parameters）与
+ * 事件驱动（task-started → binary → task-finished SUCCEEDED）→ wav 返回；
+ * FAILED / task-failed / 超时 → RuntimeException（调用方降级为文本）。
+ */
 class AliyunTtsProviderTest {
 
     static final String API_KEY = "sk-test-dashscope";
     static final String TEXT = "空调调到二十四度";
-    // 假 wav 字节（RIFF 头），MockWebServer 原样返回
+    // 假 wav 字节（RIFF 头），server 端 WS 原样推送
     static final byte[] WAV_BYTES = {0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45};
 
     final ObjectMapper mapper = new ObjectMapper();
@@ -46,46 +58,129 @@ class AliyunTtsProviderTest {
         server.shutdown();
     }
 
-    @Test
-    void synthesizesWavOn200() throws Exception {
-        server.enqueue(new MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "audio/wav")
-                .setBody(new Buffer().write(WAV_BYTES)));
-
-        Reply reply = provider.synthesize(TEXT, ctx("s1"));
-
-        // wav 字节 + 200 → Reply audio 回复：kind=audio / mime=audio/wav / data 相等
-        assertEquals("audio", reply.kind());
-        assertEquals("audio/wav", reply.mime());
-        assertArrayEquals(WAV_BYTES, reply.data());
-
-        RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
-        assertNotNull(req);
-        assertEquals("POST", req.getMethod());
-        assertEquals("Bearer " + API_KEY, req.getHeader("Authorization"));
-        assertNotNull(req.getHeader("Content-Type"));
-        assertTrue(req.getHeader("Content-Type").startsWith("application/json"));
-
-        // body：{"text":...,"format":"wav","sample_rate":16000}
-        JsonNode body = mapper.readTree(req.getBody().readUtf8());
-        assertEquals(TEXT, body.path("text").asText());
-        assertEquals("wav", body.path("format").asText());
-        assertEquals(16_000, body.path("sample_rate").asInt());
-    }
-
-    @Test
-    void non2xxThrowsRuntimeException() throws Exception {
-        server.enqueue(new MockResponse()
-                .setResponseCode(401)
-                .setBody("{\"code\":\"InvalidApiKey\"}"));
-
-        RuntimeException ex = assertThrows(RuntimeException.class,
-                () -> provider.synthesize(TEXT, ctx("s2")));
-        assertTrue(ex.getMessage().contains("401"));
+    /**
+     * server 端 WS 监听器基类：响应客户端关闭，避免 MockWebServer.shutdown() 挂起
+     * （同 IflytekIatAsrProviderTest 模式）。
+     */
+    abstract static class ServerListener extends WebSocketListener {
+        @Override
+        public void onClosing(@NotNull WebSocket ws, int code, @NotNull String reason) {
+            ws.close(1000, "bye");
+        }
     }
 
     private static SessionContext ctx(String sessionId) {
         return new SessionContext(sessionId, "zh-CN", Map.of());
+    }
+
+    private static String finishedFrame(String status) {
+        return "{\"header\":{\"event\":\"task-finished\",\"task_id\":\"t1\",\"task_status\":\""
+                + status + "\"},\"payload\":{\"output\":{},\"usage\":{\"characters\":6}}}";
+    }
+
+    @Test
+    void synthesizesWavOverWebSocket() throws Exception {
+        // run-task 是 WS 文本帧（握手后发送），在 server 端 listener 中捕获校验
+        List<String> receivedFrames = new CopyOnWriteArrayList<>();
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
+                receivedFrames.add(message);
+            }
+
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-started\",\"task_id\":\"t1\"},\"payload\":{}}");
+                ws.send(ByteString.of(WAV_BYTES));                       // 音频分片
+                ws.send("{\"header\":{\"event\":\"result-generated\",\"task_id\":\"t1\"},\"payload\":{}}");
+                ws.send(finishedFrame("SUCCEEDED"));
+            }
+        }));
+
+        Reply reply = provider.synthesize(TEXT, ctx("s1"));
+
+        // SUCCEEDED + 累积二进制 → Reply audio：kind=audio / mime=audio/wav / data 相等
+        assertEquals("audio", reply.kind());
+        assertEquals("audio/wav", reply.mime());
+        assertArrayEquals(WAV_BYTES, reply.data());
+
+        // 握手请求：Bearer 鉴权
+        RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
+        assertNotNull(req);
+        assertEquals("GET", req.getMethod());
+        assertEquals("Bearer " + API_KEY, req.getHeader("Authorization"));
+        assertEquals("websocket", req.getHeader("Upgrade"));
+
+        // run-task 帧完整 schema
+        assertEquals(1, receivedFrames.size(), "连接建立后应恰好发送一帧 run-task");
+        JsonNode runTask = mapper.readTree(receivedFrames.get(0));
+        JsonNode header = runTask.path("header");
+        assertEquals("run-task", header.path("action").asText());
+        assertEquals("out", header.path("streaming").asText());
+        assertTrue(header.path("task_id").asText().length() > 0);
+        JsonNode payload = runTask.path("payload");
+        assertEquals("audio", payload.path("task_group").asText());
+        assertEquals("tts", payload.path("task").asText());
+        assertEquals("SpeechSynthesizer", payload.path("function").asText());
+        assertEquals("sambert-zhichu-v1", payload.path("model").asText());
+        assertEquals(TEXT, payload.path("input").path("text").asText());
+        JsonNode params = payload.path("parameters");
+        assertEquals("PlainText", params.path("text_type").asText());
+        assertEquals("wav", params.path("format").asText());
+        assertEquals(16_000, params.path("sample_rate").asInt());
+    }
+
+    @Test
+    void taskFinishedFailedThrowsRuntimeException() {
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-started\"},\"payload\":{}}");
+                ws.send(finishedFrame("FAILED"));
+            }
+        }));
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> provider.synthesize(TEXT, ctx("s2")));
+        assertTrue(ex.getMessage().contains("FAILED"), ex.getMessage());
+    }
+
+    @Test
+    void taskFailedEventThrowsRuntimeException() {
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-failed\",\"task_id\":\"t1\"},"
+                        + "\"payload\":{\"error_code\":\"InvalidParameter\",\"error_message\":\"bad text\"}}");
+            }
+        }));
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> provider.synthesize(TEXT, ctx("s3")));
+        assertTrue(ex.getMessage().contains("InvalidParameter"), ex.getMessage());
+    }
+
+    @Test
+    void timeoutThrowsRuntimeException() {
+        // server 连接后不回任何帧 → 短超时（500ms）兜底
+        AliyunTtsProvider slow = new AliyunTtsProvider(
+                new OkHttpClient(), API_KEY, server.url("/").toString(), 500);
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+        }));
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> slow.synthesize(TEXT, ctx("s4")));
+        assertTrue(ex.getMessage().contains("timeout"), ex.getMessage());
+    }
+
+    @Test
+    void connectFailureThrowsRuntimeException() throws Exception {
+        MockWebServer dead = new MockWebServer();
+        dead.start();
+        String url = dead.url("/").toString();
+        dead.shutdown(); // 端口关闭 → WS 握手失败 → onFailure
+        AliyunTtsProvider broken = new AliyunTtsProvider(new OkHttpClient(), API_KEY, url, 5_000);
+
+        assertThrows(RuntimeException.class, () -> broken.synthesize(TEXT, ctx("s5")));
     }
 }

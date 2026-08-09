@@ -53,6 +53,8 @@ public final class SegmentPipeline {
     private final TtsProvider tts;
     private final DecisionSink sink;
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SegmentPipeline.class);
+
     public SegmentPipeline(AsrProvider asr, RaceArbiter arbiter, NluProvider nlu,
                            LlmProvider llm, TtsProvider tts, DecisionSink sink) {
         this.asr = asr;
@@ -99,14 +101,20 @@ public final class SegmentPipeline {
 
     /** ASR：失败或空白识别结果一律走兜底话术。返回 null 表示已兜底收敛。 */
     private String transcribe(byte[] pcm, SessionContext ctx, String utteranceId) {
+        // 诊断：ASR 失败被兜底吞掉后 server 无日志可查（端侧只看到 asr_failed_fallback）——
+        // 失败路径必须留痕：pcm 长度 + 异常/空白原因
+        LOG.info("ASR start: pcm={}B ({}ms) utt={}", pcm.length, pcm.length * 1000 / (2 * 16000), utteranceId);
         try {
             String text = asr.transcribe(pcm, ctx);
             if (text == null || text.isBlank()) {
+                LOG.warn("ASR returned blank text (pcm={}B utt={}) → asr_failed_fallback", pcm.length, utteranceId);
                 fallback(ctx, utteranceId, REASON_ASR_FAILED);
                 return null;
             }
+            LOG.info("ASR ok: \"{}\" (utt={})", text, utteranceId);
             return text;
         } catch (Exception e) {
+            LOG.error("ASR failed (pcm={}B utt={}) → asr_failed_fallback", pcm.length, utteranceId, e);
             fallback(ctx, utteranceId, REASON_ASR_FAILED);
             return null;
         }
@@ -127,10 +135,12 @@ public final class SegmentPipeline {
         try {
             Reply audio = tts.synthesize(speakText, ctx);
             if (audio == null || !"audio".equals(audio.kind()) || audio.data() == null) {
+                LOG.warn("TTS returned no audio (\"{}\") → downgrade to text reply", speakText);
                 return new SegmentResult(null, speakText, intent);
             }
             return new SegmentResult(audio.data(), speakText, intent);
         } catch (Exception e) {
+            LOG.error("TTS failed (\"{}\") → downgrade to text reply", speakText, e);
             return new SegmentResult(null, speakText, intent); // TTS 失败 → 降级文本
         }
     }
