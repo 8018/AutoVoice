@@ -122,7 +122,7 @@ class AliyunTtsProviderTest {
         assertEquals("audio", payload.path("task_group").asText());
         assertEquals("tts", payload.path("task").asText());
         assertEquals("SpeechSynthesizer", payload.path("function").asText());
-        assertEquals("sambert-zhichu-v1", payload.path("model").asText());
+        assertEquals("sambert-zhimiao-emo-v1", payload.path("model").asText()); // Task 63 换音色：知妙·女声
         assertEquals(TEXT, payload.path("input").path("text").asText());
         JsonNode params = payload.path("parameters");
         assertEquals("PlainText", params.path("text_type").asText());

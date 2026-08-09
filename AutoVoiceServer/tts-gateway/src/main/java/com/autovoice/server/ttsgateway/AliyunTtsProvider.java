@@ -30,7 +30,7 @@ import java.util.UUID;
  * <pre>{@code
  * {"header":{"action":"run-task","task_id":"<uuid>","streaming":"out"},
  *  "payload":{"task_group":"audio","task":"tts","function":"SpeechSynthesizer",
- *             "model":"sambert-zhichu-v1",
+ *             "model":"sambert-zhimiao-emo-v1",
  *             "input":{"text":"<text>"},
  *             "parameters":{"text_type":"PlainText","format":"wav","sample_rate":16000}}}
  * }</pre>
@@ -54,7 +54,7 @@ public final class AliyunTtsProvider implements TtsProvider {
     private static final long CALL_TIMEOUT_MS = 15_000;
     private static final String HEADER_AUTHORIZATION = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
-    private static final String MODEL_SAMBERT = "sambert-zhichu-v1";
+    private static final String MODEL_SAMBERT = "sambert-zhimiao-emo-v1"; // 知妙·女声（Task 63 换音色；原 sambert-zhichu-v1 知厨·男声）
     private static final String HEADER_ACTION_RUN_TASK = "run-task";
     private static final String EVENT_TASK_STARTED = "task-started";
     private static final String EVENT_RESULT_GENERATED = "result-generated";
