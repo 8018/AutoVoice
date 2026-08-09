@@ -134,7 +134,6 @@ class TtsPlayer(
             return
         }
         currentFile = file
-        saveDiagCopy(file) // 诊断期临时：拷贝到外部目录供 adb pull 分析
         val mp = MediaPlayer()
         player = mp
         Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
@@ -187,20 +186,6 @@ class TtsPlayer(
     fun release() = stop()
 
     // ------------------------------------------------------------------ 内部
-
-    /** 诊断期临时：播放前拷贝 wav 到应用外部目录（/sdcard/Android/data/<pkg>/files/tts_diag/），
-     *  adb pull 可免权限取出，分析合成音频结构/内容。用完即删。 */
-    private fun saveDiagCopy(file: File) {
-        try {
-            val dir = File(context.getExternalFilesDir(null), "tts_diag")
-            dir.mkdirs()
-            val dest = File(dir, "tts_${System.currentTimeMillis()}_${file.length()}.wav")
-            file.copyTo(dest, overwrite = true)
-            Log.i(TAG, "diag saved: ${dest.absolutePath}")
-        } catch (t: Throwable) {
-            Log.w(TAG, "diag save failed", t)
-        }
-    }
 
     private fun writeAudioFile(reply: AudioReply): File {
         val file = File.createTempFile("autovoice_tts_", ".wav", context.cacheDir)
