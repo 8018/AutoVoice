@@ -56,8 +56,9 @@ class IflytekOfflineCommandAsrStage(
     val workDir: String = DEFAULT_WORK_DIR,
     /**
      * FSA 命令词文件路径（Task 54 对齐官方布局：readme 要求把 SDK 归档
-     * resource/ 内容导入 workDir，故 fsa 在 CNENESR/fsa/ 下）；不存在时
-     * 按 [COMMAND_WORDS] 自动生成。
+     * resource/ 内容导入 workDir，故 fsa 在 CNENESR/fsa/ 下）；内容与
+     * [COMMAND_WORDS] 不一致时自动覆盖（Task 55：官方 demo 词表残留导致
+     * 车控词不识别）。
      */
     val fsaPath: String = DEFAULT_WORK_DIR + "CNENESR/fsa/cn_fsa.txt",
     /** 0=中文（demo 默认），1=英文。 */
@@ -364,22 +365,27 @@ class IflytekOfflineCommandAsrStage(
         }
     }
 
-    /** 写 FSA 命令词文件（GBK 编码）；已存在则跳过。 */
+    /**
+     * 确保 FSA 命令词文件与 [COMMAND_WORDS] 一致（GBK 编码）。
+     * 以词表为准：文件缺失、或内容为旧版/官方 demo 词表时一律覆盖——
+     * 否则引擎装载的是残留词表，车控词（如"打开车窗"）不识别。
+     */
     fun ensureCommandWordFile() {
         val file = File(fsaPath)
-        if (!file.exists()) {
-            file.parentFile?.mkdirs()
-            runCatching { file.writeBytes(fsaContent().toByteArray(GBK)) }
-                .onFailure {
-                    // Task 54：重装后 MANAGE_EXTERNAL_STORAGE 授权丢失时写 /sdcard 报 EPERM，
-                    // 给出明确修复命令而非裸 FileNotFoundException 栈
-                    throw IllegalStateException(
-                        "无法写入 FSA 命令词文件 $fsaPath（${it.message}）：app 缺所有文件访问权限，" +
-                            "请执行 adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow 后重启 app",
-                        it,
-                    )
-                }
-        }
+        val expected = fsaContent()
+        val current = runCatching { file.readBytes().toString(GBK) }.getOrNull()
+        if (current == expected) return
+        file.parentFile?.mkdirs()
+        runCatching { file.writeBytes(expected.toByteArray(GBK)) }
+            .onFailure {
+                // Task 54：重装后 MANAGE_EXTERNAL_STORAGE 授权丢失时写 /sdcard 报 EPERM，
+                // 给出明确修复命令而非裸 FileNotFoundException 栈
+                throw IllegalStateException(
+                    "无法写入 FSA 命令词文件 $fsaPath（${it.message}）：app 缺所有文件访问权限，" +
+                        "请执行 adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow 后重启 app",
+                    it,
+                )
+            }
     }
 
     /** 引擎日志尾部（setLogInfo 输出文件 workDir/aikit/aeeLog.txt），失败排查用；读不到时返回空串。 */

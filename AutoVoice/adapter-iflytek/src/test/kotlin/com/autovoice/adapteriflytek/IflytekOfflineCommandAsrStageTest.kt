@@ -4,7 +4,9 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.File
 import java.nio.charset.Charset
+import java.nio.file.Files
 
 /**
  * 真实讯飞引擎（AIKit AEE，native + Android Context）无法在 JVM 单测中运行，
@@ -54,5 +56,26 @@ class IflytekOfflineCommandAsrStageTest {
             stage.fsaPath.startsWith("${IflytekOfflineCommandAsrStage.DEFAULT_WORK_DIR}CNENESR/fsa/"),
             "fsaPath 应对齐官方布局: ${stage.fsaPath}",
         )
+    }
+
+    @Test
+    fun `stale fsa file is overwritten with command words`() {
+        // Task 55：重推官方资源后残留 demo 词表（仅空调/电视），若不覆盖则车控词不识别
+        val tmp = Files.createTempDirectory("fsa-stale-test").toFile()
+        val fsaFile = File(tmp, "cn_fsa.txt")
+        val gbk = Charset.forName("GBK")
+        fsaFile.writeText(
+            "#FSA 1.0;\r\n0\t1\t<esr>\r\n;\r\n<esr>:打开空调;",
+            gbk,
+        )
+        val stage = IflytekOfflineCommandAsrStage(
+            appId = "a", apiKey = "b", apiSecret = "c",
+            fsaPath = fsaFile.absolutePath,
+        )
+        stage.ensureCommandWordFile()
+        val written = fsaFile.readBytes().toString(gbk)
+        assertEquals(IflytekOfflineCommandAsrStage.fsaContent(), written)
+        assertTrue(written.contains("打开车窗"), "覆盖后应包含车控词（打开车窗）")
+        tmp.deleteRecursively()
     }
 }
