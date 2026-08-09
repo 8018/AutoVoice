@@ -54,9 +54,11 @@ fun VoiceScreen(
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
         // Task 53 对话区：识别 + 回复各占一半主空间（仲裁结果只进 logcat，不再上屏）
+        // Task 61：识别卡片标题行带竞速胜出徽标（端侧胜出 / 云端胜出，null = 尚无结果不显示）
         AsrResultCard(
             title = "识别",
             text = state.lastRecognizedText,
+            winner = state.lastWinner,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         Spacer(Modifier.height(12.dp))
@@ -98,12 +100,17 @@ fun VoiceScreen(
     }
 }
 
-/** 对话区卡片（Task 53）：识别/回复各一张，垂直平分主空间，等宽上下对齐。 */
+/**
+ * 对话区卡片（Task 53）：识别/回复各一张，垂直平分主空间，等宽上下对齐。
+ * [winner]（Task 61）：竞速胜出方徽标文本（"端侧"/"云端"，由 ViewModel 映射），
+ * 非 null 时在标题行右侧显示「XX胜出」小徽标。
+ */
 @Composable
 private fun AsrResultCard(
     title: String,
     text: String?,
     modifier: Modifier = Modifier,
+    winner: String? = null,
 ) {
     Surface(
         modifier = modifier,
@@ -111,11 +118,27 @@ private fun AsrResultCard(
         color = MaterialTheme.colorScheme.primaryContainer,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    modifier = Modifier.weight(1f),
+                )
+                if (winner != null) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            text = "${winner}胜出",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 text = text ?: "(${title}内容待更新)",

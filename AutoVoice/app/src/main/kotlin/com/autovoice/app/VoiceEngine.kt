@@ -166,8 +166,13 @@ class VoiceEngine(
         }
     }
 
-    /** 云端回复路由：Audio → 播放 + 可选执行；Text → 播报；Action → 执行 + 播报。 */
+    /**
+     * 云端回复路由（Task 61）：云端胜出时把语义结果携带的识别文本写进识别区
+     * （reply.asrText 非空才写，本地胜出/未携带时不覆盖本地识别文本）。
+     * 之后按 kind 分发：Audio → 播放 + 可选执行；Text → 播报；Action → 执行 + 播报。
+     */
     private fun routeCloudReply(reply: Reply) {
+        if (reply.asrText.isNotBlank()) onLocalRecognized(reply.asrText)
         when (reply) {
             is AudioReply -> {
                 player.play(reply)

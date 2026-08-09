@@ -83,15 +83,22 @@ data class Intent(
 /**
  * 网关下行回复。网关下发的音频回复统一 [AudioReply]（云端 TTS 后 kind 恒为 audio，
  * intent 存在时附带，供执行器消费）；intent 为 null 时序列化省略该字段。
+ *
+ * [asrText]（Task 61）：云端 ASR 识别文本，随 reply 下行——端侧云端胜出时据此把
+ * 语义结果里的识别文本写进识别区；本地胜出时该字段为空（不覆盖本地识别文本）。
  */
 sealed class Reply {
     /** 网关 payload 中的 kind 字段。 */
     abstract val kind: String
+
+    /** 云端 ASR 识别文本（无则空串，本地胜出/未携带时不覆盖识别区）。 */
+    abstract val asrText: String
 }
 
 /** 纯文本回复。 */
 data class TextReply(
     val text: String,
+    override val asrText: String = "",
 ) : Reply() {
     override val kind: String = "text"
 }
@@ -102,6 +109,7 @@ data class AudioReply(
     val data: ByteArray,
     val speakText: String = "",
     val intent: Intent? = null,
+    override val asrText: String = "",
 ) : Reply() {
     override val kind: String = "audio"
 }
@@ -110,6 +118,7 @@ data class AudioReply(
 data class ActionReply(
     val intent: Intent,
     val speakText: String,
+    override val asrText: String = "",
 ) : Reply() {
     override val kind: String = "action"
 }

@@ -62,18 +62,22 @@ public final class SegmentPipeline {
         this.sink = sink;
     }
 
-    /** 一段录音的处理结果：wavAudio 为 null 时网关下行降级 kind=text（仅 speakText）。 */
-    public record SegmentResult(byte[] wavAudio, String speakText, Intent intent) {
+    /**
+     * 一段录音的处理结果：wavAudio 为 null 时网关下行降级 kind=text（仅 speakText）。
+     * asrText = 本条识别文本（Task 61：随 reply 下行，端侧云端胜出时写进识别区），
+     * ASR 失败/兜底时为 null。
+     */
+    public record SegmentResult(byte[] wavAudio, String speakText, Intent intent, String asrText) {
     }
 
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId) {
         String text = transcribe(pcm, ctx, utteranceId);
         if (text == null) {
-            return new SegmentResult(null, FALLBACK_TEXT, null); // ASR 失败兜底：不合成音频
+            return new SegmentResult(null, FALLBACK_TEXT, null, null); // ASR 失败兜底：不合成音频
         }
         Reply reply = arbitrate(text, ctx, utteranceId);
         if (reply == null) {
-            return new SegmentResult(null, FALLBACK_TEXT, null);
+            return new SegmentResult(null, FALLBACK_TEXT, null, null);
         }
         String speakText;
         Intent intent = null;
@@ -85,7 +89,7 @@ public final class SegmentPipeline {
             }
             case "audio" -> {
                 // demo 不出现（LLM/TTS 恒产 wav）：data 直通、speakText=null，不再 TTS
-                return new SegmentResult(reply.data(), null, null);
+                return new SegmentResult(reply.data(), null, null, text);
             }
             default -> speakText = reply.speakText() != null ? reply.speakText() : reply.text();
         }
@@ -93,7 +97,7 @@ public final class SegmentPipeline {
             // 防御：仲裁结果无可播报文本 → 兜底话术
             return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
         }
-        return synthesize(speakText, ctx, intent);
+        return synthesize(speakText, ctx, intent, text);
     }
 
     /** ASR：失败或空白识别结果一律走兜底话术。返回 null 表示已兜底收敛。 */
@@ -141,24 +145,28 @@ public final class SegmentPipeline {
         }
     }
 
-    /** TTS：合成失败（或未产出音频）→ 降级为屏幕显示文本，wavAudio=null 而 speakText 保留。 */
-    private SegmentResult synthesize(String speakText, SessionContext ctx, Intent intent) {
+    /**
+     * TTS：合成失败（或未产出音频）→ 降级为屏幕显示文本，wavAudio=null 而 speakText 保留。
+     * 成功留痕一行（Task 60 复盘：成功路径曾完全静默，超时故障无对比日志——成功/失败成对）。
+     */
+    private SegmentResult synthesize(String speakText, SessionContext ctx, Intent intent, String asrText) {
         try {
             Reply audio = tts.synthesize(speakText, ctx);
             if (audio == null || !"audio".equals(audio.kind()) || audio.data() == null) {
                 LOG.warn("TTS returned no audio (\"{}\") → downgrade to text reply", speakText);
-                return new SegmentResult(null, speakText, intent);
+                return new SegmentResult(null, speakText, intent, asrText);
             }
-            return new SegmentResult(audio.data(), speakText, intent);
+            LOG.info("TTS ok: \"{}\" → {}B audio", speakText, audio.data().length);
+            return new SegmentResult(audio.data(), speakText, intent, asrText);
         } catch (Exception e) {
             LOG.error("TTS failed (\"{}\") → downgrade to text reply", speakText, e);
-            return new SegmentResult(null, speakText, intent); // TTS 失败 → 降级文本
+            return new SegmentResult(null, speakText, intent, asrText); // TTS 失败 → 降级文本
         }
     }
 
     /** 兜底收敛：记一条决策事件（reason 区分 ASR / 仲裁失败），返回兜底话术结果。 */
     private SegmentResult fallback(SessionContext ctx, String utteranceId, String reason) {
         sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_CLOUD, reason, utteranceId, System.currentTimeMillis()));
-        return new SegmentResult(null, FALLBACK_TEXT, null);
+        return new SegmentResult(null, FALLBACK_TEXT, null, null); // 兜底无识别文本
     }
 }

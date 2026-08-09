@@ -167,14 +167,16 @@ class GatewayClient(
      *  - kind=audio → [AudioReply]（mime / dataBase64 解码 / speakText / 可选 intent）；
      *  - kind=text → [TextReply]（text + speakText）；
      *  - kind=action → [ActionReply]（intent + speakText）。
+     * asrText（Task 61：云端 ASR 识别文本）随各 kind 透传，缺失时为空串。
      * payload 非法 / 字段缺失 / 未知 kind → null（防御，不抛）。
      */
     fun parseReply(payload: JsonObject): Reply? {
         val kind = payload.get("kind")?.stringOrNull() ?: return null
+        val asrText = payload.get("asrText")?.stringOrNull() ?: ""
         return when (kind) {
             "text" -> {
                 val text = payload.get("text")?.stringOrNull() ?: return null
-                TextReply(text)
+                TextReply(text = text, asrText = asrText)
             }
             "audio" -> {
                 val mime = payload.get("mime")?.stringOrNull() ?: return null
@@ -189,11 +191,16 @@ class GatewayClient(
                     data = data,
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     intent = parseIntent(payload.get("intent")),
+                    asrText = asrText,
                 )
             }
             "action" -> {
                 val intent = parseIntent(payload.get("intent")) ?: return null
-                ActionReply(intent = intent, speakText = payload.get("speakText")?.stringOrNull() ?: "")
+                ActionReply(
+                    intent = intent,
+                    speakText = payload.get("speakText")?.stringOrNull() ?: "",
+                    asrText = asrText,
+                )
             }
             else -> null
         }

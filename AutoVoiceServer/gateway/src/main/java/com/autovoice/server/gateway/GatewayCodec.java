@@ -43,7 +43,7 @@ public final class GatewayCodec {
             "ready", Set.of("sessionId", "language", "protocolVersion"),
             "decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs"),
             "asr_partial", Set.of("sessionId", "text", "isFinal"),
-            "reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId"),
+            "reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText"),
             "error", Set.of("sessionId", "code", "message", "segmentId"),
             "bye", Set.of("sessionId", "reason"));
 

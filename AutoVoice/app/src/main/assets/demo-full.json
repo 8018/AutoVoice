@@ -1,6 +1,5 @@
 {
   "mode": "full",
-  "testAudio": "cloud-test.pcm",
   "vad": {
     "threshold": 0.5,
     "minSpeechMs": 64,

@@ -185,7 +185,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             result = st.pipeline.handleSegment(pcm, st.ctx, st.utteranceId);
         } catch (RuntimeException e) {
             // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
-            result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null);
+            result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
         }
         for (DecisionEntry entry : st.pendingDecisions) {
             send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
@@ -194,9 +194,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         sendReply(session, st, result);
     }
 
-    /** 下行收敛：恒 kind=audio（mime/dataBase64/speakText/intent，null 省略）；wavAudio 为 null 时降级 kind=text（仅 speakText）。 */
+    /**
+     * 下行收敛：恒 kind=audio（mime/dataBase64/speakText/intent，null 省略）；wavAudio 为 null 时降级
+     * kind=text（仅 speakText）。asrText（Task 61：云端 ASR 识别文本，端侧云端胜出时写进识别区）非空时附带。
+     */
     private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result) {
         Map<String, Object> payload = new LinkedHashMap<>();
+        if (result.asrText() != null && !result.asrText().isBlank()) {
+            payload.put("asrText", result.asrText());
+        }
         if (result.wavAudio() != null) {
             payload.put("kind", "audio");
             payload.put("mime", MIME_WAV);

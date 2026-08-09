@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.autovoice.app.BuildConfig
 import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.audio.SystemTtsFallback
 import com.autovoice.app.audio.TtsPlayer
@@ -17,6 +18,7 @@ import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.SessionState
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -77,6 +79,11 @@ data class UiState(
     val lastRecognizedText: String? = null,
     /** 最近一次回复播报文本（Task 53：云端 AudioReply.speakText 或本地文本播报）。 */
     val lastReplyText: String? = null,
+    /**
+     * 最近一次竞速胜出方（Task 61：UI 标志「端侧胜出 / 云端胜出」；端侧仲裁决策
+     * arbiter=on-device 时按 route 更新，null = 尚无结果）。
+     */
+    val lastWinner: String? = null,
 )
 
 /**
@@ -178,6 +185,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val cloudSegments = recorder.finishSegments()
         for (seg in cloudSegments) engine.onCloudSegment(seg)
         if (denoised.size >= MIN_SEGMENT_BYTES) {
+            dumpLocalSegment(denoised) // Task 58 诊断：本地整段落盘，验证真实麦克风音频进了链路
             engine.onTurnSegment(denoised)
         } else {
             // 瞬时噪声/误触：不送识别不打扰
@@ -232,10 +240,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ------------------------------------------------------------------ Task 20 接线点
 
     /**
-     * 仲裁器 sink：仲裁结果只打 logcat（Task 53：不再上屏，界面留给识别/回复）。
-     * 格式对齐原 UI 行：HH:mm:ss.SSS · 仲裁 arbiter → route: reason。
+     * 仲裁器 sink：仲裁结果只打 logcat（Task 53：不再上屏，界面留给识别/回复）；
+     * Task 61 补「胜出方」UI 标志：仅端侧仲裁决策（arbiter=on-device）映射 route
+     * （local → 端侧 / cloud → 云端），云端决策（arbiter=cloud）与兜底不覆盖。
+     * 日志格式对齐原 UI 行：HH:mm:ss.SSS · 仲裁 arbiter → route: reason。
      */
     internal fun addDecision(entry: DecisionEntry) {
+        if (entry.arbiter == "on-device") {
+            _uiState.update {
+                it.copy(lastWinner = when (entry.route) {
+                    "cloud" -> WINNER_CLOUD
+                    else -> WINNER_LOCAL
+                })
+            }
+        }
         val time = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
             .format(Instant.ofEpochMilli(entry.timestampMs)
                 .atZone(ZoneId.systemDefault()).toLocalTime())
@@ -261,6 +279,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             offset += b.size
         }
         return out
+    }
+
+    /**
+     * 诊断落盘（Task 58 联调）：debug 构建把本地链路整段降噪 PCM（16k 单声道 PCM16）
+     * 写 app 私有目录（免存储权限），adb pull 分析真实麦克风信号电平/内容。
+     * release 构建零开销（常量折叠）。失败静默（仅日志），不阻断识别。
+     */
+    private fun dumpLocalSegment(pcm: ByteArray) {
+        if (!BuildConfig.DEBUG) return
+        runCatching {
+            val f = File(getApplication<Application>().filesDir, "local-${System.currentTimeMillis()}.pcm")
+            f.writeBytes(pcm)
+            Log.i(TAG, "本地整段落盘: ${f.absolutePath} (${pcm.size}B ≈ ${pcm.size / 32}ms)")
+        }.onFailure { Log.w(TAG, "本地整段落盘失败（静默）", it) }
     }
 
     /**
@@ -372,5 +404,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         /** 最小语音段字节数（300ms @16k 16bit = 9600B；瞬时误触发过滤）。 */
         const val MIN_SEGMENT_BYTES = 9_600
+
+        /** 竞速胜出方 UI 标志文本（Task 61）。 */
+        const val WINNER_LOCAL = "端侧"
+        const val WINNER_CLOUD = "云端"
     }
 }
