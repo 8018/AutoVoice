@@ -6,6 +6,19 @@ server:
 autovoice:
   arbitration:
     safety-timeout-ms: 6500
+    offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）
+  offline:
+    # 服务器 .env 设 AUTOVOICE_OFFLINE_ENABLED=true 开启（未设时与旧链路一致）
+    enabled: ${AUTOVOICE_OFFLINE_ENABLED:false}
+    asr-fail-wait-ms: 2000   # ASR 失败后等离线结果窗口（asr_failed_fallback 前）
+    sdk:
+      lib-path: /opt/autovoice/iflytek-offline/libautovoice_offline_esr.so
+      resource-dir: /opt/autovoice/iflytek-offline/resource
+      work-dir: /opt/autovoice/iflytek-offline/work
+      fsa-path: /opt/autovoice/iflytek-offline/cn_fsa.txt
+      license-file: ${AUTOVOICE_OFFLINE_LICENSE_FILE:}   # 空 → 联网激活（authType=0）
+  tts:
+    cache-dir: /opt/autovoice/tts-cache   # 磁盘持久缓存（cache HIT 秒回）
   providers:
     llm: deepseek       # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）

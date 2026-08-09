@@ -11,6 +11,18 @@ spring:
 autovoice:
   arbitration:
     safety-timeout-ms: 6500
+    offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）
+  offline:
+    enabled: ${AUTOVOICE_OFFLINE_ENABLED:false}   # 阿里云部署置 true；Mac 本地保持 false（老链路）
+    asr-fail-wait-ms: 2000   # ASR 失败后等离线结果窗口（asr_failed_fallback 前）
+    sdk:
+      lib-path: ${AUTOVOICE_OFFLINE_LIB_PATH:}
+      resource-dir: ${AUTOVOICE_OFFLINE_RESOURCE_DIR:}
+      work-dir: ${AUTOVOICE_OFFLINE_WORK_DIR:}
+      fsa-path: ${AUTOVOICE_OFFLINE_FSA_PATH:}
+      license-file: ${AUTOVOICE_OFFLINE_LICENSE_FILE:}
+  tts:
+    cache-dir: ${AUTOVOICE_TTS_CACHE_DIR:}   # 空 → 仅内存缓存
   providers:
     llm: deepseek        # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）

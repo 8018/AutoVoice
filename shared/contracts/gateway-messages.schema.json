@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -183,6 +183,36 @@
               "required": ["kind", "intent", "speakText"]
             }
           ]
+        }
+      }
+    },
+    {
+      "title": "tts_request (client -> server, TTS 解耦 v1.1)",
+      "properties": {
+        "type": { "const": "tts_request" },
+        "payload": {
+          "type": "object",
+          "required": ["text"],
+          "properties": {
+            "text": { "type": "string" },
+            "segmentId": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "tts_response (server -> client, TTS 合成结果)",
+      "properties": {
+        "type": { "const": "tts_response" },
+        "payload": {
+          "type": "object",
+          "required": ["mime", "dataBase64"],
+          "properties": {
+            "mime": { "type": "string" },
+            "dataBase64": { "type": "string" },
+            "text": { "type": "string" },
+            "segmentId": { "type": "string" }
+          }
         }
       }
     },

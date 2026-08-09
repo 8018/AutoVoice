@@ -1,0 +1,9 @@
+{
+  "type": "tts_response",
+  "payload": {
+    "mime": "audio/wav",
+    "dataBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
+    "text": "好的，空调已打开",
+    "segmentId": "tts-1"
+  }
+}

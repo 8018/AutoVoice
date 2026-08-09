@@ -29,7 +29,9 @@
 | `ready` | 服务端 → 客户端 | 握手成功，服务端就绪 |
 | `decision` | 服务端 → 客户端 | 决策日志事件：本次请求由谁仲裁、走哪条路线及原因 |
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
-| `reply` | 服务端 → 客户端 | 最终回复（文本 / 音频 / 动作意图） |
+| `reply` | 服务端 → 客户端 | 最终回复（文本 / 动作意图；**TTS 解耦后不再携带音频**） |
+| `tts_request` | 客户端 → 服务端 | 独立 TTS 请求：按文本合成播报音频（§3.4） |
+| `tts_response` | 服务端 → 客户端 | TTS 合成结果：音频数据（§4.6） |
 | `error` | 服务端 → 客户端 | 错误通知 |
 | `bye` | 服务端 → 客户端 | 服务端主动结束会话 |
 
@@ -44,7 +46,7 @@
   "type": "hello",
   "payload": {
     "client": "autovoice-android",
-    "protocolVersion": "1.0",
+    "protocolVersion": "1.1",
     "sessionId": "demo-1"
   }
 }
@@ -55,7 +57,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `client` | string | 客户端标识，如 `autovoice-android` |
-| `protocolVersion` | string | 协议版本，当前 `"1.0"` |
+| `protocolVersion` | string | 协议版本，当前 `"1.1"`（v1.1：TTS 解耦——reply 不再携带音频，新增 `tts_request`/`tts_response`） |
 | `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；携带时服务端优先采纳，未登记的会话自动创建 |
 
 ### 3.2 audio_start
@@ -105,6 +107,27 @@
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
 | `durationMs` | integer | 本段录音时长（毫秒） |
+
+### 3.4 tts_request
+
+**TTS 解耦（v1.1）**：播报音频由客户端按文本**另行请求**，与话语的识别/仲裁完全解耦——
+设备收到 `reply` 后执行 `intent`（若为 action），再按回复文本发 `tts_request` 获取音频播放。
+服务端合成失败走 `error`（code `TTS_FAILED`），**不关闭连接**。
+
+```json
+{
+  "type": "tts_request",
+  "payload": {
+    "text": "好的，空调已打开",
+    "segmentId": "tts-1"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `text` | string（必填） | 待合成文本（UTF-8，即 reply 的 `speakText` / `text`） |
+| `segmentId` | string（可选） | 客户端生成的对账 ID；非空时在 `tts_response` 与失败 `error` 中原样回显 |
 
 ## 4. 服务端 → 客户端消息
 
@@ -169,46 +192,17 @@
 
 ### 4.4 reply
 
-最终的回复，按 `kind` 分三种形态：
+最终的回复，按 `kind` 分两种形态（**TTS 解耦（v1.1）：下行只携带语义，不再携带音频**——
+播报音频由客户端按回复文本另发 `tts_request` 获取，见 §3.4 / §4.6）：
 
-- `text`：纯文本回复（可含 `speakText` 供 TTS 朗读）。
-- `audio`：音频回复，携带 `mime` 与 `dataBase64`（网关下行主形态，另携带 `speakText` 与可选 `intent`）。
 - `action`：动作意图回复，携带结构化 `intent`（可执行动作 + 槽位）与 `speakText`。
+- `text`：纯文本回复（闲聊 / 兜底 / 降级），**`text` 与 `speakText` 同带**（客户端对 `kind=text`
+  强读 `text` 字段，缺失会丢回复）。
 
-> **下行收敛（网关）**：云端网关对 `text` / `action` 回复统一合成音频并下行 **`kind=audio`**，
-> payload 携带 `mime` / `dataBase64` / `speakText` / `intent`——`intent` 为 null 时省略字段（不发送 null），
-> `speakText` 为 null 时同样省略；`audio` 形态（TTS 链路直接产物）则 `dataBase64` 直通。
-> 音频超过 64KB 的 Base64 也一次消息下发，不分帧。
-> **唯一例外（降级路径，spec §7.2）**：TTS 合成失败（或 ASR 失败兜底）时下行降级为 `kind=text`
-> （仅 `speakText`，无 `text` / `mime` / `dataBase64` 字段），客户端按屏幕显示文本处理。
-
-`reply/text`：
-
-```json
-{
-  "type": "reply",
-  "payload": {
-    "kind": "text",
-    "text": "已为您把空调调到24度",
-    "speakText": "已为您把空调调到24度"
-  }
-}
-```
-
-`reply/audio`（与 `shared/fixtures/gateway-reply-audio.json` 一致）：
-
-```json
-{
-  "type": "reply",
-  "payload": {
-    "kind": "audio",
-    "mime": "audio/wav",
-    "dataBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
-    "speakText": "已为您把空调调到24度",
-    "segmentId": "seg-1"
-  }
-}
-```
+> **下行收敛（网关）**：云端网关按语义产出 `action` / `text` 两形态；`asrText`（识别文本，
+> 离线命令命中时为离线原文，供客户端云端胜出时写入识别区）非空时附带；`segmentId`（§3.2）
+> 非空时原样回显；`intent` 为 null 时省略字段（不发送 null）。**协议层不再下发 `kind=audio`**
+> （音频见 `tts_response`；客户端对 `audio` 的解析保留为防御分支）。
 
 `reply/action`（与 `shared/fixtures/gateway-reply-action.json` 一致）：
 
@@ -226,9 +220,25 @@
         "zone": { "type": "enum", "value": "driver" }
       },
       "confidence": 0.95,
-      "source": "nlu.iflytek.api"
+      "source": "llm.deepseek"
     },
-    "speakText": "已为您把空调调到24度",
+    "speakText": "好的，空调温度已调到24度",
+    "asrText": "把空调调到二十四度",
+    "segmentId": "seg-1"
+  }
+}
+```
+
+`reply/text`：
+
+```json
+{
+  "type": "reply",
+  "payload": {
+    "kind": "text",
+    "text": "今天天气不错",
+    "speakText": "今天天气不错",
+    "asrText": "今天天气怎么样",
     "segmentId": "seg-1"
   }
 }
@@ -236,13 +246,12 @@
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `kind` | string（必填） | `text` / `audio` / `action` |
-| `text` | string | 仅 `text`：回复文本 |
-| `speakText` | string | 供 TTS 朗读的文本（`text` 与 `action` 必填；网关下行的 `audio` 亦携带，`audio` 形态本身无） |
-| `mime` | string | 仅 `audio`：媒体类型，如 `audio/wav` |
-| `dataBase64` | string | 仅 `audio`：音频数据的 Base64 编码 |
-| `intent` | object | `action` 必填；网关下行的 `audio` 可选携带（为 null 时省略字段，不发送 null），字段见下 |
-| `segmentId` | string（可选） | 回显对应 `audio_start` 携带的 `segmentId`（§3.2）；未携带时省略，三种 `kind` 均可带 |
+| `kind` | string（必填） | `action` / `text` |
+| `text` | string | 仅 `text`：回复文本（客户端强读；与 `speakText` 同带） |
+| `speakText` | string | 供 TTS 朗读的文本（`action` 与 `text` 均必填） |
+| `intent` | object | `action` 必填；字段见下 |
+| `asrText` | string（可选） | 识别文本（ASR 结果；离线命令命中时为离线原文） |
+| `segmentId` | string（可选） | 回显对应 `audio_start` 携带的 `segmentId`（§3.2）；未携带时省略 |
 
 `intent` 对象字段（与 `shared/contracts/intent.schema.json` 一致）：
 
@@ -258,7 +267,8 @@
 
 ### 4.5 error
 
-处理失败时发送，随消息附错误码与人类可读说明；发送 `error` 后连接由服务端关闭（或跟随 `bye`）。
+处理失败时发送，随消息附错误码与人类可读说明。多数 `error` 发送后连接由服务端关闭（或跟随 `bye`）；
+**例外：`TTS_FAILED`（§3.4 独立 TTS 链路失败）不关闭连接**，客户端可重试或稍后继续其他请求。
 
 ```json
 {
@@ -275,11 +285,35 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID（已握手时） |
-| `code` | string | 机器可读错误码（如 `BAD_HELLO` / `ASR_FAILED` / `NLU_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
+| `code` | string | 机器可读错误码（如 `BAD_HELLO` / `ASR_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
 | `message` | string | 人类可读错误说明 |
-| `segmentId` | string（可选） | 回显当前话语的 `segmentId`（§3.2）；`audio_start` 未携带时省略。端侧据此丢弃他轮（上一轮）迟到的 `error` |
+| `segmentId` | string（可选） | 回显当前话语的 `segmentId`（§3.2，`tts_request` 失败时回显其 `segmentId`）；未携带时省略。端侧据此丢弃他轮（上一轮）迟到的 `error` |
 
-### 4.6 bye
+### 4.6 tts_response
+
+`tts_request` 的合成结果。音频数据随消息一次下发（不分帧）；服务端有缓存时命中直接回放
+（本地日志 `TTS cache HIT`）。
+
+```json
+{
+  "type": "tts_response",
+  "payload": {
+    "mime": "audio/wav",
+    "dataBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=",
+    "text": "好的，空调已打开",
+    "segmentId": "tts-1"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `mime` | string（必填） | 媒体类型，如 `audio/wav` |
+| `dataBase64` | string（必填） | 音频数据的 Base64 编码 |
+| `text` | string（可选） | 回显请求文本（客户端按话语对账） |
+| `segmentId` | string（可选） | 回显 `tts_request` 携带的 `segmentId`（§3.4）；未携带时省略 |
+
+### 4.7 bye
 
 服务端主动结束会话（正常完成一轮对话、收到 `error` 后、或空闲超时）时发送，随后关闭连接。客户端不应再发送任何消息。
 
@@ -321,7 +355,7 @@
      │ ─────────────────────────────────────────────────► │
      │ 7. 文本帧 decision（决策日志事件，必发）            │
      │ ◄───────────────────────────────────────────────── │
-     │ 8. 文本帧 reply（text | audio | action）            │
+     │ 8. 文本帧 reply（action | text，无音频）            │
      │ ◄───────────────────────────────────────────────── │
      │ 9. 文本帧 bye（服务端关闭连接）                     │
      │ ◄───────────────────────────────────────────────── │
@@ -332,7 +366,10 @@
 1. **连接**：客户端发起 WS 连接 → 发 `hello`；服务端校验后回 `ready`。`ready` 之前客户端不得发送音频帧。
 2. **录音段**：客户端发 `audio_start`（携带 PCM 参数）→ 连续发送二进制音频帧 → 发 `audio_end`。录音期间服务端可持续下发 `asr_partial`。
 3. **结果**：服务端完成 ASR / 仲裁 / 回复生成后，先发 `decision`（日志事件，两端对齐），再发最终 `reply`，最后 `bye` 关闭连接。
-4. 异常路径：任意阶段失败，服务端发 `error`（随后 `bye`）或直接 `bye`。
+4. **TTS 解耦（v1.1）**：设备收到 `reply` 后（action 先执行 `intent`），按 `speakText` 另发
+   `tts_request` 获取播报音频——该请求与话语的识别/仲裁**完全独立**，可随时发起（任意轮之间）：
+   `tts_request` → `tts_response`；合成失败 → `error`（`TTS_FAILED`，不关连接）。
+5. 异常路径：任意阶段失败，服务端发 `error`（随后 `bye`）或直接 `bye`（`TTS_FAILED` 除外，见 §4.5）。
 
 ## 6. 决策日志事件（decision）规范
 
@@ -361,15 +398,17 @@
 
 ### 6.1 云端仲裁（arbiter = `cloud`）的 reason 取值
 
+云端链路为**双候选竞速**：离线命令识别（route `nlu-traditional`）与 ASR→LLM（route `llm`）并行，
+离线命中立即胜出；LLM 到达后起 1.5s 宽限期（`offline-grace-ms`）等离线——宽限期内离线命中则
+离线胜出，到点离线无结果则 LLM 胜出（离线已完成时 LLM 立即胜出）。
+
 | reason | 含义 |
 | --- | --- |
-| `nlu_first` | NLU 优先：NLU 在等待窗口内先返回且命中，走传统 NLU（`nlu-traditional`） |
-| `llm_first_wait_nlu_arrived` | LLM 先返回，等待窗口内 NLU 结果随后到达，最终采用 LLM（`llm`） |
-| `nlu_rejected_use_llm` | NLU 先返回但被拒绝（置信度过低或意图不在白名单），改用 LLM（`llm`） |
-| `llm_first_wait_timeout` | LLM 先返回，等待 NLU 超时，采用 LLM（`llm`） |
+| `offline_won` | 离线命令命中（规则映射非 unknown）立即胜出，走传统链路（`nlu-traditional`） |
+| `llm_reply` | LLM 胜出：离线未命中 / 宽限期超时 / 离线已完成时 LLM 到达（`llm`） |
 | `safety_timeout` | 安全超时兜底：整体处理超时，采用当时已产生的可用结果 |
-| `asr_failed_fallback` | ASR 识别失败（或识别结果为空），走兜底话术，不合成音频（`cloud`） |
-| `arbitration_failed_fallback` | 仲裁调用异常，走兜底话术，不合成音频（`cloud`） |
+| `asr_failed_fallback` | ASR 识别失败（或识别结果为空）且离线窗口内无命中，走兜底话术（`cloud`） |
+| `arbitration_failed_fallback` | 仲裁调用异常，走兜底话术（`cloud`） |
 
 ### 6.2 端侧仲裁（arbiter = `on-device`）的 reason 取值
 
@@ -380,7 +419,7 @@
 | `both_failed` | 两侧均失败，无可用结果（`route` 记录最后尝试的路线） |
 | `cloud_unreachable` | 云端不可达（断网 / 握手失败），直接采用本地（`local`） |
 
-> 与 `route` 的对应关系：`nlu_first` → `nlu-traditional`；`llm_first_*` / `nlu_rejected_use_llm` → `llm`；`cloud_won` → `cloud`；`cloud_timeout_use_local` / `cloud_unreachable` → `local`。
+> 与 `route` 的对应关系：`offline_won` → `nlu-traditional`；`llm_reply` → `llm`；`cloud_won` → `cloud`；`cloud_timeout_use_local` / `cloud_unreachable` → `local`。
 
 ## 7. 消息字段与 schema / fixtures 的对应
 

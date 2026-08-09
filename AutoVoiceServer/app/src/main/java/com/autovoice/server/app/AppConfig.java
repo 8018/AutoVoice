@@ -8,10 +8,12 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.offlinecommand.NativeOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.AliyunTtsProvider;
+import com.autovoice.server.ttsgateway.CachedTtsProvider;
 import okhttp3.OkHttpClient;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -34,9 +36,10 @@ public class AppConfig {
 
     /** {@code autovoice.*} 配置（constructor binding）。 */
     @ConfigurationProperties(prefix = "autovoice")
-    public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets) {
+    public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
+                                      Offline offline, Tts tts) {
 
-        public record Arbitration(long safetyTimeoutMs) {
+        public record Arbitration(long safetyTimeoutMs, long offlineGraceMs) {
         }
 
         public record Providers(String llm, String asr, String tts) {
@@ -46,6 +49,22 @@ public class AppConfig {
         public record Secrets(String xfyunAppid, String xfyunApiKey, String xfyunApiSecret,
                               String deepseekApiKey, String aliyunAk, String aliyunSk,
                               String aliyunNlsAppkey, String dashscopeApiKey) {
+        }
+
+        /**
+         * 离线命令词链路（S1 起加入）：默认关闭（Mac 本地跑老链路）；阿里云
+         * 部署时 {@code AUTOVOICE_OFFLINE_ENABLED=true}。sdk 路径非 secret，随
+         * application-demo-full.yml 固定于 /opt/autovoice/iflytek-offline/。
+         */
+        public record Offline(boolean enabled, long asrFailWaitMs, Sdk sdk) {
+
+            public record Sdk(String libPath, String resourceDir, String workDir,
+                              String fsaPath, String licenseFile) {
+            }
+        }
+
+        /** TTS 播报链路：cacheDir 为空 → 仅内存缓存（本地默认）；部署时可指磁盘目录持久缓存。 */
+        public record Tts(String cacheDir) {
         }
     }
 
@@ -115,22 +134,47 @@ public class AppConfig {
             throw new IllegalArgumentException(
                     "unknown providers.tts: " + props.providers().tts() + " (aliyun)");
         }
-        return new AliyunTtsProvider(client, props.secrets().dashscopeApiKey(),
+        TtsProvider delegate = new AliyunTtsProvider(client, props.secrets().dashscopeApiKey(),
                 AliyunTtsProvider.DEFAULT_ENDPOINT);
+        String cacheDir = props.tts().cacheDir();
+        if (cacheDir == null || cacheDir.isBlank()) {
+            return new CachedTtsProvider(delegate); // 仅内存缓存
+        }
+        return new CachedTtsProvider(delegate, java.nio.file.Path.of(cacheDir));
+    }
+
+    /** 仅 Linux x86-64 上可用原生离线识别（JNI 桥 .so）；其余平台一律 Noop。 */
+    private static boolean isLinuxX86_64() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        return os.contains("linux") && (arch.equals("amd64") || arch.equals("x86_64"));
     }
 
     /**
-     * 离线命令链：S3 暂以 Noop 装配（离线未启用，与改造前行为一致）；
-     * S5 按 {@code autovoice.offline.enabled} 切换 Native/Noop。
+     * 离线命令链（可开关，默认关）：{@code offline.enabled=true} 且 Linux x86-64 →
+     * Native SDK（讯飞离线命令词，凭据复用 XFYUN_APPID/API_KEY/API_SECRET 环境变量，
+     * 值不打印）；否则 Noop（与改造前行为一致）。构造异常降级为 Noop，绝不崩服务。
      */
     @Bean
-    public OfflineCommandService offlineCommandService() {
-        return new OfflineCommandService(new NoopOfflineCommandProvider());
+    public OfflineCommandService offlineCommandService(AutovoiceProperties props) {
+        if (!props.offline().enabled() || !isLinuxX86_64()) {
+            return new OfflineCommandService(new NoopOfflineCommandProvider());
+        }
+        AutovoiceProperties.Offline.Sdk sdk = props.offline().sdk();
+        try {
+            return new OfflineCommandService(new NativeOfflineCommandProvider(
+                    sdk.libPath(), sdk.resourceDir(), sdk.workDir(), sdk.fsaPath(), sdk.licenseFile(),
+                    props.secrets().xfyunAppid(), props.secrets().xfyunApiKey(),
+                    props.secrets().xfyunApiSecret()));
+        } catch (Throwable t) {
+            LOG.error("offline command init failed, degraded to Noop: {}", String.valueOf(t.getMessage()));
+            return new OfflineCommandService(new NoopOfflineCommandProvider());
+        }
     }
 
     /**
-     * 网关 WS 处理器：仲裁参数来自配置（safetyTimeoutMs）；每连接的
-     * RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出，无需 app 级关闭）。
+     * 网关 WS 处理器：仲裁参数（safety / offline 宽限期）与 ASR 失败等离线窗口
+     * 均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
      */
     @Bean
     public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
@@ -138,6 +182,9 @@ public class AppConfig {
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props) {
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
-                props.arbitration().safetyTimeoutMs(), 2000);
+                props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
+                props.arbitration().offlineGraceMs());
     }
+
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);
 }

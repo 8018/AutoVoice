@@ -60,6 +60,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     public static final String DEFAULT_LANGUAGE = "zh-CN";
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
+    private static final long DEFAULT_OFFLINE_GRACE_MS = 1500;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AsrProvider asr;
@@ -69,6 +70,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private final SessionRegistry registry;
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
+    private final long offlineGraceMs;
 
     /** 各连接共用的仲裁计时线程池（daemon，demo 规模足够）。 */
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
@@ -80,15 +82,22 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
-    /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s）。 */
+    /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）。 */
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry) {
-        this(asr, llm, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS);
+        this(asr, llm, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS,
+                DEFAULT_OFFLINE_GRACE_MS);
     }
 
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs) {
+        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, DEFAULT_OFFLINE_GRACE_MS);
+    }
+
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs) {
         this.asr = asr;
         this.llm = llm;
         this.tts = tts;
@@ -96,6 +105,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         this.registry = registry;
         this.safetyTimeoutMs = safetyTimeoutMs;
         this.asrFailWaitMs = asrFailWaitMs;
+        this.offlineGraceMs = offlineGraceMs;
     }
 
     @Override
@@ -315,7 +325,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private final class ConnectionState {
         final List<DecisionEntry> pendingDecisions = new ArrayList<>();
         final DecisionSink sink = pendingDecisions::add;
-        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, scheduler, sink);
+        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink);
         final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;

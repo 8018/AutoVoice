@@ -1,0 +1,7 @@
+{
+  "type": "tts_request",
+  "payload": {
+    "text": "好的，空调已打开",
+    "segmentId": "tts-1"
+  }
+}
