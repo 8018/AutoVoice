@@ -15,6 +15,8 @@ import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.AliyunTtsProvider;
 import com.autovoice.server.ttsgateway.CachedTtsProvider;
 import okhttp3.OkHttpClient;
+
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -37,7 +39,12 @@ public class AppConfig {
     /** {@code autovoice.*} 配置（constructor binding）。 */
     @ConfigurationProperties(prefix = "autovoice")
     public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
-                                      Offline offline, Tts tts) {
+                                      Offline offline, Tts tts, Gateway gateway) {
+
+        /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32。 */
+        public AutovoiceProperties {
+            gateway = gateway == null ? new Gateway(false, Map.of(), 32) : gateway;
+        }
 
         public record Arbitration(long safetyTimeoutMs, long offlineGraceMs) {
         }
@@ -65,6 +72,20 @@ public class AppConfig {
 
         /** TTS 播报链路：cacheDir 为空 → 仅内存缓存（本地默认）；部署时可指磁盘目录持久缓存。 */
         public record Tts(String cacheDir) {
+        }
+
+        /**
+         * 接入网关策略（多设备加固 M1）：auth-enabled 默认 false（本地裸连兼容）；devices 为
+         * {@code {deviceId: token}} 表（env 注入 JSON map，如
+         * {@code AUTOVOICE_GATEWAY_AUTH_DEVICES={"demo-1":"..."}}，值不打印）；max-connections
+         * 默认 32，超限新连接 close(4001)。
+         */
+        public record Gateway(boolean authEnabled, Map<String, String> authDevices, int maxConnections) {
+
+            public Gateway {
+                authDevices = authDevices == null ? Map.of() : authDevices;
+                maxConnections = maxConnections < 1 ? 32 : maxConnections;
+            }
         }
     }
 
@@ -173,17 +194,18 @@ public class AppConfig {
     }
 
     /**
-     * 网关 WS 处理器：仲裁参数（safety / offline 宽限期）与 ASR 失败等离线窗口
-     * 均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
+     * 网关 WS 处理器：仲裁参数（safety / offline 宽限期）、ASR 失败等离线窗口与接入策略
+     * （鉴权/连接上限，M1）均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
      */
     @Bean
     public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props) {
+        AutovoiceProperties.Gateway g = props.gateway();
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
                 props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
-                props.arbitration().offlineGraceMs());
+                props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevices(), g.maxConnections());
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);

@@ -1,9 +1,15 @@
-# demo-full profile：完整云端 demo 配置（端口 8080，WS 端点 /ws）。
+# demo-full profile：完整云端 demo 配置（端口 ${AUTOVOICE_PORT:8080}，WS 端点 /ws）。
 # secrets 从环境变量注入（XFYUN_APPID / XFYUN_API_KEY / XFYUN_API_SECRET /
 # DEEPSEEK_API_KEY / DASHSCOPE_API_KEY；ALIYUN_* 仅 asr=aliyun 时需要）。
 server:
-  port: 8080
+  port: ${AUTOVOICE_PORT:8080}
 autovoice:
+  gateway:
+    auth-enabled: ${AUTOVOICE_GATEWAY_AUTH_ENABLED:false}   # 多设备加固 M1；阿里云部署置 true
+    # 设备表 {deviceId: token}（JSON map，如 AUTOVOICE_GATEWAY_AUTH_DEVICES='{"demo-1":"..."}'）：
+    # 不在 yml 声明（占位符空串无法绑定 Map）——env 变量按宽松绑定自动映射到 gateway.auth-devices，
+    # 未配置时绑定 null → record 默认空表
+    max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
   arbitration:
     safety-timeout-ms: 6500
     offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）

@@ -81,6 +81,17 @@ class GatewayCodecTest {
     }
 
     @Test
+    void decodesHelloWithOptionalAuthFields() {
+        // M1 多设备加固：hello 可选携带 deviceId/authToken（协议必需字段不变，鉴权在 handler 按配置校验）
+        Map<String, Object> msg = GatewayCodec.decode("""
+                {"type":"hello","payload":{"client":"autovoice-android","protocolVersion":"1.1","deviceId":"demo-1","authToken":"tok"}}
+                """);
+        Map<?, ?> payload = (Map<?, ?>) msg.get("payload");
+        assertEquals("demo-1", payload.get("deviceId"));
+        assertEquals("tok", payload.get("authToken"));
+    }
+
+    @Test
     void decodeIsLenientOnUnknownFields() {
         // 宽松解析：extra 字段透传，不拒绝
         Map<String, Object> msg = GatewayCodec.decode("""

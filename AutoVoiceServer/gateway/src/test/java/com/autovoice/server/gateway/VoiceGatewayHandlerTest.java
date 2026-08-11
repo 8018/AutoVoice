@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -303,6 +304,69 @@ class VoiceGatewayHandlerTest {
         assertEquals("BAD_HELLO", error.get("payload").get("code").asText());
     }
 
+    // ---------- 接入策略（M1）：鉴权 / 连接上限 ----------
+
+    @Test
+    void authEnabledWithValidTokenGetsReady() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("demo-1", "tok")));
+
+        assertEquals(1, s.sent.size());
+        assertEquals("ready", parse(s.sent.get(0)).get("type").asText());
+        assertNull(s.closeStatus, "鉴权通过不应关闭连接");
+    }
+
+    @Test
+    void authEnabledWithWrongTokenRejectsWithBadAuth() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("demo-1", "wrong")));
+
+        assertEquals(1, s.sent.size());
+        JsonNode error = parse(s.sent.get(0));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("BAD_AUTH", error.get("payload").get("code").asText());
+        assertNotNull(s.closeStatus, "鉴权失败应关闭连接");
+        assertEquals(4001, s.closeStatus.getCode());
+    }
+
+    @Test
+    void authEnabledRejectsLegacyHelloWithoutCredentials() {
+        // 共享 fixture 的 hello（无 deviceId/authToken）在鉴权开启时应被拒——旧客户端需升级
+        VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(TestFixtures.HELLO_JSON));
+
+        JsonNode error = parse(s.sent.get(0));
+        assertEquals("BAD_AUTH", error.get("payload").get("code").asText());
+        assertEquals(4001, s.closeStatus.getCode());
+    }
+
+    @Test
+    void authDisabledAcceptsLegacyHello() {
+        // 鉴权默认关：fixture 老 hello 裸连兼容（现有全部测试路径回归）
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(TestFixtures.HELLO_JSON));
+        assertEquals("ready", parse(s.sent.get(0)).get("type").asText());
+        assertNull(s.closeStatus);
+    }
+
+    @Test
+    void connectionLimitRejectsAdditionalConnection() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 1);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("demo-1", "tok")));
+        assertEquals("ready", parse(first.sent.get(0)).get("type").asText(), "第一条连接正常握手");
+
+        StubSession second = open(h);
+        assertNotNull(second.closeStatus, "超限连接应被服务端关闭");
+        assertEquals(4001, second.closeStatus.getCode());
+        assertEquals("connection limit reached", second.closeStatus.getReason());
+        assertTrue(second.sent.isEmpty(), "超限连接不应收到任何消息");
+    }
+
     // ---------- helpers ----------
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts) {
@@ -312,6 +376,18 @@ class VoiceGatewayHandlerTest {
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                            OfflineCommandService offline) {
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry, SAFETY, ASR_FAIL_WAIT);
+    }
+
+    /** 鉴权开启（M1）的 handler：设备表 + 连接上限可配。 */
+    private VoiceGatewayHandler newAuthHandler(Map<String, String> devices, int maxConnections) {
+        return new VoiceGatewayHandler(asr("x"), llm("LLM"), ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT, 1500, true, devices, maxConnections);
+    }
+
+    /** 带设备凭据的 hello（鉴权开启时的合法握手）。 */
+    private static String helloWithAuth(String deviceId, String authToken) {
+        return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\",\"protocolVersion\":\"1.1\",\"deviceId\":\""
+                + deviceId + "\",\"authToken\":\"" + authToken + "\"}}";
     }
 
     private static StubSession open(VoiceGatewayHandler h) {
@@ -379,9 +455,10 @@ class VoiceGatewayHandlerTest {
         }
     }
 
-    /** 最小 WebSocketSession stub：记录所有下行消息。 */
+    /** 最小 WebSocketSession stub：记录所有下行消息与最近一次服务端关闭（closeStatus）。 */
     private static final class StubSession implements WebSocketSession {
         final List<WebSocketMessage<?>> sent = new ArrayList<>();
+        CloseStatus closeStatus;
 
         @Override public String getId() { return "ws-1"; }
         @Override public URI getUri() { return URI.create("ws://localhost/ws"); }
@@ -398,7 +475,7 @@ class VoiceGatewayHandlerTest {
         @Override public List<WebSocketExtension> getExtensions() { return List.of(); }
         @Override public boolean isOpen() { return true; }
         @Override public void sendMessage(WebSocketMessage<?> message) throws IOException { sent.add(message); }
-        @Override public void close() throws IOException { }
-        @Override public void close(CloseStatus status) throws IOException { }
+        @Override public void close() throws IOException { close(CloseStatus.NORMAL); }
+        @Override public void close(CloseStatus status) throws IOException { this.closeStatus = status; }
     }
 }

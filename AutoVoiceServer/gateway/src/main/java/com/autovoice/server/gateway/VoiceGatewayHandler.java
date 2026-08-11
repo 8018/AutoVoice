@@ -23,6 +23,8 @@ import org.springframework.web.socket.WebSocketSession;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -32,6 +34,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 网关 WebSocket 处理器（shared/protocol.md §5 时序）：
@@ -61,7 +66,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
     private static final long DEFAULT_OFFLINE_GRACE_MS = 1500;
+    private static final int DEFAULT_MAX_CONNECTIONS = 32;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 接入策略违规（鉴权失败 / 连接数超限）统一关闭码（protocol.md §8）。 */
+    private static final CloseStatus POLICY_CLOSE = new CloseStatus(4001, "policy violation");
+
+    private static final Logger LOG = LoggerFactory.getLogger(VoiceGatewayHandler.class);
 
     private final AsrProvider asr;
     private final LlmProvider llm;
@@ -71,6 +82,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
+
+    /** 接入网关（M1）：authEnabled=false → 裸连兼容（本地）；否则 hello 须携带合法 deviceId+authToken。 */
+    private final boolean authEnabled;
+    /** 合法设备表 {@code {deviceId: token}}（值不打印，仅 MessageDigest.isEqual 比对）。 */
+    private final Map<String, String> authDevices;
+    /** 并发连接上限（含所有设备），超限新连接直接 close(4001) 不登记。 */
+    private final int maxConnections;
 
     /** 各连接共用的仲裁计时线程池（daemon，demo 规模足够）。 */
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
@@ -82,7 +100,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
-    /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）。 */
+    /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）；鉴权关、连接上限 32。 */
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry) {
         this(asr, llm, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS,
@@ -98,6 +116,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs) {
+        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                false, Map.of(), DEFAULT_MAX_CONNECTIONS);
+    }
+
+    /** 完整构造：接入策略（鉴权开关/设备表/连接上限）由 AppConfig 从 {@code autovoice.gateway.*} 注入。 */
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections) {
         this.asr = asr;
         this.llm = llm;
         this.tts = tts;
@@ -106,10 +133,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         this.safetyTimeoutMs = safetyTimeoutMs;
         this.asrFailWaitMs = asrFailWaitMs;
         this.offlineGraceMs = offlineGraceMs;
+        this.authEnabled = authEnabled;
+        this.authDevices = authDevices;
+        this.maxConnections = maxConnections;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (connections.size() >= maxConnections) {
+            LOG.warn("connection limit reached ({}), rejecting {}", maxConnections, session.getId());
+            closeQuietly(session, "connection limit reached");
+            return; // 不登记：后续消息直接走 handleMessage 的 computeIfAbsent 兜底，但连接已关
+        }
         connections.computeIfAbsent(session, s -> new ConnectionState());
     }
 
@@ -161,8 +196,26 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         return false;
     }
 
-    /** hello：SessionRegistry 取会话，不存在则新建；回 ready（sessionId 以服务端采纳为准）。 */
+    /**
+     * hello：接入策略校验（M1，authEnabled 时）→ SessionRegistry 取会话，不存在则新建 →
+     * 回 ready（sessionId 以服务端采纳为准）。鉴权失败：error(BAD_AUTH) + close(4001)。
+     */
     private void onHello(WebSocketSession session, ConnectionState st, Map<String, Object> payload) {
+        if (authEnabled) {
+            String deviceId = payload.get("deviceId") != null ? String.valueOf(payload.get("deviceId")) : null;
+            String authToken = payload.get("authToken") != null ? String.valueOf(payload.get("authToken")) : null;
+            String expected = deviceId == null ? null : authDevices.get(deviceId);
+            if (expected == null || authToken == null
+                    || !MessageDigest.isEqual(authToken.getBytes(StandardCharsets.UTF_8),
+                                              expected.getBytes(StandardCharsets.UTF_8))) {
+                LOG.warn("auth failed for deviceId={} session={}", deviceId, session.getId());
+                sendError(session, st, "BAD_AUTH", "invalid device credentials");
+                closeQuietly(session, "bad auth");
+                return;
+            }
+            st.deviceId = deviceId;
+            LOG.info("authenticated device {} session {}", deviceId, session.getId());
+        }
         if (st.ctx == null) {
             String sessionId = String.valueOf(payload.get("sessionId"));
             SessionContext ctx = registry.get(sessionId);
@@ -303,6 +356,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         }
     }
 
+    /** 接入策略关闭（4001）：send 已抛错时也尽力关；close 失败仅记日志不抛。 */
+    private static void closeQuietly(WebSocketSession session, String reason) {
+        try {
+            if (session.isOpen()) {
+                session.close(new CloseStatus(POLICY_CLOSE.getCode(), reason));
+            }
+        } catch (IOException e) {
+            LOG.warn("failed to close {}: {}", session.getId(), e.getMessage());
+        }
+    }
+
     /** 解码失败时粗判错误码：hello 消息非法 → BAD_HELLO，其余 → INTERNAL。 */
     private static String errorCodeOf(String raw) {
         try {
@@ -329,6 +393,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
+        String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）
         String utteranceId;
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
         boolean audioActive;
