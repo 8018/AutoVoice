@@ -17,6 +17,7 @@ autovoice:
     # 服务器 .env 设 AUTOVOICE_OFFLINE_ENABLED=true 开启（未设时与旧链路一致）
     enabled: ${AUTOVOICE_OFFLINE_ENABLED:false}
     asr-fail-wait-ms: 2000   # ASR 失败后等离线结果窗口（asr_failed_fallback 前）
+    pool-size: ${AUTOVOICE_OFFLINE_POOL_SIZE:2}   # 引擎池大小（M3，多设备加固）：N worker 各一独立引擎，会话级 sticky，池满快速失败降级
     sdk:
       lib-path: /opt/autovoice/iflytek-offline/libautovoice_offline_esr.so
       resource-dir: /opt/autovoice/iflytek-offline/resource

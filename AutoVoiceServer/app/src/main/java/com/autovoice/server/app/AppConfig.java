@@ -5,17 +5,21 @@ import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
 import com.autovoice.server.offlinecommand.NativeOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
+import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.AliyunTtsProvider;
 import com.autovoice.server.ttsgateway.CachedTtsProvider;
 import okhttp3.OkHttpClient;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -62,8 +66,16 @@ public class AppConfig {
          * 离线命令词链路（S1 起加入）：默认关闭（Mac 本地跑老链路）；阿里云
          * 部署时 {@code AUTOVOICE_OFFLINE_ENABLED=true}。sdk 路径非 secret，随
          * application-demo-full.yml 固定于 /opt/autovoice/iflytek-offline/。
+         *
+         * <p>M3 多设备加固：{@code poolSize} 为离线引擎池大小（默认 2，clamp ≥1）——
+         * 每个 worker 一个独立 NativeOfflineCommandProvider（各自 JNI 桥实例与串行队列），
+         * 会话级 sticky 分配、引擎间并行，池满快速失败降级 ASR/LLM（见 OfflineEnginePool）。</p>
          */
-        public record Offline(boolean enabled, long asrFailWaitMs, Sdk sdk) {
+        public record Offline(boolean enabled, long asrFailWaitMs, int poolSize, Sdk sdk) {
+
+            public Offline {
+                poolSize = poolSize < 1 ? 2 : poolSize;
+            }
 
             public record Sdk(String libPath, String resourceDir, String workDir,
                               String fsaPath, String licenseFile) {
@@ -173,8 +185,11 @@ public class AppConfig {
 
     /**
      * 离线命令链（可开关，默认关）：{@code offline.enabled=true} 且 Linux x86-64 →
-     * Native SDK（讯飞离线命令词，凭据复用 XFYUN_APPID/API_KEY/API_SECRET 环境变量，
-     * 值不打印）；否则 Noop（与改造前行为一致）。构造异常降级为 Noop，绝不崩服务。
+     * Native SDK 引擎池（M3：{@code poolSize} 个 worker 各一个 NativeOfflineCommandProvider
+     * 实例——JNI 桥能力级 init 进程内一次、识别互斥兜底，见 autovoice_offline_esr.cpp；
+     * 会话级 sticky 路由 + 池满快速失败，见 OfflineEnginePool）；否则 Noop（与改造前行为
+     * 一致）。构造异常降级为 Noop，绝不崩服务。凭据复用 XFYUN_APPID/API_KEY/API_SECRET
+     * 环境变量，值不打印。
      */
     @Bean
     public OfflineCommandService offlineCommandService(AutovoiceProperties props) {
@@ -182,11 +197,16 @@ public class AppConfig {
             return new OfflineCommandService(new NoopOfflineCommandProvider());
         }
         AutovoiceProperties.Offline.Sdk sdk = props.offline().sdk();
+        int poolSize = props.offline().poolSize();
         try {
-            return new OfflineCommandService(new NativeOfflineCommandProvider(
-                    sdk.libPath(), sdk.resourceDir(), sdk.workDir(), sdk.fsaPath(), sdk.licenseFile(),
-                    props.secrets().xfyunAppid(), props.secrets().xfyunApiKey(),
-                    props.secrets().xfyunApiSecret()));
+            List<OfflineCommandProvider> workers = new ArrayList<>(poolSize);
+            for (int i = 0; i < poolSize; i++) {
+                workers.add(new NativeOfflineCommandProvider(
+                        sdk.libPath(), sdk.resourceDir(), sdk.workDir(), sdk.fsaPath(), sdk.licenseFile(),
+                        props.secrets().xfyunAppid(), props.secrets().xfyunApiKey(),
+                        props.secrets().xfyunApiSecret()));
+            }
+            return new OfflineCommandService(new OfflineEnginePool(workers));
         } catch (Throwable t) {
             LOG.error("offline command init failed, degraded to Noop: {}", String.valueOf(t.getMessage()));
             return new OfflineCommandService(new NoopOfflineCommandProvider());

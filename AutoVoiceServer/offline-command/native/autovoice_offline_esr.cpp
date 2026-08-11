@@ -8,7 +8,14 @@
  *              报 10017）→ SpecifyDataSet(FSA, {0}) → Start → 320B 分帧 Write/Read → DataEnd
  *              → End → 取 plain 节点（GBK 原始字节；Linux 引擎 status=1，不可用 status==2 门限）
  *
- * Java 侧调用方 NativeOfflineCommandProvider 保证单线程串行（SDK 引擎非线程安全）。
+ * 多实例（M3 多设备加固）：能力级 API（AIKIT_Init / EngineInit / LoadData）进程内仅初始化
+ * 一次（std::call_once）——引擎池的 N 个 worker 各自 nativeInit 时共享同一份引擎；每次
+ * recognize 的 Start/Write/Read/End 走独立会话句柄（srHandle）。SDK 能力级 API 未验证
+ * 多会话并行（重载互扰），默认全局限识别互斥（std::mutex，安全兜底：串行但各 worker 队列
+ * 独立、Java 池可 busy 快速失败）。若服务器实测证明会话级隔离（M7.3：不重载/仅
+ * SpecifyDataSet 不报 10017 且并行不互扰），可去掉互斥与重载提升并行度——见 recognizeImpl。
+ *
+ * Java 侧调用方 NativeOfflineCommandProvider 每实例单线程串行（SDK 引擎非线程安全）。
  * 凭据（appId/apiKey/apiSecret）仅用于联网激活（authType=0）；licenseFile 非空走
  * authType=1（离线授权）。两者都不打印、不落盘。
  *
@@ -68,18 +75,23 @@ static void OnError(AIKIT_HANDLE* handle, int32_t err, const char* desc) {
     setLastError("SDK callback error %d: %s", err, desc != nullptr ? desc : "");
 }
 
-// ---- 引擎状态 ----
+// ---- 引擎状态（能力级，进程内全局一份；识别会话每次 Start 独立句柄） ----
+static std::once_flag g_initOnce;
+static jlong g_initResult = 0;                     // call_once 内一次初始化结果（0 = 失败）
 static bool g_initialized = false;
-static std::string g_fsaPath;                 // 每次 recognize 重载用
-static AIKIT_ParamBuilder* g_startParam = nullptr;  // 识别参数（构建一次，复用）
+static std::string g_fsaPath;                      // 每次 recognize 重载用
+static AIKIT_ParamBuilder* g_startParam = nullptr; // 识别参数（构建一次，复用）
+static std::mutex g_engineMutex;                   // 识别互斥（见 recognizeImpl 注释）
 
 /*
- * 初始化引擎；成功返回非 0 句柄（Java 侧仅判断 0/非 0），失败返回 0。
- * 任一步非 0 即中止并记错误（lastError() 可取描述）。
+ * 实际初始化（仅经 call_once 执行一次）；成功返回非 0 句柄（Java 侧仅判断 0/非 0），
+ * 失败返回 0。任一步非 0 即中止并记错误（lastError() 可取描述）。
+ * M3 多实例：引擎池 N 个 worker 各自 nativeInit → 各自 initEngine()，只有第一个真正
+ * 执行能力级初始化，其余共享同一份引擎（配置同源注入 AppConfig，必须一致）。
  */
-static jlong initEngine(const char* appId, const char* apiKey, const char* apiSecret,
-                        const char* workDir, const char* resourceDir, const char* fsaPath,
-                        const char* licenseFile) {
+static jlong initEngineOnce(const char* appId, const char* apiKey, const char* apiSecret,
+                            const char* workDir, const char* resourceDir, const char* fsaPath,
+                            const char* licenseFile) {
     clearLastError();
     int ret = 0;
 
@@ -177,6 +189,20 @@ static jlong initEngine(const char* appId, const char* apiKey, const char* apiSe
 }
 
 /*
+ * initEngine 入口（M3 多实例共享）：std::call_once 保证能力级初始化进程内恰好一次；
+ * 首个调用者的参数生效，后续调用直接复用结果（失败同样被记住——初始化失败不重试，
+ * 与 Java 侧 initFailed 缓存语义一致）。
+ */
+static jlong initEngine(const char* appId, const char* apiKey, const char* apiSecret,
+                        const char* workDir, const char* resourceDir, const char* fsaPath,
+                        const char* licenseFile) {
+    std::call_once(g_initOnce, [&] {
+        g_initResult = initEngineOnce(appId, apiKey, apiSecret, workDir, resourceDir, fsaPath, licenseFile);
+    });
+    return g_initResult;
+}
+
+/*
  * Write + Read 一轮；识别文本在 key 含 "plain" 的节点（GBK 原始字节）。
  * - 关键：Linux 引擎 plain 节点 status=1 而非 2（DataEnd 后随整链输出，
  *   调试确认 len=8 即 "打开空调" GBK 4 字×2B），此前 status==2 门限把它
@@ -222,9 +248,16 @@ static int collectResult(AIKIT_HANDLE* srHandle, AIKIT_DataBuilder* dataBuilder,
 
 /*
  * 识别一段 PCM（S16LE / 16kHz / 单声道）；成功返回 GBK 字节 vector，失败或无结果返回 false。
+ *
+ * M3 多实例：能力级 API（LoadData 重载 / SpecifyDataSet / Start）全局共享，SDK 未验证
+ * 多会话并行（A 的重载可能影响 B 进行中的会话）——默认全局限识别互斥（安全兜底：引擎级
+ * 串行，但各 worker 队列独立，Java 池超载快速失败，多设备互不卡死）。服务器实测（M7.3）
+ * 若证明会话级隔离（去掉重载、Start 前仅 SpecifyDataSet 不报 10017 且并行不互扰），
+ * 移除 g_engineMutex 与重载段即可引擎间并行——见文件头注释。
  */
 static bool recognizeImpl(jlong handle, const char* pcm, jsize len, std::vector<char>* out) {
     (void)handle;
+    std::lock_guard<std::mutex> lock(g_engineMutex);
     clearLastError();
     if (!g_initialized) {
         setLastError("engine not initialized");

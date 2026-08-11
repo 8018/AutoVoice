@@ -21,6 +21,7 @@ autovoice:
   offline:
     enabled: ${AUTOVOICE_OFFLINE_ENABLED:false}   # 阿里云部署置 true；Mac 本地保持 false（老链路）
     asr-fail-wait-ms: 2000   # ASR 失败后等离线结果窗口（asr_failed_fallback 前）
+    pool-size: ${AUTOVOICE_OFFLINE_POOL_SIZE:2}   # 引擎池大小（M3）：N 个 worker 各一独立引擎，会话级 sticky，池满快速失败降级
     sdk:
       lib-path: ${AUTOVOICE_OFFLINE_LIB_PATH:}
       resource-dir: ${AUTOVOICE_OFFLINE_RESOURCE_DIR:}
