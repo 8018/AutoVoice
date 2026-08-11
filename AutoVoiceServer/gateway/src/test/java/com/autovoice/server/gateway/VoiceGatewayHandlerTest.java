@@ -26,9 +26,12 @@ import java.net.URI;
 import java.security.Principal;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -83,7 +86,7 @@ class VoiceGatewayHandlerTest {
     // ---------- 接线：完整段 → decision 先行 + reply(action，无音频) ----------
 
     @Test
-    void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeActionReply() {
+    void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeActionReply() throws InterruptedException {
         byte[][] asrReceived = new byte[1][];
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrReceived[0] = pcm;
@@ -99,7 +102,7 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
-        assertEquals(3, s.sent.size(), "ready + decision + reply");
+        awaitSent(s, 3); // M2 异步化：decision/reply 由工作线程随后下发
 
         // 顺序：decision（协议 §5 第 7 步）先于 reply（第 8 步）
         JsonNode decision = parse(s.sent.get(1));
@@ -124,7 +127,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void textReplyCarriesTextAndSpeakTextOmitsIntent() {
+    void textReplyCarriesTextAndSpeakTextOmitsIntent() throws InterruptedException {
         // LLM 文本回复（闲聊）：kind=text 且 text 与 speakText 同带（端侧 parseReply 强读 text）
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM回答"), ttsOk());
         StubSession s = open(h);
@@ -133,6 +136,7 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid)));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 3);
 
         JsonNode reply = parse(s.sent.get(2));
         assertEquals("reply", reply.get("type").asText());
@@ -147,7 +151,7 @@ class VoiceGatewayHandlerTest {
     // ---------- 离线命令命中 ----------
 
     @Test
-    void offlineHitEmitsOfflineWonActionReply() {
+    void offlineHitEmitsOfflineWonActionReply() throws InterruptedException {
         // 离线识别命中（"打开空调"）→ offline_won：decision 先行，reply=action（intent + speakText）
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk(), hitOffline("打开空调"));
         StubSession s = open(h);
@@ -156,8 +160,7 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid)));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        assertEquals(3, s.sent.size());
+        awaitSent(s, 3);
         JsonNode decision = parse(s.sent.get(1));
         assertEquals("offline_won", decision.get("payload").get("reason").asText());
         assertEquals("nlu-traditional", decision.get("payload").get("route").asText());
@@ -200,7 +203,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void ttsFailureSendsTtsFailedErrorWithoutClosing() {
+    void ttsFailureSendsTtsFailedErrorWithoutClosing() throws InterruptedException {
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"),
                 (text, ctx) -> {
                     throw new RuntimeException("tts down");
@@ -219,13 +222,14 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 4);
         assertEquals(4, s.sent.size(), "TTS 失败后连接仍可继续语音轮次（ready+error+decision+reply）");
     }
 
     // ---------- 降级路径 ----------
 
     @Test
-    void asrFailureSendsFallbackDecisionAndTextReply() {
+    void asrFailureSendsFallbackDecisionAndTextReply() throws InterruptedException {
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             throw new AsrException("asr down");
         }, llm("LLM"), ttsOk());
@@ -235,8 +239,7 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid)));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        assertEquals(3, s.sent.size());
+        awaitSent(s, 3);
         JsonNode decision = parse(s.sent.get(1));
         assertEquals("asr_failed_fallback", decision.get("payload").get("reason").asText());
 
@@ -367,6 +370,78 @@ class VoiceGatewayHandlerTest {
         assertTrue(second.sent.isEmpty(), "超限连接不应收到任何消息");
     }
 
+    // ---------- audio_end 异步化（M2）：不占 WS 消息线程 + BUSY 拒收 ----------
+
+    @Test
+    void audioEndReturnsImmediatelyWhilePipelineRunsAsync() throws Exception {
+        // 慢 pipeline（ASR 阻塞在工作线程）：audio_end 立即返回，WS 线程不被占死，
+        // decision/reply 由工作线程在释放后下发（协议时序不变）
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
+            entered.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+            return "把空调调到二十四度";
+        }, llmAction(), ttsOk());
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        assertTrue(entered.await(5, TimeUnit.SECONDS), "流水线应在工作线程启动");
+        assertEquals(1, s.sent.size(), "处理中不应有 decision/reply（WS 线程未被占死，处理在后台）");
+
+        release.countDown();
+        awaitSent(s, 3);
+        assertEquals("decision", parse(s.sent.get(1)).get("type").asText());
+        assertEquals("reply", parse(s.sent.get(2)).get("type").asText());
+        assertEquals("seg-1", parse(s.sent.get(2)).get("payload").get("segmentId").asText(),
+                "异步回复应回显本段 segmentId");
+    }
+
+    @Test
+    void audioEndWhileProcessingSendsBusyError() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+            return "x";
+        }, llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        // 上一段处理中再来一轮：audio_start 正常累积 PCM，audio_end → BUSY（同步下发）
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode error = parse(s.sent.get(1));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("BUSY", error.get("payload").get("code").asText());
+        assertEquals("seg-2", error.get("payload").get("segmentId").asText(),
+                "BUSY 应回显被拒段的 segmentId");
+
+        release.countDown();
+        awaitSent(s, 4); // ready + BUSY + decision + reply
+        assertEquals("decision", parse(s.sent.get(2)).get("type").asText());
+        assertEquals("reply", parse(s.sent.get(3)).get("type").asText());
+    }
+
     // ---------- helpers ----------
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts) {
@@ -455,9 +530,19 @@ class VoiceGatewayHandlerTest {
         }
     }
 
-    /** 最小 WebSocketSession stub：记录所有下行消息与最近一次服务端关闭（closeStatus）。 */
+    /** 等待工作线程（M2 异步化）把消息补齐再断言。 */
+    private static void awaitSent(StubSession s, int n) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && s.sent.size() < n) {
+            Thread.sleep(20);
+        }
+        assertEquals(n, s.sent.size(), "5s 内应收到 " + n + " 条下行消息（异步处理）");
+    }
+
+    /** 最小 WebSocketSession stub：记录所有下行消息与最近一次服务端关闭（closeStatus）。
+     *  下行可能来自工作线程（M2 异步化），sent 必须线程安全。 */
     private static final class StubSession implements WebSocketSession {
-        final List<WebSocketMessage<?>> sent = new ArrayList<>();
+        final List<WebSocketMessage<?>> sent = Collections.synchronizedList(new ArrayList<>());
         CloseStatus closeStatus;
 
         @Override public String getId() { return "ws-1"; }

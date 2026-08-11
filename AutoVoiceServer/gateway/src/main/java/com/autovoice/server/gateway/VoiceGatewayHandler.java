@@ -25,15 +25,17 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,8 +47,9 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code hello} → 校验通过后回 {@code ready}（sessionId 由 SessionRegistry 取或新建）；</li>
  *   <li>{@code audio_start} → 记录 utteranceId（自增 {@code u-N}）并开始累积 PCM；</li>
  *   <li>二进制帧 → 累积 PCM（S16LE/16kHz/单声道，协议不校验内容）；</li>
- *   <li>{@code audio_end} → 同步执行每连接一份的 {@link SegmentPipeline#handleSegment} →
- *       先逐条下发 arbiter 的 {@code decision} 事件，再下发最终 {@code reply}（协议 §5 时序）；</li>
+ *   <li>{@code audio_end} → 异步（本连接串行工作线程，M2 多设备加固）：快照本段上下文后立即
+ *       返回，流水线处理不占 WS 消息线程——{@code decision} 事件与最终 {@code reply} 由工作线程
+ *       随后下发（协议 §5 时序不变）；上一段处理中（processing）再收 audio_end → error(BUSY)；</li>
  *   <li>{@code tts_request} → 独立 TTS 链路（不依赖本轮的识别/仲裁）：合成文本 →
  *       下发 {@code tts_response}；失败 → error（code TTS_FAILED）。</li>
  * </ul>
@@ -96,6 +99,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         t.setDaemon(true);
         return t;
     });
+
+    /** 每连接串行工作线程命名序号（M2：audio_end 异步化）。 */
+    private static final AtomicInteger CONN_SEQ = new AtomicInteger();
 
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
@@ -183,12 +189,20 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
-        connections.remove(session);
+        removeConnection(session);
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
-        connections.remove(session);
+        removeConnection(session);
+    }
+
+    /** 连接拆除：移除状态并关闭本连接串行工作线程（未决任务随线程池中断丢弃）。 */
+    private void removeConnection(WebSocketSession session) {
+        ConnectionState st = connections.remove(session);
+        if (st != null) {
+            st.connExecutor.shutdownNow();
+        }
     }
 
     @Override
@@ -243,28 +257,56 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
     }
 
-    /** audio_end：同步执行流水线 → 先逐条下发 decision 事件，再下发 reply（协议 §5 时序）。 */
+    /**
+     * audio_end（M2 异步化）：快照本段上下文（pcm/ctx/utteranceId/segmentId）提交到本连接
+     * 串行工作线程，立即返回——WS 消息线程不被最长 safetyTimeoutMs 的处理占死。上一段处理中
+     * （processing）再收 audio_end → error(BUSY)（本段音频已丢弃，端侧可依赖本地兜底链路）。
+     */
     private void onAudioEnd(WebSocketSession session, ConnectionState st) {
         if (!st.audioActive || st.ctx == null) {
             return;
         }
         st.audioActive = false;
-        byte[] pcm = st.pcm.toByteArray();
-        if (pcm.length == 0) {
+        if (st.processing) {
+            LOG.warn("segment dropped: previous segment still processing (session={})", st.ctx.sessionId());
+            sendError(session, st, "BUSY", "previous segment still processing");
             return;
         }
-        SegmentPipeline.SegmentResult result;
+        st.processing = true;
+        byte[] pcm = st.pcm.toByteArray();
+        SessionContext ctx = st.ctx;
+        String utteranceId = st.utteranceId;
+        String segmentId = st.segmentId;
+        st.connExecutor.submit(() -> processSegment(session, st, pcm, ctx, utteranceId, segmentId));
+    }
+
+    /**
+     * 工作线程执行段处理：只读快照（不回写 ConnectionState——audioActive 由 onAudioEnd 同步管），
+     * 发送走任务线程 session.sendMessage（Spring WS 线程安全）。handleSegment 返回后本段决策事件
+     * 已全部入队（arbiter 胜方恒先 sink.log 后 complete，迟到者被 CAS 拒绝），drain 无竞态。
+     */
+    private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
+                                SessionContext ctx, String utteranceId, String segmentId) {
         try {
-            result = st.pipeline.handleSegment(pcm, st.ctx, st.utteranceId);
-        } catch (RuntimeException e) {
-            // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
-            result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
+            if (pcm.length == 0) {
+                return;
+            }
+            SegmentPipeline.SegmentResult result;
+            try {
+                result = st.pipeline.handleSegment(pcm, ctx, utteranceId);
+            } catch (RuntimeException e) {
+                // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
+                result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
+            }
+            DecisionEntry entry;
+            while ((entry = st.pendingDecisions.poll()) != null) {
+                send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
+                }));
+            }
+            sendReply(session, st, result, segmentId);
+        } finally {
+            st.processing = false;
         }
-        for (DecisionEntry entry : st.pendingDecisions) {
-            send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
-            }));
-        }
-        sendReply(session, st, result);
     }
 
     /**
@@ -272,8 +314,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
      * （intent + speakText）；纯文本 → kind=text 且 <b>text 与 speakText 同带</b>
      * （端侧 parseReply 对 kind=text 强读 text 字段，text 缺失会丢回复）。
      * asrText（Task 61：识别文本，端侧云端胜出时写进识别区）非空时附带。
+     * segmentId 用快照（工作线程回显本段的值，此时 st.segmentId 可能已被下一段覆盖）。
      */
-    private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result) {
+    private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result,
+                           String segmentId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (result.asrText() != null && !result.asrText().isBlank()) {
             payload.put("asrText", result.asrText());
@@ -293,8 +337,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
                 payload.put("speakText", result.speakText());
             }
         }
-        if (st.segmentId != null) {
-            payload.put("segmentId", st.segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
+        if (segmentId != null) {
+            payload.put("segmentId", segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
         }
         send(session, "reply", payload);
     }
@@ -385,9 +429,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         return (Map<String, Object>) msg.get("payload");
     }
 
-    /** 每连接状态。仲裁器与流水线各连接一份；sink 收集本连接待下发的决策事件。 */
+    /**
+     * 每连接状态。仲裁器与流水线各连接一份；sink 收集本连接待下发的决策事件
+     * （CLQ：audio_start 的 clear 与 arbiter 回调 add 跨线程，M2）。
+     */
     private final class ConnectionState {
-        final List<DecisionEntry> pendingDecisions = new ArrayList<>();
+        /** 本连接串行工作线程（M2）：audio_end 后的段处理在此执行，不占 WS 消息线程。 */
+        final ExecutorService connExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "gateway-conn-" + CONN_SEQ.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+        final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final DecisionSink sink = pendingDecisions::add;
         final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink);
         final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink);
@@ -397,6 +450,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         String utteranceId;
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
         boolean audioActive;
+        volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
         long segmentSeq;
     }
 }
