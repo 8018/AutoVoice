@@ -21,7 +21,9 @@
           "properties": {
             "client": { "type": "string" },
             "protocolVersion": { "type": "string" },
-            "sessionId": { "type": "string" }
+            "sessionId": { "type": "string" },
+            "deviceId": { "type": "string", "description": "设备标识（多设备加固 M5）：网关 auth-enabled 时必填，与 authToken 配对" },
+            "authToken": { "type": "string", "description": "设备令牌（M5）：与服务器 AUTOVOICE_GATEWAY_AUTH_DEVICES 设备表匹配" }
           }
         }
       }

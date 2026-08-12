@@ -86,6 +86,47 @@ demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线�
 （`192.168.x.x` = 开发机 `ifconfig`/`ipconfig` 查到的局域网地址；`waitMs=2000` 即
 端侧仲裁的云端等待窗口，剧本 4 依赖它。）
 
+### 1.6 多设备加固部署（M1-M5）
+
+多设备架构：所有请求都到接入网关（单实例 8080）→ 离线识别走引擎池（N 个独立引擎，
+会话级 sticky，池满快速失败降级）→ TTS 独立服务（同机 8082，网关纯转发）。
+
+#### 1.6.1 网关 env（服务端 .env，追加；secrets 部分不动）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AUTOVOICE_PORT` | `8080` | 网关端口 |
+| `AUTOVOICE_GATEWAY_AUTH_ENABLED` | `false` | 设备鉴权开关（阿里云部署置 `true`） |
+| `AUTOVOICE_GATEWAY_AUTH_DEVICES` | 空 | 设备表 `{"demo-1":"<token>"}`（JSON map；值不打印） |
+| `AUTOVOICE_GATEWAY_MAX_CONNECTIONS` | `32` | 并发连接上限，超限 close(4001) |
+| `AUTOVOICE_OFFLINE_ENABLED` | `false` | 离线命令词开关（阿里云部署置 `true`） |
+| `AUTOVOICE_OFFLINE_POOL_SIZE` | `2` | 离线引擎池大小（N worker，各一独立引擎；≥1） |
+| `AUTOVOICE_TTS_REMOTE_URL` | `http://127.0.0.1:8082/tts` | 网关转发 TTS 服务端点 |
+
+端侧 `demo-full.json` 的 `cloud.deviceId` / `cloud.authToken` 须与设备表一致
+（authToken 会进 APK，demo 静态凭据可接受；服务器可轮换 token）。
+
+#### 1.6.2 TTS 独立服务（tts-server）
+
+```bash
+cd AutoVoiceServer
+./gradlew :tts-server:bootJar   # 产物 tts-server/build/libs/tts-server-*.jar
+export DASHSCOPE_API_KEY=... AUTOVOICE_TTS_CACHE_DIR=/opt/autovoice/tts-cache
+java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env 覆盖
+```
+
+- 内部端点 `POST /tts`：body `{"text","sessionId"}` → `{"mime","dataBase64"}`；
+  缺 text → 400；合成失败 → 500（网关按 `TTS_FAILED` 降级文本回复，不崩识别链路）。
+- 合成（DashScope sambert）与缓存（磁盘 cache HIT 秒回）全部在 TTS 服务侧，网关不
+  再本地合成；TTS 服务挂掉只影响播报音频，识别/仲裁链路不受影响。
+
+#### 1.6.3 扩容（多实例）
+
+- **网关多实例**：N 个网关进程（`AUTOVOICE_PORT` 各自端口）+ nginx WS 代理做
+  负载均衡，需开 **sticky session**（WS 连接按源 IP/session 绑定，防跨实例会话漂移）。
+- **TTS 多实例**：`TTS_PORT` 换端口部署多份（DashScope 并发安全，无单例引擎问题）；
+  网关 `AUTOVOICE_TTS_REMOTE_URL` 指向负载均衡地址即可。
+
 ---
 
 ## 2. 启动步骤
@@ -99,6 +140,11 @@ export XFYUN_APPID=... XFYUN_API_KEY=... DEEPSEEK_API_KEY=... \
        ALIYUN_AK=... ALIYUN_SK=... ALIYUN_NLS_APPKEY=... DASHSCOPE_API_KEY=...
 ./gradlew :app:bootRun --args='--spring.profiles.active=demo-full'
 ```
+
+> **M4 起 TTS 独立**：要播报音频需同时起 TTS 服务（§1.6.2，`java -jar tts-server...`
+> 或 `./gradlew :tts-server:bootRun`）；网关 `AUTOVOICE_TTS_REMOTE_URL` 默认已指向
+> `http://127.0.0.1:8082/tts`。TTS 服务未起时 tts_request 走 `TTS_FAILED` → 端侧文本兜底，
+> 识别/仲裁链路不受影响。
 
 **期望**：监听 `0.0.0.0:8080`，WS 端点为 `ws://<开发机IP>:8080/ws`；等待日志出现
 `Tomcat started on port(s): 8080`（Spring Boot 默认输出）即服务就绪；此时若手机

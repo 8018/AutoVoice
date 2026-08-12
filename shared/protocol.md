@@ -59,6 +59,20 @@
 | `client` | string | 客户端标识，如 `autovoice-android` |
 | `protocolVersion` | string | 协议版本，当前 `"1.1"`（v1.1：TTS 解耦——reply 不再携带音频，新增 `tts_request`/`tts_response`） |
 | `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；携带时服务端优先采纳，未登记的会话自动创建 |
+| `deviceId` | string（可选） | 设备标识（多设备加固 M1/M5）。网关 `auth-enabled` 时**必填**（与 `authToken` 一同校验），未启用鉴权时携带亦无副作用 |
+| `authToken` | string（可选） | 设备令牌，与 `deviceId` 配对（服务器 `AUTOVOICE_GATEWAY_AUTH_DEVICES` 设备表）。鉴权失败 → `error(BAD_AUTH)` + 连接关闭（4001） |
+
+#### 鉴权与连接准入（多设备加固）
+
+网关可开启设备鉴权（`autovoice.gateway.auth-enabled`）：
+
+- **鉴权开启**：`hello` 须携带合法 `deviceId` + `authToken`（与设备表精确匹配，常量时间比较）。
+  失败 → `error`（code `BAD_AUTH`）+ `close(4001)`，**不注册会话**；
+  成功 → 正常 `ready`，`deviceId` 记入服务端日志。
+- **连接上限**（`max-connections`，默认 32）：超限新连接直接 `close(4001)`（不注册、不发 `error`）。
+- 未开启鉴权时，老 hello（无凭据字段）行为不变。
+
+### 3.2 audio_start
 
 ### 3.2 audio_start
 
@@ -107,6 +121,11 @@
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
 | `durationMs` | integer | 本段录音时长（毫秒） |
+
+> **异步处理（多设备加固 M2）**：服务端收到 `audio_end` 后立即返回，识别/仲裁/回复在
+> 连接专用线程异步进行（`decision` → `reply` 时序不变，见 §5）。**每连接同一时刻最多一段
+> 话语处理中**：上一段尚未产出结果又收到新 `audio_end` → `error`（code `BUSY`，**不关闭
+> 连接**），客户端可稍后重试或仅依赖本地兜底。处理期间的 `audio_start` 照常接受（累积新段）。
 
 ### 3.4 tts_request
 
@@ -285,7 +304,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID（已握手时） |
-| `code` | string | 机器可读错误码（如 `BAD_HELLO` / `ASR_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
+| `code` | string | 机器可读错误码（`BAD_HELLO` / `BAD_AUTH`（鉴权失败，随后 4001 关闭） / `BUSY`（上一段话语处理中，不关连接） / `ASR_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
 | `message` | string | 人类可读错误说明 |
 | `segmentId` | string（可选） | 回显当前话语的 `segmentId`（§3.2，`tts_request` 失败时回显其 `segmentId`）；未携带时省略。端侧据此丢弃他轮（上一轮）迟到的 `error` |
 

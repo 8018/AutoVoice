@@ -132,10 +132,11 @@ class GatewayClientTest {
         val okHttp = OkHttpClient()
         val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
         try {
-            client.connect()
-
+            // 先订阅、后 connect：ready 实时入列（若订阅晚于 connect，replay=1 槽可能被
+            // 更早到达的 decision 覆盖、ready 丢失——连接/回执快的机器上偶发）
             val received = mutableListOf<GatewayMessage>()
             val collector = launch { client.messages.collect { received.add(it) } }
+            client.connect()
 
             client.sendAudioStart("srv-sess-1", "seg-1")
             client.sendAudioChunk(pcm)
