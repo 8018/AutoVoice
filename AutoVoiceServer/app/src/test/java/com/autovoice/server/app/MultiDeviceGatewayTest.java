@@ -12,16 +12,24 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import okio.ByteString;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -38,7 +46,12 @@ import static org.mockito.Mockito.when;
  * 第二个排在其后永远进不来 → 闩超时失败）。各自 reply 回显自己的 segmentId
  * （audio_start 携带），证明决策/回复不跨连接串话。</p>
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "autovoice.telemetry.enabled=true",
+                "autovoice.telemetry.db-path=${java.io.tmpdir}/autovoice-e2e-${random.uuid}.db",
+                "autovoice.telemetry.audio-dir=${java.io.tmpdir}/autovoice-e2e-audio"
+        })
 class MultiDeviceGatewayTest {
 
     /** 任意 16k 字节 PCM 即可：mock asr 不真识别，仅验证二进制帧通路。 */
@@ -47,6 +60,10 @@ class MultiDeviceGatewayTest {
 
     @LocalServerPort
     private int port;
+
+    /** RANDOM_PORT 下自动配置：telemetry E2E 的 POST /round + GET /rounds/{utt}（与 WS 并列）。 */
+    @Autowired
+    private TestRestTemplate rest;
 
     @MockBean
     private AsrProvider asr;
@@ -73,10 +90,11 @@ class MultiDeviceGatewayTest {
             return CompletableFuture.completedFuture(Reply.ofText("好的"));
         });
         when(asr.transcribe(any(), any())).thenReturn("空调调到二十四度");
-        when(tts.synthesize(any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
+        // 3 参入口（utteranceId 贯通，Task 5）：synthesize 现以 synthesize(text, ctx, utteranceId) 调用
+        when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
 
-        DeviceSession a = DeviceSession.open(port, "multi-device-a", "seg-A-1");
-        DeviceSession b = DeviceSession.open(port, "multi-device-b", "seg-B-1");
+        DeviceSession a = DeviceSession.open(port, "multi-device-a", "seg-A-1", "utt-par-a");
+        DeviceSession b = DeviceSession.open(port, "multi-device-b", "seg-B-1", "utt-par-b");
         try {
             a.speak();
             b.speak();
@@ -96,6 +114,69 @@ class MultiDeviceGatewayTest {
         }
     }
 
+    /**
+     * 端云事件按 utteranceId 汇合（telemetry Task 9）：双连接各说一句（audio_start 携带
+     * 端侧 utteranceId），服务端插桩事件（cloud_asr/cloud_arbiter）在 reply 前已入库；
+     * 端侧事件包 POST /api/telemetry/round 后，GET /api/telemetry/rounds/{utt} 应同时
+     * 看到两类事件——证明端侧包与服务端插桩在同一 round 汇合。
+     *
+     * <p>时序前提：reply 到达即流水线完成（record 先于 sendReply enqueue）；POST 与 GET
+     * 都经 telemetry 单写线程串行化（syncQuery 与写入同队列），无需轮询。</p>
+     */
+    @Test
+    void telemetryRoundMergesDeviceAndServerEvents() throws Exception {
+        // @MockBean 在测试方法间重置：本方法内自建 stub（llm 快速返回，不用汇合闩）
+        when(asr.transcribe(any(), any())).thenReturn("空调调到二十四度");
+        when(llm.chat(any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofText("好的")));
+        when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
+
+        // 同现有用例：双连接各说一句（utteranceId = utt-e2e-a / utt-e2e-b）
+        DeviceSession a = DeviceSession.open(port, "telemetry-a", "seg-E2E-A", "utt-e2e-a");
+        DeviceSession b = DeviceSession.open(port, "telemetry-b", "seg-E2E-B", "utt-e2e-b");
+        try {
+            a.speak();
+            b.speak();
+            assertNotNull(a.awaitReply(), "A 应收到 reply");
+            assertNotNull(b.awaitReply(), "B 应收到 reply");
+        } finally {
+            a.close();
+            b.close();
+        }
+
+        // 端侧事件包（模拟设备端插桩）：POST /api/telemetry/round
+        String deviceRound = """
+                {"utteranceId":"utt-e2e-a","sessionId":"s1","deviceId":"demo-1","source":"button",
+                 "startMs":1000,"endMs":5000,
+                 "events":[{"stage":"utterance_start","tsMs":1000,"level":"info","payload":{"source":"button"}},
+                           {"stage":"local_asr","tsMs":1500,"level":"info","payload":{"text":"打开空调"}},
+                           {"stage":"device_arbiter","tsMs":3000,"level":"info","payload":{"route":"cloud","reason":"cloud_won"}},
+                           {"stage":"execute","tsMs":4000,"level":"info","payload":{"intent":"climate/set_temperature","result":"applied"}},
+                           {"stage":"tts_request","tsMs":4500,"level":"info","payload":{"text":"空调调到二十四度"}},
+                           {"stage":"tts_play","tsMs":4900,"level":"info","payload":{"source":"network","result":"ok"}}]}
+                """;
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        rest.postForObject("/api/telemetry/round", new HttpEntity<>(deviceRound, headers), String.class);
+
+        // 查询汇合：GET /api/telemetry/rounds/utt-e2e-a（RoundDetail：events 是顶层字段）
+        @SuppressWarnings("unchecked")
+        Map<String, Object> round = rest.getForObject("/api/telemetry/rounds/utt-e2e-a", Map.class);
+        assertNotNull(round, "round 应存在");
+        List<?> events = (List<?>) round.get("events");
+        assertNotNull(events, "events 应为顶层数组（{summary:{...}, events:[...]}）");
+        Set<String> stages = events.stream()
+                .map(e -> String.valueOf(((Map<?, ?>) e).get("stage")))
+                .collect(Collectors.toSet());
+        assertTrue(stages.containsAll(Set.of("utterance_start", "local_asr", "device_arbiter",
+                "execute", "tts_request", "tts_play")),
+                "端侧事件应汇合, 实际 stages: " + stages);
+        // 服务端插桩在采纳的 utteranceId 下实际记录的 stage 是 cloud_asr + cloud_arbiter（SegmentPipeline）。
+        // llm 由 DeepSeekLlmProvider 以 sessionId 记录（LlmProvider 接口无 utteranceId，plan 声明二期
+        // 取舍），且本类 llm 为 @MockBean 不产生事件——故不断言 llm（brief 原文含之，实测不可达）。
+        assertTrue(stages.containsAll(Set.of("cloud_asr", "cloud_arbiter")),
+                "服务端插桩事件应汇合, 实际 stages: " + stages);
+    }
+
     /** 一条设备连接的封装：hello → ready → speak（audio_start/PCM/audio_end）→ awaitReply。 */
     private static final class DeviceSession {
 
@@ -103,11 +184,13 @@ class MultiDeviceGatewayTest {
         private WebSocket ws;
         private final String sessionId;
         private final String segmentId;
+        private final String utteranceId;
 
-        static DeviceSession open(int port, String clientSessionId, String segmentId) throws Exception {
+        static DeviceSession open(int port, String clientSessionId, String segmentId, String utteranceId)
+                throws Exception {
             OkHttpClient http = new OkHttpClient.Builder().readTimeout(20, TimeUnit.SECONDS).build();
             CountDownLatch opened = new CountDownLatch(1);
-            DeviceSession s = new DeviceSession(clientSessionId, segmentId, http, opened);
+            DeviceSession s = new DeviceSession(clientSessionId, segmentId, utteranceId, http, opened);
             s.ws = http.newWebSocket(new Request.Builder()
                     .url("ws://localhost:" + port + "/ws").build(), s.listener());
             assertTrue(opened.await(10, TimeUnit.SECONDS), "ws 连接应建立: " + clientSessionId);
@@ -118,9 +201,11 @@ class MultiDeviceGatewayTest {
             return s;
         }
 
-        private DeviceSession(String sessionId, String segmentId, OkHttpClient http, CountDownLatch opened) {
+        private DeviceSession(String sessionId, String segmentId, String utteranceId,
+                              OkHttpClient http, CountDownLatch opened) {
             this.sessionId = sessionId;
             this.segmentId = segmentId;
+            this.utteranceId = utteranceId;
             this.http = http;
             this.opened = opened;
         }
@@ -148,8 +233,10 @@ class MultiDeviceGatewayTest {
         }
 
         void speak() {
+            // audio_start 携带端侧 utteranceId：服务端插桩事件（Task 2 采纳逻辑）落到该 ID 下
             send("audio_start", Map.of("sessionId", sessionId, "sampleRate", 16000,
-                    "channels", 1, "encoding", "pcm_s16le", "segmentId", segmentId));
+                    "channels", 1, "encoding", "pcm_s16le", "segmentId", segmentId,
+                    "utteranceId", utteranceId));
             assertTrue(ws.send(ByteString.of(PCM_16K)), "二进制 PCM 帧应发送成功: " + sessionId);
             send("audio_end", Map.of("sessionId", sessionId, "durationMs", 1000));
         }
