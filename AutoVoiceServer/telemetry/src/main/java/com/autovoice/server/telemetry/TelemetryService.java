@@ -92,6 +92,12 @@ public class TelemetryService implements TelemetryRecorder {
                 store.upsertRound(utteranceId,
                         Map.of("created_ms", clock.getAsLong(), "start_ms", event.tsMs()));
             }
+            // Task 4 服务端插桩走 record() 路径：关键 stage 补聚合列——纯云端轮次（端侧不上报
+            // /round）的决策/识别/LLM/TTS 缓存列不落 NULL，面板决策分布统计有数据
+            Map<String, Object> agg = aggregateFromEvent(event);
+            if (!agg.isEmpty()) {
+                store.upsertRound(utteranceId, agg);
+            }
             store.insertEvent(utteranceId, event);
         });
     }
@@ -248,41 +254,61 @@ public class TelemetryService implements TelemetryRecorder {
     }
 
     /**
-     * 聚合列推导：取每 stage 末事件的 payload 摘要（route→决策、text→识别/LLM/TTS 文本、
-     * result→执行/播放结果、hit→缓存命中）。推导不到（事件缺失/键缺失）则跳过，
-     * 对应列保持 NULL。
+     * 聚合列推导（recordDeviceRound 用）：取每 stage 末事件的 payload 摘要（route→决策、
+     * text→识别/LLM/TTS 文本、result→执行/播放结果、hit→缓存命中）。推导不到（事件缺失/
+     * 键缺失）则跳过，对应列保持 NULL。字段映射与 {@link #aggregateFromEvent} 同一套
+     * （Task 4 起：record() 与 recordDeviceRound() 两路径共用）。
      */
     private static Map<String, Object> deriveAggregates(List<TelemetryEvent> events) {
-        Map<String, Map<String, Object>> last = new HashMap<>();
+        Map<String, Object> f = new HashMap<>();
         if (events != null) {
             for (TelemetryEvent e : events) {
-                if (e != null && e.stage() != null && e.payload() != null) {
-                    last.put(e.stage(), e.payload());
-                }
+                f.putAll(aggregateFromEvent(e));
             }
         }
+        return f;
+    }
+
+    /**
+     * 单事件 → 聚合列映射（record() 逐事件 upsert 与 recordDeviceRound() 批量推导共用）：
+     * cloud_arbiter.route → cloud_decision；LLM.text → llm_reply；CLOUD_ASR.text →
+     * asr_cloud；tts_cache.hit → tts_cache_hit；端侧 stage（device_arbiter/local_asr/…）同规则。
+     */
+    private static Map<String, Object> aggregateFromEvent(TelemetryEvent e) {
         Map<String, Object> f = new HashMap<>();
-        putPayloadValue(f, "local_decision", last.get(TelemetryStages.DEVICE_ARBITER), "route");
-        putPayloadValue(f, "cloud_decision", last.get(TelemetryStages.CLOUD_ARBITER), "route");
-        putPayloadValue(f, "final_decision", last.get(TelemetryStages.DEVICE_ARBITER), "route");
-        putPayloadValue(f, "asr_local", last.get(TelemetryStages.LOCAL_ASR), "text");
-        putPayloadValue(f, "asr_cloud", last.get(TelemetryStages.CLOUD_ASR), "text");
-        putPayloadValue(f, "llm_reply", last.get(TelemetryStages.LLM), "text");
-        putPayloadValue(f, "execute_result", last.get(TelemetryStages.EXECUTE), "result");
-        putPayloadValue(f, "tts_text", last.get(TelemetryStages.TTS_REQUEST), "text");
-        putPayloadValue(f, "playback_result", last.get(TelemetryStages.TTS_PLAY), "result");
-        Map<String, Object> cache = last.get(TelemetryStages.TTS_CACHE);
-        if (cache != null && cache.get("hit") != null) {
-            Object v = cache.get("hit");
-            boolean hit;
-            if (v instanceof Boolean b) {
-                hit = b;
-            } else if (v instanceof Number n) {
-                hit = n.intValue() != 0;
-            } else {
-                hit = Boolean.parseBoolean(String.valueOf(v));
+        if (e == null || e.stage() == null || e.payload() == null) {
+            return f;
+        }
+        Map<String, Object> payload = e.payload();
+        switch (e.stage()) {
+            case TelemetryStages.DEVICE_ARBITER -> {
+                putPayloadValue(f, "local_decision", payload, "route");
+                putPayloadValue(f, "final_decision", payload, "route");
             }
-            f.put("tts_cache_hit", hit ? 1 : 0);
+            case TelemetryStages.CLOUD_ARBITER -> putPayloadValue(f, "cloud_decision", payload, "route");
+            case TelemetryStages.LOCAL_ASR -> putPayloadValue(f, "asr_local", payload, "text");
+            case TelemetryStages.CLOUD_ASR -> putPayloadValue(f, "asr_cloud", payload, "text");
+            case TelemetryStages.LLM -> putPayloadValue(f, "llm_reply", payload, "text");
+            case TelemetryStages.EXECUTE -> putPayloadValue(f, "execute_result", payload, "result");
+            case TelemetryStages.TTS_REQUEST -> putPayloadValue(f, "tts_text", payload, "text");
+            case TelemetryStages.TTS_PLAY -> putPayloadValue(f, "playback_result", payload, "result");
+            case TelemetryStages.TTS_CACHE -> {
+                if (payload.get("hit") != null) {
+                    Object v = payload.get("hit");
+                    boolean hit;
+                    if (v instanceof Boolean b) {
+                        hit = b;
+                    } else if (v instanceof Number n) {
+                        hit = n.intValue() != 0;
+                    } else {
+                        hit = Boolean.parseBoolean(String.valueOf(v));
+                    }
+                    f.put("tts_cache_hit", hit ? 1 : 0);
+                }
+            }
+            default -> {
+                // 未知 stage：无聚合列可推导
+            }
         }
         return f;
     }

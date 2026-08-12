@@ -12,8 +12,11 @@ import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SpeakTexts;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -49,6 +52,8 @@ public final class SegmentPipeline {
 
     private static final String ARBITER_CLOUD = "cloud";
     private static final String ROUTE_CLOUD = "cloud";
+    /** LLM 胜出/安全兜底的路由（与 RaceArbiter sink 日志取值一致，Task 4 插桩复用）。 */
+    private static final String ROUTE_LLM = "llm";
     private static final String ROUTE_NLU_TRADITIONAL = "nlu-traditional";
     private static final String REASON_OFFLINE_WON = "offline_won";
 
@@ -58,20 +63,25 @@ public final class SegmentPipeline {
     private final OfflineCommandService offline;
     private final long asrFailWaitMs;
     private final DecisionSink sink;
+    /** 链路事件记录器（Task 4 插桩：cloud_asr / cloud_arbiter；telemetry 禁用时是 Noop）。 */
+    private final TelemetryRecorder recorder;
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SegmentPipeline.class);
 
     /**
      * @param asrFailWaitMs ASR 失败后等待离线结果的窗口（asr-fail-wait-ms，默认 2000）
+     * @param recorder     链路事件记录器（Task 4 起；telemetry 未启用时由装配层注入 Noop）
      */
     public SegmentPipeline(AsrProvider asr, RaceArbiter arbiter, LlmProvider llm,
-                           OfflineCommandService offline, long asrFailWaitMs, DecisionSink sink) {
+                           OfflineCommandService offline, long asrFailWaitMs, DecisionSink sink,
+                           TelemetryRecorder recorder) {
         this.asr = asr;
         this.arbiter = arbiter;
         this.llm = llm;
         this.offline = offline;
         this.asrFailWaitMs = asrFailWaitMs;
         this.sink = sink;
+        this.recorder = recorder;
     }
 
     /**
@@ -95,6 +105,7 @@ public final class SegmentPipeline {
             ArbiterDecision decision = arbiter
                     .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId)
                     .join();
+            recordArbiter(utteranceId, routeOf(decision), decision.reason());
             return toResult(decision, text, ctx, utteranceId);
         } catch (Exception e) {
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
@@ -102,26 +113,52 @@ public final class SegmentPipeline {
         }
     }
 
+    /**
+     * 决策路由（ArbiterDecision 不携带 route，按 reason 还原与 RaceArbiter sink 日志同源的
+     * 取值：offline_won → nlu-traditional，其余（llm_reply / safety_timeout）→ llm）。
+     */
+    private static String routeOf(ArbiterDecision decision) {
+        return REASON_OFFLINE_WON.equals(decision.reason()) ? ROUTE_NLU_TRADITIONAL : ROUTE_LLM;
+    }
+
+    /** cloud_arbiter 事件（route/reason → 聚合列 cloud_decision，Task 4 插桩）。 */
+    private void recordArbiter(String utteranceId, String route, String reason) {
+        recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER, "info",
+                Map.of("route", route, "reason", reason));
+    }
+
     /** ASR：失败或空白识别结果一律返回 null（决策日志由调用方按离线窗口后统一收敛）。 */
     private String transcribe(byte[] pcm, SessionContext ctx, String utteranceId) {
         // 诊断：ASR 失败被兜底吞掉后 server 无日志可查（端侧只看到 asr_failed_fallback）——
         // 失败路径必须留痕：pcm 长度 + 异常/空白原因
+        long start = System.currentTimeMillis();
         LOG.info("ASR start: pcm={}B ({}ms) utt={}", pcm.length, pcm.length * 1000 / (2 * 16000), utteranceId);
         try {
             String text = asr.transcribe(pcm, ctx);
             if (text == null || text.isBlank()) {
                 LOG.warn("ASR returned blank text (pcm={}B utt={})", pcm.length, utteranceId);
                 dumpPcm(pcm, utteranceId); // 落盘空白段，回放定位音频内容问题（端侧双 ASR 全空）
+                recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "warn",
+                        Map.of("error", "blank text", "durationMs", elapsedMs(start)));
                 return null;
             }
             LOG.info("ASR ok: \"{}\" (utt={})", text, utteranceId);
             dumpPcm(pcm, "ok-" + utteranceId); // 诊断：成功轮与失败轮音频对比
+            recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "info",
+                    Map.of("text", text, "durationMs", elapsedMs(start)));
             return text;
         } catch (Exception e) {
             LOG.error("ASR failed (pcm={}B utt={})", pcm.length, utteranceId, e);
             dumpPcm(pcm, utteranceId);
+            recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "warn",
+                    Map.of("error", String.valueOf(e.getMessage()), "durationMs", elapsedMs(start)));
             return null;
         }
+    }
+
+    /** 耗时（毫秒，最小 1 防止 0 被面板当缺省值）。 */
+    private static long elapsedMs(long start) {
+        return Math.max(1, System.currentTimeMillis() - start);
     }
 
     /** 诊断：ASR 段 PCM 落盘 /tmp/asr-<kind>-<utt>-<ts>.pcm，回放分析音频内容。 */
@@ -153,6 +190,7 @@ public final class SegmentPipeline {
             LOG.info("ASR failed but offline command hit: \"{}\" (utt={})", hit.get().text(), utteranceId);
             sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_NLU_TRADITIONAL, REASON_OFFLINE_WON,
                     utteranceId, System.currentTimeMillis()));
+            recordArbiter(utteranceId, ROUTE_NLU_TRADITIONAL, REASON_OFFLINE_WON);
             return offlineHitResult(hit.get());
         }
         return fallback(ctx, utteranceId, REASON_ASR_FAILED);
@@ -200,6 +238,7 @@ public final class SegmentPipeline {
     /** 兜底收敛：记一条决策事件（reason 区分 ASR / 仲裁失败），返回兜底话术结果。 */
     private SegmentResult fallback(SessionContext ctx, String utteranceId, String reason) {
         sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_CLOUD, reason, utteranceId, System.currentTimeMillis()));
+        recordArbiter(utteranceId, ROUTE_CLOUD, reason);
         return new SegmentResult(null, FALLBACK_TEXT, null, null); // 兜底无识别文本
     }
 }

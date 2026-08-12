@@ -11,6 +11,9 @@ import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
+import com.autovoice.server.contracts.telemetry.TelemetryEvent;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +29,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 流水线测试（双候选竞速 + TTS 解耦）：fake providers 全同步就绪
@@ -43,6 +47,8 @@ class SegmentPipelineTest {
     final List<DecisionEntry> log = new ArrayList<>();
     final DecisionSink sink = log::add;
     final ScheduledExecutorService sched = Executors.newScheduledThreadPool(4);
+    final List<TelemetryEvent> events = new ArrayList<>();
+    final TelemetryRecorder recorder = (utt, e) -> events.add(e);
 
     @AfterEach
     void shutdownScheduler() {
@@ -92,7 +98,7 @@ class SegmentPipelineTest {
     }
 
     SegmentPipeline pipeline(AsrProvider asr, OfflineCommandService offline) {
-        return new SegmentPipeline(asr, arbiter(), llmAction(), offline, ASR_FAIL_WAIT, sink);
+        return new SegmentPipeline(asr, arbiter(), llmAction(), offline, ASR_FAIL_WAIT, sink, recorder);
     }
 
     // ------------------------------------------------------------ 竞速收敛
@@ -130,7 +136,7 @@ class SegmentPipelineTest {
     void offlineMissLlmTextReply() {
         // 离线未命中 + LLM 闲聊 → kind=text 且 text 与 speakText 同带（端侧 parseReply 强读 text）
         SegmentPipeline p = new SegmentPipeline(asr("今天天气怎么样"), arbiter(),
-                llmText("今天天气不错"), offlineMiss(), ASR_FAIL_WAIT, sink);
+                llmText("今天天气不错"), offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
         SegmentPipeline.SegmentResult r = p.handleSegment(PCM, CTX, "u-1");
         assertEquals("text", replyKind(r));
         assertEquals("今天天气不错", r.text());
@@ -144,7 +150,7 @@ class SegmentPipelineTest {
     void llmErrorFallsBackToSafety() {
         // LLM future 异常完成 → RaceArbiter safety 兜底（safety_timeout + 兜底话术）
         SegmentPipeline p = new SegmentPipeline(asr("x"), arbiter(), llmError(),
-                offlineMiss(), ASR_FAIL_WAIT, sink);
+                offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
         SegmentPipeline.SegmentResult r = p.handleSegment(PCM, CTX, "u-1");
         assertEquals("safety_timeout", log.get(0).reason());
         assertEquals("网络开小差了，请稍后再试", r.speakText());
@@ -206,5 +212,46 @@ class SegmentPipelineTest {
     /** 语义 kind：intent 非空 → action，否则 text（pipeline 层无 audio 概念）。 */
     private static String replyKind(SegmentPipeline.SegmentResult r) {
         return r.intent() != null ? "action" : "text";
+    }
+
+    // ------------------------------------------------------------ 链路插桩（Task 4）
+
+    @Test
+    void recordsCloudAsrAndArbiterEvents() {
+        // 纯云端轮次（离线未命中）：cloud_asr ok 事件（text + durationMs）+ cloud_arbiter 决策事件
+        SegmentPipeline p = pipeline(asr("空调调到二十四度"), offlineMiss());
+        p.handleSegment(PCM, CTX, "utt-9");
+
+        TelemetryEvent asrEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ASR.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("info", asrEvent.level());
+        assertEquals("空调调到二十四度", asrEvent.payload().get("text"));
+        assertTrue(asrEvent.payload().containsKey("durationMs"), "cloud_asr 事件应带 durationMs");
+
+        TelemetryEvent arbiterEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("info", arbiterEvent.level());
+        assertEquals("llm_reply", arbiterEvent.payload().get("reason"));
+    }
+
+    @Test
+    void recordsOfflineWonArbiterEventAndAsrFailure() {
+        // ASR 失败 + 离线命中：cloud_asr warn 事件（error）+ cloud_arbiter（nlu-traditional/offline_won）
+        SegmentPipeline p = pipeline(asrFails(), offline("打开空调"));
+        p.handleSegment(PCM, CTX, "utt-10");
+
+        TelemetryEvent asrEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ASR.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("warn", asrEvent.level());
+        assertTrue(asrEvent.payload().containsKey("error"), "ASR 失败事件应带 error");
+
+        TelemetryEvent arbiterEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("nlu-traditional", arbiterEvent.payload().get("route"));
+        assertEquals("offline_won", arbiterEvent.payload().get("reason"));
     }
 }

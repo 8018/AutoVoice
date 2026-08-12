@@ -6,6 +6,7 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
@@ -476,7 +477,8 @@ class VoiceGatewayHandlerTest {
     /** 鉴权开启（M1）的 handler：设备表 + 连接上限可配。 */
     private VoiceGatewayHandler newAuthHandler(Map<String, String> devices, int maxConnections) {
         return new VoiceGatewayHandler(asr("x"), llm("LLM"), ttsOk(), noopOffline(), registry,
-                SAFETY, ASR_FAIL_WAIT, 1500, true, devices, maxConnections);
+                SAFETY, ASR_FAIL_WAIT, 1500, true, devices, maxConnections,
+                NoopTelemetryRecorder.INSTANCE);
     }
 
     /** 带设备凭据的 hello（鉴权开启时的合法握手）。 */

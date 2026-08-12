@@ -8,6 +8,8 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -100,6 +102,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         return t;
     });
 
+    /** 链路事件记录器（Task 4 插桩，注入各连接 SegmentPipeline；telemetry 禁用时是 Noop）。 */
+    private final TelemetryRecorder recorder;
+
     /** 每连接串行工作线程命名序号（M2：audio_end 异步化）。 */
     private static final AtomicInteger CONN_SEQ = new AtomicInteger();
 
@@ -123,14 +128,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs) {
         this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
-                false, Map.of(), DEFAULT_MAX_CONNECTIONS);
+                false, Map.of(), DEFAULT_MAX_CONNECTIONS, NoopTelemetryRecorder.INSTANCE);
     }
 
-    /** 完整构造：接入策略（鉴权开关/设备表/连接上限）由 AppConfig 从 {@code autovoice.gateway.*} 注入。 */
+    /**
+     * 完整构造：接入策略（鉴权开关/设备表/连接上限）由 AppConfig 从 {@code autovoice.gateway.*}
+     * 注入；recorder 为链路事件记录器（Task 4，AppConfig 注入 TelemetryService/Noop）。
+     */
     public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
-                               boolean authEnabled, Map<String, String> authDevices, int maxConnections) {
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               TelemetryRecorder recorder) {
         this.asr = asr;
         this.llm = llm;
         this.tts = tts;
@@ -142,6 +151,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         this.authEnabled = authEnabled;
         this.authDevices = authDevices;
         this.maxConnections = maxConnections;
+        this.recorder = recorder;
     }
 
     @Override
@@ -447,7 +457,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final DecisionSink sink = pendingDecisions::add;
         final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink);
-        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink);
+        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink, recorder);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）

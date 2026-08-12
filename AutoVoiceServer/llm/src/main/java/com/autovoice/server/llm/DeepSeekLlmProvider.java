@@ -6,6 +6,8 @@ import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
 import com.autovoice.server.contracts.SpeakTexts;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -85,13 +87,21 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     private final OkHttpClient client;
     private final String apiKey;
     private final String endpoint;
+    /** 链路事件记录器（Task 4 插桩：llm；telemetry 禁用时是 Noop）。 */
+    private final TelemetryRecorder recorder;
 
-    /** @param endpoint DeepSeek 接口地址；测试注入 MockWebServer URL，生产用 {@link #DEFAULT_ENDPOINT} */
-    public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint) {
+    /**
+     * @param endpoint DeepSeek 接口地址；测试注入 MockWebServer URL，生产用 {@link #DEFAULT_ENDPOINT}
+     * @param recorder 链路事件记录器（Task 4 起）。llm 事件以 sessionId 关联（utteranceId 不在
+     *                 LlmProvider 接口内，plan 已声明的取舍，二期再精确化）。
+     */
+    public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint,
+                               TelemetryRecorder recorder) {
         // 派生 callTimeout 10s，不改动调用方传入的 client
         this.client = client.newBuilder().callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS).build();
         this.apiKey = apiKey;
         this.endpoint = endpoint;
+        this.recorder = recorder;
     }
 
     @Override
@@ -99,12 +109,37 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         // 同步 HTTP call 放进 supplyAsync（common pool），调用方立即可挂回调；
         // IO 异常在 lambda 内包装为 RuntimeException，future 以该异常完成。
         return CompletableFuture.supplyAsync(() -> {
+            long start = System.currentTimeMillis();
             try {
-                return callAndParse(text);
+                Reply reply = callAndParse(text);
+                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "info",
+                        Map.of("text", text, "reply", replySummary(reply),
+                                "durationMs", Math.max(1, System.currentTimeMillis() - start)));
+                return reply;
             } catch (IOException e) {
-                throw new RuntimeException("deepseek llm request failed: " + e.getMessage(), e);
+                String msg = String.valueOf(e.getMessage());
+                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "error",
+                        Map.of("text", text, "error", msg,
+                                "durationMs", Math.max(1, System.currentTimeMillis() - start)));
+                throw new RuntimeException("deepseek llm request failed: " + msg, e);
+            } catch (RuntimeException e) {
+                // LlmException（HTTP 非 2xx / 解析失败）等：记事件后原样抛（future 异常完成）
+                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "error",
+                        Map.of("text", text, "error", String.valueOf(e.getMessage()),
+                                "durationMs", Math.max(1, System.currentTimeMillis() - start)));
+                throw e;
             }
         });
+    }
+
+    /** reply 摘要：action → intent 摘要（domain/intent），text → 截断 80 字符。 */
+    private static String replySummary(Reply reply) {
+        Intent intent = reply.intent();
+        if (intent != null) {
+            return "action:" + intent.domain() + "/" + intent.intent();
+        }
+        String t = reply.text() == null ? "" : reply.text();
+        return "text:" + (t.length() <= 80 ? t : t.substring(0, 80));
     }
 
     private Reply callAndParse(String text) throws IOException {

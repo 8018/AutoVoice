@@ -2,6 +2,9 @@ package com.autovoice.server.llm;
 
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.telemetry.TelemetryEvent;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
@@ -13,9 +16,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,13 +37,19 @@ class DeepSeekLlmProviderTest {
 
     MockWebServer server;
     DeepSeekLlmProvider provider;
+    final List<TelemetryEvent> events = new CopyOnWriteArrayList<>();
+    final List<String> recordKeys = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
         server = new MockWebServer();
         server.start();
+        TelemetryRecorder recorder = (utt, e) -> {
+            recordKeys.add(utt);
+            events.add(e);
+        };
         provider = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
-                server.url("/chat/completions").toString());
+                server.url("/chat/completions").toString(), recorder);
     }
 
     @AfterEach
@@ -102,6 +113,26 @@ class DeepSeekLlmProviderTest {
         JsonNode tools = body.path("tools");
         assertTrue(tools.isArray());
         assertEquals("car_control", tools.get(0).path("function").path("name").asText());
+    }
+
+    @Test
+    void chatRecordsLlmTelemetryEvent() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-reply.json")));
+
+        Reply reply = provider.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
+
+        // llm 事件：sessionId 关联（utteranceId 不在 LlmProvider 接口内）+ text/reply/durationMs
+        TelemetryEvent e = events.stream()
+                .filter(x -> TelemetryStages.LLM.equals(x.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("info", e.level());
+        assertEquals("s1", recordKeys.get(0), "llm 事件用 sessionId 关联");
+        assertEquals(USER_TEXT, e.payload().get("text"));
+        assertEquals("text:" + reply.text(), e.payload().get("reply"));
+        assertTrue(e.payload().containsKey("durationMs"));
     }
 
     @Test

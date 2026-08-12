@@ -42,6 +42,21 @@ class TelemetryServiceTest {
     }
 
     @Test
+    void recordDerivesAggregatesForCloudOnlyRounds() {
+        // Task 4 服务端插桩：纯 record() 路径（端侧不上报 /round）也要推导聚合列——
+        // cloud_arbiter→cloud_decision、llm→llm_reply、cloud_asr→asr_cloud
+        TelemetryService svc = newService();
+        svc.record("utt-cloud", TelemetryStages.CLOUD_ASR, "info", Map.of("text", "把空调调到二十四度"));
+        svc.record("utt-cloud", TelemetryStages.LLM, "info", Map.of("text", "好的，空调温度已调到24度"));
+        svc.record("utt-cloud", TelemetryStages.CLOUD_ARBITER, "info",
+                Map.of("route", "cloud", "reason", "llm_reply"));
+        var round = svc.queryRound("utt-cloud");
+        assertNotNull(round);
+        assertEquals("cloud", round.cloudDecision());
+        assertEquals(3, round.events().size());
+    }
+
+    @Test
     void savesWavFile() throws Exception {
         TelemetryService svc = newService();
         byte[] pcm = new byte[3200];

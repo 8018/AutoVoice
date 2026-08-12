@@ -2,8 +2,11 @@ package com.autovoice.server.offlinecommand;
 
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
@@ -29,19 +32,28 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
 
     private final List<OfflineCommandProvider> workers;
     private final Semaphore permits;
+    /** 链路事件记录器（Task 4 插桩：offline_pool；telemetry 禁用时是 Noop）。 */
+    private final TelemetryRecorder recorder;
 
-    public OfflineEnginePool(List<OfflineCommandProvider> workers) {
+    /**
+     * @param recorder 链路事件记录器（Task 4 起）。池事件以 sessionId 关联——utteranceId 不在
+     *                 OfflineCommandProvider 接口内（plan 已声明的取舍，二期再精确化）。
+     */
+    public OfflineEnginePool(List<OfflineCommandProvider> workers, TelemetryRecorder recorder) {
         if (workers == null || workers.isEmpty()) {
             throw new IllegalArgumentException("offline engine pool requires at least one worker");
         }
         this.workers = List.copyOf(workers);
         this.permits = new Semaphore(workers.size());
+        this.recorder = recorder;
     }
 
     @Override
     public CompletableFuture<Optional<String>> recognize(byte[] pcm16k, SessionContext ctx) {
         if (!permits.tryAcquire()) {
             LOG.info("offline engine busy, skip (pool={}, session={})", workers.size(), ctx.sessionId());
+            recorder.record(ctx.sessionId(), TelemetryStages.OFFLINE_POOL, "warn",
+                    Map.of("reason", "busy", "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
         OfflineCommandProvider worker;
@@ -50,6 +62,9 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
         } catch (RuntimeException e) {
             permits.release();
             LOG.warn("offline engine pool routing failed, skip: {}", String.valueOf(e.getMessage()));
+            recorder.record(ctx.sessionId(), TelemetryStages.OFFLINE_POOL, "warn",
+                    Map.of("reason", "routing_failed", "error", String.valueOf(e.getMessage()),
+                            "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
         CompletableFuture<Optional<String>> future;
@@ -58,12 +73,18 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
         } catch (RuntimeException e) {
             permits.release();
             LOG.warn("offline engine worker rejected recognize, skip: {}", String.valueOf(e.getMessage()));
+            recorder.record(ctx.sessionId(), TelemetryStages.OFFLINE_POOL, "warn",
+                    Map.of("reason", "worker_rejected", "error", String.valueOf(e.getMessage()),
+                            "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
         return future.handle((result, err) -> {
             permits.release();
             if (err != null) {
                 LOG.warn("offline engine worker failed, skip: {}", String.valueOf(err.getMessage()));
+                recorder.record(ctx.sessionId(), TelemetryStages.OFFLINE_POOL, "warn",
+                        Map.of("reason", "worker_failed", "error", String.valueOf(err.getMessage()),
+                                "poolSize", workers.size()));
                 return Optional.<String>empty();
             }
             return result == null ? Optional.<String>empty() : result;

@@ -2,10 +2,14 @@ package com.autovoice.server.offlinecommand;
 
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.telemetry.TelemetryEvent;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -51,7 +55,8 @@ class OfflineEnginePoolTest {
     void sameSessionIdAlwaysRoutesToSameWorker() {
         AtomicInteger a = new AtomicInteger();
         AtomicInteger b = new AtomicInteger();
-        OfflineEnginePool pool = new OfflineEnginePool(List.of(fake("a", a, null), fake("b", b, null)));
+        OfflineEnginePool pool = new OfflineEnginePool(List.of(fake("a", a, null), fake("b", b, null)),
+                (utt, e) -> { });
         SessionContext sid = ctx("device-A-42");
         String expectedTag = Math.floorMod(sid.sessionId().hashCode(), 2) == 0 ? "a" : "b";
 
@@ -68,7 +73,7 @@ class OfflineEnginePoolTest {
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger calls = new AtomicInteger();
         OfflineEnginePool pool = new OfflineEnginePool(List.of(
-                fake("a", calls, release), fake("b", calls, release)));
+                fake("a", calls, release), fake("b", calls, release)), (utt, e) -> { });
         // 与 sticky 无关：两个 worker 各被占住（permits 同步获取，先于 worker 异步执行）
         CompletableFuture<Optional<String>> f1 = pool.recognize(new byte[16], ctx("session-one"));
         CompletableFuture<Optional<String>> f2 = pool.recognize(new byte[16], ctx("session-two"));
@@ -86,7 +91,8 @@ class OfflineEnginePoolTest {
 
     @Test
     void permitReleasedAfterCompletionAllowsReuse() {
-        OfflineEnginePool pool = new OfflineEnginePool(List.of(fake("a", new AtomicInteger(), null)));
+        OfflineEnginePool pool = new OfflineEnginePool(List.of(fake("a", new AtomicInteger(), null)),
+                (utt, e) -> { });
         assertFalse(pool.recognize(new byte[16], ctx("session-one")).join().isEmpty());
         // join 返回即 handle 回调已执行（释放许可证）→ 第二次识别可再获许可
         assertFalse(pool.recognize(new byte[16], ctx("session-two")).join().isEmpty(),
@@ -96,7 +102,7 @@ class OfflineEnginePoolTest {
     @Test
     void failingWorkerYieldsEmptyAndReleasesPermit() {
         OfflineEnginePool pool = new OfflineEnginePool(List.of(
-                exploding(), fake("a", new AtomicInteger(), null)));
+                exploding(), fake("a", new AtomicInteger(), null)), (utt, e) -> { });
         // 选一个 sticky 命中 exploding（index 0）的 sessionId
         String badSession = findSessionMappingTo(0, "bad-");
         CompletableFuture<Optional<String>> f1 = pool.recognize(new byte[16], ctx(badSession));
@@ -113,5 +119,31 @@ class OfflineEnginePoolTest {
             sid += "x";
         }
         return sid;
+    }
+
+    @Test
+    void busySkipRecordsOfflinePoolEvent() throws InterruptedException {
+        // 池满快速失败：offline_pool warn 事件（sessionId 关联，reason=busy + poolSize）
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        List<TelemetryEvent> events = new CopyOnWriteArrayList<>();
+        TelemetryRecorder recorder = (utt, e) -> events.add(e);
+        OfflineEnginePool pool = new OfflineEnginePool(List.of(
+                fake("a", calls, release), fake("b", calls, release)), recorder);
+
+        pool.recognize(new byte[16], ctx("session-one"));
+        pool.recognize(new byte[16], ctx("session-two"));
+        CompletableFuture<Optional<String>> f3 = pool.recognize(new byte[16], ctx("session-three"));
+        assertEquals(Optional.empty(), f3.join());
+
+        TelemetryEvent busy = events.stream()
+                .filter(e -> TelemetryStages.OFFLINE_POOL.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("warn", busy.level());
+        assertEquals("busy", busy.payload().get("reason"));
+        assertEquals(2, busy.payload().get("poolSize"));
+
+        release.countDown(); // 放行慢识别，避免泄漏 common pool 任务
+        pool.recognize(new byte[16], ctx("session-one")).join();
     }
 }

@@ -7,6 +7,7 @@ import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
 import com.autovoice.server.offlinecommand.NativeOfflineCommandProvider;
@@ -135,13 +136,14 @@ public class AppConfig {
     }
 
     @Bean
-    public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props) {
+    public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props,
+                                   TelemetryRecorder recorder) {
         if (!"deepseek".equals(props.providers().llm())) {
             throw new IllegalArgumentException(
                     "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
         }
         return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
-                DeepSeekLlmProvider.DEFAULT_ENDPOINT);
+                DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder);
     }
 
     /** NLS token 接口的 AK/SK 以明文 query 出现（该 API 设计固有，URL 会进代理日志）。 */
@@ -196,7 +198,8 @@ public class AppConfig {
      * 环境变量，值不打印。
      */
     @Bean
-    public OfflineCommandService offlineCommandService(AutovoiceProperties props) {
+    public OfflineCommandService offlineCommandService(AutovoiceProperties props,
+                                                       TelemetryRecorder recorder) {
         if (!props.offline().enabled() || !isLinuxX86_64()) {
             return new OfflineCommandService(new NoopOfflineCommandProvider());
         }
@@ -210,7 +213,8 @@ public class AppConfig {
                         props.secrets().xfyunAppid(), props.secrets().xfyunApiKey(),
                         props.secrets().xfyunApiSecret()));
             }
-            return new OfflineCommandService(new OfflineEnginePool(workers));
+            // recorder 注入位置随 bean 创建路径走：构造降级（catch）时 Noop provider 无插桩需求
+            return new OfflineCommandService(new OfflineEnginePool(workers, recorder));
         } catch (Throwable t) {
             LOG.error("offline command init failed, degraded to Noop: {}", String.valueOf(t.getMessage()));
             return new OfflineCommandService(new NoopOfflineCommandProvider());
@@ -225,11 +229,13 @@ public class AppConfig {
     public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
-                                                   AutovoiceProperties props) {
+                                                   AutovoiceProperties props,
+                                                   TelemetryRecorder recorder) {
         AutovoiceProperties.Gateway g = props.gateway();
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
                 props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
-                props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevices(), g.maxConnections());
+                props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevices(), g.maxConnections(),
+                recorder);
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);
