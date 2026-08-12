@@ -17,6 +17,7 @@ dependencies {
     implementation(project(":tts-gateway"))
     implementation(project(":gateway"))
     implementation(project(":offline-command"))
+    implementation(project(":telemetry"))
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.okhttp)

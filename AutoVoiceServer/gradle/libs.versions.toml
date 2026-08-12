@@ -19,3 +19,4 @@ junit = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jackson-datatype-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310", version.ref = "jackson" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version = "3.45.3.0" }
