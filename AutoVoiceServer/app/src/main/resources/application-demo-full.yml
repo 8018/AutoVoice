@@ -25,7 +25,9 @@ autovoice:
       fsa-path: /opt/autovoice/iflytek-offline/cn_fsa.txt
       license-file: ${AUTOVOICE_OFFLINE_LICENSE_FILE:}   # 空 → 联网激活（authType=0）
   tts:
-    cache-dir: /opt/autovoice/tts-cache   # 磁盘持久缓存（cache HIT 秒回）
+    # M4 独立服务：网关转发到 tts-server /tts（AUTOVOICE_TTS_REMOTE_URL 可覆盖）。
+    # 合成与缓存归 TTS 服务侧（tts-server 的 AUTOVOICE_TTS_CACHE_DIR 指磁盘持久缓存，cache HIT 秒回）
+    remote-url: ${AUTOVOICE_TTS_REMOTE_URL:http://127.0.0.1:8082/tts}
   providers:
     llm: deepseek       # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）

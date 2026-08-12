@@ -1,0 +1,14 @@
+# TTS 独立服务（M4）基础配置：端口 TTS_PORT（默认 8082，与网关同机部署）。
+# secrets 为 ${VAR:} 空默认占位：本文件不含任何 secret 字面值。
+server:
+  port: ${TTS_PORT:8082}
+
+spring:
+  main:
+    banner-mode: off
+
+autovoice:
+  tts:
+    cache-dir: ${AUTOVOICE_TTS_CACHE_DIR:}   # 空 → 仅内存缓存；阿里云部署指磁盘目录持久缓存
+  secrets:
+    dashscope-api-key: ${DASHSCOPE_API_KEY:}

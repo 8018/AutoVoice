@@ -29,7 +29,8 @@ autovoice:
       fsa-path: ${AUTOVOICE_OFFLINE_FSA_PATH:}
       license-file: ${AUTOVOICE_OFFLINE_LICENSE_FILE:}
   tts:
-    cache-dir: ${AUTOVOICE_TTS_CACHE_DIR:}   # 空 → 仅内存缓存
+    # M4 独立服务：网关转发到 tts-server /tts（合成与缓存归 TTS 服务侧；本地需同时起 tts-server）
+    remote-url: ${AUTOVOICE_TTS_REMOTE_URL:http://127.0.0.1:8082/tts}
   providers:
     llm: deepseek        # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）

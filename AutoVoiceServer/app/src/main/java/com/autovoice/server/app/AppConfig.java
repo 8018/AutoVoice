@@ -14,8 +14,7 @@ import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
-import com.autovoice.server.ttsgateway.AliyunTtsProvider;
-import com.autovoice.server.ttsgateway.CachedTtsProvider;
+import com.autovoice.server.ttsgateway.RemoteTtsProvider;
 import okhttp3.OkHttpClient;
 
 import java.util.ArrayList;
@@ -82,8 +81,18 @@ public class AppConfig {
             }
         }
 
-        /** TTS 播报链路：cacheDir 为空 → 仅内存缓存（本地默认）；部署时可指磁盘目录持久缓存。 */
-        public record Tts(String cacheDir) {
+        /**
+         * TTS 播报链路（M4 独立服务）：remoteUrl 指向 tts-server 的 /tts 端点，网关纯转发
+         * （RemoteTtsProvider）；合成与缓存（CachedTtsProvider）归 TTS 服务侧，多实例 =
+         * TTS_PORT 换端口部署。默认本机 8082（本地需同时起 tts-server；服务挂掉 → TTS_FAILED
+         * → 端侧文本兜底，不崩识别链路）。
+         */
+        public record Tts(String remoteUrl) {
+
+            public Tts {
+                remoteUrl = remoteUrl == null || remoteUrl.isBlank()
+                        ? "http://127.0.0.1:8082/tts" : remoteUrl;
+            }
         }
 
         /**
@@ -161,19 +170,14 @@ public class AppConfig {
         };
     }
 
+    /** TTS 转发（M4 独立服务）：网关不本地合成，HTTP 转发 tts-server /tts（RemoteTtsProvider）。 */
     @Bean
     public TtsProvider ttsProvider(OkHttpClient client, AutovoiceProperties props) {
         if (!"aliyun".equals(props.providers().tts())) {
             throw new IllegalArgumentException(
                     "unknown providers.tts: " + props.providers().tts() + " (aliyun)");
         }
-        TtsProvider delegate = new AliyunTtsProvider(client, props.secrets().dashscopeApiKey(),
-                AliyunTtsProvider.DEFAULT_ENDPOINT);
-        String cacheDir = props.tts().cacheDir();
-        if (cacheDir == null || cacheDir.isBlank()) {
-            return new CachedTtsProvider(delegate); // 仅内存缓存
-        }
-        return new CachedTtsProvider(delegate, java.nio.file.Path.of(cacheDir));
+        return new RemoteTtsProvider(client, props.tts().remoteUrl());
     }
 
     /** 仅 Linux x86-64 上可用原生离线识别（JNI 桥 .so）；其余平台一律 Noop。 */
