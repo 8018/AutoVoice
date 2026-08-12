@@ -132,14 +132,20 @@ class VoiceEngine(
     private var currentUtteranceId = ""
 
     /**
-     * TTS 网络播放事件入口（T7）：TtsPlayer（MainViewModel 装配）的 onPlayEvent 接到这里；
-     * [create] 已绑定 telemetry.record(tts_play, level, payload + source=network)。
-     * TtsPlayer 回调在播放线程/主线程发出，telemetry.record 内部 @Synchronized 串行；
-     * enabled=false 时 record no-op，零影响。
+     * TTS 网络播放事件入口（T7）：TtsPlayer（MainViewModel 装配）的 onPlayEvent 接到这里，
+     * 构造时（init）已绑定 telemetry.recordFor（T7 评审 C1，见下）——播放线程/主线程回调
+     * 内部 @Synchronized 串行；enabled=false 时 recordFor no-op，零影响。
+     */
+    val onTtsPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit
+
+    /**
+     * 发起播报时快照的 utteranceId（T7 评审 C1）：onTurnResult 收口处（本轮所有 player.play
+     * / speaker.speak / speakViaTts 的源头）取当前 utteranceId。播放完成/失败的异步回调
+     * 晚于 [telemetry.end] 收包，必须用这个快照而非 current（后者可能已被下一轮覆盖）；
+     * 回调经 [recordFor] 归属到快照轮（轮已关闭 → 单事件直传 /events，不并入下一轮）。
      */
     @Volatile
-    var onTtsPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit =
-        { _, _, _ -> }
+    private var playUtteranceId = ""
 
     /** 本轮云端 VAD 段计数（T7 vad 聚合统计；onListeningStart 清零，onCloudSegment 累加）。 */
     private var turnSegmentCount = 0
@@ -151,6 +157,18 @@ class VoiceEngine(
     val session: VoiceSession
 
     init {
+        // T7 评审 C1：网络播放事件绑定 telemetry（用 playUtteranceId 快照走 recordFor——
+        // 异步回调晚于 end() 收包；轮已关闭/跨轮时单事件直传 /api/telemetry/events）。
+        // TtsPlayer 的详情 stage（start/completed/failed/interrupted）以 event 字段进 payload，
+        // level 由 TtsPlayer 给出 info/error/warn
+        onTtsPlayEvent = { stage, level, payload ->
+            telemetry.recordFor(
+                playUtteranceId,
+                TelemetryStages.TTS_PLAY,
+                level,
+                payload + mapOf("source" to "network", "event" to stage),
+            )
+        }
         session = VoiceSession(
             cfg = cfg,
             arbiter = arbiter,
@@ -245,6 +263,9 @@ class VoiceEngine(
     // ------------------------------------------------------------------ 结果路由
 
     private fun onTurnResult(winner: RaceWinner) {
+        // T7 评审 C1：本轮所有播报（player.play / speaker.speak / speakViaTts）由此发起，
+        // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
+        playUtteranceId = currentUtteranceId
         when (winner) {
             is RaceWinner.Cloud -> routeCloudReply(winner.reply)
             is RaceWinner.Local -> {
@@ -330,9 +351,14 @@ class VoiceEngine(
         }
     }
 
-    /** T7 tts_play：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。 */
+    /**
+     * T7 tts_play：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。
+     * 用 [playUtteranceId] 快照走 [TelemetryClient.recordFor]（T7 评审 C1）：UtteranceProgressListener
+     * 回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 → 单事件直传 /events。
+     */
     private fun recordSystemTtsPlay(ok: Boolean) {
-        telemetry.record(
+        telemetry.recordFor(
+            playUtteranceId,
             TelemetryStages.TTS_PLAY,
             if (ok) "info" else "error",
             mapOf("source" to "system", "result" to if (ok) "ok" else "failed"),
@@ -433,15 +459,8 @@ class VoiceEngine(
                 },
             )
             engineRef = engine
-            // T7：TtsPlayer（MainViewModel 装配）播放事件 → telemetry（network 路径；
-            // start/completed/failed/interrupted，level 由 TtsPlayer 给出 info/error/warn）
-            engine.onTtsPlayEvent = { stage, level, payload ->
-                telemetry.record(
-                    TelemetryStages.TTS_PLAY,
-                    level,
-                    payload + mapOf("source" to "network"),
-                )
-            }
+            // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
+            // （telemetry 为构造参数，构造即绑定），此处无需再装配
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
             // T6：云端链发帧时读取引擎当前话语的 utteranceId

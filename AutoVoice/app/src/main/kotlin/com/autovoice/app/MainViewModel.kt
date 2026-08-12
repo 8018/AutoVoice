@@ -329,9 +329,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 ttsPlayer.play(reply)
             },
-            speaker = TextSpeaker { text, _ ->
+            speaker = TextSpeaker { text, onResult ->
                 _uiState.update { s -> s.copy(lastReplyText = text) }
-                ttsFallback.speak(text) {}
+                // T7 评审 C1：SystemTtsFallback 的播报结果（onDone/onError 回调）透传给引擎，
+                // 否则 recordSystemTtsPlay 的 ok/failed 结果在生产上永远进 no-op
+                ttsFallback.speak(text, onResult)
             },
             vehicle = vehicleState,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),

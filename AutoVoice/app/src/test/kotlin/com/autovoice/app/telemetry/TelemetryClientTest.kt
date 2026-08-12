@@ -101,6 +101,83 @@ class TelemetryClientTest {
         assertEquals(0, events.length(), "begin 之前的事件不得进入本轮")
     }
 
+    /**
+     * T7 评审 C1：recordFor 在轮未关闭且 utteranceId 匹配时并入 round events
+     * （随 end() 一并 POST，tts_play 落入本轮）。
+     */
+    @Test
+    fun `recordFor merges into open round when utteranceId matches`() {
+        server.enqueue(MockResponse().setResponseCode(200))
+        val client = client()
+        client.begin("utt-1")
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
+        client.end("utt-1")
+
+        val req = server.takeRequest(5, TimeUnit.SECONDS)
+        assertNotNull(req, "end 应 POST /api/telemetry/round")
+        assertEquals("/api/telemetry/round", req!!.path)
+        val events = JSONObject(req.body.readUtf8()).getJSONArray("events")
+        assertEquals(1, events.length(), "匹配轮的 recordFor 事件应进 round 包")
+        val e = events.getJSONObject(0)
+        assertEquals(TelemetryStages.TTS_PLAY, e.getString("stage"))
+        assertEquals("info", e.getString("level"))
+        assertEquals("network", e.getJSONObject("payload").getString("source"))
+        assertTrue(e.getLong("tsMs") > 0)
+    }
+
+    /**
+     * T7 评审 C1：轮已关闭（current=null）后的迟到事件 → 直接 POST 单事件到
+     * /api/telemetry/events（服务端按 utterance_id 汇合到已有 round，不新建轮）。
+     */
+    @Test
+    fun `recordFor posts single event to events endpoint when round closed`() {
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        server.enqueue(MockResponse().setResponseCode(200)) // /events POST
+        val client = client()
+        client.begin("utt-1")
+        client.end("utt-1")
+        assertNotNull(server.takeRequest(5, TimeUnit.SECONDS), "round 应先收包")
+
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "error", mapOf("source" to "system", "result" to "failed"))
+        val req = server.takeRequest(5, TimeUnit.SECONDS)
+        assertNotNull(req, "轮关闭后的迟到事件应 POST /api/telemetry/events")
+        assertEquals("/api/telemetry/events", req!!.path)
+        val body = JSONObject(req.body.readUtf8())
+        assertEquals("utt-1", body.getString("utteranceId"))
+        val events = body.getJSONArray("events")
+        assertEquals(1, events.length())
+        val e = events.getJSONObject(0)
+        assertEquals(TelemetryStages.TTS_PLAY, e.getString("stage"))
+        assertEquals("error", e.getString("level"))
+        assertEquals("failed", e.getJSONObject("payload").getString("result"))
+        assertTrue(e.getLong("tsMs") > 0)
+    }
+
+    /**
+     * T7 评审 C1：current 轮存在但 utteranceId 不匹配（跨轮迟到事件）→ 不并入当前轮，
+     * 直传 /api/telemetry/events 并按事件自己的 utteranceId 归属。
+     */
+    @Test
+    fun `recordFor with mismatched utteranceId goes to events endpoint not round`() {
+        server.enqueue(MockResponse().setResponseCode(200)) // /events POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        val client = client()
+        client.begin("utt-1")
+        client.recordFor("utt-2", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
+        client.end("utt-1")
+
+        // 两个请求先后到达（顺序不依赖：HTTP 异步），按 path 区分
+        val req1 = server.takeRequest(5, TimeUnit.SECONDS)
+        val req2 = server.takeRequest(5, TimeUnit.SECONDS)
+        val requests = listOf(req1, req2)
+        assertTrue(requests.all { it != null }, "应发出 round POST 与 /events POST 各一次")
+        val roundReq = requests.first { it!!.path == "/api/telemetry/round" }!!
+        val eventsReq = requests.first { it!!.path == "/api/telemetry/events" }!!
+        val roundEvents = JSONObject(roundReq.body.readUtf8()).getJSONArray("events")
+        assertEquals(0, roundEvents.length(), "不匹配的 recordFor 不得进当前轮")
+        assertEquals("utt-2", JSONObject(eventsReq.body.readUtf8()).getString("utteranceId"))
+    }
+
     @Test
     fun `end with mismatched utteranceId does not post`() {
         val client = client()
@@ -148,6 +225,7 @@ class TelemetryClientTest {
         client.onSessionId("srv-sess-1")
         client.begin("utt-1")
         client.record(TelemetryStages.VAD, "info", mapOf("bytes" to 1600))
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
         client.end("utt-1")
         client.uploadAudio("utt-1", ByteArray(4))
 

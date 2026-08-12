@@ -144,7 +144,6 @@ class TtsPlayer(
         val mp = MediaPlayer()
         player = mp
         Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
-        onPlayEvent("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
         try {
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
@@ -164,6 +163,9 @@ class TtsPlayer(
             mp.prepare()
             mp.start()
             isPlayingFlag = true
+            // T7 评审 M1：start 事件在真正开始播放后发出——prepare/start 抛异常时只有
+            // failed 事件，不产生 start+failed 的失真成对
+            onPlayEvent("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
             onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))

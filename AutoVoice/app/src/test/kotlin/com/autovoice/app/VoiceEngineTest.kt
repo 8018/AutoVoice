@@ -1,5 +1,7 @@
 package com.autovoice.app
 
+import com.autovoice.app.telemetry.TelemetryClient
+import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.DecisionEntry
@@ -20,15 +22,23 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withTimeout
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -85,6 +95,14 @@ class VoiceEngineTest {
         cloudWaitMs: Long = 100,
         localFallbackMs: Long = 1000,
         sink: DecisionSink = DecisionSink {},
+        /** 默认 enabled=false 全 no-op 实例（T6），用例可注入 enabled=true + MockWebServer。 */
+        telemetry: TelemetryClient = TelemetryClient(
+            okHttp = OkHttpClient(),
+            baseUrl = "",
+            deviceId = null,
+            scope = scope,
+            enabled = false,
+        ),
         player: AudioPlayer = AudioPlayer {},
         speaker: TextSpeaker = TextSpeaker { _, _ -> },
         /** A3 默认 TTS 失败（返回 null）→ speaker 兜底；用例可注入 fake 返回音频。 */
@@ -101,6 +119,7 @@ class VoiceEngineTest {
                 sink = sink,
             ),
             sink = sink,
+            telemetry = telemetry,
             networkAvailable = networkAvailable,
             local = local,
             cloud = cloud,
@@ -122,6 +141,100 @@ class VoiceEngineTest {
         engine.onListeningStart()
         repeat(cloudSegments) { engine.onCloudSegment(segment) }
         engine.onTurnSegment(segment)
+    }
+
+    /**
+     * 从 MockWebServer 取请求直到命中目标 path（上限 5 个；异步 POST 顺序不保证，
+     * 例如 uploadAudio 的 /audio 可能晚于 round 到达，需跳过）。
+     */
+    private fun takeRequestUntil(server: MockWebServer, path: String): RecordedRequest? {
+        repeat(5) {
+            val r = server.takeRequest(5, TimeUnit.SECONDS) ?: return null
+            if (r.path == path) return r
+        }
+        return null
+    }
+
+    /**
+     * T7 评审 C1 修复证明：tts_play 事件在轮收包前后都不丢、不串轮——
+     * 轮内到达（routeCloudReply 同步播放回调）→ 经 recordFor 并入本轮 round events，
+     * 随 end() 一并 POST；轮已关闭后到达（MediaPlayer 异步完成回调）→ 单事件直传
+     * /api/telemetry/events，utteranceId 仍属本轮（不并入下一轮）。
+     */
+    @Test
+    fun `tts_play before and after round end both land on their utterance`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        server.enqueue(MockResponse().setResponseCode(200)) // /events POST
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        lateinit var engine: VoiceEngine
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { powerOnIntent() },
+                    cloud = CloudRunner {
+                        AudioReply(
+                            mime = "audio/wav",
+                            data = ByteArray(8) { it.toByte() },
+                            speakText = "好的",
+                            intent = null,
+                        )
+                    },
+                    telemetry = telemetry,
+                    player = AudioPlayer {
+                        // 模拟 TtsPlayer 真实回调路径：routeCloudReply 内 play 同步发 start（轮未收包）
+                        engine.onTtsPlayEvent("start", "info", mapOf("bytes" to 8, "mime" to "audio/wav"))
+                    },
+                )
+                engine = pair.first
+                utter(engine)
+            }
+            // 轮收包：onTurnSegment 的 uploadAudio（/audio）与 end 的 round POST 异步到达
+            // （顺序不保证），跳过非目标请求取 round——round events 应含轮内到达的
+            // tts_play（start 落入本轮）
+            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
+            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
+            assertEquals("/api/telemetry/round", roundReq!!.path)
+            val roundBody = JSONObject(roundReq.body.readUtf8())
+            val utteranceId = roundBody.getString("utteranceId")
+            val roundEvents = roundBody.getJSONArray("events")
+            val playInRound = (0 until roundEvents.length()).any { i ->
+                val e = roundEvents.getJSONObject(i)
+                e.getString("stage") == TelemetryStages.TTS_PLAY &&
+                    e.getString("level") == "info" &&
+                    e.getJSONObject("payload").getString("source") == "network" &&
+                    e.getJSONObject("payload").getString("event") == "start"
+            }
+            assertTrue(playInRound, "轮未收包时到达的 tts_play 应并入本轮 round events")
+
+            // 轮已关闭后的迟到完成回调 → 单事件直传 /events，utteranceId 仍属本轮
+            // （迟到的 /audio 请求若晚到会被 takeRequestUntil 跳过）
+            engine.onTtsPlayEvent("completed", "info", mapOf("bytes" to 8))
+            val eventsReq = takeRequestUntil(server, "/api/telemetry/events")
+            assertNotNull(eventsReq, "轮关闭后的迟到 tts_play 应 POST /api/telemetry/events")
+            assertEquals("/api/telemetry/events", eventsReq!!.path)
+            val eventsBody = JSONObject(eventsReq.body.readUtf8())
+            assertEquals(utteranceId, eventsBody.getString("utteranceId"), "迟到事件应归属本轮 utteranceId")
+            val late = eventsBody.getJSONArray("events").getJSONObject(0)
+            assertEquals(TelemetryStages.TTS_PLAY, late.getString("stage"))
+            assertEquals("info", late.getString("level"))
+            assertEquals("network", late.getJSONObject("payload").getString("source"))
+            assertEquals("completed", late.getJSONObject("payload").getString("event"))
+            assertTrue(late.getLong("tsMs") > 0)
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
     }
 
     // ------------------------------------------------------------------ 用例
