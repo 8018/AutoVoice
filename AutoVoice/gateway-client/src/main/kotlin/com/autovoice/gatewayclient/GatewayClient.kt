@@ -55,6 +55,9 @@ class GatewayClient(
     private val sampleRate: Int = 16_000,
     private val channels: Int = 1,
     private val encoding: String = "pcm_s16le",
+    /** 网关鉴权凭据（M5）：非空时注入 hello 帧（服务器 auth-enabled 时必填）。 */
+    private val deviceId: String? = null,
+    private val authToken: String? = null,
 ) {
     companion object {
         /** protocol.md §3.1 hello 的客户端标识。 */
@@ -265,10 +268,13 @@ class GatewayClient(
         gson.toJson(
             mapOf(
                 "type" to "hello",
-                "payload" to mapOf(
-                    "client" to CLIENT_NAME,
-                    "protocolVersion" to PROTOCOL_VERSION,
-                ),
+                "payload" to buildMap {
+                    put("client", CLIENT_NAME)
+                    put("protocolVersion", PROTOCOL_VERSION)
+                    // M5 鉴权：配置了凭据才带（auth-disabled 网关保持老 hello 形态）
+                    deviceId?.let { put("deviceId", it) }
+                    authToken?.let { put("authToken", it) }
+                },
             ),
         )
 

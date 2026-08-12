@@ -377,7 +377,13 @@ private class GatewayCloudRunner(
     scope: CoroutineScope,
 ) : CloudRunner, TtsRequester {
 
-    private val client = GatewayClient(url = cfg.gatewayUrl, okHttp = OkHttpClient())
+    private val client = GatewayClient(
+        url = cfg.gatewayUrl,
+        okHttp = OkHttpClient(),
+        // M5 鉴权：hello 注入设备凭据（auth-enabled 网关必填；未配置则保持老 hello）
+        deviceId = cfg.deviceId,
+        authToken = cfg.authToken,
+    )
     private val bridge = GatewayBridge(client, sink, scope)
 
     /** 是否已收到 ready（含 sessionId）——据此区分 ready 前/后故障。 */
