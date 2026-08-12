@@ -61,13 +61,15 @@ public final class RaceArbiter {
     /**
      * 双候选竞速入口。offline 以 {@code null} 表示"无命中"（调用方把 Optional 摊平）。
      *
-     * @param offline 离线命令识别结果（{@code CompletableFuture<OfflineCommandHit>}，
-     *                未命中/失败 → complete(null)）
-     * @param llm     LLM 语义结果
+     * @param offline     离线命令识别结果（{@code CompletableFuture<OfflineCommandHit>}，
+     *                    未命中/失败 → complete(null)）
+     * @param llm         LLM 语义结果
+     * @param utteranceId 本段话语唯一 ID（telemetry 贯通：决策事件填真实值，由调用方从
+     *                    audio_start 的端侧 utteranceId 或自增回退值传入）
      */
     public CompletableFuture<ArbiterDecision> decide(CompletableFuture<OfflineCommandHit> offline,
                                                      CompletableFuture<Reply> llm,
-                                                     SessionContext ctx) {
+                                                     SessionContext ctx, String utteranceId) {
         CompletableFuture<ArbiterDecision> out = new CompletableFuture<>();
         AtomicBoolean settled = new AtomicBoolean(false);
 
@@ -76,7 +78,7 @@ public final class RaceArbiter {
             if (err != null || hit == null || settled.get()) return;
             if (settled.compareAndSet(false, true)) {
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
-                sink.log(entry(ctx, ROUTE_NLU_TRADITIONAL, "offline_won"));
+                sink.log(entry(ctx, utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
                 out.complete(new ArbiterDecision(reply, "offline_won", hit.text()));
             }
         });
@@ -87,14 +89,14 @@ public final class RaceArbiter {
             if (offline.isDone()) {
                 // 离线已完成（空/失败）：没有更优候选可等 → LLM 立即胜出
                 if (settled.compareAndSet(false, true)) {
-                    sink.log(entry(ctx, ROUTE_LLM, "llm_reply"));
+                    sink.log(entry(ctx, utteranceId, ROUTE_LLM, "llm_reply"));
                     out.complete(new ArbiterDecision(reply, "llm_reply", null));
                 }
             } else {
                 // 宽限期：LLM 到达后等 offline 到 graceMs，到点未命中 → LLM 胜出
                 scheduler.schedule(() -> {
                     if (settled.compareAndSet(false, true)) {
-                        sink.log(entry(ctx, ROUTE_LLM, "llm_reply"));
+                        sink.log(entry(ctx, utteranceId, ROUTE_LLM, "llm_reply"));
                         out.complete(new ArbiterDecision(reply, "llm_reply", null));
                     }
                 }, offlineGraceMs, TimeUnit.MILLISECONDS);
@@ -104,7 +106,7 @@ public final class RaceArbiter {
         // safety 兜底：safetyTimeoutMs 内无一收敛
         scheduler.schedule(() -> {
             if (settled.compareAndSet(false, true)) {
-                sink.log(entry(ctx, ROUTE_LLM, "safety_timeout"));
+                sink.log(entry(ctx, utteranceId, ROUTE_LLM, "safety_timeout"));
                 out.complete(new ArbiterDecision(Reply.ofText(SAFETY_TEXT), "safety_timeout", null));
             }
         }, safetyTimeoutMs, TimeUnit.MILLISECONDS);
@@ -112,12 +114,12 @@ public final class RaceArbiter {
     }
 
     /** 旧单路入口（offline 恒空）：语义与改造前一致——llm_reply / safety_timeout。 */
-    public CompletableFuture<Reply> decide(String text, LlmProvider llm, SessionContext ctx) {
+    public CompletableFuture<Reply> decide(String text, LlmProvider llm, SessionContext ctx, String utteranceId) {
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(null);
-        return decide(offline, llm.chat(text, ctx), ctx).thenApply(ArbiterDecision::reply);
+        return decide(offline, llm.chat(text, ctx), ctx, utteranceId).thenApply(ArbiterDecision::reply);
     }
 
-    private static DecisionEntry entry(SessionContext ctx, String route, String reason) {
-        return new DecisionEntry(ARBITER_CLOUD, route, reason, ctx.sessionId(), System.currentTimeMillis());
+    private static DecisionEntry entry(SessionContext ctx, String utteranceId, String route, String reason) {
+        return new DecisionEntry(ARBITER_CLOUD, route, reason, utteranceId, System.currentTimeMillis());
     }
 }

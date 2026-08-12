@@ -109,6 +109,8 @@ class VoiceGatewayHandlerTest {
         assertEquals("decision", decision.get("type").asText());
         assertEquals("llm_reply", decision.get("payload").get("reason").asText());
         assertEquals("cloud", decision.get("payload").get("arbiter").asText());
+        assertEquals("u-1", decision.get("payload").get("utteranceId").asText(),
+                "旧客户端（无 utteranceId）回退自增 u-N，行为与改造前一致");
 
         // TTS 解耦：reply 只携带语义（action + speakText），无 mime/dataBase64
         JsonNode reply = parse(s.sent.get(2));
@@ -124,6 +126,24 @@ class VoiceGatewayHandlerTest {
 
         // 二进制帧已按序累积为完整 PCM 交给 ASR
         assertArrayEquals(new byte[]{1, 2, 3, 4}, asrReceived[0]);
+    }
+
+    @Test
+    void audioStartClientUtteranceIdFlowsToDecision() throws InterruptedException {
+        // 端侧 utteranceId 贯通：audio_start 携带 utteranceId → 决策事件原样采纳（不回落自增 u-N）
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "utt-custom-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 3);
+
+        JsonNode decision = parse(s.sent.get(1));
+        assertEquals("decision", decision.get("type").asText());
+        assertEquals("utt-custom-1", decision.get("payload").get("utteranceId").asText(),
+                "决策事件应携带端侧 utteranceId");
     }
 
     @Test
@@ -510,6 +530,13 @@ class VoiceGatewayHandlerTest {
         String seg = segmentId == null ? "" : ",\"segmentId\":\"" + segmentId + "\"";
         return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId
                 + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\"" + seg + "}}";
+    }
+
+    /** audio_start 携带端侧 utteranceId（可选，telemetry 贯通）：服务端原样采纳进决策事件。 */
+    private static String audioStartWithUtteranceId(String sessionId, String utteranceId) {
+        return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId
+                + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\""
+                + ",\"utteranceId\":\"" + utteranceId + "\"}}";
     }
 
     private static String audioEnd(String sessionId) {

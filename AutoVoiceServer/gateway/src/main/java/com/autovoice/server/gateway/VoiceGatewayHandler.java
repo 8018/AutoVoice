@@ -45,7 +45,7 @@ import org.slf4j.LoggerFactory;
  *
  * <ul>
  *   <li>{@code hello} → 校验通过后回 {@code ready}（sessionId 由 SessionRegistry 取或新建）；</li>
- *   <li>{@code audio_start} → 记录 utteranceId（自增 {@code u-N}）并开始累积 PCM；</li>
+ *   <li>{@code audio_start} → 记录 utteranceId（优先采纳端侧值，缺失回退自增 {@code u-N}）并开始累积 PCM；</li>
  *   <li>二进制帧 → 累积 PCM（S16LE/16kHz/单声道，协议不校验内容）；</li>
  *   <li>{@code audio_end} → 异步（本连接串行工作线程，M2 多设备加固）：快照本段上下文后立即
  *       返回，流水线处理不占 WS 消息线程——{@code decision} 事件与最终 {@code reply} 由工作线程
@@ -245,7 +245,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         send(session, "ready", ready);
     }
 
-    /** audio_start：未握手不处理；开始累积，记录 utteranceId 与可选 segmentId（reply/error 原样回显）。 */
+    /** audio_start：未握手不处理；开始累积，记录 utteranceId（优先采纳端侧值，缺失回退自增）与可选 segmentId（reply/error 原样回显）。 */
     private void onAudioStart(ConnectionState st, Map<String, Object> payload) {
         if (st.ctx == null) {
             return; // 未收到合法 hello 前不处理后续音频
@@ -253,7 +253,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         st.audioActive = true;
         st.pcm.reset();
         st.pendingDecisions.clear();
-        st.utteranceId = "u-" + ++st.segmentSeq;
+        String clientUtteranceId = payload.get("utteranceId") != null
+                ? String.valueOf(payload.get("utteranceId")) : null;
+        st.utteranceId = clientUtteranceId != null && !clientUtteranceId.isBlank()
+                ? clientUtteranceId
+                : "u-" + ++st.segmentSeq; // 兼容旧客户端：无 utteranceId 时回退自增
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
     }
 
@@ -447,7 +451,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）
-        String utteranceId;
+        String utteranceId; // 端侧 utteranceId 或自增回退（u-N），决策事件/链路插桩复用
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
         boolean audioActive;
         volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）

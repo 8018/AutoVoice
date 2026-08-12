@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
  * 云端语音段处理流水线（spec §5.2 修订，双候选竞速链路）：
  * {@code audio_end 后并行启动 { 离线命令识别 , ASR → LLM } → RaceArbiter 竞速}。
  *
- * <p>接线（按 RaceArbiter 双候选 API）：{@code arbiter.decide(offlineF, llmF, ctx).join()}——
+ * <p>接线（按 RaceArbiter 双候选 API）：{@code arbiter.decide(offlineF, llmF, ctx, utteranceId).join()}——
  * 离线命令命中（规则映射非 unknown）立即胜出；LLM 到达后起离线宽限期等离线（离线已完成
  * 则 LLM 立即胜出）；safety 兜底。回复只携带语义（intent/speakText），<b>不再携带音频</b>
  * ——TTS 已解耦为独立 {@code tts_request/tts_response} 链路（S4）。</p>
@@ -93,7 +93,7 @@ public final class SegmentPipeline {
         CompletableFuture<Reply> llmF = llm.chat(text, ctx);
         try {
             ArbiterDecision decision = arbiter
-                    .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx)
+                    .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId)
                     .join();
             return toResult(decision, text, ctx, utteranceId);
         } catch (Exception e) {

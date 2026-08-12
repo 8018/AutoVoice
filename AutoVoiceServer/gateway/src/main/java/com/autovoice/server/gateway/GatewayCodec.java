@@ -39,7 +39,7 @@ public final class GatewayCodec {
     /** 每类消息 payload 允许输出的字段白名单（encode 只输出白名单字段）。 */
     private static final Map<String, Set<String>> FIELD_WHITELIST = Map.ofEntries(
             Map.entry("hello", Set.of("client", "protocolVersion", "sessionId", "deviceId", "authToken")),
-            Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId")),
+            Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId", "utteranceId")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
             Map.entry("ready", Set.of("sessionId", "language", "protocolVersion")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
@@ -47,7 +47,7 @@ public final class GatewayCodec {
             Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
             Map.entry("bye", Set.of("sessionId", "reason")),
-            Map.entry("tts_request", Set.of("text", "segmentId")),
+            Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),
             Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")));
 
     /** 按 protocol.md §3 校验的消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。

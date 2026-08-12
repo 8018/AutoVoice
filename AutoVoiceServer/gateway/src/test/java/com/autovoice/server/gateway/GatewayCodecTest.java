@@ -50,6 +50,24 @@ class GatewayCodecTest {
     }
 
     @Test
+    void audioStartCarriesOptionalUtteranceId() {
+        // utteranceId（可选，telemetry 贯通）：客户端每轮话语生成的唯一 ID，服务端沿决策事件复用
+        Map<String, Object> msg = GatewayCodec.decode("""
+                {"type":"audio_start","payload":{"sessionId":"s1","sampleRate":16000,"channels":1,"encoding":"pcm_s16le","utteranceId":"utt-1"}}
+                """);
+        assertEquals("utt-1", ((Map<?, ?>) msg.get("payload")).get("utteranceId"));
+    }
+
+    @Test
+    void ttsRequestCarriesOptionalUtteranceId() {
+        // tts_request 同样可携带 utteranceId（可选字段，不属必需）
+        Map<String, Object> msg = GatewayCodec.decode("""
+                {"type":"tts_request","payload":{"text":"打开空调","utteranceId":"utt-2"}}
+                """);
+        assertEquals("utt-2", ((Map<?, ?>) msg.get("payload")).get("utteranceId"));
+    }
+
+    @Test
     void decodesValidAudioEnd() {
         Map<String, Object> msg = GatewayCodec.decode("""
                 {"type":"audio_end","payload":{"sessionId":"demo-1","durationMs":2340}}
@@ -251,6 +269,30 @@ class GatewayCodecTest {
         assertEquals("tts-1", p.get("segmentId").asText());
         assertFalse(p.has("evil"));
         assertEquals(4, p.size());
+    }
+
+    @Test
+    void encodeAudioStartAndTtsRequestAdmitOptionalUtteranceId() {
+        // utteranceId 仅进 FIELD_WHITELIST（不进 REQUIRED_FIELDS）：encode 原样输出该可选字段
+        Map<String, Object> audio = new LinkedHashMap<>();
+        audio.put("sessionId", "s1");
+        audio.put("sampleRate", 16000);
+        audio.put("channels", 1);
+        audio.put("encoding", "pcm_s16le");
+        audio.put("utteranceId", "utt-1");
+        JsonNode ap = read(GatewayCodec.encode("audio_start", audio)).get("payload");
+        assertEquals("utt-1", ap.get("utteranceId").asText());
+
+        Map<String, Object> tts = new LinkedHashMap<>();
+        tts.put("text", "打开空调");
+        tts.put("utteranceId", "utt-2");
+        JsonNode tp = read(GatewayCodec.encode("tts_request", tts)).get("payload");
+        assertEquals("utt-2", tp.get("utteranceId").asText());
+
+        // 缺失时字段省略（可选字段语义，与 segmentId 一致）
+        Map<String, Object> noUtt = new LinkedHashMap<>(audio);
+        noUtt.remove("utteranceId");
+        assertFalse(read(GatewayCodec.encode("audio_start", noUtt)).get("payload").has("utteranceId"));
     }
 
     @Test

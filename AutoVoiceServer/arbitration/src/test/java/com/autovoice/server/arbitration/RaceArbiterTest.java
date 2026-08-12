@@ -81,7 +81,7 @@ class RaceArbiterTest {
     @Test
     void offlineHitWinsImmediatelyEvenIfLlmAlreadyArrived() {
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("offline_won", d.reason());
         assertEquals("action", d.reply().kind());
         assertEquals("climate", d.reply().intent().domain());
@@ -95,7 +95,7 @@ class RaceArbiterTest {
     void offlineHitBeatsFasterLlm() {
         // LLM 50ms 到达，离线 200ms 命中 → 离线胜出（命中即胜，不看先后）
         CompletableFuture<OfflineCommandHit> offline = offlineAt(200, hit("关闭空调"));
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 50).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 50).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("offline_won", d.reason());
         assertEquals("关闭空调", d.offlineText());
         assertEquals(1, log.size());
@@ -105,7 +105,7 @@ class RaceArbiterTest {
     void offlineHitWithinGraceBeatsLlmArrivedFirst() {
         // LLM 10ms 到达（离线未完成 → 起宽限期），离线 100ms 命中（< grace 300ms）→ 离线胜出
         CompletableFuture<OfflineCommandHit> offline = offlineAt(100, hit("打开空调"));
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("offline_won", d.reason());
         assertEquals(1, log.size());
     }
@@ -117,7 +117,7 @@ class RaceArbiterTest {
         // 离线已完成（空结果）→ LLM 到达即胜出，不花宽限期
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(null);
         long start = System.currentTimeMillis();
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         long elapsed = System.currentTimeMillis() - start;
         assertEquals("llm_reply", d.reason());
         assertEquals("LLM回答", d.reply().text());
@@ -132,7 +132,7 @@ class RaceArbiterTest {
     void llmWinsAfterGraceWhenOfflineNeverHits() {
         // LLM 10ms 到达，离线 200ms 空结果（> grace 前未命中）→ 宽限期到点 LLM 胜出
         CompletableFuture<OfflineCommandHit> offline = offlineAt(200, null);
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("llm_reply", d.reason());
         assertEquals(1, log.size());
     }
@@ -141,7 +141,7 @@ class RaceArbiterTest {
     void lateOfflineDoesNotStealFromLlm() {
         // LLM 10ms 到达 + 宽限 300ms 到点胜出；离线命中 600ms 才到 → CAS 拒绝，仍是 llm_reply
         CompletableFuture<OfflineCommandHit> offline = offlineAt(600, hit("打开空调"));
-        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("llm_reply", d.reason());
         assertEquals(1, log.size(), "迟到的离线不得写第二条决策日志");
     }
@@ -149,7 +149,7 @@ class RaceArbiterTest {
     @Test
     void llmErrorFallsBackToSafety() {
         CompletableFuture<OfflineCommandHit> offline = offlineAt(5000, null); // 始终未完成
-        ArbiterDecision d = arbiter.decide(offline, llmError(10).chat("x", ctx), ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llmError(10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("safety_timeout", d.reason());
         assertTrue(d.reply().text().contains("网络开小差"));
         assertEquals(1, log.size());
@@ -159,16 +159,26 @@ class RaceArbiterTest {
     void bothHangSafetyFallback() {
         CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
         CompletableFuture<Reply> llmF = new CompletableFuture<>();
-        ArbiterDecision d = arbiter.decide(offline, llmF, ctx).join();
+        ArbiterDecision d = arbiter.decide(offline, llmF, ctx, "utt-42").join();
         assertEquals("safety_timeout", d.reason());
         assertEquals(1, log.size());
+    }
+
+    // ------------------------------------------------------------ 决策事件 utteranceId
+
+    @Test
+    void decisionEntryUsesPassedUtteranceId() {
+        // 决策事件填调用方传入的 utteranceId（telemetry 贯通），而非 sessionId
+        arbiter.decide(CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("hi")), ctx, "utt-42").join();
+        assertEquals("utt-42", log.get(0).utteranceId());
     }
 
     // ------------------------------------------------------------ 旧单路入口委托
 
     @Test
     void legacyDecideDelegatesToLlmOnly() {
-        Reply r = arbiter.decide("打开空调", llm("LLM回答", 10), ctx).join();
+        Reply r = arbiter.decide("打开空调", llm("LLM回答", 10), ctx, "utt-42").join();
         assertEquals("LLM回答", r.text());
         assertEquals(1, log.size());
         assertEquals("llm_reply", log.get(0).reason());
@@ -176,7 +186,7 @@ class RaceArbiterTest {
 
     @Test
     void legacyDecideLlmErrorSafetyFallback() {
-        Reply r = arbiter.decide("打开空调", llmError(10), ctx).join();
+        Reply r = arbiter.decide("打开空调", llmError(10), ctx, "utt-42").join();
         assertTrue(r.text().contains("网络开小差"));
         assertEquals(1, log.size());
         assertEquals("safety_timeout", log.get(0).reason());
