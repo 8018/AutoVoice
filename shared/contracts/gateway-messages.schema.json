@@ -38,7 +38,8 @@
             "sessionId": { "type": "string" },
             "sampleRate": { "type": "integer" },
             "channels": { "type": "integer" },
-            "encoding": { "type": "string" }
+            "encoding": { "type": "string" },
+            "utteranceId": { "type": "string", "description": "链路追踪：端侧每轮生成的 UUID，随 audio_start 上传，服务端插桩复用（可选，向后兼容）" }
           }
         }
       }
@@ -197,7 +198,8 @@
           "required": ["text"],
           "properties": {
             "text": { "type": "string" },
-            "segmentId": { "type": "string" }
+            "segmentId": { "type": "string" },
+            "utteranceId": { "type": "string", "description": "随 tts_request 上传，tts-server 插桩用" }
           }
         }
       }

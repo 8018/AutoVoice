@@ -98,6 +98,7 @@
 | `channels` | integer | 声道数，固定 `1` |
 | `encoding` | string | 编码，固定 `"pcm_s16le"` |
 | `segmentId` | string（可选） | 每轮话语的唯一 ID（客户端生成，如 UUID）。demo 单连接多轮往返时，服务端无法凭 `sessionId` 区分话语，客户端需以此关联 `reply` / `error`（服务端原样回显） |
+| `utteranceId` | string（可选） | 链路追踪 ID（端侧每轮 UUID）；服务端决策/插桩事件回带该值；缺省时服务端回退 `u-N` 自增 |
 
 > **关联语义**：`segmentId` 由客户端生成、每轮话语唯一、不重复使用。服务端收到后记录为该话语的标识，
 > 在随后的 `reply` 与 `error` payload 中原样回显（未携带时下行省略该字段）。客户端据此丢弃
@@ -147,6 +148,7 @@
 | --- | --- | --- |
 | `text` | string（必填） | 待合成文本（UTF-8，即 reply 的 `speakText` / `text`） |
 | `segmentId` | string（可选） | 客户端生成的对账 ID；非空时在 `tts_response` 与失败 `error` 中原样回显 |
+| `utteranceId` | string（可选） | 透传到 TTS 服务的链路追踪 ID |
 
 ## 4. 服务端 → 客户端消息
 
@@ -389,6 +391,14 @@
    `tts_request` 获取播报音频——该请求与话语的识别/仲裁**完全独立**，可随时发起（任意轮之间）：
    `tts_request` → `tts_response`；合成失败 → `error`（`TTS_FAILED`，不关连接）。
 5. 异常路径：任意阶段失败，服务端发 `error`（随后 `bye`）或直接 `bye`（`TTS_FAILED` 除外，见 §4.5）。
+
+### 5.1 链路追踪（telemetry）
+
+链路追踪与 WS 协议消息**独立**：端侧每轮事件（`utterance_start` / `vad` / `local_asr` /
+`device_arbiter` / `execute` / `tts_request` / `tts_play`）经 HTTP `POST /api/telemetry/round`
+上报（**非 WS 协议消息**）；服务端插桩事件（`cloud_asr` / `offline_pool` / `llm` /
+`cloud_arbiter` / `tts_request` / `tts_cache` / `tts_synth`）落同库；查询 API 与面板地址
+`/telemetry/`。上报为**尽力而为**：失败或禁用不影响业务。
 
 ## 6. 决策日志事件（decision）规范
 

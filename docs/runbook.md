@@ -127,6 +127,21 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 - **TTS 多实例**：`TTS_PORT` 换端口部署多份（DashScope 并发安全，无单例引擎问题）；
   网关 `AUTOVOICE_TTS_REMOTE_URL` 指向负载均衡地址即可。
 
+### 1.7 链路数据平台（telemetry）
+
+数据平台与网关同进程同端口（8080）：端侧每轮事件经 HTTP 上报，服务端插桩落同库，
+面板 `http://47.94.4.204:8080/telemetry/`（SSE 实时列表 / 单轮时间线 / 音频回放 / 统计）。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AUTOVOICE_TELEMETRY_ENABLED` | `true` | 数据平台开关（关 → 全部 Noop，零影响） |
+| `AUTOVOICE_TELEMETRY_DB` | `./telemetry.db` | SQLite 路径（服务器建议 `/opt/autovoice/telemetry/telemetry.db`） |
+| `AUTOVOICE_TELEMETRY_AUDIO_DIR` | `./telemetry-audio` | VAD 后语音 WAV 目录 |
+| `AUTOVOICE_TELEMETRY_RETENTION_DAYS` | `7` | 保留天数，超期自动清理（含音频） |
+| `AUTOVOICE_TELEMETRY_URL`（tts-server） | 空 | tts-server 事件转发网关地址（`http://127.0.0.1:8080`）；空 → 不转发 |
+
+端侧 `demo-full.json` `telemetry.enabled=true` 时启用上报（baseUrl 从 gatewayUrl 推导，可 `url` 覆盖）。
+
 ---
 
 ## 2. 启动步骤
