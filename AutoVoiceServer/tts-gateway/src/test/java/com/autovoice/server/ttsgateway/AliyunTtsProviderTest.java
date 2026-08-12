@@ -2,6 +2,7 @@ package com.autovoice.server.ttsgateway;
 
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
@@ -129,6 +130,54 @@ class AliyunTtsProviderTest {
         assertEquals("PlainText", params.path("text_type").asText());
         assertEquals("wav", params.path("format").asText());
         assertEquals(16_000, params.path("sample_rate").asInt());
+    }
+
+    @Test
+    void recordsSynthSuccessEvent() throws Exception {
+        RecordingRecorder rec = new RecordingRecorder();
+        AliyunTtsProvider recording = new AliyunTtsProvider(
+                new OkHttpClient(), API_KEY, server.url("/").toString(), 15_000, rec);
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-started\",\"task_id\":\"t1\"},\"payload\":{}}");
+                ws.send(ByteString.of(WAV_BYTES));
+                ws.send(finishedFrame("SUCCEEDED"));
+            }
+        }));
+
+        Reply reply = recording.synthesize(TEXT, ctx("s1"), "utt-9");
+
+        assertEquals("audio", reply.kind());
+        assertEquals(1, rec.events.size());
+        assertEquals("utt-9", rec.utteranceIds.get(0));
+        var ev = rec.events.get(0);
+        assertEquals(TelemetryStages.TTS_SYNTH, ev.stage());
+        assertEquals("info", ev.level());
+        assertEquals(WAV_BYTES.length, ev.payload().get("bytes"));
+        assertTrue(((Number) ev.payload().get("durationMs")).longValue() >= 0, "应带合成耗时");
+    }
+
+    @Test
+    void recordsSynthErrorEvent() {
+        RecordingRecorder rec = new RecordingRecorder();
+        AliyunTtsProvider recording = new AliyunTtsProvider(
+                new OkHttpClient(), API_KEY, server.url("/").toString(), 15_000, rec);
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override
+            public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
+                ws.send("{\"header\":{\"event\":\"task-started\",\"task_id\":\"t1\"},\"payload\":{}}");
+                ws.send(finishedFrame("FAILED"));
+            }
+        }));
+
+        assertThrows(RuntimeException.class, () -> recording.synthesize(TEXT, ctx("s2"), "utt-9"));
+
+        assertEquals(1, rec.events.size());
+        assertEquals("utt-9", rec.utteranceIds.get(0));
+        assertEquals(TelemetryStages.TTS_SYNTH, rec.events.get(0).stage());
+        assertEquals("error", rec.events.get(0).level());
+        assertTrue(rec.events.get(0).payload().get("error").toString().contains("FAILED"));
     }
 
     @Test

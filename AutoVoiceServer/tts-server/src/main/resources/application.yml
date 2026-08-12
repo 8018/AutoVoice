@@ -10,5 +10,7 @@ spring:
 autovoice:
   tts:
     cache-dir: ${AUTOVOICE_TTS_CACHE_DIR:}   # 空 → 仅内存缓存；阿里云部署指磁盘目录持久缓存
+  telemetry:
+    url: ${AUTOVOICE_TELEMETRY_URL:}         # 空 → 不转发（Noop）；如 http://127.0.0.1:8080 或带 /api/telemetry 前缀
   secrets:
     dashscope-api-key: ${DASHSCOPE_API_KEY:}

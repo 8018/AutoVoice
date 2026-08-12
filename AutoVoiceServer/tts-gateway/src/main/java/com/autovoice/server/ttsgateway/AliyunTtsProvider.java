@@ -3,6 +3,9 @@ package com.autovoice.server.ttsgateway;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -15,6 +18,7 @@ import okhttp3.HttpUrl;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.ByteArrayOutputStream;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -67,6 +71,7 @@ public final class AliyunTtsProvider implements TtsProvider {
     private final String apiKey;
     private final HttpUrl endpoint;
     private final long timeoutMs;
+    private final TelemetryRecorder recorder;
 
     /**
      * @param apiKey   DashScope API Key
@@ -74,15 +79,27 @@ public final class AliyunTtsProvider implements TtsProvider {
      *                 URL（http/https 自动转 ws/wss）
      */
     public AliyunTtsProvider(OkHttpClient client, String apiKey, String endpoint) {
-        this(client, apiKey, endpoint, CALL_TIMEOUT_MS);
+        this(client, apiKey, endpoint, CALL_TIMEOUT_MS, NoopTelemetryRecorder.INSTANCE);
     }
 
     /** 测试用：可注入短超时，避免超时用例等满 15s。 */
     AliyunTtsProvider(OkHttpClient client, String apiKey, String endpoint, long timeoutMs) {
+        this(client, apiKey, endpoint, timeoutMs, NoopTelemetryRecorder.INSTANCE);
+    }
+
+    /** 带链路记录器的生产构造（Task 5）：超时用默认 15s。 */
+    public AliyunTtsProvider(OkHttpClient client, String apiKey, String endpoint, TelemetryRecorder recorder) {
+        this(client, apiKey, endpoint, CALL_TIMEOUT_MS, recorder);
+    }
+
+    /** 完整构造（Task 5）：recorder 为链路事件记录器（TTS_SYNTH 插桩）。 */
+    public AliyunTtsProvider(OkHttpClient client, String apiKey, String endpoint, long timeoutMs,
+                             TelemetryRecorder recorder) {
         this.client = client; // WS 不受 callTimeout 约束，超时由 future.get 兜底
         this.apiKey = apiKey;
         this.endpoint = toWsUrl(endpoint);
         this.timeoutMs = timeoutMs;
+        this.recorder = recorder == null ? NoopTelemetryRecorder.INSTANCE : recorder;
     }
 
     /**
@@ -97,6 +114,12 @@ public final class AliyunTtsProvider implements TtsProvider {
 
     @Override
     public Reply synthesize(String text, SessionContext ctx) {
+        return synthesize(text, ctx, "");
+    }
+
+    @Override
+    public Reply synthesize(String text, SessionContext ctx, String utteranceId) {
+        long startedNanos = System.nanoTime();
         CompletableFuture<byte[]> audio = new CompletableFuture<>();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Request request = new Request.Builder().url(endpoint)
@@ -105,19 +128,36 @@ public final class AliyunTtsProvider implements TtsProvider {
         WebSocket socket = client.newWebSocket(request, new Listener(audio, out, text));
         try {
             byte[] wav = audio.get(timeoutMs, TimeUnit.MILLISECONDS);
-            return Reply.ofAudio(OUTPUT_MIME, fixWavHeader(wav));
+            Reply reply = Reply.ofAudio(OUTPUT_MIME, fixWavHeader(wav));
+            recorder.record(utteranceId, TelemetryStages.TTS_SYNTH, "info", Map.of(
+                    "text", text, "bytes", reply.data().length, "durationMs", elapsedMs(startedNanos)));
+            return reply;
         } catch (TimeoutException e) {
             socket.close(1000, "timeout");
-            throw new RuntimeException("aliyun tts timeout after " + timeoutMs + "ms", e);
+            RuntimeException re = new RuntimeException("aliyun tts timeout after " + timeoutMs + "ms", e);
+            recordSynthError(utteranceId, text, startedNanos, re);
+            throw re;
         } catch (Exception e) {
             socket.close(1000, "error");
             if (e.getCause() instanceof RuntimeException re) {
+                recordSynthError(utteranceId, text, startedNanos, re);
                 throw re; // 服务端明确失败（task-finished FAILED / task-failed / 网络错误）
             }
-            throw new RuntimeException("aliyun tts failed: " + e.getMessage(), e);
+            RuntimeException re = new RuntimeException("aliyun tts failed: " + e.getMessage(), e);
+            recordSynthError(utteranceId, text, startedNanos, re);
+            throw re;
         } finally {
             socket.close(1000, "done");
         }
+    }
+
+    private static long elapsedMs(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000;
+    }
+
+    private void recordSynthError(String utteranceId, String text, long startedNanos, RuntimeException e) {
+        recorder.record(utteranceId, TelemetryStages.TTS_SYNTH, "error", Map.of(
+                "text", text, "durationMs", elapsedMs(startedNanos), "error", String.valueOf(e.getMessage())));
     }
 
     /**

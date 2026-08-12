@@ -2,6 +2,8 @@ package com.autovoice.server.ttsserver;
 
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.ttsserver.TtsController.TtsRequest;
 
 import java.util.Base64;
@@ -14,7 +16,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -34,9 +38,36 @@ class TtsControllerTest {
     @MockBean
     private TtsProvider tts;
 
+    @MockBean
+    private TelemetryRecorder recorder;
+
+    @Test
+    void recordsTtsRequestEventAndForwardsUtteranceId() throws Exception {
+        when(tts.synthesize(anyString(), any(), anyString())).thenReturn(Reply.ofAudio("audio/wav", WAV));
+
+        mvc.perform(post("/tts").contentType(JSON)
+                        .content("{\"text\":\"好的\",\"sessionId\":\"s1\",\"utteranceId\":\"utt-5\"}"))
+                .andExpect(status().isOk());
+
+        verify(tts).synthesize(eq("好的"), any(), eq("utt-5"));
+        verify(recorder).record(eq("utt-5"), eq(TelemetryStages.TTS_REQUEST), eq("info"), any());
+    }
+
+    @Test
+    void recordsTtsRequestErrorOnSynthesizeFailure() throws Exception {
+        when(tts.synthesize(any(), any(), any())).thenThrow(new RuntimeException("aliyun tts timeout"));
+
+        mvc.perform(post("/tts")
+                        .contentType(JSON)
+                        .content("{\"text\":\"好的\",\"sessionId\":\"s1\",\"utteranceId\":\"utt-6\"}"))
+                .andExpect(status().isInternalServerError());
+
+        verify(recorder).record(eq("utt-6"), eq(TelemetryStages.TTS_REQUEST), eq("error"), any());
+    }
+
     @Test
     void synthesizesAndReturnsBase64Audio() throws Exception {
-        when(tts.synthesize(eq("打开空调"), any())).thenReturn(Reply.ofAudio("audio/wav", WAV));
+        when(tts.synthesize(eq("打开空调"), any(), any())).thenReturn(Reply.ofAudio("audio/wav", WAV));
 
         mvc.perform(post("/tts")
                         .contentType(JSON)
@@ -49,7 +80,7 @@ class TtsControllerTest {
 
     @Test
     void synthesizeFailureYields500() throws Exception {
-        when(tts.synthesize(any(), any())).thenThrow(new RuntimeException("aliyun tts timeout"));
+        when(tts.synthesize(any(), any(), any())).thenThrow(new RuntimeException("aliyun tts timeout"));
 
         mvc.perform(post("/tts")
                         .contentType(JSON)
@@ -67,7 +98,7 @@ class TtsControllerTest {
 
     @Test
     void emptyAudioYields500() throws Exception {
-        when(tts.synthesize(any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[0]));
+        when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[0]));
 
         mvc.perform(post("/tts")
                         .contentType(JSON)

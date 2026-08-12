@@ -47,9 +47,18 @@ public final class RemoteTtsProvider implements TtsProvider {
 
     @Override
     public Reply synthesize(String text, SessionContext ctx) {
+        return synthesize(text, ctx, "");
+    }
+
+    /** 3 参版：utteranceId 随请求 body 透传 tts-server（非空才带，兼容旧协议）。 */
+    @Override
+    public Reply synthesize(String text, SessionContext ctx, String utteranceId) {
         ObjectNode body = MAPPER.createObjectNode();
         body.put("text", text);
         body.put("sessionId", ctx == null ? null : ctx.sessionId());
+        if (utteranceId != null && !utteranceId.isBlank()) {
+            body.put("utteranceId", utteranceId);
+        }
         Request request = new Request.Builder().url(url)
                 .post(RequestBody.create(body.toString(), JSON))
                 .build();

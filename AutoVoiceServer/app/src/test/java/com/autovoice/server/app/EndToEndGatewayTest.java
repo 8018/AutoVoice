@@ -70,7 +70,7 @@ class EndToEndGatewayTest {
         when(llm.chat(any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofAction(
                 Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.95, "llm.car_control", null),
                 "好的，空调温度已调到24度")));
-        when(tts.synthesize(any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
+        when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
     }
 
     @Test

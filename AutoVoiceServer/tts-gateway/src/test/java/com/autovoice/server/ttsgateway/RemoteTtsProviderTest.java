@@ -2,6 +2,8 @@ package com.autovoice.server.ttsgateway;
 
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -60,6 +62,28 @@ class RemoteTtsProviderTest {
         assertEquals("audio", reply.kind());
         assertEquals("audio/wav", reply.mime());
         assertArrayEquals(wav, reply.data());
+    }
+
+    @Test
+    void forwardsUtteranceId() throws Exception {
+        MockResponse ok = new MockResponse().setResponseCode(200)
+                .setBody("{\"mime\":\"audio/wav\",\"dataBase64\":\"AQID\"}");
+        server.enqueue(ok);
+        provider.synthesize("你好", ctx("demo-1"), "utt-5");
+        RecordedRequest req = server.takeRequest();
+        JsonNode body = new ObjectMapper().readTree(req.getBody().readUtf8());
+        assertEquals("utt-5", body.get("utteranceId").asText());
+    }
+
+    @Test
+    void omitsUtteranceIdWhenBlank() throws Exception {
+        MockResponse ok = new MockResponse().setResponseCode(200)
+                .setBody("{\"mime\":\"audio/wav\",\"dataBase64\":\"AQID\"}");
+        server.enqueue(ok);
+        provider.synthesize("你好", ctx("demo-1"), "");
+        RecordedRequest req = server.takeRequest();
+        JsonNode body = new ObjectMapper().readTree(req.getBody().readUtf8());
+        assertTrue(body.get("utteranceId") == null, "空 utteranceId 应省略: " + body);
     }
 
     @Test

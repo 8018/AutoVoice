@@ -3,6 +3,9 @@ package com.autovoice.server.ttsgateway;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -11,6 +14,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -31,25 +35,37 @@ public final class CachedTtsProvider implements TtsProvider {
 
     private final TtsProvider delegate;
     private final Path cacheDir;
+    private final TelemetryRecorder recorder;
     private final ConcurrentMap<String, byte[]> memory = new ConcurrentHashMap<>();
 
     /** 仅内存缓存（cacheDir = null，S5 配置缺省）。 */
     public CachedTtsProvider(TtsProvider delegate) {
-        this(delegate, null);
+        this(delegate, null, NoopTelemetryRecorder.INSTANCE);
     }
 
     /**
      * @param cacheDir 磁盘缓存目录；null 表示仅内存缓存
      */
     public CachedTtsProvider(TtsProvider delegate, Path cacheDir) {
+        this(delegate, cacheDir, NoopTelemetryRecorder.INSTANCE);
+    }
+
+    /** 完整构造：cacheDir 可 null（仅内存缓存）；recorder 为链路事件记录器（Task 5 插桩）。 */
+    public CachedTtsProvider(TtsProvider delegate, Path cacheDir, TelemetryRecorder recorder) {
         this.delegate = delegate;
         this.cacheDir = cacheDir;
+        this.recorder = recorder == null ? NoopTelemetryRecorder.INSTANCE : recorder;
     }
 
     @Override
     public Reply synthesize(String text, SessionContext ctx) {
+        return synthesize(text, ctx, "");
+    }
+
+    @Override
+    public Reply synthesize(String text, SessionContext ctx, String utteranceId) {
         if (text == null || text.isBlank()) {
-            return delegate.synthesize(text, ctx); // 空文本不缓存，直接委托
+            return delegate.synthesize(text, ctx, utteranceId); // 空文本不缓存，直接委托
         }
         byte[] cached = memory.get(text);
         if (cached == null && cacheDir != null) {
@@ -60,18 +76,28 @@ public final class CachedTtsProvider implements TtsProvider {
         }
         if (cached != null) {
             LOG.info("TTS cache HIT: \"{}\" -> {} bytes", text, cached.length);
+            recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "info",
+                    Map.of("text", text, "hit", true, "bytes", cached.length));
             return Reply.ofAudio("audio/wav", cached);
         }
-        Reply reply = delegate.synthesize(text, ctx);
-        if ("audio".equals(reply.kind()) && reply.data() != null && reply.data().length > 0) {
-            byte[] data = reply.data();
-            memory.put(text, data);
-            if (cacheDir != null) {
-                writeDisk(text, data);
+        try {
+            Reply reply = delegate.synthesize(text, ctx, utteranceId);
+            if ("audio".equals(reply.kind()) && reply.data() != null && reply.data().length > 0) {
+                byte[] data = reply.data();
+                memory.put(text, data);
+                if (cacheDir != null) {
+                    writeDisk(text, data);
+                }
+                LOG.info("TTS ok: \"{}\" -> {} bytes (cache MISS)", text, data.length);
+                recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "info",
+                        Map.of("text", text, "hit", false, "bytes", data.length));
             }
-            LOG.info("TTS ok: \"{}\" -> {} bytes (cache MISS)", text, data.length);
+            return reply;
+        } catch (RuntimeException e) {
+            recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "error",
+                    Map.of("text", text, "hit", false, "error", String.valueOf(e.getMessage())));
+            throw e;
         }
-        return reply;
     }
 
     /** 读磁盘缓存；文件缺失或损坏（空文件/读失败）→ null（视为未命中，重新合成）。 */

@@ -3,6 +3,7 @@ package com.autovoice.server.ttsgateway;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -117,5 +119,46 @@ class CachedTtsProviderTest {
         p.synthesize("", CTX);
         assertEquals(2, calls.get(), "空文本不缓存，直接委托底层");
         assertTrue(calls.get() > 0);
+    }
+
+    @Test
+    void recordsCacheHitAndMissEvents() {
+        AtomicInteger calls = new AtomicInteger();
+        RecordingRecorder rec = new RecordingRecorder();
+        CachedTtsProvider p = new CachedTtsProvider(countingDelegate(calls), null, rec);
+
+        Reply first = p.synthesize("打开空调", CTX, "utt-1"); // MISS → 合成并写缓存
+        assertArrayEquals(WAV, first.data());
+        Reply second = p.synthesize("打开空调", CTX, "utt-2"); // HIT → 回放缓存
+
+        assertEquals(2, rec.events.size(), "MISS 与 HIT 各记一条 tts_cache");
+        assertEquals("utt-1", rec.utteranceIds.get(0));
+        assertEquals("utt-2", rec.utteranceIds.get(1));
+
+        var miss = rec.events.get(0);
+        assertEquals(TelemetryStages.TTS_CACHE, miss.stage());
+        assertEquals("info", miss.level());
+        assertEquals(Boolean.FALSE, miss.payload().get("hit"));
+        assertEquals(WAV.length, miss.payload().get("bytes"));
+
+        var hit = rec.events.get(1);
+        assertEquals(Boolean.TRUE, hit.payload().get("hit"));
+        assertEquals(WAV.length, hit.payload().get("bytes"));
+    }
+
+    @Test
+    void recordsErrorWhenDelegateFails() {
+        RecordingRecorder rec = new RecordingRecorder();
+        TtsProvider failing = (text, ctx) -> {
+            throw new RuntimeException("aliyun down");
+        };
+        CachedTtsProvider p = new CachedTtsProvider(failing, null, rec);
+
+        assertThrows(RuntimeException.class, () -> p.synthesize("打开空调", CTX, "utt-3"));
+
+        assertEquals(1, rec.events.size());
+        assertEquals(TelemetryStages.TTS_CACHE, rec.events.get(0).stage());
+        assertEquals("error", rec.events.get(0).level());
+        assertEquals("utt-3", rec.utteranceIds.get(0));
     }
 }

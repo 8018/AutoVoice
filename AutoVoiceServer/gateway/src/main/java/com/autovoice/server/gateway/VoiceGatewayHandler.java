@@ -386,8 +386,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         }
         String text = String.valueOf(payload.get("text"));
         String ttsSegmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        // 链路插桩（Task 5）：tts_request 的 utteranceId（GatewayCodec 白名单，Task 2）透传合成链，缺省 ""
+        String utteranceId = payload.get("utteranceId") != null ? String.valueOf(payload.get("utteranceId")) : "";
         try {
-            Reply reply = tts.synthesize(text, st.ctx);
+            Reply reply = tts.synthesize(text, st.ctx, utteranceId);
             if (!"audio".equals(reply.kind()) || reply.data() == null || reply.data().length == 0) {
                 throw new IllegalStateException("tts returned non-audio reply: kind=" + reply.kind());
             }
