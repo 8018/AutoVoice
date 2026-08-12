@@ -345,6 +345,8 @@ class VoiceEngine(
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
             // T6：云端链发帧时读取引擎当前话语的 utteranceId
             cloudRunner.utteranceIdProvider = { engine.currentUtteranceId }
+            // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
+            cloudRunner.onReadySessionId = telemetry::onSessionId
             return engine
         }
 
@@ -479,6 +481,14 @@ private class GatewayCloudRunner(
     @Volatile
     var utteranceIdProvider: () -> String = { "" }
 
+    /**
+     * ready 回执的 sessionId 回调（T6 评审 C1）：由 [VoiceEngine.create] 绑定到
+     * `telemetry::onSessionId`——round body 按会话关联，缺此转发服务端
+     * recordDeviceRound 会把 session_id="" 落库，轮次无法按会话查询。
+     */
+    @Volatile
+    var onReadySessionId: (String) -> Unit = {}
+
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
         client.disconnect()
@@ -497,6 +507,8 @@ private class GatewayCloudRunner(
                 sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: throw GatewayException("ready 事件缺少 sessionId")
                 readyReceived = true
+                // T6 评审 C1：ready 的 sessionId 转发给遥测（round body 按会话关联）
+                onReadySessionId(sessionId)
             }
             // T6：utteranceId 空串不发送（服务端视为未提供，保持旧协议形态）
             client.sendAudioStart(sessionId, segmentId, utteranceIdProvider().takeIf { it.isNotBlank() })

@@ -22,7 +22,8 @@ import org.junit.jupiter.api.Test
  * POST /api/telemetry/audio 的 multipart 表单；失败静默（500 不抛）、
  * utteranceId 对不上不收包、enabled=false 全 no-op。
  *
- * 注：app 单测由 AGP mockable android.jar 提供真实 org.json 实现，JSONObject 可直接用。
+ * 注：AGP mockable android.jar 的 org.json 是桩（put 返回 null），拼 JSON 依赖
+ * testImplementation 引入的真实 org.json（见 app/build.gradle.kts）。
  */
 class TelemetryClientTest {
 
