@@ -46,9 +46,13 @@ fun interface AudioPlayer {
     fun play(reply: AudioReply)
 }
 
-/** 本地播报出口（应用层实现：SystemTtsFallback）。JVM 测试可注入 fake。 */
+/**
+ * 本地播报出口（应用层实现：SystemTtsFallback）。JVM 测试可注入 fake。
+ * [onResult]（T7 数据平台插桩）：播报完成回调 ok=true，失败/未就绪回调 ok=false。
+ * 不关心结果的调用方传 no-op 回调（如 `{ _ -> }`）。
+ */
 fun interface TextSpeaker {
-    fun speak(text: String)
+    fun speak(text: String, onResult: (Boolean) -> Unit)
 }
 
 /**
@@ -127,6 +131,22 @@ class VoiceEngine(
     @Volatile
     private var currentUtteranceId = ""
 
+    /**
+     * TTS 网络播放事件入口（T7）：TtsPlayer（MainViewModel 装配）的 onPlayEvent 接到这里；
+     * [create] 已绑定 telemetry.record(tts_play, level, payload + source=network)。
+     * TtsPlayer 回调在播放线程/主线程发出，telemetry.record 内部 @Synchronized 串行；
+     * enabled=false 时 record no-op，零影响。
+     */
+    @Volatile
+    var onTtsPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit =
+        { _, _, _ -> }
+
+    /** 本轮云端 VAD 段计数（T7 vad 聚合统计；onListeningStart 清零，onCloudSegment 累加）。 */
+    private var turnSegmentCount = 0
+
+    /** 本轮云端 VAD 段总时长 ms（T7 vad 聚合统计；16k 单声道 16bit，bytes/32 = ms）。 */
+    private var turnSegmentsTotalMs = 0L
+
     /** 装配好的会话：状态机 + 双路由竞速编排。 */
     val session: VoiceSession
 
@@ -166,6 +186,11 @@ class VoiceEngine(
      */
     fun onListeningStart() {
         currentUtteranceId = UUID.randomUUID().toString()
+        // T7：会话也持有本轮 utteranceId——on-device 决策日志（仲裁器 provider / localOnly）带真实值
+        session.currentUtteranceId = currentUtteranceId
+        // T7 vad 聚合统计：本轮从零开始
+        turnSegmentCount = 0
+        turnSegmentsTotalMs = 0L
         telemetry.begin(currentUtteranceId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
         if (networkAvailable()) session.onCloudAvailable() else session.onCloudUnavailable()
@@ -176,24 +201,41 @@ class VoiceEngine(
      * 云端路段（Task 49 双路：VAD 切出的语音段，按住期间每切出一段喂一段，
      * 0..n 个）：入队串行上云，回复挂在会话的云端收敛点。
      * 必须在 [onTurnSegment] 之前全部喂完（会话防御丢弃倒序段）。
+     * T7：累加本轮 VAD 聚合统计（段数/总时长，随 onTurnSegment 的 vad 事件上报）。
      */
-    fun onCloudSegment(segment: ByteArray) = session.onCloudSegment(segment)
+    fun onCloudSegment(segment: ByteArray) {
+        if (currentUtteranceId.isNotBlank()) {
+            turnSegmentCount += 1
+            turnSegmentsTotalMs += durationMs(segment.size)
+        }
+        session.onCloudSegment(segment)
+    }
 
     /**
-     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：记录 VAD 事件 + 上传 VAD 后 PCM
-     * 到数据平台（T6；未开始话语时静默跳过），再启动双路竞速收敛。
+     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：记录 VAD 事件（含本轮聚合统计：
+     * 段数/总时长；maxProb 在 VadSegmenter 内、AudioRecorder 持有，此处不可得）+ 上传
+     * VAD 后 PCM 到数据平台（T6；未开始话语时静默跳过），再启动双路竞速收敛。
      */
     fun onTurnSegment(segment: ByteArray) {
         if (currentUtteranceId.isNotBlank()) {
             telemetry.record(
                 TelemetryStages.VAD,
                 "info",
-                mapOf("bytes" to segment.size, "durationMs" to segment.size * 1000 / (2 * 16000)),
+                mapOf(
+                    "bytes" to segment.size,
+                    "durationMs" to durationMs(segment.size),
+                    // 聚合：云端段数 + 本地整段 = 本轮 VAD 切段总数；总时长为云端段 + 本地段之和
+                    "segmentCount" to turnSegmentCount + 1,
+                    "totalMs" to turnSegmentsTotalMs + durationMs(segment.size),
+                ),
             )
             telemetry.uploadAudio(currentUtteranceId, segment)
         }
         session.onTurnSegment(segment)
     }
+
+    /** 16k 单声道 16bit PCM 字节数 → 毫秒（与 AudioRecorder/TtsPlayer 同口径：32000B/s）。 */
+    private fun durationMs(bytes: Int): Long = bytes * 1000L / 32_000
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
@@ -205,13 +247,29 @@ class VoiceEngine(
     private fun onTurnResult(winner: RaceWinner) {
         when (winner) {
             is RaceWinner.Cloud -> routeCloudReply(winner.reply)
-            is RaceWinner.Local -> vehicle.apply(winner.intent)?.let { text ->
-                onVehicleApplied()
-                speaker.speak(text)
+            is RaceWinner.Local -> {
+                val applied = vehicle.apply(winner.intent)
+                // T7 execute：本地意图执行结果（未知意图 apply 返回 null → skipped，静默不播报）
+                telemetry.record(
+                    TelemetryStages.EXECUTE,
+                    "info",
+                    mapOf(
+                        "intent" to intentSummary(winner.intent),
+                        "result" to if (applied != null) "applied" else "skipped",
+                        "speakText" to (applied ?: ""),
+                    ),
+                )
+                applied?.let { text ->
+                    onVehicleApplied()
+                    speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
+                }
             }
             // 全败：播报兜底话术（按钮录音模式下需要明确反馈；
             // 决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
-            is RaceWinner.Failed -> speaker.speak(FALLBACK_PHRASE)
+            is RaceWinner.Failed -> {
+                telemetry.record(TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
+                speaker.speak(FALLBACK_PHRASE) { ok -> recordSystemTtsPlay(ok) }
+            }
         }
         // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
         telemetry.end(currentUtteranceId)
@@ -243,18 +301,46 @@ class VoiceEngine(
     /**
      * TTS 解耦播报（A3）：后台请求服务端合成音频 → 播放；失败/超时（null）→
      * 系统 TTS 兜底（不静默）。本地胜出路径不动（保持 [speaker] 直接播报）。
+     * T7 插桩：tts_request（合成请求）+ tts_play（system 兜底播报结果；network 播放
+     * 事件由 TtsPlayer 经 [onTtsPlayEvent] 上报）。
      */
     private fun speakViaTts(text: String) {
         if (text.isBlank()) return
+        telemetry.record(TelemetryStages.TTS_REQUEST, "info", mapOf("text" to text))
         scope.launch {
-            tts.request(text)?.let(player::play) ?: speaker.speak(text)
+            tts.request(text)?.let(player::play) ?: speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
         }
     }
 
-    /** 车控执行：apply 成功（非未知意图）后通知应用层刷新车辆面板快照。 */
+    /** 车控执行：apply 成功（非未知意图）后通知应用层刷新车辆面板快照（T7：execute 事件）。 */
     private fun applyAndNotify(intent: Intent) {
-        if (vehicle.apply(intent) != null) onVehicleApplied()
+        if (vehicle.apply(intent) != null) {
+            telemetry.record(
+                TelemetryStages.EXECUTE,
+                "info",
+                mapOf("intent" to intentSummary(intent), "result" to "applied"),
+            )
+            onVehicleApplied()
+        } else {
+            telemetry.record(
+                TelemetryStages.EXECUTE,
+                "info",
+                mapOf("intent" to intentSummary(intent), "result" to "skipped"),
+            )
+        }
     }
+
+    /** T7 tts_play：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。 */
+    private fun recordSystemTtsPlay(ok: Boolean) {
+        telemetry.record(
+            TelemetryStages.TTS_PLAY,
+            if (ok) "info" else "error",
+            mapOf("source" to "system", "result" to if (ok) "ok" else "failed"),
+        )
+    }
+
+    /** T7：意图摘要（数据平台 execute 事件的 intent 字段，与本地 NLU 日志同格式）。 */
+    private fun intentSummary(intent: Intent): String = "${intent.domain}/${intent.intent}"
 
     companion object {
         private const val TAG = "VoiceEngine"
@@ -316,6 +402,9 @@ class VoiceEngine(
             // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
             // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
             val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
+            // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
+            // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
+            var engineRef: VoiceEngine? = null
             val engine = VoiceEngine(
                 cfg = cfg,
                 arbiter = OnDeviceRaceArbiter(
@@ -323,11 +412,13 @@ class VoiceEngine(
                     localFallbackMs = LOCAL_FALLBACK_MS,
                     clock = System::currentTimeMillis,
                     sink = telemetrySink,
+                    // T7：on-device 决策日志携带本轮真实 utteranceId（onListeningStart 写入会话）
+                    utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
                 ),
                 sink = telemetrySink,
                 telemetry = telemetry,
                 networkAvailable = networkAvailable,
-                local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef),
+                local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef, telemetry),
                 cloud = cloudRunner,
                 tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
                 player = player,
@@ -341,6 +432,16 @@ class VoiceEngine(
                     offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
                 },
             )
+            engineRef = engine
+            // T7：TtsPlayer（MainViewModel 装配）播放事件 → telemetry（network 路径；
+            // start/completed/failed/interrupted，level 由 TtsPlayer 给出 info/error/warn）
+            engine.onTtsPlayEvent = { stage, level, payload ->
+                telemetry.record(
+                    TelemetryStages.TTS_PLAY,
+                    level,
+                    payload + mapOf("source" to "network"),
+                )
+            }
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
             // T6：云端链发帧时读取引擎当前话语的 utteranceId
@@ -377,6 +478,8 @@ class VoiceEngine(
             onLocalRecognized: (String?) -> Unit,
             /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
             offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
+            /** T7 插桩：local_asr 事件（识别文本/意图/耗时；enabled=false 时 no-op）。 */
+            telemetry: TelemetryClient,
         ): LocalChainRunner {
             val offlineStage = if (cfg.local.asr == "iflytek.offline") {
                 // 凭据来自 local.properties（BuildConfig 注入，不入库）
@@ -400,6 +503,7 @@ class VoiceEngine(
                 }
             }
             return LocalChainRunner { segment ->
+                val startMs = System.currentTimeMillis()
                 try {
                     val command = when {
                         offlineStage != null -> try {
@@ -418,10 +522,28 @@ class VoiceEngine(
                     onLocalRecognized(command)
                     val intent = RuleNluProvider.understand(command ?: "")
                     Log.i(TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
+                    // T7 local_asr：识别文本/意图/耗时（unknown 意图同样落库，供拒识分析）
+                    telemetry.record(
+                        TelemetryStages.LOCAL_ASR,
+                        "info",
+                        mapOf(
+                            "text" to (command ?: ""),
+                            "intent" to "${intent.domain}/${intent.intent}",
+                            "durationMs" to (System.currentTimeMillis() - startMs),
+                        ),
+                    )
                     intent
                 } catch (t: Throwable) {
                     // 本地链绝不抛出：任何 SDK 异常 → unknown 意图（不执行、不播报）
                     Log.w(TAG, "本地链路异常，降级 unknown 意图", t)
+                    telemetry.record(
+                        TelemetryStages.LOCAL_ASR,
+                        "warn",
+                        mapOf(
+                            "intent" to "unknown/vehicle",
+                            "durationMs" to (System.currentTimeMillis() - startMs),
+                        ),
+                    )
                     Intent.unknown("vehicle")
                 }
             }

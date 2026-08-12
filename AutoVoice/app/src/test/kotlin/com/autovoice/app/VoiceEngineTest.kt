@@ -86,7 +86,7 @@ class VoiceEngineTest {
         localFallbackMs: Long = 1000,
         sink: DecisionSink = DecisionSink {},
         player: AudioPlayer = AudioPlayer {},
-        speaker: TextSpeaker = TextSpeaker {},
+        speaker: TextSpeaker = TextSpeaker { _, _ -> },
         /** A3 默认 TTS 失败（返回 null）→ speaker 兜底；用例可注入 fake 返回音频。 */
         tts: TtsRequester = TtsRequester { null },
         debugBuild: Boolean = true,
@@ -177,7 +177,7 @@ class VoiceEngineTest {
                 },
                 networkAvailable = { false },
                 sink = DecisionSink { entries.add(it) },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             vehicle = pair.second
@@ -225,7 +225,7 @@ class VoiceEngineTest {
                 cloud = CloudRunner { awaitCancellation() },
                 localFallbackMs = 150,
                 sink = DecisionSink { entries.add(it) },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             utter(engine)
@@ -243,7 +243,7 @@ class VoiceEngineTest {
                 scope = this,
                 local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner { TextReply("已为您把空调调到 24 度") },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             utter(engine)
@@ -266,7 +266,7 @@ class VoiceEngineTest {
                         speakText = "已为您把空调调到24度",
                     )
                 },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             vehicle = pair.second
@@ -301,7 +301,7 @@ class VoiceEngineTest {
                     ttsAudio
                 },
                 player = AudioPlayer { played.add(it) },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             vehicle = pair.second
@@ -328,7 +328,7 @@ class VoiceEngineTest {
                     ttsCalled = true
                     null // 模拟超时/合成失败
                 },
-                speaker = TextSpeaker { spoken.add(it) },
+                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             utter(engine)
@@ -443,7 +443,7 @@ class VoiceEngineTest {
             },
             player = AudioPlayer {},
             tts = TtsRequester { null },
-            speaker = TextSpeaker { spoken.add(it) },
+            speaker = TextSpeaker { text, _ -> spoken.add(text) },
             vehicle = MockVehicleState(),
             scope = scope,
         )

@@ -95,6 +95,14 @@ class VoiceSession(
     /** 当前会话状态，可订阅（flow 收集天然携带初始值）。 */
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
+    /**
+     * 本轮话语 utteranceId（T7）：由应用层 [VoiceSession.onListeningStart] 调用前设置
+     * （VoiceEngine.onListeningStart 同步写入）；本会话写出的 on-device 决策日志携带
+     * 真实值（[localOnly]），装配时注入 [OnDeviceRaceArbiter] 的 provider 也读它——
+     * 数据平台按 utteranceId 汇合端云事件。默认空串（未接 telemetry 时零影响）。
+     */
+    var currentUtteranceId: String = ""
+
     private val stateListeners = CopyOnWriteArrayList<(SessionState) -> Unit>()
 
     /** 云端可达性（spec §5.1）：`onCloudUnavailable()` 置 false 后不再启动云端链；
@@ -228,7 +236,8 @@ class VoiceSession(
                 arbiter = "on-device",
                 route = "local",
                 reason = reason,
-                utteranceId = "",
+                // T7：决策日志携带本轮真实 utteranceId（空串=未接 telemetry，语义不变）
+                utteranceId = currentUtteranceId,
                 timestampMs = System.currentTimeMillis(),
             ),
         )

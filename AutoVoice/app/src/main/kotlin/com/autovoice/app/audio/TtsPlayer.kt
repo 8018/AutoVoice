@@ -89,12 +89,18 @@ object WavHeader {
  *   已是 wav/mpeg 等 → 原样写文件，MediaPlayer 自解析。
  * - 播放完成回调 [onCompleted]（供 Task 19/20 状态机）；失败静默降级：
  *   所有异常捕获后 Log.w + [onError]，不抛到 UI。
+ * - 播放事件回调 [onPlayEvent]（T7 数据平台插桩，默认 no-op）：stage =
+ *   `start` / `completed` / `failed` / `interrupted`，level = info / error / warn，
+ *   payload 含 bytes/mime/error 等；装配方（VoiceEngine.create）接到
+ *   telemetry.record(tts_play)，enabled=false 时整体零影响。
  * - 临时文件在播放完成/失败/stop 后删除。
  */
 class TtsPlayer(
     private val context: Context,
     private val onCompleted: (() -> Unit)? = null,
     private val onError: ((Throwable) -> Unit)? = null,
+    private val onPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit =
+        { _, _, _ -> },
 ) {
 
     @Volatile
@@ -127,6 +133,7 @@ class TtsPlayer(
         } catch (t: Throwable) {
             Log.w(TAG, "write audio file failed, degraded silently", t)
             onError?.invoke(t)
+            onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
             return
         }
         if (token != playToken) {
@@ -137,16 +144,19 @@ class TtsPlayer(
         val mp = MediaPlayer()
         player = mp
         Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
+        onPlayEvent("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
         try {
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
                 Log.i(TAG, "play completed: data=${reply.data.size}B")
+                onPlayEvent("completed", "info", mapOf("bytes" to reply.data.size))
                 if (token == playToken) onCompleted?.invoke()
                 finishPlayback(token, mp)
             }
             mp.setOnErrorListener { _, what, extra ->
                 val err = IllegalStateException("MediaPlayer error what=$what extra=$extra")
                 Log.w(TAG, "playback failed, degraded silently", err)
+                onPlayEvent("failed", "error", mapOf("error" to err.message))
                 if (token == playToken) onError?.invoke(err)
                 finishPlayback(token, mp)
                 true // 事件已消费
@@ -156,6 +166,7 @@ class TtsPlayer(
             isPlayingFlag = true
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
+            onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
             if (token == playToken) onError?.invoke(t)
             finishPlayback(token, mp)
         }
@@ -163,7 +174,10 @@ class TtsPlayer(
 
     /** 停止播放并释放（幂等）。 */
     fun stop() {
-        if (isPlayingFlag || player != null) Log.i(TAG, "play interrupted by stop()")
+        if (isPlayingFlag || player != null) {
+            Log.i(TAG, "play interrupted by stop()")
+            onPlayEvent("interrupted", "warn", mapOf())
+        }
         playToken++
         isPlayingFlag = false
         lastPlayEndMs = System.currentTimeMillis()

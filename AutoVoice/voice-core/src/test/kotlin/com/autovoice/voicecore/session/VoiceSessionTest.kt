@@ -219,6 +219,22 @@ class VoiceSessionTest {
         assertEquals(SessionState.IDLE, t.session.state.value)
     }
 
+    /**
+     * T7：本地单链决策日志携带本轮真实 utteranceId（VoiceEngine.onListeningStart 写入
+     * currentUtteranceId，数据平台据此把端侧决策与云端事件按 utteranceId 汇合）。
+     */
+    @Test
+    fun `local-only decision carries currentUtteranceId`() {
+        val t = turn(
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner { error("云端链不应被启动") },
+            cloudSegments = 0,
+            beforeFeed = { it.currentUtteranceId = "utt-123" },
+        )
+        assertTrue(t.results.single() is RaceWinner.Local)
+        assertEquals("utt-123", t.entries.single().utteranceId)
+    }
+
     @Test
     fun `onTurnSegment outside LISTENING is ignored`() = runBlocking {
         val entries = mutableListOf<DecisionEntry>()

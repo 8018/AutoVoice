@@ -116,7 +116,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val vehicleState = MockVehicleState()
 
     /** 云端音频播放出口（生产实现：MediaPlayer + wav 临时文件）。 */
-    private val ttsPlayer = TtsPlayer(application)
+    /**
+     * 云端音频播放（Task 18）。T7：播放事件（start/completed/failed/interrupted）转发到
+     * 引擎的 [VoiceEngine.onTtsPlayEvent]（create() 已绑定 telemetry.record tts_play）；
+     * engine 在 init 完成装配，播放必然发生在引擎就绪之后。
+     */
+    private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
+        engine.onTtsPlayEvent(stage, level, payload)
+    }
 
     /** 本地播报出口（生产实现：系统 TextToSpeech，离线兜底）。 */
     private val ttsFallback = SystemTtsFallback(application)
@@ -322,7 +329,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 ttsPlayer.play(reply)
             },
-            speaker = TextSpeaker { text ->
+            speaker = TextSpeaker { text, _ ->
                 _uiState.update { s -> s.copy(lastReplyText = text) }
                 ttsFallback.speak(text) {}
             },

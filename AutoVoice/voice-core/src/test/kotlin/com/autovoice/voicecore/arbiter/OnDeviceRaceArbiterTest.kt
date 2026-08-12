@@ -50,4 +50,21 @@ class OnDeviceRaceArbiterTest {
         assertTrue(w is RaceWinner.Failed)
         assertEquals("both_failed", entries.last().reason)
     }
+
+    /** T7：决策日志的 utteranceId 取注入 provider 的真实值（装配方绑到会话 currentUtteranceId）。 */
+    @Test fun `decision carries utteranceId from provider`() = runBlocking {
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 50,
+            localFallbackMs = 100,
+            clock = { 1L },
+            sink = sink,
+            utteranceId = { "utt-provided" },
+        )
+        val cloud = CompletableDeferred<Reply>().also { it.complete(TextReply("好的")) }
+        val local = CompletableDeferred<Intent>()
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Cloud)
+        assertEquals("utt-provided", entries.last().utteranceId)
+        assertEquals(1L, entries.last().timestampMs)
+    }
 }

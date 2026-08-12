@@ -31,7 +31,9 @@ sealed class RaceWinner {
  *  - 两者皆超时 → [RaceWinner.Failed]（reason = `both_failed`）。
  *
  * 决策日志经 [DecisionSink] 写出：arbiter = `on-device`，
- * utteranceId 当前无上游会话参数可取，填占位空串，timestampMs 用注入的 [clock]。
+ * utteranceId 由注入的 [utteranceId] provider 提供（装配方绑到会话的
+ * [com.autovoice.voicecore.session.VoiceSession.currentUtteranceId]，T7 起填真实值；
+ * 未注入时默认空串），timestampMs 用注入的 [clock]。
  *
  * 协程语义：`withTimeoutOrNull` 只把自身超时转换为 null；块内抛出的
  * [kotlinx.coroutines.CancellationException]（如父协程取消导致 `await` 中断）
@@ -42,6 +44,8 @@ class OnDeviceRaceArbiter(
     private val localFallbackMs: Long = 10_000,
     private val clock: () -> Long = System::currentTimeMillis,
     private val sink: DecisionSink,
+    /** 本轮话语 utteranceId 读取器（T7）：装配方绑到会话的 currentUtteranceId；默认空串保兼容。 */
+    private val utteranceId: () -> String = { "" },
 ) {
     suspend fun race(cloud: Deferred<Reply>, local: Deferred<Intent>): RaceWinner {
         val reply = withTimeoutOrNull(cloudWaitMs) { cloud.await() }
@@ -65,7 +69,7 @@ class OnDeviceRaceArbiter(
             arbiter = "on-device",
             route = route,
             reason = reason,
-            utteranceId = "",
+            utteranceId = utteranceId(),
             timestampMs = clock(),
         )
 }
