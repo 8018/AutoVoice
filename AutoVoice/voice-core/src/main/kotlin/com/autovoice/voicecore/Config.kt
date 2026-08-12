@@ -47,6 +47,16 @@ data class DemoConfig(
                     // 多设备加固 M5：网关鉴权凭据（auth-enabled 时必填；null → hello 不带）
                     deviceId = cloud.optString("deviceId"),
                     authToken = cloud.optString("authToken"),
+                    // T6 遥测（数据平台一期）：cloud.telemetry 可选段，未配置 → null（遥测关闭）
+                    telemetry = cloud.get("telemetry")
+                        ?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?.let { t ->
+                            TelemetryConfig(
+                                enabled = t.optBoolean("enabled") ?: true,
+                                // url 空白 → null：装配处回落 gatewayUrl 推导
+                                url = t.optString("url")?.takeIf { it.isNotBlank() },
+                            )
+                        },
                 ),
                 mock = MockConfig(
                     executor = mock?.optBoolean("executor") ?: false,
@@ -81,6 +91,14 @@ data class CloudConfig(
     val deviceId: String? = null,
     /** 网关鉴权令牌（M5；与服务器 devices 表一致，值会进 APK，demo 静态凭据可接受）。 */
     val authToken: String? = null,
+    /** 链路数据平台（T6）：null → 端侧 TelemetryClient 不启用（全 no-op）。 */
+    val telemetry: TelemetryConfig? = null,
+)
+
+/** 链路数据平台配置（T6）：enabled 控制端侧上报；url 为 HTTP 基址，空白 → 由 gatewayUrl 推导。 */
+data class TelemetryConfig(
+    val enabled: Boolean = true,
+    val url: String? = null,
 )
 
 data class MockConfig(

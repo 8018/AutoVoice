@@ -6,6 +6,8 @@ import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
+import com.autovoice.app.telemetry.TelemetryClient
+import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.voicecore.ActionReply
@@ -86,6 +88,17 @@ class VoiceEngine(
     cfg: DemoConfig,
     arbiter: OnDeviceRaceArbiter,
     sink: DecisionSink,
+    /**
+     * 链路数据上报客户端（T6）：生产装配由 [create] 注入（telemetry 未配置 → enabled=false
+     * 的全 no-op 实例）；JVM 测试不传时用默认 disabled 实例，行为不变。
+     */
+    private val telemetry: TelemetryClient = TelemetryClient(
+        okHttp = OkHttpClient(),
+        baseUrl = "",
+        deviceId = null,
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        enabled = false,
+    ),
     private val networkAvailable: () -> Boolean,
     local: LocalChainRunner,
     cloud: CloudRunner,
@@ -105,6 +118,14 @@ class VoiceEngine(
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
     @Volatile
     var weakNetwork: Boolean = false
+
+    /**
+     * 当前话语的链路追踪 ID（T6）：onListeningStart 生成，贯穿本轮全部插桩
+     * （audio_start/tts_request 上行 + telemetry 事件）；云端链在 IO 线程读取，
+     * volatile 可见。
+     */
+    @Volatile
+    private var currentUtteranceId = ""
 
     /** 装配好的会话：状态机 + 双路由竞速编排。 */
     val session: VoiceSession
@@ -139,10 +160,14 @@ class VoiceEngine(
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
     /**
-     * 录音开始：网络可用则重新启用云端路由（断网恢复场景），否则立即挂起云端
+     * 录音开始：生成本轮 utteranceId（一个"话语开始"一个 id，贯穿本轮全部插桩）并开启
+     * telemetry 轮；网络可用则重新启用云端路由（断网恢复场景），否则立即挂起云端
      * （本轮起只跑本地链，reason `cloud_unreachable`），再进入 LISTENING。
      */
     fun onListeningStart() {
+        currentUtteranceId = UUID.randomUUID().toString()
+        telemetry.begin(currentUtteranceId)
+        telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
         if (networkAvailable()) session.onCloudAvailable() else session.onCloudUnavailable()
         session.onListeningStart()
     }
@@ -154,8 +179,21 @@ class VoiceEngine(
      */
     fun onCloudSegment(segment: ByteArray) = session.onCloudSegment(segment)
 
-    /** 本地路整段音频（Task 49 双路：抬手后完整降噪段）：启动双路竞速收敛。 */
-    fun onTurnSegment(segment: ByteArray) = session.onTurnSegment(segment)
+    /**
+     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：记录 VAD 事件 + 上传 VAD 后 PCM
+     * 到数据平台（T6；未开始话语时静默跳过），再启动双路竞速收敛。
+     */
+    fun onTurnSegment(segment: ByteArray) {
+        if (currentUtteranceId.isNotBlank()) {
+            telemetry.record(
+                TelemetryStages.VAD,
+                "info",
+                mapOf("bytes" to segment.size, "durationMs" to segment.size * 1000 / (2 * 16000)),
+            )
+            telemetry.uploadAudio(currentUtteranceId, segment)
+        }
+        session.onTurnSegment(segment)
+    }
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
@@ -175,6 +213,8 @@ class VoiceEngine(
             // 决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
             is RaceWinner.Failed -> speaker.speak(FALLBACK_PHRASE)
         }
+        // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
+        telemetry.end(currentUtteranceId)
     }
 
     /**
@@ -250,7 +290,29 @@ class VoiceEngine(
             onVehicleApplied: () -> Unit = {},
             onLocalRecognized: (String?) -> Unit = {},
         ): VoiceEngine {
-            val cloudRunner = GatewayCloudRunner(cfg.cloud, sink, scope)
+            // T6 遥测装配：telemetry 段未配置（enabled 缺省 false）→ enabled=false 全 no-op 实例
+            val telemetry = TelemetryClient(
+                okHttp = OkHttpClient(),
+                baseUrl = cfg.cloud.telemetry?.url ?: telemetryBaseUrl(cfg.cloud.gatewayUrl),
+                deviceId = cfg.cloud.deviceId,
+                scope = scope,
+                enabled = cfg.cloud.telemetry?.enabled ?: false,
+            )
+            // T6 决策插桩：sink 收到端云两端的决策事件——on-device → device_arbiter，cloud → cloud_arbiter。
+            // 在装配点包裹，仲裁器 / 会话 / 网关桥三条来源的决策都经此记录
+            val telemetrySink = DecisionSink { entry ->
+                telemetry.record(
+                    if (entry.arbiter == "on-device") {
+                        TelemetryStages.DEVICE_ARBITER
+                    } else {
+                        TelemetryStages.CLOUD_ARBITER
+                    },
+                    "info",
+                    mapOf("route" to entry.route, "reason" to entry.reason),
+                )
+                sink.onDecision(entry)
+            }
+            val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope)
             // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
             // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
             val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
@@ -260,9 +322,10 @@ class VoiceEngine(
                     cloudWaitMs = cfg.cloud.waitMs,
                     localFallbackMs = LOCAL_FALLBACK_MS,
                     clock = System::currentTimeMillis,
-                    sink = sink,
+                    sink = telemetrySink,
                 ),
-                sink = sink,
+                sink = telemetrySink,
+                telemetry = telemetry,
                 networkAvailable = networkAvailable,
                 local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef),
                 cloud = cloudRunner,
@@ -280,8 +343,21 @@ class VoiceEngine(
             )
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
+            // T6：云端链发帧时读取引擎当前话语的 utteranceId
+            cloudRunner.utteranceIdProvider = { engine.currentUtteranceId }
             return engine
         }
+
+        /**
+         * 遥测 HTTP 基址推导（T6）：显式 telemetry.url 未配时由网关地址推导——
+         * `ws://h:p/ws` → `http://h:p`；已是 http 前缀时仅去掉尾部 `/ws` 路径。
+         */
+        private fun telemetryBaseUrl(gatewayUrl: String): String =
+            when {
+                gatewayUrl.startsWith("ws://") ->
+                    "http://" + gatewayUrl.removePrefix("ws://").removeSuffix("/ws")
+                else -> gatewayUrl.removeSuffix("/ws")
+            }
 
         /**
          * 本地链装配：命令词 ASR（真实/降级 fake）→ 规则 NLU；绝不抛出。
@@ -396,6 +472,13 @@ private class GatewayCloudRunner(
     /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
 
+    /**
+     * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngine.create] 在 engine 装配完成后
+     * 绑定到 `engine.currentUtteranceId`；空串时发帧不携带 utteranceId（服务端视为未提供）。
+     */
+    @Volatile
+    var utteranceIdProvider: () -> String = { "" }
+
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
         client.disconnect()
@@ -415,7 +498,8 @@ private class GatewayCloudRunner(
                     ?: throw GatewayException("ready 事件缺少 sessionId")
                 readyReceived = true
             }
-            client.sendAudioStart(sessionId, segmentId)
+            // T6：utteranceId 空串不发送（服务端视为未提供，保持旧协议形态）
+            client.sendAudioStart(sessionId, segmentId, utteranceIdProvider().takeIf { it.isNotBlank() })
             var offset = 0
             while (offset < segment.size) {
                 val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
@@ -446,7 +530,8 @@ private class GatewayCloudRunner(
         val ttsId = UUID.randomUUID().toString()
         val ttsSlot = bridge.newTtsSlot(ttsId)
         return try {
-            client.sendTtsRequest(text, ttsId)
+            // T6：关联当前话语 utteranceId（空串不发送，保持旧协议形态）
+            client.sendTtsRequest(text, ttsId, utteranceIdProvider().takeIf { it.isNotBlank() })
             withTimeoutOrNull(TTS_TIMEOUT_MS) { ttsSlot.await() }
         } catch (e: GatewayException) {
             null // 连接未就绪等发送失败：本次播报直接兜底

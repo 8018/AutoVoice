@@ -252,6 +252,45 @@ class GatewayClientTest {
             assertTrue(awaitTrue { gateway.frames.any { it.type == "audio_start" } }, "应收到 audio_start")
             val startPayload = gateway.frames.first { it.type == "audio_start" }.payload
             assertFalse(startPayload.has("segmentId"), "segmentId 为 null 时不得发送该字段")
+            assertFalse(startPayload.has("utteranceId"), "utteranceId 为 null 时不得发送该字段（T6 兼容）")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `audio start carries utteranceId when provided`() = runBlocking {
+        // T6：utteranceId 为可选字段——提供时须出现在 audio_start payload 中（服务端优先采纳端侧值）
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendAudioStart("srv-sess-1", "seg-1", "utt-1")
+            assertTrue(awaitTrue { gateway.frames.any { it.type == "audio_start" } }, "应收到 audio_start")
+            val startPayload = gateway.frames.first { it.type == "audio_start" }.payload
+            assertEquals("utt-1", startPayload.get("utteranceId").asString, "audio_start 应携带 utteranceId")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `tts request carries utteranceId when provided`() = runBlocking {
+        // T6：tts_request 同样可选携带 utteranceId（跨阶段按话语汇合）
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendTtsRequest("好的，空调已打开", "tts-1", "utt-1")
+            assertTrue(awaitTrue { gateway.frames.any { it.type == "tts_request" } }, "应收到 tts_request")
+            val payload = gateway.frames.first { it.type == "tts_request" }.payload
+            assertEquals("utt-1", payload.get("utteranceId").asString, "tts_request 应携带 utteranceId")
         } finally {
             gateway.closeAll(client, okHttp)
         }

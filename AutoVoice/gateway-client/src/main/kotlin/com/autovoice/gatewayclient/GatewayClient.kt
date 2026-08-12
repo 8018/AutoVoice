@@ -126,9 +126,11 @@ class GatewayClient(
      * @param sessionId 会话 ID（服务端权威，来自 ready 回执）
      * @param segmentId 可选：每轮话语的唯一 ID（客户端生成，如 UUID），服务端在 reply/error
      *                  中原样回显（§3.2 关联语义），端侧据此丢弃上一轮迟到的消息。非空才发送。
+     * @param utteranceId 可选（T6）：本轮话语的链路追踪 ID（客户端生成，如 UUID），服务端
+     *                    onAudioStart 优先采纳端侧值（遥测按话语汇合）。非空才发送。
      * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
-    fun sendAudioStart(sessionId: String, segmentId: String? = null) {
+    fun sendAudioStart(sessionId: String, segmentId: String? = null, utteranceId: String? = null) {
         val payload = linkedMapOf<String, Any>(
             "sessionId" to sessionId,
             "sampleRate" to sampleRate,
@@ -137,6 +139,9 @@ class GatewayClient(
         )
         if (segmentId != null) {
             payload["segmentId"] = segmentId
+        }
+        if (utteranceId != null) {
+            payload["utteranceId"] = utteranceId
         }
         sendFrame(mapOf("type" to "audio_start", "payload" to payload))
         pcmBytesInSegment = 0
@@ -168,11 +173,17 @@ class GatewayClient(
     /**
      * 独立 TTS 播报请求（protocol.md §3.4）：设备执行 intent 后按 speakText 调用。
      * 回复经 [parseTtsResponse] 对账（同一 segmentId）；与录音段流程互不干扰。
+     *
+     * @param utteranceId 可选（T6）：当前话语的链路追踪 ID，服务端落库时关联 tts 事件。
+     *                    非空才发送。
      */
-    fun sendTtsRequest(text: String, segmentId: String? = null) {
+    fun sendTtsRequest(text: String, segmentId: String? = null, utteranceId: String? = null) {
         val payload = linkedMapOf<String, Any>("text" to text)
         if (segmentId != null) {
             payload["segmentId"] = segmentId
+        }
+        if (utteranceId != null) {
+            payload["utteranceId"] = utteranceId
         }
         sendFrame(mapOf("type" to "tts_request", "payload" to payload))
     }
