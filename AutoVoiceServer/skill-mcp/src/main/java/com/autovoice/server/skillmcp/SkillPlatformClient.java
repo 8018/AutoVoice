@@ -15,7 +15,7 @@ import java.util.List;
  */
 public class SkillPlatformClient {
 
-    static final String SERVICE_TOKEN_HEADER = "X-Skill-Service-Token";
+    public static final String SERVICE_TOKEN_HEADER = "X-Skill-Service-Token";
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final long CALL_TIMEOUT_MS = 5_000;
 

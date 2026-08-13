@@ -18,11 +18,13 @@ dependencies {
     implementation(project(":gateway"))
     implementation(project(":offline-command"))
     implementation(project(":telemetry"))
+    implementation(project(":skill-mcp"))
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.okhttp)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.okhttp)
+    testImplementation(libs.mockwebserver)
 }
 
 tasks.test {
