@@ -56,3 +56,6 @@ AutoVoice/adapter-iflytek/libs/
 
 # superpowers 实现工作区（git worktree）
 .worktrees/
+
+# superpowers SDD 工作区（ledger/brief/review 包，不入库）
+.superpowers/
