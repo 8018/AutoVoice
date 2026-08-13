@@ -36,7 +36,12 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Bean
     public SkillWebhookNotifier skillWebhookNotifier(SkillProperties props) {
-        // Task 8 换成 SkillWebhookPublisher（HTTP 推送）；当前 no-op 占位
-        return skillId -> {};
+        return new SkillWebhookPublisher(new okhttp3.OkHttpClient(),
+                props.gatewayWebhookUrl(), props.serviceToken());
+    }
+
+    @Bean
+    public McpDiscoveryClient mcpDiscoveryClient(SkillProperties props) {
+        return new McpDiscoveryClient(props.mcpConnectTimeoutMs());
     }
 }

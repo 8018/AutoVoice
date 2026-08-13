@@ -17,10 +17,12 @@ public class SkillController {
 
     private final SkillService service;
     private final SqliteSkillStore store;
+    private final McpDiscoveryClient discovery;
 
-    public SkillController(SkillService service, SqliteSkillStore store) {
+    public SkillController(SkillService service, SqliteSkillStore store, McpDiscoveryClient discovery) {
         this.service = service;
         this.store = store;
+        this.discovery = discovery;
     }
 
     @GetMapping
@@ -73,5 +75,25 @@ public class SkillController {
         return ResponseEntity.ok(service.setEnabled(id, req.enabled()));
     }
 
+    /** 发现工具（用保存的配置；body 可选覆盖 mcpUrl/authHeader/authValue），不落库。 */
+    @PostMapping("/{id}/discover")
+    public ResponseEntity<List<ToolInfo>> discover(@PathVariable String id,
+                                                   @RequestBody(required = false) DiscoverOverride body) {
+        SkillRecord r = store.findById(id);
+        if (r == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String mcpUrl = body != null && body.mcpUrl() != null ? body.mcpUrl() : r.mcpUrl();
+        String authHeader = body != null && body.authHeader() != null ? body.authHeader() : r.authHeader();
+        String authValue = body != null && body.authValue() != null ? body.authValue() : r.authValue();
+        try {
+            return ResponseEntity.ok(discovery.discover(mcpUrl, authHeader, authValue));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(null);
+        }
+    }
+
     public record EnableRequest(boolean enabled) {}
+
+    public record DiscoverOverride(String mcpUrl, String authHeader, String authValue) {}
 }
