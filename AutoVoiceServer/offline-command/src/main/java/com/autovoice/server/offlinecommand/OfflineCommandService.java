@@ -34,9 +34,18 @@ public final class OfflineCommandService {
      * 识别 + 规则映射，永不异常完成。结果：命中 → 含 OfflineCommandHit；否则空。
      */
     public CompletableFuture<Optional<OfflineCommandHit>> recognize(byte[] pcm16k, SessionContext ctx) {
+        return recognize(pcm16k, ctx, null);
+    }
+
+    /**
+     * 带 utteranceId 的入口（telemetry 贯通）：透传给 provider（OfflineEnginePool 以
+     * utteranceId 记录 offline_pool 事件）。null utteranceId 时事件以无 ID 记录（丢弃）。
+     */
+    public CompletableFuture<Optional<OfflineCommandHit>> recognize(byte[] pcm16k, SessionContext ctx,
+                                                                    String utteranceId) {
         CompletableFuture<Optional<String>> raw;
         try {
-            raw = provider.recognize(pcm16k, ctx);
+            raw = provider.recognize(pcm16k, ctx, utteranceId);
         } catch (Throwable t) {
             // 同步抛异常（罕见）：等同未命中，兜底为空结果
             LOG.warn("Offline ASR failed (sync): {}", String.valueOf(t.getMessage()));

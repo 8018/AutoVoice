@@ -92,8 +92,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
 
     /**
      * @param endpoint DeepSeek 接口地址；测试注入 MockWebServer URL，生产用 {@link #DEFAULT_ENDPOINT}
-     * @param recorder 链路事件记录器（Task 4 起）。llm 事件以 sessionId 关联（utteranceId 不在
-     *                 LlmProvider 接口内，plan 已声明的取舍，二期再精确化）。
+     * @param recorder 链路事件记录器（Task 4 起）。llm 事件按调用方透传的 utteranceId 记录
+     *                 （时间线"大模型"阶段与 llm_reply 聚合列依赖此贯通）。
      */
     public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint,
                                TelemetryRecorder recorder) {
@@ -106,25 +106,31 @@ public final class DeepSeekLlmProvider implements LlmProvider {
 
     @Override
     public CompletableFuture<Reply> chat(String text, SessionContext ctx) {
+        // 旧入口（无 utteranceId）：事件无从归属，交由 record(null, …) 丢弃，不产生幽灵 round
+        return chat(text, ctx, null);
+    }
+
+    @Override
+    public CompletableFuture<Reply> chat(String text, SessionContext ctx, String utteranceId) {
         // 同步 HTTP call 放进 supplyAsync（common pool），调用方立即可挂回调；
         // IO 异常在 lambda 内包装为 RuntimeException，future 以该异常完成。
         return CompletableFuture.supplyAsync(() -> {
             long start = System.currentTimeMillis();
             try {
                 Reply reply = callAndParse(text);
-                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "info",
+                recorder.record(utteranceId, TelemetryStages.LLM, "info",
                         Map.of("text", text, "reply", replySummary(reply),
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
                 return reply;
             } catch (IOException e) {
                 String msg = String.valueOf(e.getMessage());
-                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "error",
+                recorder.record(utteranceId, TelemetryStages.LLM, "error",
                         Map.of("text", text, "error", msg,
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
                 throw new RuntimeException("deepseek llm request failed: " + msg, e);
             } catch (RuntimeException e) {
                 // LlmException（HTTP 非 2xx / 解析失败）等：记事件后原样抛（future 异常完成）
-                recorder.record(ctx.sessionId(), TelemetryStages.LLM, "error",
+                recorder.record(utteranceId, TelemetryStages.LLM, "error",
                         Map.of("text", text, "error", String.valueOf(e.getMessage()),
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
                 throw e;

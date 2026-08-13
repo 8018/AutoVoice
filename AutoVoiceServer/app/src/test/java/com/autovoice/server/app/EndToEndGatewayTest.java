@@ -45,7 +45,12 @@ import static org.mockito.Mockito.when;
  * 无音频——TTS 解耦）—— LLM mock 模拟 function calling 产出 action 回复
  * （语义已由模型工具调用承担，原 NLU 链路退役）。</p>
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                // 隔离 telemetry 落盘：不污染开发机默认库/音频目录（随机临时库，测试后丢弃）
+                "autovoice.telemetry.db-path=${java.io.tmpdir}/autovoice-fix-${random.uuid}.db",
+                "autovoice.telemetry.audio-dir=${java.io.tmpdir}/autovoice-fix-${random.uuid}-audio"
+        })
 class EndToEndGatewayTest {
 
     /** 任意 16k 字节 PCM 即可：mock asr 不真识别，仅验证二进制帧通路。 */
@@ -67,7 +72,8 @@ class EndToEndGatewayTest {
     @BeforeEach
     void stubProviders() {
         when(asr.transcribe(any(), any())).thenReturn("空调调到二十四度");
-        when(llm.chat(any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofAction(
+        // 3 参入口（utteranceId 贯通）：pipeline 现以 chat(text, ctx, utteranceId) 调用
+        when(llm.chat(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofAction(
                 Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.95, "llm.car_control", null),
                 "好的，空调温度已调到24度")));
         when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));

@@ -14,4 +14,14 @@ import java.util.concurrent.CompletableFuture;
 public interface OfflineCommandProvider {
 
     CompletableFuture<Optional<String>> recognize(byte[] pcm16k, SessionContext ctx);
+
+    /**
+     * 带 utteranceId 的入口（telemetry 贯通）：实现方以 utteranceId 记录 offline_pool 事件。
+     * 默认转发到 {@link #recognize(byte[], SessionContext)}（旧实现零改动，仅不产生
+     * utteranceId 级事件）。
+     */
+    default CompletableFuture<Optional<String>> recognize(byte[] pcm16k, SessionContext ctx,
+                                                          String utteranceId) {
+        return recognize(pcm16k, ctx);
+    }
 }

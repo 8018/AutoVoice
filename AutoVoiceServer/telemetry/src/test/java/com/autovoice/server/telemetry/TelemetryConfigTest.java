@@ -50,7 +50,8 @@ class TelemetryConfigTest {
     @Nested
     @SpringBootTest(classes = TelemetryConfigTest.ConfigTestApp.class,
             properties = {
-                    "autovoice.telemetry.db-path=${java.io.tmpdir}/autovoice-telemetry-test/t.db",
+                    // 保持 enabled=true（默认），仅隔离 db 落盘（随机临时库，防跨测试残留）
+                    "autovoice.telemetry.db-path=${java.io.tmpdir}/autovoice-fix-${random.uuid}.db",
                     "autovoice.telemetry.audio-dir=${java.io.tmpdir}/autovoice-telemetry-test/audio"})
     class Enabled {
 

@@ -122,14 +122,14 @@ class DeepSeekLlmProviderTest {
                 .setHeader("Content-Type", "application/json")
                 .setBody(fixture("deepseek-llm-reply.json")));
 
-        Reply reply = provider.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
+        Reply reply = provider.chat(USER_TEXT, ctx("s1"), "utt-llm-1").get(5, TimeUnit.SECONDS);
 
-        // llm 事件：sessionId 关联（utteranceId 不在 LlmProvider 接口内）+ text/reply/durationMs
+        // llm 事件：3 参入口按 utteranceId 关联（时间线"大模型"阶段贯通）+ text/reply/durationMs
         TelemetryEvent e = events.stream()
                 .filter(x -> TelemetryStages.LLM.equals(x.stage()))
                 .findFirst().orElseThrow();
         assertEquals("info", e.level());
-        assertEquals("s1", recordKeys.get(0), "llm 事件用 sessionId 关联");
+        assertEquals("utt-llm-1", recordKeys.get(0), "llm 事件应按 utteranceId 汇入");
         assertEquals(USER_TEXT, e.payload().get("text"));
         assertEquals("text:" + reply.text(), e.payload().get("reply"));
         assertTrue(e.payload().containsKey("durationMs"));

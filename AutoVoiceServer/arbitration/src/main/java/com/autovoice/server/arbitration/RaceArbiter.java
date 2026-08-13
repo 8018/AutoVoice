@@ -78,7 +78,7 @@ public final class RaceArbiter {
             if (err != null || hit == null || settled.get()) return;
             if (settled.compareAndSet(false, true)) {
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
-                sink.log(entry(ctx, utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
+                sink.log(entry(utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
                 out.complete(new ArbiterDecision(reply, "offline_won", hit.text()));
             }
         });
@@ -89,14 +89,14 @@ public final class RaceArbiter {
             if (offline.isDone()) {
                 // 离线已完成（空/失败）：没有更优候选可等 → LLM 立即胜出
                 if (settled.compareAndSet(false, true)) {
-                    sink.log(entry(ctx, utteranceId, ROUTE_LLM, "llm_reply"));
+                    sink.log(entry(utteranceId, ROUTE_LLM, "llm_reply"));
                     out.complete(new ArbiterDecision(reply, "llm_reply", null));
                 }
             } else {
                 // 宽限期：LLM 到达后等 offline 到 graceMs，到点未命中 → LLM 胜出
                 scheduler.schedule(() -> {
                     if (settled.compareAndSet(false, true)) {
-                        sink.log(entry(ctx, utteranceId, ROUTE_LLM, "llm_reply"));
+                        sink.log(entry(utteranceId, ROUTE_LLM, "llm_reply"));
                         out.complete(new ArbiterDecision(reply, "llm_reply", null));
                     }
                 }, offlineGraceMs, TimeUnit.MILLISECONDS);
@@ -106,7 +106,7 @@ public final class RaceArbiter {
         // safety 兜底：safetyTimeoutMs 内无一收敛
         scheduler.schedule(() -> {
             if (settled.compareAndSet(false, true)) {
-                sink.log(entry(ctx, utteranceId, ROUTE_LLM, "safety_timeout"));
+                sink.log(entry(utteranceId, ROUTE_LLM, "safety_timeout"));
                 out.complete(new ArbiterDecision(Reply.ofText(SAFETY_TEXT), "safety_timeout", null));
             }
         }, safetyTimeoutMs, TimeUnit.MILLISECONDS);
@@ -116,10 +116,11 @@ public final class RaceArbiter {
     /** 旧单路入口（offline 恒空）：语义与改造前一致——llm_reply / safety_timeout。 */
     public CompletableFuture<Reply> decide(String text, LlmProvider llm, SessionContext ctx, String utteranceId) {
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(null);
-        return decide(offline, llm.chat(text, ctx), ctx, utteranceId).thenApply(ArbiterDecision::reply);
+        return decide(offline, llm.chat(text, ctx, utteranceId), ctx, utteranceId)
+                .thenApply(ArbiterDecision::reply);
     }
 
-    private static DecisionEntry entry(SessionContext ctx, String utteranceId, String route, String reason) {
+    private static DecisionEntry entry(String utteranceId, String route, String reason) {
         return new DecisionEntry(ARBITER_CLOUD, route, reason, utteranceId, System.currentTimeMillis());
     }
 }

@@ -57,6 +57,25 @@ class TelemetryServiceTest {
     }
 
     @Test
+    void deviceArbiterFinalDecisionPrefersReasonOverRoute() {
+        // 面板按 final_decision 含 "failed" 判定失败：reason=both_failed → 标红；
+        // reason 缺失时回退 route（cloud/local，不会误标红）
+        TelemetryService svc = newService();
+        svc.recordDeviceRound(new TelemetryService.DeviceRoundPayload("utt-dev-1", "s1", "demo-1",
+                "button", 1000L, 5000L,
+                List.of(new TelemetryEvent(TelemetryStages.DEVICE_ARBITER, 3000L, "info",
+                        Map.of("route", "local", "reason", "both_failed")))));
+        assertEquals("both_failed", svc.queryRound("utt-dev-1").finalDecision());
+
+        TelemetryService svc2 = newService();
+        svc2.recordDeviceRound(new TelemetryService.DeviceRoundPayload("utt-dev-2", "s1", "demo-1",
+                "button", 1000L, 5000L,
+                List.of(new TelemetryEvent(TelemetryStages.DEVICE_ARBITER, 3000L, "info",
+                        Map.of("route", "cloud")))));
+        assertEquals("cloud", svc2.queryRound("utt-dev-2").finalDecision());
+    }
+
+    @Test
     void savesWavFile() throws Exception {
         TelemetryService svc = newService();
         byte[] pcm = new byte[3200];

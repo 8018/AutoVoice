@@ -11,7 +11,6 @@ java {
 dependencies {
     implementation(project(":contracts"))
     implementation(libs.spring.boot.starter.web)
-    implementation(libs.okhttp)
     implementation(libs.sqlite.jdbc)
     testImplementation(libs.spring.boot.starter.test)
 }

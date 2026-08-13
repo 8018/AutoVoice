@@ -93,14 +93,15 @@ public final class SegmentPipeline {
     }
 
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId) {
-        // 并行启动：离线命令识别（异步）∥ ASR（同步）
-        CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx);
+        // 并行启动：离线命令识别（异步）∥ ASR（同步）——utteranceId 透传（llm/offline_pool
+        // 事件按 utteranceId 汇入本轮，不再以 sessionId 建幽灵 round）
+        CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
         String text = transcribe(pcm, ctx, utteranceId);
         if (text == null) {
             // ASR 失败：等离线窗口，窗口内命中则离线兜底，否则 asr_failed_fallback
             return waitOfflineFallback(offlineF, ctx, utteranceId);
         }
-        CompletableFuture<Reply> llmF = llm.chat(text, ctx);
+        CompletableFuture<Reply> llmF = llm.chat(text, ctx, utteranceId);
         try {
             ArbiterDecision decision = arbiter
                     .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId)

@@ -283,7 +283,15 @@ public class TelemetryService implements TelemetryRecorder {
         switch (e.stage()) {
             case TelemetryStages.DEVICE_ARBITER -> {
                 putPayloadValue(f, "local_decision", payload, "route");
-                putPayloadValue(f, "final_decision", payload, "route");
+                // 失败标红按 final_decision 含 "failed" 判定（面板 isFailedSummary）：
+                // 优先取 reason（both_failed 命中标红；cloud_timeout_use_local 本地兜底成功不标红），
+                // 无 reason 回退 route（{cloud, local}）
+                Object reason = payload.get("reason");
+                if (reason != null && !String.valueOf(reason).isBlank()) {
+                    putPayloadValue(f, "final_decision", payload, "reason");
+                } else {
+                    putPayloadValue(f, "final_decision", payload, "route");
+                }
             }
             case TelemetryStages.CLOUD_ARBITER -> putPayloadValue(f, "cloud_decision", payload, "route");
             case TelemetryStages.LOCAL_ASR -> putPayloadValue(f, "asr_local", payload, "text");

@@ -77,7 +77,7 @@ class MultiDeviceGatewayTest {
         // 汇合闩：两段话语都进入 LLM（并行处理证明）后才放行。
         // 若连接处理被串行化，chat#1 在闩上等待 chat#2，而 chat#2 排在其后无法进入 → 超时失败。
         CountDownLatch bothArrived = new CountDownLatch(2);
-        when(llm.chat(any(), any())).thenAnswer(inv -> {
+        when(llm.chat(any(), any(), any())).thenAnswer(inv -> {
             bothArrived.countDown();
             try {
                 if (!bothArrived.await(10, TimeUnit.SECONDS)) {
@@ -127,7 +127,7 @@ class MultiDeviceGatewayTest {
     void telemetryRoundMergesDeviceAndServerEvents() throws Exception {
         // @MockBean 在测试方法间重置：本方法内自建 stub（llm 快速返回，不用汇合闩）
         when(asr.transcribe(any(), any())).thenReturn("空调调到二十四度");
-        when(llm.chat(any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofText("好的")));
+        when(llm.chat(any(), any(), any())).thenReturn(CompletableFuture.completedFuture(Reply.ofText("好的")));
         when(tts.synthesize(any(), any(), any())).thenReturn(Reply.ofAudio("audio/wav", new byte[]{1, 2, 3}));
 
         // 同现有用例：双连接各说一句（utteranceId = utt-e2e-a / utt-e2e-b）
@@ -171,10 +171,12 @@ class MultiDeviceGatewayTest {
                 "execute", "tts_request", "tts_play")),
                 "端侧事件应汇合, 实际 stages: " + stages);
         // 服务端插桩在采纳的 utteranceId 下实际记录的 stage 是 cloud_asr + cloud_arbiter（SegmentPipeline）。
-        // llm 由 DeepSeekLlmProvider 以 sessionId 记录（LlmProvider 接口无 utteranceId，plan 声明二期
-        // 取舍），且本类 llm 为 @MockBean 不产生事件——故不断言 llm（brief 原文含之，实测不可达）。
+        // llm 现亦按 utteranceId 记录（3 参入口），但本类 llm 为 @MockBean 不产生事件
+        // ——故不断言 llm（brief 原文含之，实测不可达）。
         assertTrue(stages.containsAll(Set.of("cloud_asr", "cloud_arbiter")),
                 "服务端插桩事件应汇合, 实际 stages: " + stages);
+        // 汇合总数精确断言（T9 硬化）：6 端侧事件 + cloud_asr + cloud_arbiter = 8
+        assertEquals(8, events.size(), "汇合事件数应为 8, 实际 events: " + events);
     }
 
     /** 一条设备连接的封装：hello → ready → speak（audio_start/PCM/audio_end）→ awaitReply。 */
