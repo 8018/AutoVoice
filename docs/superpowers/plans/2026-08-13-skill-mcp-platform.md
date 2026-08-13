@@ -78,7 +78,7 @@ class FunctionToolTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :contracts:test --tests com.autovoice.server.contracts.FunctionToolTest`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :contracts:test --tests com.autovoice.server.contracts.FunctionToolTest`
 Expected: FAIL（编译错：找不到 FunctionTool）。
 
 - [ ] **Step 3: 写实现**
@@ -119,14 +119,14 @@ public interface ToolExecutor {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :contracts:test --tests com.autovoice.server.contracts.FunctionToolTest`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :contracts:test --tests com.autovoice.server.contracts.FunctionToolTest`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/FunctionTool.java AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/ToolProvider.java AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/ToolExecutor.java AutoVoiceServer/contracts/src/test/java/com/autovoice/server/contracts/FunctionToolTest.java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(contracts): FunctionTool/ToolProvider/ToolExecutor 工具契约"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/FunctionTool.java AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/ToolProvider.java AutoVoiceServer/contracts/src/main/java/com/autovoice/server/contracts/ToolExecutor.java AutoVoiceServer/contracts/src/test/java/com/autovoice/server/contracts/FunctionToolTest.java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(contracts): FunctionTool/ToolProvider/ToolExecutor 工具契约"
 ```
 
 ---
@@ -249,7 +249,7 @@ class ToolInjectorTest {
 
 - [ ] **Step 4: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.ToolInjectorTest`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.ToolInjectorTest`
 Expected: FAIL（编译错：找不到 ToolInjectors）。
 
 - [ ] **Step 5: 写实现**
@@ -315,14 +315,14 @@ public final class ToolInjectors {
 
 - [ ] **Step 6: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test`
 Expected: PASS（3 个用例）。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/settings.gradle.kts AutoVoiceServer/gradle/libs.versions.toml AutoVoiceServer/skill-mcp
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-mcp): 模块脚手架 + 分级注入策略 direct"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/settings.gradle.kts AutoVoiceServer/gradle/libs.versions.toml AutoVoiceServer/skill-mcp
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-mcp): 模块脚手架 + 分级注入策略 direct"
 ```
 
 ---
@@ -416,7 +416,7 @@ class SkillPlatformClientTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.SkillPlatformClientTest`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.SkillPlatformClientTest`
 Expected: FAIL（编译错）。
 
 - [ ] **Step 3: 写实现**
@@ -492,14 +492,14 @@ public final class SkillPlatformClient {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test`
 Expected: PASS（3 个用例，含 Task 2 的）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillConfig.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillPlatformClient.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/SkillPlatformClientTest.java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-mcp): SkillPlatformClient 拉取启用 skill 配置"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillConfig.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillPlatformClient.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/SkillPlatformClientTest.java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-mcp): SkillPlatformClient 拉取启用 skill 配置"
 ```
 
 ---
@@ -703,7 +703,7 @@ class McpToolExecutorTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test`
 Expected: FAIL（编译错：找不到 McpToolSession / McpToolExecutor / McpToolException）。
 
 - [ ] **Step 3: 写实现**
@@ -892,14 +892,14 @@ public final class McpToolExecutor implements ToolExecutor {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test`
 Expected: PASS（Task 2/3/4 全部用例）。若 SDK API 签名有出入（inputSchema 类型、CallToolRequest 构造器），按 Step 3 备注调整后重跑。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolSession.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolException.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolExecutor.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/FakeMcpServer.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpToolSessionTest.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpToolExecutorTest.java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-mcp): MCP SDK 会话（发现/过滤/执行）+ 执行器适配"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolSession.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolException.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolExecutor.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/FakeMcpServer.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpToolSessionTest.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpToolExecutorTest.java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-mcp): MCP SDK 会话（发现/过滤/执行）+ 执行器适配"
 ```
 
 ---
@@ -1032,7 +1032,7 @@ class McpSkillRegistryTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.McpSkillRegistryTest`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.McpSkillRegistryTest`
 Expected: FAIL（编译错：找不到 McpSkillRegistry；McpToolSession 构造器不可见）。
 
 - [ ] **Step 3: 写实现**
@@ -1167,14 +1167,14 @@ public final class McpSkillRegistry implements AutoCloseable {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-mcp:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test`
 Expected: PASS（全部用例）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolSession.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpSkillRegistry.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpSkillRegistryTest.java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-mcp): McpSkillRegistry 快照/重拉/降级/路由执行"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpToolSession.java AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/McpSkillRegistry.java AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/McpSkillRegistryTest.java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-mcp): McpSkillRegistry 快照/重拉/降级/路由执行"
 ```
 
 ---
@@ -1325,7 +1325,7 @@ class SqliteSkillStoreTest {
 
 - [ ] **Step 3: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: FAIL（编译错）。
 
 - [ ] **Step 4: 写实现**
@@ -1489,14 +1489,14 @@ public final class SqliteSkillStore {
 
 - [ ] **Step 5: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: PASS。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/settings.gradle.kts AutoVoiceServer/skill-manager
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager): 平台脚手架 + SQLite 存储"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/settings.gradle.kts AutoVoiceServer/skill-manager
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-manager): 平台脚手架 + SQLite 存储"
 ```
 
 ---
@@ -1714,7 +1714,7 @@ class AdminAuthTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: FAIL（编译错）。
 
 - [ ] **Step 3: 写实现**
@@ -2100,15 +2100,15 @@ public record SkillResponse(String id, String name, String description, String m
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: PASS（Task 6 + Task 7 全部用例）。
 （注意：`AdminAuthTest.logoutClearsCookie` 断言 `cookie().maxAge("skill_admin", 0)` 若与 Spring 渲染细节不符（maxAge 0 可能显示为 -1/0），改为断言响应 cookie 存在且值为空即可——以实际行为修正断言。）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-manager/src/main/java AutoVoiceServer/skill-manager/src/test/java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager): skill CRUD/启停 API + 管理鉴权（cookie/服务 token）"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-manager/src/main/java AutoVoiceServer/skill-manager/src/test/java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-manager): skill CRUD/启停 API + 管理鉴权（cookie/服务 token）"
 ```
 
 ---
@@ -2247,7 +2247,7 @@ class SkillDiscoverControllerTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: FAIL（编译错：找不到 McpDiscoveryClient / SkillWebhookPublisher / ToolInfo）。
 
 - [ ] **Step 3: 写实现**
@@ -2418,14 +2418,14 @@ public record ToolInfo(String name, String description) {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test`
 Expected: PASS（全部用例）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-manager/src
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager): discover 端点 + webhook 推送网关"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-manager/src
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-manager): discover 端点 + webhook 推送网关"
 ```
 
 ---
@@ -2739,7 +2739,7 @@ class DeepSeekLlmBudgetTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :llm:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :llm:test`
 Expected: FAIL（编译错：7 参构造器不存在；或断言失败：现有行为单轮）。
 
 - [ ] **Step 3: 写实现**
@@ -2845,14 +2845,14 @@ Expected: FAIL（编译错：7 参构造器不存在；或断言失败：现有�
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :llm:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :llm:test`
 Expected: PASS（Task 9 全部 + 现有 llm 用例全绿）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/llm/src
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(llm): DeepSeekLlmProvider 注入式工具 + 多轮循环（≤3 轮，5s 预算）"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/llm/src
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(llm): DeepSeekLlmProvider 注入式工具 + 多轮循环（≤3 轮，5s 预算）"
 ```
 
 ---
@@ -3105,7 +3105,7 @@ class McpEndToEndGatewayTest {
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :app:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :app:test`
 Expected: FAIL（编译错：`AutovoiceProperties` 无 `skillManager()`；beans 不存在）。
 
 - [ ] **Step 3: 写实现**
@@ -3213,14 +3213,14 @@ public class SkillRefreshController {
 
 - [ ] **Step 4: 运行确认通过**
 
-Run: `cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :app:test`
+Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :app:test`
 Expected: PASS（Task 10 全部 + 现有 app 用例含 EndToEnd/MultiDevice/AppConfig 全绿）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/app/src AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillPlatformClient.java
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(app): skill-mcp 装配（registry/工具合并/多轮 provider）+ webhook 端点 + E2E"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/app/src AutoVoiceServer/skill-mcp/src/main/java/com/autovoice/server/skillmcp/SkillPlatformClient.java
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(app): skill-mcp 装配（registry/工具合并/多轮 provider）+ webhook 端点 + E2E"
 ```
 
 ---
@@ -3748,22 +3748,22 @@ label > input, label > textarea { margin-top: 4px; color: var(--text); }
 - [ ] **Step 4: 构建并验证**
 
 ```bash
-cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer/skill-manager-web
+cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer/skill-manager-web
 npm install
 npm run build
 ```
 Expected: tsc 零错误；产物出现在 `skill-manager/src/main/resources/static/skill-manager/{index.html,assets/}`。
 
 ```bash
-cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew :skill-manager:test
+cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-manager:test
 ```
 Expected: PASS（后端不受影响）。手动冒烟（可选）：`./gradlew :skill-manager:bootRun` 后浏览器开 `http://127.0.0.1:8083/skill-manager/` 应出登录页（**注意**：子路径 `/skill-manager/` 与 telemetry 同样的限制——直接访问根路径不会自动 index，按 `/skill-manager/index.html` 访问）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/skill-manager-web AutoVoiceServer/skill-manager/src/main/resources/static
-git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager-web): 管理前端（登录/列表/编辑/发现工具勾选）"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/skill-manager-web AutoVoiceServer/skill-manager/src/main/resources/static
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "feat(skill-manager-web): 管理前端（登录/列表/编辑/发现工具勾选）"
 ```
 
 ---
@@ -3782,7 +3782,7 @@ git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager-web): 管�
 
 1. **构建**：
    ```bash
-   cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer
+   cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer
    ./gradlew :app:bootJar :skill-manager:bootJar   # 产出 app/build/libs/app-*.jar、skill-manager/build/libs/skill-manager-*.jar
    ```
 2. **平台部署**（阿里云 47.94.4.204）：
@@ -3833,15 +3833,15 @@ git -C /Users/michaelliu/code/AutoVoice commit -m "feat(skill-manager-web): 管�
 - [ ] **Step 2: 全量回归**
 
 ```bash
-cd /Users/michaelliu/code/AutoVoice/AutoVoiceServer && ./gradlew test
+cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew test
 ```
 Expected: 全部模块测试绿（contracts/skill-mcp/skill-manager/llm/app/gateway/…）。
 
 - [ ] **Step 3: 提交**
 
 ```bash
-git -C /Users/michaelliu/code/AutoVoice add AutoVoiceServer/docs
-git -C /Users/michaelliu/code/AutoVoice commit -m "docs: skill 管理平台部署文档 + runbook 章节"
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform add AutoVoiceServer/docs
+git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m "docs: skill 管理平台部署文档 + runbook 章节"
 ```
 
 ---
