@@ -11,9 +11,10 @@ spring:
 autovoice:
   gateway:
     auth-enabled: ${AUTOVOICE_GATEWAY_AUTH_ENABLED:false}   # 多设备加固 M1；阿里云部署置 true
-    # 设备表 {deviceId: token}（JSON map，如 AUTOVOICE_GATEWAY_AUTH_DEVICES='{"demo-1":"..."}'）：
-    # 不在 yml 声明（占位符空串无法绑定 Map）——env 变量按宽松绑定自动映射到 gateway.auth-devices，
-    # 未配置时绑定 null → record 默认空表
+    # 设备表 {deviceId: token}（JSON 字符串，如 AUTOVOICE_GATEWAY_AUTH_DEVICES={"demo-1":"..."}）：
+    # 不在 yml 声明（占位符空串无法绑定 Map）——env 变量按字符串绑定 gateway.auth-devices，
+    # 由 Gateway record 解析 JSON（部署实测 Boot 无 String→Map 转换器，见 AppConfig.Gateway）；
+    # 未配置/空 → 空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
   arbitration:
     safety-timeout-ms: 6500

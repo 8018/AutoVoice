@@ -16,6 +16,8 @@ import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.ttsgateway.RemoteTtsProvider;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.OkHttpClient;
 
 import java.util.ArrayList;
@@ -47,7 +49,7 @@ public class AppConfig {
 
         /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32。 */
         public AutovoiceProperties {
-            gateway = gateway == null ? new Gateway(false, Map.of(), 32) : gateway;
+            gateway = gateway == null ? new Gateway(false, "{}", 32) : gateway;
         }
 
         public record Arbitration(long safetyTimeoutMs, long offlineGraceMs) {
@@ -98,15 +100,28 @@ public class AppConfig {
 
         /**
          * 接入网关策略（多设备加固 M1）：auth-enabled 默认 false（本地裸连兼容）；devices 为
-         * {@code {deviceId: token}} 表（env 注入 JSON map，如
-         * {@code AUTOVOICE_GATEWAY_AUTH_DEVICES={"demo-1":"..."}}，值不打印）；max-connections
-         * 默认 32，超限新连接 close(4001)。
+         * {@code {deviceId: token}} 表（env 注入 JSON 字符串，如
+         * {@code AUTOVOICE_GATEWAY_AUTH_DEVICES={"demo-1":"..."}}，值不打印）。部署实测 Boot
+         * 无 String→Map 转换器（ConverterNotFoundException），故组件按字符串接收、由
+         * {@link #authDevicesMap()} 解析；max-connections 默认 32，超限新连接 close(4001)。
          */
-        public record Gateway(boolean authEnabled, Map<String, String> authDevices, int maxConnections) {
+        public record Gateway(boolean authEnabled, String authDevices, int maxConnections) {
+
+            private static final ObjectMapper JSON = new ObjectMapper();
 
             public Gateway {
-                authDevices = authDevices == null ? Map.of() : authDevices;
+                authDevices = authDevices == null || authDevices.isBlank() ? "{}" : authDevices;
                 maxConnections = maxConnections < 1 ? 32 : maxConnections;
+            }
+
+            /** 解析 {@code {deviceId: token}} 设备表；非法 JSON 快速失败（鉴权配置错误不应静默）。 */
+            public Map<String, String> authDevicesMap() {
+                try {
+                    return JSON.readValue(authDevices, new TypeReference<Map<String, String>>() {});
+                } catch (Exception e) {
+                    throw new IllegalArgumentException(
+                            "AUTOVOICE_GATEWAY_AUTH_DEVICES 不是合法的 {deviceId: token} JSON map: " + authDevices, e);
+                }
             }
         }
     }
@@ -234,7 +249,7 @@ public class AppConfig {
         AutovoiceProperties.Gateway g = props.gateway();
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
                 props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
-                props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevices(), g.maxConnections(),
+                props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
                 recorder);
     }
 
