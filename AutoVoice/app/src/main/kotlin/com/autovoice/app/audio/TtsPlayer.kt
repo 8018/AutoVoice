@@ -133,7 +133,8 @@ class TtsPlayer(
         } catch (t: Throwable) {
             Log.w(TAG, "write audio file failed, degraded silently", t)
             onError?.invoke(t)
-            onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
+            onPlayEvent("failed", "error",
+                mapOf("result" to "failed", "error" to (t.message ?: t.javaClass.simpleName)))
             return
         }
         if (token != playToken) {
@@ -155,7 +156,7 @@ class TtsPlayer(
             mp.setOnErrorListener { _, what, extra ->
                 val err = IllegalStateException("MediaPlayer error what=$what extra=$extra")
                 Log.w(TAG, "playback failed, degraded silently", err)
-                onPlayEvent("failed", "error", mapOf("error" to err.message))
+                onPlayEvent("failed", "error", mapOf("result" to "failed", "error" to err.message))
                 if (token == playToken) onError?.invoke(err)
                 finishPlayback(token, mp)
                 true // 事件已消费
@@ -168,7 +169,8 @@ class TtsPlayer(
             onPlayEvent("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
-            onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
+            onPlayEvent("failed", "error",
+                mapOf("result" to "failed", "error" to (t.message ?: t.javaClass.simpleName)))
             if (token == playToken) onError?.invoke(t)
             finishPlayback(token, mp)
         }
@@ -178,7 +180,7 @@ class TtsPlayer(
     fun stop() {
         if (isPlayingFlag || player != null) {
             Log.i(TAG, "play interrupted by stop()")
-            onPlayEvent("interrupted", "warn", mapOf())
+            onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted"))
         }
         playToken++
         isPlayingFlag = false
