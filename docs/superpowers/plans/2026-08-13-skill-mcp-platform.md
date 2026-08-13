@@ -462,7 +462,8 @@ public final class SkillPlatformClient {
 
     public SkillPlatformClient(OkHttpClient client, String baseUrl, String serviceToken) {
         this.client = client.newBuilder().callTimeout(CALL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS).build();
-        this.baseUrl = baseUrl == null ? "" : baseUrl.trim();
+        // 去尾部斜杠：装配方可能传 http://host:8083/（测试 server.url() 即带 /），避免 //api 双斜杠
+        this.baseUrl = baseUrl == null ? "" : baseUrl.trim().replaceAll("/+$", "");
         this.serviceToken = serviceToken;
     }
 
@@ -765,20 +766,24 @@ public final class McpToolSession implements AutoCloseable {
 
     /** 连接 + initialize + list_tools + 勾选过滤；连接失败抛 IOException（registry 跳过该 skill）。 */
     public static McpToolSession connect(SkillConfig config, long connectTimeoutMs) throws IOException {
+        // 注意（SDK 2.0.0 实测）：builder 只接受 String URL（非 URI）；httpRequestCustomizer
+        // 是 5 参 lambda（多一个 McpTransportContext 参数）
         HttpClientStreamableHttpTransport.Builder tb = HttpClientStreamableHttpTransport
-                .builder(URI.create(config.mcpUrl()))
+                .builder(config.mcpUrl())
                 .connectTimeout(Duration.ofMillis(connectTimeoutMs));
         if (!config.authHeader().isBlank()) {
             String header = config.authHeader();
             String value = config.authValue();
             // 认证头必须每请求注入（httpRequestCustomizer），不能用已弃用的 customizeRequest()
-            tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, String body) ->
+            tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, Object ctx, String body) ->
                     b.header(header, value));
         }
         McpSyncClient c = McpClient.sync(tb.build())
                 .requestTimeout(Duration.ofMillis(connectTimeoutMs))
                 .clientInfo(new McpSchema.Implementation("autovoice-gateway", "1.0"))
                 .build();
+        // 注意：initialize() 失败抛 SDK RuntimeException（非 IOException）——registry 的
+        // skip 逻辑按 RuntimeException 捕获，两种异常都覆盖
         c.initialize();
         ListToolsResult listed;
         try {
@@ -791,7 +796,8 @@ public final class McpToolSession implements AutoCloseable {
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         for (Tool t : listed.tools()) {
             if (chosen.getOrDefault(t.name(), true)) { // 勾选清单为空 = 全选
-                String schema = t.inputSchema() == null
+                // 实测：inputSchema() 返回 Map<String,Object>（非 JsonNode），writeValueAsString 可直序列化
+                String schema = t.inputSchema() == null || t.inputSchema().isEmpty()
                         ? "{\"type\":\"object\"}"
                         : MAPPER.writeValueAsString(t.inputSchema());
                 tools.put(t.name(), new FunctionTool(t.name(),
@@ -930,29 +936,54 @@ git -C /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform commit -m 
 
 - [ ] **Step 1: 写失败测试**
 
-`McpSkillRegistryTest.java`（用假 client + 假 sessionFactory，不碰真实 MCP）：
+`McpSkillRegistryTest.java`（假平台 client + 假 sessionFactory 走本模块 FakeMcpServer 完整会话，不碰真实 MCP）：
+
+> 说明：本版测试经 `McpToolSession.connect()`（Task 4 的 public 静态工厂，抛 IOException）对共享
+> FakeMcpServer 建真会话——registry 的 callTool 路由断言需要会话真实可执行（`sessionFactory`
+> 是 BiFunction 不能抛受检异常，测试用 `session(cfg)` 帮手把 IOException 包成 RuntimeException，
+> 正常路径不会触发）。
+
 ```java
 package com.autovoice.server.skillmcp;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.autovoice.server.contracts.FunctionTool;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 class McpSkillRegistryTest {
 
-    private static SkillConfig cfg(String id) {
-        return new SkillConfig(id, id, "d", "https://mcp.example.com/mcp", "", "",
-                "[{\"name\":\"t1\",\"enabled\":true}]", true, 1L);
+    private static FakeMcpServer fake;
+    private static String mcpUrl;
+
+    @BeforeAll
+    static void startFake() throws IOException {
+        fake = new FakeMcpServer();
+        mcpUrl = fake.url();
     }
 
+    @AfterAll
+    static void stopFake() throws IOException {
+        fake.close();
+    }
+
+    /** 假平台配置：指向共享 FakeMcpServer；空 toolsJson = 全选（poi_search/route_plan 两个工具）。 */
+    private static SkillConfig cfg(String id) {
+        return new SkillConfig(id, id, "d", mcpUrl, "", "", "", true, 1L);
+    }
+
+    /** 真会话：McpToolSession.connect 走完整 SDK 握手（对 FakeMcpServer，无真实 MCP）。 */
     private static McpToolSession session(SkillConfig cfg) {
-        return new McpToolSession(cfg, null, Map.of("t1",
-                new FunctionTool("t1", "d", "{\"type\":\"object\"}")));
+        try {
+            return McpToolSession.connect(cfg, 5_000);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Test
@@ -961,8 +992,8 @@ class McpSkillRegistryTest {
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
                 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
-            assertEquals(2, reg.enabledToolSpecs().size());
-            assertEquals("a", reg.callTool("t1", "{}")); // t1 可路由（不炸）
+            assertEquals(4, reg.enabledToolSpecs().size()); // 2 skills × 2 工具
+            assertEquals("找到 1 个结果：西湖", reg.callTool("poi_search", "{}")); // 路由到所属 session 执行
         }
     }
 
@@ -971,19 +1002,19 @@ class McpSkillRegistryTest {
         AtomicInteger pulls = new AtomicInteger();
         FakePlatformClient client = new FakePlatformClient(null) {
             @Override
-            public List<SkillConfig> fetchEnabled() throws java.io.IOException {
+            public List<SkillConfig> fetchEnabled() throws IOException {
                 if (pulls.incrementAndGet() == 1) {
                     return List.of(cfg("a"));
                 }
-                throw new java.io.IOException("platform down");
+                throw new IOException("platform down");
             }
         };
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
                 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
-            assertEquals(1, reg.enabledToolSpecs().size());
+            assertEquals(2, reg.enabledToolSpecs().size());
             reg.refresh(); // 平台挂了
-            assertEquals(1, reg.enabledToolSpecs().size()); // 旧快照仍在
+            assertEquals(2, reg.enabledToolSpecs().size()); // 旧快照仍在
         }
     }
 
@@ -999,7 +1030,7 @@ class McpSkillRegistryTest {
                     return session(c);
                 })) {
             reg.refresh();
-            assertEquals(1, reg.enabledToolSpecs().size());
+            assertEquals(2, reg.enabledToolSpecs().size()); // 仅 good 的 2 个工具
         }
     }
 
@@ -1022,22 +1053,21 @@ class McpSkillRegistryTest {
         }
 
         @Override
-        public List<SkillConfig> fetchEnabled() throws java.io.IOException {
+        public List<SkillConfig> fetchEnabled() throws IOException {
             return configs;
         }
     }
 }
 ```
-（说明：`McpToolSession` 构造器是 private 且字段 final——测试的 `session(cfg)` 帮手无法 new。**实现时必须把 `McpToolSession` 的构造器放宽为 package-private**，或提供 `static McpToolSession of(SkillConfig, Map<String,FunctionTool>)` 测试工厂。本任务 Step 3 采用：把构造器从 `private` 改为 `McpToolSession(SkillConfig, McpSyncClient, Map)` package-private（Task 4 的类同步改一处），并在测试里直接用。）
 
 - [ ] **Step 2: 运行确认失败**
 
 Run: `cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServer && ./gradlew :skill-mcp:test --tests com.autovoice.server.skillmcp.McpSkillRegistryTest`
-Expected: FAIL（编译错：找不到 McpSkillRegistry；McpToolSession 构造器不可见）。
+Expected: FAIL（编译错：找不到 McpSkillRegistry）。
 
 - [ ] **Step 3: 写实现**
 
-先改 Task 4 的 `McpToolSession`：构造器 `private McpToolSession(...)` → **package-private** `McpToolSession(...)`（去掉 private 关键字），其余不动。
+（无需改 `McpToolSession`：构造器在 Task 4 已是 package-private，且本版测试走 public 静态工厂 `connect()`。）
 
 `McpSkillRegistry.java`：
 ```java
