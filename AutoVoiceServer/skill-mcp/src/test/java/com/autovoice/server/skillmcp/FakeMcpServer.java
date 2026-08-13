@@ -22,8 +22,16 @@ final class FakeMcpServer implements AutoCloseable {
     static final ObjectMapper MAPPER = new ObjectMapper();
     final MockWebServer server = new MockWebServer();
     final AtomicInteger callCount = new AtomicInteger();
+    final AtomicInteger deleteCount = new AtomicInteger();
+    final boolean failListTools;
 
     FakeMcpServer() {
+        this(false);
+    }
+
+    /** failListTools=true 时 tools/list 返回 JSON-RPC 错误（测试 list_tools 失败路径用）。 */
+    FakeMcpServer(boolean failListTools) {
+        this.failListTools = failListTools;
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
@@ -33,6 +41,7 @@ final class FakeMcpServer implements AutoCloseable {
                 }
                 if ("DELETE".equals(request.getMethod())) {
                     // 会话关闭确认
+                    deleteCount.incrementAndGet();
                     return new MockResponse().setResponseCode(200).setBody("");
                 }
                 try {
@@ -58,6 +67,17 @@ final class FakeMcpServer implements AutoCloseable {
                         return new MockResponse().setResponseCode(202).setBody("");
                     }
                     if ("tools/list".equals(method)) {
+                        if (failListTools) {
+                            // JSON-RPC 错误响应（回显请求 id，SDK 据此关联并抛 McpException）
+                            ObjectNode err = MAPPER.createObjectNode();
+                            err.put("code", -32603);
+                            err.put("message", "fake: tools/list disabled");
+                            ObjectNode out = MAPPER.createObjectNode();
+                            out.put("jsonrpc", "2.0");
+                            out.set("id", id);
+                            out.set("error", err);
+                            return resp.setBody(out.toString());
+                        }
                         ArrayNode tools = result.putArray("tools");
                         tools.add(tool("poi_search", "搜索兴趣点", "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}"));
                         tools.add(tool("route_plan", "规划驾车路线", "{\"type\":\"object\"}"));

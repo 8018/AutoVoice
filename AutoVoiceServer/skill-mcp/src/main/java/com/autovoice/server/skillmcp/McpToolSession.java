@@ -40,25 +40,39 @@ public final class McpToolSession implements AutoCloseable {
         this.tools = tools;
     }
 
-    /** 连接 + initialize + list_tools + 勾选过滤；连接失败抛 IOException（registry 跳过该 skill）。 */
+    /** 连接 + initialize + list_tools + 勾选过滤；连接/初始化失败抛 IOException（registry 跳过该 skill）。 */
     public static McpToolSession connect(SkillConfig config, long connectTimeoutMs) throws IOException {
-        // SDK 2.0.0 的 HttpClientStreamableHttpTransport.builder 只有 String 重载（无 URI 版本）
-        HttpClientStreamableHttpTransport.Builder tb = HttpClientStreamableHttpTransport
-                .builder(config.mcpUrl())
-                .connectTimeout(Duration.ofMillis(connectTimeoutMs));
-        if (!config.authHeader().isBlank()) {
-            String header = config.authHeader();
-            String value = config.authValue();
-            // 认证头必须每请求注入（httpRequestCustomizer），不能用已弃用的 customizeRequest()
-            // 2.0.0 的自定义器签名为 customize(builder, method, endpoint, body, context)，比计划多一个 context 参数
-            tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, String body,
-                                      McpTransportContext ctx) -> b.header(header, value));
+        McpSyncClient c = null;
+        try {
+            // SDK 2.0.0 的 HttpClientStreamableHttpTransport.builder 只有 String 重载（无 URI 版本）
+            HttpClientStreamableHttpTransport.Builder tb = HttpClientStreamableHttpTransport
+                    .builder(config.mcpUrl())
+                    .connectTimeout(Duration.ofMillis(connectTimeoutMs));
+            if (!config.authHeader().isBlank()) {
+                String header = config.authHeader();
+                String value = config.authValue();
+                // 认证头必须每请求注入（httpRequestCustomizer），不能用已弃用的 customizeRequest()
+                // 2.0.0 的自定义器签名为 customize(builder, method, endpoint, body, context)，比计划多一个 context 参数
+                tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, String body,
+                                          McpTransportContext ctx) -> b.header(header, value));
+            }
+            c = McpClient.sync(tb.build())
+                    .requestTimeout(Duration.ofMillis(connectTimeoutMs))
+                    .clientInfo(new McpSchema.Implementation("autovoice-gateway", "1.0"))
+                    .build();
+            c.initialize();
+        } catch (RuntimeException e) {
+            // 连接/初始化失败（连接拒绝、超时、非法 URL 等）：SDK 抛 RuntimeException，
+            // 统一转 IOException 并关闭会话 —— registry 据此跳过该 skill，一个坏 skill 不拖垮全部注入
+            if (c != null) {
+                try {
+                    c.closeGracefully();
+                } catch (RuntimeException ignored) {
+                    // 关闭失败不致命，不覆盖原始错误
+                }
+            }
+            throw new IOException("mcp connect/initialize failed for " + config.id() + ": " + e.getMessage(), e);
         }
-        McpSyncClient c = McpClient.sync(tb.build())
-                .requestTimeout(Duration.ofMillis(connectTimeoutMs))
-                .clientInfo(new McpSchema.Implementation("autovoice-gateway", "1.0"))
-                .build();
-        c.initialize();
         ListToolsResult listed;
         try {
             listed = c.listTools();
@@ -121,8 +135,18 @@ public final class McpToolSession implements AutoCloseable {
                             new TypeReference<Map<String, Object>>() {}));
         } catch (IOException e) {
             throw new McpToolException("tool call arguments invalid: " + argumentsJson);
+        } catch (IllegalArgumentException e) {
+            // 合法 JSON 但非对象（如 [1,2]）：convertValue 转 Map 失败，
+            // 给出干净错误文本而非 Jackson 内部消息
+            throw new McpToolException("tool call arguments must be a JSON object: " + argumentsJson);
         }
-        CallToolResult res = client.callTool(req);
+        CallToolResult res;
+        try {
+            res = client.callTool(req);
+        } catch (RuntimeException e) {
+            // SDK 层调用失败（超时、传输中断等）也统一转 McpToolException：message 作为 tool_result 回 LLM
+            throw new McpToolException("tool " + name + " call failed: " + e.getMessage());
+        }
         String text = res.content() == null ? "" : res.content().stream()
                 .filter(TextContent.class::isInstance)
                 .map(c -> ((TextContent) c).text())
