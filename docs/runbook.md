@@ -135,10 +135,13 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `AUTOVOICE_TELEMETRY_ENABLED` | `true` | 数据平台开关（关 → 全部 Noop，零影响） |
-| `AUTOVOICE_TELEMETRY_DB` | `./telemetry.db` | SQLite 路径（服务器建议 `/opt/autovoice/telemetry/telemetry.db`） |
-| `AUTOVOICE_TELEMETRY_AUDIO_DIR` | `./telemetry-audio` | VAD 后语音 WAV 目录 |
+| `AUTOVOICE_TELEMETRY_DB` | `${java.io.tmpdir}/autovoice-telemetry/telemetry.db` | SQLite 路径（服务器建议 `/opt/autovoice/telemetry/telemetry.db`） |
+| `AUTOVOICE_TELEMETRY_AUDIO_DIR` | `${java.io.tmpdir}/autovoice-telemetry/audio` | VAD 后语音 WAV 目录 |
 | `AUTOVOICE_TELEMETRY_RETENTION_DAYS` | `7` | 保留天数，超期自动清理（含音频） |
 | `AUTOVOICE_TELEMETRY_URL`（tts-server） | 空 | tts-server 事件转发网关地址（`http://127.0.0.1:8080`）；空 → 不转发 |
+
+> 不设 env 时 db/audio 落 `${java.io.tmpdir}`（重启即丢），生产必配
+> `AUTOVOICE_TELEMETRY_DB` / `AUTOVOICE_TELEMETRY_AUDIO_DIR`。
 
 端侧 `demo-full.json` `telemetry.enabled=true` 时启用上报（baseUrl 从 gatewayUrl 推导，可 `url` 覆盖）。
 
