@@ -1,0 +1,12 @@
+server:
+  port: ${SKILL_MANAGER_PORT:8083}
+spring:
+  main:
+    banner-mode: off
+autovoice:
+  skill-manager:
+    db-path: ${SKILL_MANAGER_DB:${java.io.tmpdir}/autovoice-skill-manager/skill-manager.db}
+    admin-token: ${SKILL_MANAGER_ADMIN_TOKEN:}
+    service-token: ${SKILL_SERVICE_TOKEN:}
+    gateway-webhook-url: ${SKILL_MANAGER_GATEWAY_WEBHOOK_URL:}
+    mcp-connect-timeout-ms: ${SKILL_MANAGER_MCP_TIMEOUT_MS:5000}
