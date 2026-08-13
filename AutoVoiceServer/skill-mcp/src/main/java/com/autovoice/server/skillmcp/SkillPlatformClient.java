@@ -13,7 +13,7 @@ import java.util.List;
  * skill 平台拉取客户端：GET {baseUrl}/api/skills?enabled=true，带 X-Skill-Service-Token。
  * baseUrl 空白 → 功能关闭（fetchEnabled 返回空表，isEnabled false）。
  */
-public final class SkillPlatformClient {
+public class SkillPlatformClient {
 
     static final String SERVICE_TOKEN_HEADER = "X-Skill-Service-Token";
     private static final ObjectMapper MAPPER = new ObjectMapper();
