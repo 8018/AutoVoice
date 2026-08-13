@@ -52,8 +52,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>真 provider 装配：@MockBean LlmProvider 的 stub 用 thenAnswer 委托容器外手工构造的
  * DeepSeekLlmProvider（MockWebServer 端点 + 容器内真实 McpSkillRegistry 的工具列表/执行路由）；
- * 真 registry 经 setUp 里同步 refresh() 填充会话快照（start() 的首拉发生在 mock 打桩前，
- * 会 NPE 一次属预期噪音，不影响本用例）。</p>
+ * 真 registry 经 setUp 里同步 refresh() 填充会话快照（start() 的首拉在 mock 打桩前发生，
+ * Mockito 对 List 返回默认空表、无 NPE，首拉仅刷新为空快照，不影响本用例）。</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "autovoice.skill-manager.url=unused",          // 平台客户端被 @MockBean 替换
@@ -179,8 +179,7 @@ class McpEndToEndGatewayTest {
                 "", "", "", true, 1L)));
 
         // 同步 refresh 填充真 registry 会话快照：没有这一步 callTool("poi_search") 抛
-        // "no skill owns tool"，LLM 退回直答、tools/call 计数断言必挂（start() 的首拉
-        // 发生在 mock 打桩前会 NPE 一次，属预期日志噪音，不影响这里）
+        // "no skill owns tool"，LLM 退回直答、tools/call 计数断言必挂
         registry.refresh();
 
         // 真 provider：容器外手工构造（真多轮工具循环 + 真工具路由），@MockBean llm 委托给它

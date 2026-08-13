@@ -40,8 +40,16 @@ export async function deleteSkill(id: string): Promise<void> {
 }
 
 export async function discoverTools(id: string, draft: SkillDraft): Promise<ToolInfo[]> {
+  // authValue 为空时省略字段（后端 DiscoverOverride 语义：字段缺席 = 保留已存值，'' = 显式清空）
+  const body: { mcpUrl: string; authHeader: string; authValue?: string } = {
+    mcpUrl: draft.mcpUrl,
+    authHeader: draft.authHeader,
+  };
+  if (draft.authValue) {
+    body.authValue = draft.authValue;
+  }
   return req(`/api/skills/${id}/discover`, {
     method: 'POST',
-    body: JSON.stringify({ mcpUrl: draft.mcpUrl, authHeader: draft.authHeader, authValue: draft.authValue }),
+    body: JSON.stringify(body),
   });
 }

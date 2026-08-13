@@ -27,7 +27,8 @@ public class SkillRefreshController {
     @PostMapping("/refresh")
     public ResponseEntity<?> refresh(HttpServletRequest request) {
         String given = request.getHeader(SkillPlatformClient.SERVICE_TOKEN_HEADER);
-        boolean ok = given != null && MessageDigest.isEqual(
+        // 先拒空：空 header 绝不等于任何配置 token（防 token 侧为空的静默开门）
+        boolean ok = given != null && !given.isEmpty() && MessageDigest.isEqual(
                 given.getBytes(StandardCharsets.UTF_8), serviceToken.getBytes(StandardCharsets.UTF_8));
         if (!ok) {
             return ResponseEntity.status(401).body("{\"error\":\"unauthorized\"}");

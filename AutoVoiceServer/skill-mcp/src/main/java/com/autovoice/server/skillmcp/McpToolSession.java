@@ -58,7 +58,7 @@ public final class McpToolSession implements AutoCloseable {
             }
             c = McpClient.sync(tb.build())
                     .requestTimeout(Duration.ofMillis(connectTimeoutMs))
-                    .clientInfo(new McpSchema.Implementation("autovoice-gateway", "1.0"))
+                    .clientInfo(McpSchema.Implementation.builder("autovoice-gateway", "1.0").build())
                     .build();
             c.initialize();
         } catch (RuntimeException e) {
@@ -77,7 +77,11 @@ public final class McpToolSession implements AutoCloseable {
         try {
             listed = c.listTools();
         } catch (RuntimeException e) {
-            c.closeGracefully();
+            try {
+                c.closeGracefully();
+            } catch (RuntimeException ignored) {
+                // 连接已死时 DELETE 同样会抛：关闭失败不致命，不覆盖原始 list_tools 错误
+            }
             throw new IOException("mcp list_tools failed for " + config.id() + ": " + e.getMessage(), e);
         }
         Map<String, Boolean> chosen = parseToolsJson(config.toolsJson());
@@ -134,18 +138,18 @@ public final class McpToolSession implements AutoCloseable {
                     MAPPER.convertValue(MAPPER.readTree(argumentsJson),
                             new TypeReference<Map<String, Object>>() {}));
         } catch (IOException e) {
-            throw new McpToolException("tool call arguments invalid: " + argumentsJson);
+            throw new McpToolException("tool call arguments invalid: " + argumentsJson, e);
         } catch (IllegalArgumentException e) {
             // 合法 JSON 但非对象（如 [1,2]）：convertValue 转 Map 失败，
             // 给出干净错误文本而非 Jackson 内部消息
-            throw new McpToolException("tool call arguments must be a JSON object: " + argumentsJson);
+            throw new McpToolException("tool call arguments must be a JSON object: " + argumentsJson, e);
         }
         CallToolResult res;
         try {
             res = client.callTool(req);
         } catch (RuntimeException e) {
             // SDK 层调用失败（超时、传输中断等）也统一转 McpToolException：message 作为 tool_result 回 LLM
-            throw new McpToolException("tool " + name + " call failed: " + e.getMessage());
+            throw new McpToolException("tool " + name + " call failed: " + e.getMessage(), e);
         }
         String text = res.content() == null ? "" : res.content().stream()
                 .filter(TextContent.class::isInstance)

@@ -32,6 +32,9 @@ class SkillWebhookPublisherTest {
         SkillWebhookPublisher p = new SkillWebhookPublisher(new OkHttpClient(),
                 server.url("/").toString(), "svc-secret");
         p.notifySkillChanged("x"); // 不抛：webhook 是尽力而为
+        RecordedRequest r = server.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(r, "请求应确实发出（失败仅吞掉响应，不跳过发送）");
+        assertEquals("/api/internal/skills/refresh", r.getPath());
         server.shutdown();
     }
 }

@@ -42,7 +42,7 @@ public final class McpDiscoveryClient {
             // 全部转 IOException（方法契约），并确保关闭客户端
             c = McpClient.sync(tb.build())
                     .requestTimeout(Duration.ofMillis(connectTimeoutMs))
-                    .clientInfo(new McpSchema.Implementation("autovoice-skill-manager", "1.0"))
+                    .clientInfo(McpSchema.Implementation.builder("autovoice-skill-manager", "1.0").build())
                     .build();
             c.initialize();
             ListToolsResult listed = c.listTools();

@@ -98,6 +98,23 @@ class McpSkillRegistryTest {
         }
     }
 
+    @Test
+    void unexpectedRuntimeExceptionDoesNotPropagate() throws Exception {
+        // 未预期 RuntimeException 穿透 refresh 会让 scheduleWithFixedDelay 静默取消轮询：
+        // 顶层守卫必须吞掉（仅 warn）
+        FakePlatformClient client = new FakePlatformClient(null) {
+            @Override
+            public List<SkillConfig> fetchEnabled() throws IOException {
+                throw new IllegalStateException("boom");
+            }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                60_000, 5_000, (c, timeout) -> session(c))) {
+            assertDoesNotThrow(reg::refresh);
+            assertEquals(0, reg.enabledToolSpecs().size()); // 空快照继续服务
+        }
+    }
+
     private static class FakePlatformClient extends SkillPlatformClient {
         private final List<SkillConfig> configs;
 

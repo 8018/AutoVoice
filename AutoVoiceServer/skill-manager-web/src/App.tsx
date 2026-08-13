@@ -63,9 +63,10 @@ export default function App() {
   }
 
   function buildDraft(): SkillDraft {
+    // 全量输出勾选状态（含未勾选）：后端 parseToolsJson 对未列出工具默认 true，
+    // 必须显式写 enabled:false 禁用才生效
     const enabledTools = Object.entries(form.checked)
-      .filter(([, v]) => v)
-      .map(([name]) => ({ name, enabled: true }));
+      .map(([name, v]) => ({ name, enabled: !!v }));
     return {
       id: form.id, name: form.name, description: form.description,
       mcpUrl: form.mcpUrl, authHeader: form.authHeader, authValue: form.authValue,
@@ -92,22 +93,41 @@ export default function App() {
   }
 
   async function doToggle(s: Skill) {
-    await api.setEnabled(s.id, !s.enabled);
-    load();
+    try {
+      await api.setEnabled(s.id, !s.enabled);
+      load();
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false);
+        localStorage.removeItem('skill-authed');
+      } else {
+        setErr(String(e.message || e));
+      }
+    }
   }
 
   async function doDelete(s: Skill) {
     if (!confirm(`删除 skill ${s.id}？`)) return;
-    await api.deleteSkill(s.id);
-    if (editingId === s.id) { setEditingId(null); setForm(emptyForm()); }
-    load();
+    try {
+      await api.deleteSkill(s.id);
+      if (editingId === s.id) { setEditingId(null); setForm(emptyForm()); }
+      load();
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false);
+        localStorage.removeItem('skill-authed');
+      } else {
+        setErr(String(e.message || e));
+      }
+    }
   }
 
   function edit(s: Skill) {
     const checked: Record<string, boolean> = {};
     try {
       const arr = JSON.parse(s.toolsJson) as { name: string; enabled: boolean }[];
-      arr.forEach((t) => (checked[t.name] = true));
+      // 保留已禁用的勾选状态（enabled:false 的条目显示为未勾选，而非重置为全选）
+      arr.forEach((t) => (checked[t.name] = t.enabled !== false));
     } catch { /* 忽略非法清单 */ }
     setEditingId(s.id);
     setForm({

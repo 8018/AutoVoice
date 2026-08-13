@@ -26,15 +26,17 @@ class DeepSeekLlmLoopTest {
 
     static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** 模拟 LLM：第 1 次请求 → 调 poi_search 工具；第 2 次 → 最终文本。记录收到的请求数。 */
-    private static MockWebServer twoRoundLlm(AtomicInteger calls) throws Exception {
+    /** 模拟 LLM：第 1 次请求 → 调 poi_search 工具；第 2 次 → 最终文本。记录收到的请求数与 body。 */
+    private static MockWebServer twoRoundLlm(AtomicInteger calls, List<String> bodies) throws Exception {
         MockWebServer server = new MockWebServer();
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
                 int n = calls.incrementAndGet();
                 try {
-                    JsonNode body = MAPPER.readTree(request.getBody().readUtf8());
+                    String bodyText = request.getBody().readUtf8();
+                    bodies.add(bodyText);
+                    JsonNode body = MAPPER.readTree(bodyText);
                     boolean hasTools = body.path("tools").isArray() && !body.path("tools").isEmpty();
                     String content;
                     if (n == 1 && hasTools) {
@@ -60,7 +62,8 @@ class DeepSeekLlmLoopTest {
     void twoRoundToolLoop() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicInteger execs = new AtomicInteger();
-        try (MockWebServer llm = twoRoundLlm(calls)) {
+        List<String> bodies = new ArrayList<>();
+        try (MockWebServer llm = twoRoundLlm(calls, bodies)) {
             ToolProvider tools = () -> List.of(new FunctionTool("poi_search", "搜索兴趣点",
                     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}"));
             ToolExecutor exec = (name, args) -> {
@@ -77,6 +80,17 @@ class DeepSeekLlmLoopTest {
             assertEquals("已为您查询到西湖附近的景点。", r.text());
             assertEquals(2, calls.get());
             assertEquals(1, execs.get());
+            // 第 2 轮请求必须回传工具结果消息（role=tool + tool_call_id），否则模型无法续轮
+            assertEquals(2, bodies.size());
+            boolean hasToolMsg = false;
+            for (JsonNode m : MAPPER.readTree(bodies.get(1)).path("messages")) {
+                if ("tool".equals(m.path("role").asText(""))) {
+                    hasToolMsg = true;
+                    assertEquals("call-1", m.path("tool_call_id").asText(""));
+                    assertEquals("西湖，国家 5A 级景区", m.path("content").asText(""));
+                }
+            }
+            assertTrue(hasToolMsg, "round 2 请求应含 role=tool 消息: " + bodies.get(1));
         }
     }
 

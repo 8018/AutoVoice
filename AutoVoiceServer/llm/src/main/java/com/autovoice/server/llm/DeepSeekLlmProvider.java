@@ -233,9 +233,9 @@ public final class DeepSeekLlmProvider implements LlmProvider {
                 messages.add(toolResultMessage(id, runTool(name, args)));
             }
         }
-        // 轮数上限：最后一次不带工具强制直答
-        JsonNode message = callChat(messages, List.of());
-        return textReply(message);
+        // 不可达（第 3 轮必走上方 return/LlmException 分支：最后一轮 tools 为空，
+        // tool_calls 非空即抛 LlmException）——仅为编译器可达性，轮数契约见 MAX_LLM_ROUNDS
+        throw new LlmException("deepseek llm tool loop ended without terminal result");
     }
 
     /** 一次 LLM 调用：组装 messages + tools（空则不设 tools 字段），返回 choices[0].message。 */

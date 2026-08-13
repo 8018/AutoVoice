@@ -124,4 +124,31 @@ class SkillControllerTest {
                         .cookie(new jakarta.servlet.http.Cookie("skill_admin", login())))
                 .andExpect(status().isNotFound());
     }
+
+    @Test
+    void updateDeletePatchMissingIdReturns404() throws Exception {
+        mvc.perform(put("/api/skills/ghost")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", login()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"ghost\",\"name\":\"x\"}"))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/skills/ghost")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", login())))
+                .andExpect(status().isNotFound());
+        mvc.perform(patch("/api/skills/ghost/enabled")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", login()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"enabled\":true}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void invalidIdRejected400() throws Exception {
+        // id 正则 [a-zA-Z0-9._-]+：空格/叹号不在字符集内
+        mvc.perform(post("/api/skills")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", login()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"bad id!\",\"name\":\"x\"}"))
+                .andExpect(status().isBadRequest());
+    }
 }

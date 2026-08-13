@@ -13,6 +13,18 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     public WebMvcConfig(SkillProperties props) {
         this.props = props;
+        // 空 token = 管理界面"静默开门"：启动期快速失败（不放 SkillProperties compact ctor——
+        // 那里只归一化，测试用默认值直接构造 record 不应触发启动语义）
+        if (props.adminToken() == null || props.adminToken().isBlank()) {
+            throw new IllegalStateException(
+                    "autovoice.skill-manager.admin-token 不能为空（SKILL_MANAGER_ADMIN_TOKEN）");
+        }
+        // service-token 仅在启用 webhook 推送（gatewayWebhookUrl 非空）时要求：feature 启用才校验
+        if ((props.gatewayWebhookUrl() != null && !props.gatewayWebhookUrl().isBlank())
+                && (props.serviceToken() == null || props.serviceToken().isBlank())) {
+            throw new IllegalStateException(
+                    "autovoice.skill-manager.service-token 不能为空（SKILL_SERVICE_TOKEN）：已配置 gateway-webhook-url");
+        }
     }
 
     @Override

@@ -222,10 +222,20 @@ public class AppConfig {
                 new McpToolExecutor(registry::callTool));
     }
 
-    /** 平台 webhook 接收端点（/api/internal/skills/refresh）：service-token 校验后触发重拉。 */
+    /**
+     * 平台 webhook 接收端点（/api/internal/skills/refresh）：service-token 校验后触发重拉。
+     * 显式 @Bean 定义覆盖组件扫描装配（SkillRefreshController 同时是 @RestController）：
+     * serviceToken 由此方法注入，删掉本 @Bean 会让扫描装配因 String 构造参数失败。
+     */
     @Bean
     public SkillRefreshController skillRefreshController(McpSkillRegistry registry, AutovoiceProperties props) {
-        return new SkillRefreshController(registry, props.skillManager().serviceToken());
+        AutovoiceProperties.SkillManager sm = props.skillManager();
+        // 平台已接入（url 非空）但 token 空白 = webhook 端点静默开门：启动期快速失败
+        if (!sm.url().isBlank() && sm.serviceToken().isBlank()) {
+            throw new IllegalStateException(
+                    "autovoice.skill-manager.service-token 不能为空（SKILL_SERVICE_TOKEN）：已配置 skill-manager.url");
+        }
+        return new SkillRefreshController(registry, sm.serviceToken());
     }
 
     /** NLS token 接口的 AK/SK 以明文 query 出现（该 API 设计固有，URL 会进代理日志）。 */

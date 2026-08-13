@@ -24,14 +24,23 @@ final class FakeMcpServer implements AutoCloseable {
     final AtomicInteger callCount = new AtomicInteger();
     final AtomicInteger deleteCount = new AtomicInteger();
     final boolean failListTools;
+    final boolean callError;
+    /** 最近一次 POST 请求（认证头注入断言用：自定义头每请求注入，最后一个即可代表全部）。 */
+    volatile RecordedRequest lastRequest;
 
     FakeMcpServer() {
-        this(false);
+        this(false, false);
     }
 
     /** failListTools=true 时 tools/list 返回 JSON-RPC 错误（测试 list_tools 失败路径用）。 */
     FakeMcpServer(boolean failListTools) {
+        this(failListTools, false);
+    }
+
+    /** failListTools 同 {@link #FakeMcpServer(boolean)}；callError=true 时 tools/call 返回 isError:true。 */
+    FakeMcpServer(boolean failListTools, boolean callError) {
         this.failListTools = failListTools;
+        this.callError = callError;
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
@@ -86,14 +95,21 @@ final class FakeMcpServer implements AutoCloseable {
                     if ("tools/call".equals(method)) {
                         callCount.incrementAndGet();
                         ArrayNode content = result.putArray("content");
-                        content.addObject().put("type", "text").put("text", "找到 1 个结果：西湖");
-                        result.put("isError", false);
+                        if (callError) {
+                            content.addObject().put("type", "text").put("text", "poi_search 执行失败：配额耗尽");
+                            result.put("isError", true);
+                        } else {
+                            content.addObject().put("type", "text").put("text", "找到 1 个结果：西湖");
+                            result.put("isError", false);
+                        }
                         return resp.setBody(rpc(id, result).toString());
                     }
                     result.put("error", "unknown method: " + method);
                     return resp.setBody(rpc(id, result).toString());
                 } catch (IOException e) {
                     throw new RuntimeException(e);
+                } finally {
+                    lastRequest = request;
                 }
             }
         });

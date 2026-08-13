@@ -61,11 +61,21 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     /** 同步重拉（start 的调度与测试都走它）。 */
     public synchronized void refresh() {
+        try {
+            refreshInternal();
+        } catch (RuntimeException e) {
+            // 顶层守卫：任何未预期异常都不能穿透到 scheduleWithFixedDelay（ScheduledExecutor
+            // 会静默取消后续轮询）；保留旧快照继续服务
+            LOG.warn("skill registry refresh failed, keep {} sessions", sessions.size(), e);
+        }
+    }
+
+    private void refreshInternal() {
         List<SkillConfig> configs;
         try {
             configs = client.fetchEnabled();
         } catch (IOException e) {
-            LOG.warn("skill platform pull failed, keep {} sessions: {}", sessions.size(), e.getMessage());
+            LOG.warn("skill platform pull failed, keep {} sessions", sessions.size(), e);
             return; // 平台不可达：保留旧快照
         }
         Map<String, McpToolSession> next = new LinkedHashMap<>();
@@ -74,7 +84,7 @@ public final class McpSkillRegistry implements AutoCloseable {
                 McpToolSession s = sessionFactory.apply(cfg, connectTimeoutMs);
                 next.put(cfg.id(), s);
             } catch (RuntimeException e) {
-                LOG.warn("skill {} mcp connect failed, skip: {}", cfg.id(), e.getMessage());
+                LOG.warn("skill {} mcp connect failed, skip", cfg.id(), e);
             }
         }
         Map<String, McpToolSession> old = sessions;

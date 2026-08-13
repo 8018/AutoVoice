@@ -69,6 +69,10 @@ public final class SkillService {
 
     public SkillResponse setEnabled(String id, boolean enabled) {
         SkillRecord old = store.findById(id);
+        if (old == null) {
+            // controller 已守卫 exists()，此为防御：NotFound 语义，避免静默 NPE
+            throw new IllegalStateException("skill not found: " + id);
+        }
         SkillRecord r = new SkillRecord(id, old.name(), old.description(), old.mcpUrl(),
                 old.authHeader(), old.authValue(), old.toolsJson(), enabled, clock.getAsLong());
         store.upsert(r);

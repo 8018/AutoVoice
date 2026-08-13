@@ -27,7 +27,11 @@ public class AdminController {
 
     @PostMapping("/login")
     public ResponseEntity<Void> login(@RequestBody LoginRequest req, HttpServletResponse response) {
-        byte[] given = req.password() == null ? new byte[0] : req.password().getBytes(StandardCharsets.UTF_8);
+        // 空 password 直接拒（先拒空再比：空口令不可能匹配非空 admin-token）
+        if (req.password() == null || req.password().isEmpty()) {
+            return ResponseEntity.status(401).build();
+        }
+        byte[] given = req.password().getBytes(StandardCharsets.UTF_8);
         byte[] expected = adminToken.getBytes(StandardCharsets.UTF_8);
         if (!MessageDigest.isEqual(given, expected)) {
             return ResponseEntity.status(401).build();

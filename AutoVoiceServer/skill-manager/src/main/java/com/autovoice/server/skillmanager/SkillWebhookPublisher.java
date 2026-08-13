@@ -46,7 +46,7 @@ public final class SkillWebhookPublisher implements SkillWebhookNotifier {
                 LOG.warn("skill webhook push failed: HTTP {}", resp.code());
             }
         } catch (Exception e) {
-            LOG.warn("skill webhook push failed: {}", String.valueOf(e.getMessage()));
+            LOG.warn("skill webhook push failed", e);
         }
     }
 }

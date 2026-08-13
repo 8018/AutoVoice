@@ -38,7 +38,8 @@ public class AdminAuthInterceptor implements HandlerInterceptor {
 
     private boolean checkServiceToken(HttpServletRequest request) {
         String given = request.getHeader(SERVICE_TOKEN_HEADER);
-        return given != null && MessageDigest.isEqual(
+        // 先拒空：空 header 绝不等于任何配置 token（防 token 侧为空的静默开门）
+        return given != null && !given.isEmpty() && MessageDigest.isEqual(
                 given.getBytes(StandardCharsets.UTF_8), serviceToken.getBytes(StandardCharsets.UTF_8));
     }
 

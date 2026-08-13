@@ -28,9 +28,24 @@ class AdminAuthTest {
     }
 
     @Test
+    void emptyPasswordRejected() throws Exception {
+        mvc.perform(post("/api/admin/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"password\":\"\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void wrongServiceTokenRejected() throws Exception {
         mvc.perform(get("/api/skills").param("enabled", "true")
                         .header("X-Skill-Service-Token", "wrong"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void emptyServiceTokenHeaderRejected() throws Exception {
+        mvc.perform(get("/api/skills").param("enabled", "true")
+                        .header("X-Skill-Service-Token", ""))
                 .andExpect(status().isUnauthorized());
     }
 

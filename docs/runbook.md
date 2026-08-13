@@ -165,9 +165,9 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 | --- | --- | --- |
 | `SKILL_MANAGER_PORT` | `8083` | 平台端口 |
 | `SKILL_MANAGER_DB` | `${java.io.tmpdir}/autovoice-skill-manager/skill-manager.db` | SQLite 路径（服务器建议 `/opt/autovoice/skill-manager/skill-manager.db`） |
-| `SKILL_MANAGER_ADMIN_TOKEN` | 空 | 管理口令（web 登录 / 管理 API） |
+| `SKILL_MANAGER_ADMIN_TOKEN` | 空 | 管理口令（web 登录 / 管理 API）；空 → 平台启动快速失败 |
 | `SKILL_SERVICE_TOKEN` | 空 | 网关 ↔ 平台内部 token（与网关同值） |
-| `SKILL_MANAGER_GATEWAY_WEBHOOK_URL` | 空 | 网关 webhook 端点（`http://127.0.0.1:8080/api/internal/skills/refresh`）；空 → 改 skill 不推网关，靠轮询收敛 |
+| `SKILL_MANAGER_GATEWAY_WEBHOOK_URL` | 空 | 网关 **base URL**（如 `http://127.0.0.1:8080`）；平台会追加 `/api/internal/skills/refresh`（勿写全端点）；空 → 改 skill 不推网关，靠轮询收敛 |
 
 > 未配置 `SKILL_MANAGER_URL`（默认）时功能关闭：MCP 工具不注入，LLM 仅
 > car_control，行为与接入前一致。

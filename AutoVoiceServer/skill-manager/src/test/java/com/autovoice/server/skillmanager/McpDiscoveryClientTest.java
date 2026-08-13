@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 
 class McpDiscoveryClientTest {
@@ -22,6 +23,7 @@ class McpDiscoveryClientTest {
     @Test
     void unreachableServerThrows() {
         McpDiscoveryClient client = new McpDiscoveryClient(1_000);
-        assertThrows(Exception.class, () -> client.discover("http://127.0.0.1:1/mcp", "", ""));
+        // 契约钉死 IOException：SDK 的 RuntimeException 必须统一转出（discover 方法签名契约）
+        assertThrows(IOException.class, () -> client.discover("http://127.0.0.1:1/mcp", "", ""));
     }
 }

@@ -31,6 +31,15 @@ class SkillRefreshControllerTest {
     }
 
     @Test
+    void emptyOrMissingTokenHeaderRejected() throws Exception {
+        mvc.perform(post("/api/internal/skills/refresh")
+                        .header("X-Skill-Service-Token", ""))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/internal/skills/refresh"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void validTokenTriggersRefresh() throws Exception {
         mvc.perform(post("/api/internal/skills/refresh")
                         .header("X-Skill-Service-Token", "svc-secret")

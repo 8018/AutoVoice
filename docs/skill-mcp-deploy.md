@@ -55,7 +55,7 @@ cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServe
    SKILL_MANAGER_DB=/opt/autovoice/skill-manager/skill-manager.db
    SKILL_MANAGER_ADMIN_TOKEN=<平台管理口令>
    SKILL_SERVICE_TOKEN=<与网关一致的内部 token>
-   SKILL_MANAGER_GATEWAY_WEBHOOK_URL=http://127.0.0.1:8080/api/internal/skills/refresh
+   SKILL_MANAGER_GATEWAY_WEBHOOK_URL=http://127.0.0.1:8080
    ```
 
 4. 启动：
@@ -66,9 +66,12 @@ cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServe
 
 说明：
 
-- `SKILL_SERVICE_TOKEN` 是网关 ↔ 平台内部调用口令，必须与网关侧同值；
-- `SKILL_MANAGER_ADMIN_TOKEN` 是管理口令（web 登录 / 管理 API，cookie 会话）；
-- `SKILL_MANAGER_GATEWAY_WEBHOOK_URL` 为空时改 skill 不推网关，仅靠轮询收敛；
+- `SKILL_SERVICE_TOKEN` 是网关 ↔ 平台内部调用口令，必须与网关侧同值（配置 webhook 时必填）；
+- `SKILL_MANAGER_ADMIN_TOKEN` 是管理口令（web 登录 / 管理 API，cookie 会话），
+  必填：空 → 平台启动快速失败（终审 M1）；
+- `SKILL_MANAGER_GATEWAY_WEBHOOK_URL` 填网关 **base URL**（如 `http://127.0.0.1:8080`）：
+  平台会追加 `/api/internal/skills/refresh`（SkillWebhookPublisher 语义，勿写全端点）；
+  为空时改 skill 不推网关，仅靠轮询收敛；
 - 可选 `SKILL_MANAGER_MCP_TIMEOUT_MS`（默认 5000）：平台 discover 时 MCP 连接超时；
 - 浏览器访问管理面板需安全组放行入方向 TCP 8083，或走 SSH 隧道：
   `ssh -L 8083:127.0.0.1:8083 root@47.94.4.204` 后访问本机 8083。
