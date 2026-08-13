@@ -962,7 +962,7 @@ class McpSkillRegistryTest {
                 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
             assertEquals(2, reg.enabledToolSpecs().size());
-            assertEquals("b", reg.callTool("t1", "{}").isEmpty() ? "" : ""); // t1 可路由（不炸）
+            assertEquals("a", reg.callTool("t1", "{}")); // t1 可路由（不炸）
         }
     }
 
@@ -1312,12 +1312,12 @@ class SqliteSkillStoreTest {
         assertEquals("amap-maps", enabled.get(0).id());
         assertEquals("secret-1", store.findById("amap-maps").authValue()); // 库内存明文
 
+        // upsert 覆盖：a 改为 disabled 后 enabled 列表应为空；findAll(false) 仍 2 条
         store.upsert(new SkillRecord("amap-maps", "高德地图2", "导航2", "https://mcp.example.com/mcp",
                 "x-api-key", "secret-2", "[]", false, 300L));
-        assertNull(store.findById("amap-maps")); // 禁用后 enabled 过滤查不到——改用 findAll(false)
-        assertEquals(1, store.findAll(false).size()); // upsert 覆盖：仍 2 条
-        assertEquals(1, store.findAll(true).size());  // 只剩 weather 外的？weather enabled=false
-        // 修正断言（见下）：upsert 后 a.enabled=false，b.enabled=false → enabled=0
+        assertTrue(store.findAll(true).isEmpty());
+        assertEquals(2, store.findAll(false).size());
+        assertEquals("secret-2", store.findById("amap-maps").authValue()); // 覆盖生效
     }
 }
 ```
@@ -3132,17 +3132,14 @@ Expected: FAIL（编译错：`AutovoiceProperties` 无 `skillManager()`；beans 
 
   @Bean
   public McpSkillRegistry mcpSkillRegistry(SkillPlatformClient platformClient, AutovoiceProperties props) {
-      McpSkillRegistry registry = new McpSkillRegistry(platformClient,
-              ToolInjectors.forCount(0), // 注入策略在 enabledToolSpecs 时按实际数量选，见下
+      // 注入策略按"当前启用工具总数"动态选择（≤8 direct / >8 direct+warn，selector 预留）
+      ToolInjector dynamic = all -> ToolInjectors.forCount(all.size()).inject(all);
+      McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic,
               props.skillManager().pollMs(), 5_000,
               McpToolSession::connect);
       registry.start();
       return registry;
   }
-  ```
-  **注意**：`ToolInjectors.forCount(0)` 拿的是固定 DirectToolInjector——registry 的 injector 应是"按当前工具数选策略"的动态工厂，所以 McpSkillRegistry 内部改为：构造参数类型保留 `ToolInjector`，但 app 装配传入 `all -> ToolInjectors.forCount(all.size()).inject(all)`（一个 lambda 实现的 ToolInjector，内部按实际数量转发）。**因此 Task 5 的注册表实现无需改**，装配时用 lambda：
-  ```java
-  ToolInjector dynamic = all -> ToolInjectors.forCount(all.size()).inject(all);
   ```
 - `llmProvider` bean 改为 7 参：
   ```java
