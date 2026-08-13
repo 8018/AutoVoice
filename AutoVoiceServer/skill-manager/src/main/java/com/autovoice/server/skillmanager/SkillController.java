@@ -1,6 +1,8 @@
 package com.autovoice.server.skillmanager;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -14,6 +16,8 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/skills")
 public class SkillController {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SkillController.class);
 
     private final SkillService service;
     private final SqliteSkillStore store;
@@ -89,6 +93,7 @@ public class SkillController {
         try {
             return ResponseEntity.ok(discovery.discover(mcpUrl, authHeader, authValue));
         } catch (Exception e) {
+            LOG.warn("discover failed for skill {}: {}", id, String.valueOf(e.getMessage()));
             return ResponseEntity.badRequest().body(null);
         }
     }
