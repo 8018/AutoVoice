@@ -12,17 +12,17 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // 设备筛选切换 → 重拉历史（SSE 后续实时追加）
+  // 设备筛选切换 → 重拉历史（SSE 后续实时追加）；失败保留现有 history，只置 banner
   useEffect(() => {
     let alive = true;
     setLoadError(null);
+    setSelectedId(null); // 切换设备后明细面板不再指向旧设备的轮次
     fetchRounds(device || undefined)
       .then((rs) => {
         if (alive) setHistory(rs);
       })
       .catch(() => {
         if (alive) {
-          setHistory([]);
           setLoadError("历史数据拉取失败（服务未启动？）——SSE 到达后仍会实时展示");
         }
       });

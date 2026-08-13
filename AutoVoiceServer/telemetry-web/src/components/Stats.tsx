@@ -38,7 +38,7 @@ export default function Stats({ rounds }: Props) {
       .concat(Object.keys(dist).filter((k) => !["llm", "nlu-traditional", "cloud"].includes(k)).map((k) => `${k} ${dist[k]}`))
       .join(" · ");
 
-    return { total, failed, avgE2E, cacheRate, distText };
+    return { total, failed, avgE2E, cacheRate, ttsCount: withTts.length, distText };
   }, [rounds]);
 
   return (
@@ -58,7 +58,7 @@ export default function Stats({ rounds }: Props) {
       <div className="stat-card">
         <div className="label">TTS 缓存命中率</div>
         <div className="value">{s.cacheRate === null ? "—" : `${s.cacheRate.toFixed(0)}%`}</div>
-        <div className="value sub">有 TTS 轮次 {s.cacheRate === null ? 0 : rounds.filter((r) => r.ttsCacheHit !== null).length}</div>
+        <div className="value sub">{s.cacheRate === null ? "—" : `有 TTS 轮次 ${s.ttsCount}`}</div>
       </div>
       <div className="stat-card" style={{ flexBasis: "260px" }}>
         <div className="label">云端决策分布</div>
