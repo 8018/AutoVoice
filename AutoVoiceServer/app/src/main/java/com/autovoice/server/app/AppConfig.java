@@ -21,6 +21,7 @@ import com.autovoice.server.skillmcp.McpSkillRegistry;
 import com.autovoice.server.skillmcp.McpToolExecutor;
 import com.autovoice.server.skillmcp.McpToolSession;
 import com.autovoice.server.skillmcp.SkillPlatformClient;
+import com.autovoice.server.skillmcp.SystemPromptStore;
 import com.autovoice.server.skillmcp.ToolInjector;
 import com.autovoice.server.skillmcp.ToolInjectors;
 import com.autovoice.server.ttsgateway.RemoteTtsProvider;
@@ -181,12 +182,19 @@ public class AppConfig {
         return new SkillPlatformClient(client, sm.url(), sm.serviceToken());
     }
 
+    /** 平台 system prompt 运行时快照：registry 刷新写入，LLM 读取（未配置回退 provider 默认）。 */
+    @Bean
+    public SystemPromptStore systemPromptStore() {
+        return new SystemPromptStore();
+    }
+
     /** 启用的 skill 会话快照：异步首拉 + 定时兜底轮询 + webhook 触发重拉（SkillRefreshController）。 */
     @Bean
-    public McpSkillRegistry mcpSkillRegistry(SkillPlatformClient platformClient, AutovoiceProperties props) {
+    public McpSkillRegistry mcpSkillRegistry(SkillPlatformClient platformClient,
+                                             SystemPromptStore promptStore, AutovoiceProperties props) {
         // 注入策略按"当前启用工具总数"动态选择（≤8 direct / >8 direct+warn，selector 预留）
         ToolInjector dynamic = all -> ToolInjectors.forCount(all.size()).inject(all);
-        McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic,
+        McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic, promptStore,
                 props.skillManager().pollMs(), 5_000,
                 (cfg, timeout) -> {
                     try {
@@ -206,7 +214,8 @@ public class AppConfig {
      */
     @Bean
     public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props,
-                                   TelemetryRecorder recorder, McpSkillRegistry registry) {
+                                   TelemetryRecorder recorder, McpSkillRegistry registry,
+                                   SystemPromptStore promptStore) {
         if (!"deepseek".equals(props.providers().llm())) {
             throw new IllegalArgumentException(
                     "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
@@ -219,7 +228,7 @@ public class AppConfig {
         return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
                 DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder, merged,
                 DeepSeekLlmProvider.DEFAULT_TOOL_LOOP_BUDGET_MS,
-                new McpToolExecutor(registry::callTool));
+                new McpToolExecutor(registry::callTool), promptStore::get);
     }
 
     /**

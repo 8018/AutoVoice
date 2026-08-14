@@ -186,7 +186,7 @@ class McpEndToEndGatewayTest {
         DeepSeekLlmProvider realProvider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
                 llmServer.url("/").toString(), NoopTelemetryRecorder.INSTANCE,
                 () -> registry.enabledToolSpecs(), 5_000,
-                new McpToolExecutor(registry::callTool));
+                new McpToolExecutor(registry::callTool), null);
         when(llm.chat(any(), any(), any())).thenAnswer(inv -> realProvider.chat(
                 (String) inv.getArgument(0), (SessionContext) inv.getArgument(1), (String) inv.getArgument(2)));
     }
