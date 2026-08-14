@@ -1,5 +1,8 @@
 package com.autovoice.app.ui
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -21,8 +24,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -161,16 +169,33 @@ private fun RecordButton(
     val content = if (recording) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
     val ring = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
 
+    // 按压缩放动效：按下 0.88、抬手弹回 1.0（spring 回弹）
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow,
+        ),
+        label = "recordButtonScale",
+    )
+
     Box(
         modifier = Modifier
             .size(88.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
+                        pressed = true
                         onStartRecording()
-                        // 阻塞到抬手（含手势取消）；无论成败都停止录音
-                        tryAwaitRelease()
-                        onStopRecording()
+                        try {
+                            // 阻塞到抬手（含手势取消）；无论成败都停止录音
+                            tryAwaitRelease()
+                            onStopRecording()
+                        } finally {
+                            pressed = false
+                        }
                     },
                 )
             }
