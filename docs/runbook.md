@@ -145,6 +145,33 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 
 端侧 `demo-full.json` `telemetry.enabled=true` 时启用上报（baseUrl 从 gatewayUrl 推导，可 `url` 覆盖）。
 
+### 1.8 skill 管理平台（可选组件）
+
+网关接入 skill 管理平台后，LLM 工具从「car_control 默认 skill」扩展为
+「car_control + 平台启用 skill 的 MCP 工具」，多轮调用外部 MCP（如 POI 搜索）。
+完整部署与验证清单见 [`skill-mcp-deploy.md`](skill-mcp-deploy.md)。
+
+网关侧 3 个 env（`/etc/autovoice/.env` 追加，重启 `autovoice-gateway`）：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SKILL_MANAGER_URL` | 空 | 平台地址（含 http(s) 前缀）；**空 = 功能关闭（仅 car_control）** |
+| `SKILL_SERVICE_TOKEN` | 空 | 网关 ↔ 平台内部 token（与平台同值） |
+| `SKILL_MANAGER_POLL_MS` | `600000` | 轮询拉取间隔；平台 webhook 可即时触发重拉，无需等轮询 |
+
+平台侧 5 个 env（独立进程 `autovoice-skill-manager`，端口 8083）：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SKILL_MANAGER_PORT` | `8083` | 平台端口 |
+| `SKILL_MANAGER_DB` | `${java.io.tmpdir}/autovoice-skill-manager/skill-manager.db` | SQLite 路径（服务器建议 `/opt/autovoice/skill-manager/skill-manager.db`） |
+| `SKILL_MANAGER_ADMIN_TOKEN` | 空 | 管理口令（web 登录 / 管理 API）；空 → 平台启动快速失败 |
+| `SKILL_SERVICE_TOKEN` | 空 | 网关 ↔ 平台内部 token（与网关同值） |
+| `SKILL_MANAGER_GATEWAY_WEBHOOK_URL` | 空 | 网关 **base URL**（如 `http://127.0.0.1:8080`）；平台会追加 `/api/internal/skills/refresh`（勿写全端点）；空 → 改 skill 不推网关，靠轮询收敛 |
+
+> 未配置 `SKILL_MANAGER_URL`（默认）时功能关闭：MCP 工具不注入，LLM 仅
+> car_control，行为与接入前一致。
+
 ---
 
 ## 2. 启动步骤

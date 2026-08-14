@@ -32,6 +32,11 @@ autovoice:
   tts:
     # M4 独立服务：网关转发到 tts-server /tts（合成与缓存归 TTS 服务侧；本地需同时起 tts-server）
     remote-url: ${AUTOVOICE_TTS_REMOTE_URL:http://127.0.0.1:8082/tts}
+  skill-manager:
+    # skill 平台地址（含 http(s) 前缀）；空白 = 平台未接入，MCP 工具不注入（registry 空快照）
+    url: ${SKILL_MANAGER_URL:}
+    service-token: ${SKILL_SERVICE_TOKEN:}
+    poll-ms: ${SKILL_MANAGER_POLL_MS:600000}
   telemetry:
     # 链路数据平台（T3）：默认开；禁用时 recorder=Noop、Controller/Service 不装配。
     # db/audio 默认 ${java.io.tmpdir}（不污染工作目录）；服务器部署用 env 覆盖

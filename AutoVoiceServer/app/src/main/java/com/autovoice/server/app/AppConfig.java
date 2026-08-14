@@ -4,8 +4,10 @@ import com.autovoice.server.asrgateway.AliyunAsrProvider;
 import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandProvider;
+import com.autovoice.server.contracts.ToolProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
@@ -15,6 +17,12 @@ import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
+import com.autovoice.server.skillmcp.McpSkillRegistry;
+import com.autovoice.server.skillmcp.McpToolExecutor;
+import com.autovoice.server.skillmcp.McpToolSession;
+import com.autovoice.server.skillmcp.SkillPlatformClient;
+import com.autovoice.server.skillmcp.ToolInjector;
+import com.autovoice.server.skillmcp.ToolInjectors;
 import com.autovoice.server.ttsgateway.RemoteTtsProvider;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,11 +53,13 @@ public class AppConfig {
     /** {@code autovoice.*} 配置（constructor binding）。 */
     @ConfigurationProperties(prefix = "autovoice")
     public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
-                                      Offline offline, Tts tts, Gateway gateway) {
+                                      Offline offline, Tts tts, Gateway gateway, SkillManager skillManager) {
 
-        /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32。 */
+        /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32；
+         *  skill-manager 缺省：平台空白（MCP 工具不注入）、轮询 600s。 */
         public AutovoiceProperties {
             gateway = gateway == null ? new Gateway(false, "{}", 32) : gateway;
+            skillManager = skillManager == null ? new SkillManager("", "", 600_000) : skillManager;
         }
 
         public record Arbitration(long safetyTimeoutMs, long offlineGraceMs) {
@@ -124,6 +134,20 @@ public class AppConfig {
                 }
             }
         }
+
+        /**
+         * skill 平台接入（MCP 工具注入）：url 空白 → 平台未接入（SkillPlatformClient.isEnabled=false，
+         * registry 快照恒空、不注入任何 MCP 工具）；serviceToken 同时用于拉取请求与 webhook
+         * 端点鉴权（X-Skill-Service-Token）；pollMs 为 registry 定时兜底轮询周期（<1 视为 600s）。
+         */
+        public record SkillManager(String url, String serviceToken, long pollMs) {
+
+            public SkillManager {
+                url = url == null || url.isBlank() ? "" : url;
+                serviceToken = serviceToken == null ? "" : serviceToken;
+                pollMs = pollMs < 1 ? 600_000 : pollMs;
+            }
+        }
     }
 
     @Bean
@@ -150,15 +174,68 @@ public class AppConfig {
         return new SessionRegistry();
     }
 
+    /** skill 平台拉取客户端：url 空白 → 功能关闭（fetchEnabled 空表，MCP 工具不注入）。 */
+    @Bean
+    public SkillPlatformClient skillPlatformClient(OkHttpClient client, AutovoiceProperties props) {
+        AutovoiceProperties.SkillManager sm = props.skillManager();
+        return new SkillPlatformClient(client, sm.url(), sm.serviceToken());
+    }
+
+    /** 启用的 skill 会话快照：异步首拉 + 定时兜底轮询 + webhook 触发重拉（SkillRefreshController）。 */
+    @Bean
+    public McpSkillRegistry mcpSkillRegistry(SkillPlatformClient platformClient, AutovoiceProperties props) {
+        // 注入策略按"当前启用工具总数"动态选择（≤8 direct / >8 direct+warn，selector 预留）
+        ToolInjector dynamic = all -> ToolInjectors.forCount(all.size()).inject(all);
+        McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic,
+                props.skillManager().pollMs(), 5_000,
+                (cfg, timeout) -> {
+                    try {
+                        return McpToolSession.connect(cfg, timeout);
+                    } catch (java.io.IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+        registry.start();
+        return registry;
+    }
+
+    /**
+     * LLM：多轮工具循环（Task 9）+ MCP 工具合并——tools = car_control 默认 skill + registry
+     * 启用快照（经注入策略），工具调用由 McpToolExecutor 按名路由回 registry（未知工具抛
+     * McpToolException，错误文本回 LLM 续轮）。
+     */
     @Bean
     public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props,
-                                   TelemetryRecorder recorder) {
+                                   TelemetryRecorder recorder, McpSkillRegistry registry) {
         if (!"deepseek".equals(props.providers().llm())) {
             throw new IllegalArgumentException(
                     "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
         }
+        ToolProvider merged = () -> {
+            List<FunctionTool> out = new ArrayList<>(DeepSeekLlmProvider.defaultTools());
+            out.addAll(registry.enabledToolSpecs());
+            return out;
+        };
         return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
-                DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder);
+                DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder, merged,
+                DeepSeekLlmProvider.DEFAULT_TOOL_LOOP_BUDGET_MS,
+                new McpToolExecutor(registry::callTool));
+    }
+
+    /**
+     * 平台 webhook 接收端点（/api/internal/skills/refresh）：service-token 校验后触发重拉。
+     * 显式 @Bean 定义覆盖组件扫描装配（SkillRefreshController 同时是 @RestController）：
+     * serviceToken 由此方法注入，删掉本 @Bean 会让扫描装配因 String 构造参数失败。
+     */
+    @Bean
+    public SkillRefreshController skillRefreshController(McpSkillRegistry registry, AutovoiceProperties props) {
+        AutovoiceProperties.SkillManager sm = props.skillManager();
+        // 平台已接入（url 非空）但 token 空白 = webhook 端点静默开门：启动期快速失败
+        if (!sm.url().isBlank() && sm.serviceToken().isBlank()) {
+            throw new IllegalStateException(
+                    "autovoice.skill-manager.service-token 不能为空（SKILL_SERVICE_TOKEN）：已配置 skill-manager.url");
+        }
+        return new SkillRefreshController(registry, sm.serviceToken());
     }
 
     /** NLS token 接口的 AK/SK 以明文 query 出现（该 API 设计固有，URL 会进代理日志）。 */
