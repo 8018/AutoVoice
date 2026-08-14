@@ -50,4 +50,29 @@ public class SkillPlatformClient {
             return MAPPER.readValue(body, new TypeReference<List<SkillConfig>>() {});
         }
     }
+
+    /**
+     * 拉取平台级 system prompt（GET /api/config/system-prompt）。
+     * 不可用（未接入 / 非 2xx / 解析失败）返回 null —— 调用方保留现值，不抛。
+     */
+    public String fetchSystemPrompt() {
+        if (!isEnabled()) {
+            return null;
+        }
+        try {
+            Request req = new Request.Builder()
+                    .url(baseUrl + "/api/config/system-prompt")
+                    .header(SERVICE_TOKEN_HEADER, serviceToken)
+                    .build();
+            try (Response resp = client.newCall(req).execute()) {
+                if (!resp.isSuccessful()) {
+                    return null;
+                }
+                String body = resp.body() == null ? "" : resp.body().string();
+                return MAPPER.readTree(body).path("value").asText(null);
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }

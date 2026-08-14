@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit;
 class SkillPlatformClientTest {
 
     private final MockWebServer server = new MockWebServer();
+    private final SkillPlatformClient client = new SkillPlatformClient(new OkHttpClient(),
+            server.url("/").toString(), "tok-123");
 
     @AfterEach
     void stop() throws IOException {
@@ -56,5 +58,34 @@ class SkillPlatformClientTest {
         SkillPlatformClient client = new SkillPlatformClient(new OkHttpClient(),
                 server.url("/").toString(), "t");
         assertThrows(IOException.class, client::fetchEnabled);
+    }
+
+    @Test
+    void fetchSystemPromptReturnsValue() throws Exception {
+        server.enqueue(new okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .setBody("{\"value\":\"你是助手\"}"));
+        assertEquals("你是助手", client.fetchSystemPrompt());
+    }
+
+    @Test
+    void fetchSystemPromptNullWhenServerError() throws Exception {
+        server.enqueue(new okhttp3.mockwebserver.MockResponse().setResponseCode(500));
+        assertNull(client.fetchSystemPrompt());
+    }
+
+    @Test
+    void fetchSystemPromptNullWhenNotEnabled() {
+        SkillPlatformClient off = new SkillPlatformClient(
+                new okhttp3.OkHttpClient(), "", "t");
+        assertNull(off.fetchSystemPrompt());
+    }
+
+    @Test
+    void fetchSystemPromptNullWhenMalformedBody() throws Exception {
+        server.enqueue(new okhttp3.mockwebserver.MockResponse()
+                .setResponseCode(200)
+                .setBody("not-json"));
+        assertNull(client.fetchSystemPrompt());
     }
 }
