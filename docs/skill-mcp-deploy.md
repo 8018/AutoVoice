@@ -76,6 +76,16 @@ cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServe
 - 浏览器访问管理面板需安全组放行入方向 TCP 8083，或走 SSH 隧道：
   `ssh -L 8083:127.0.0.1:8083 root@47.94.4.204` 后访问本机 8083。
 
+## 系统提示词配置（/api/config/system-prompt）
+
+LLM system prompt 由平台配置，网关热更新（改后立即生效，无需重启）。
+
+- 管理界面「系统提示词」面板编辑保存（或 `PUT /api/config/system-prompt`，body `{"value":"..."}`，
+  仅管理 cookie）；留空 = 恢复内置默认提示词。
+- 网关每次刷新（webhook/轮询）拉取：`GET /api/config/system-prompt`（X-Skill-Service-Token）。
+- 平台未部署或端点不可用 → 网关回退内置默认，链路不崩。
+- 验证：改 prompt → 网关日志 `system prompt updated (N chars)`；对同一句话，回答风格随 prompt 变化。
+
 ## 3. 网关侧
 
 `/etc/autovoice/.env` 追加：

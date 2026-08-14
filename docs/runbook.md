@@ -172,6 +172,9 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 > 未配置 `SKILL_MANAGER_URL`（默认）时功能关闭：MCP 工具不注入，LLM 仅
 > car_control，行为与接入前一致。
 
+- LLM system prompt 亦由平台配置（`/api/config/system-prompt`，管理界面「系统提示词」面板），
+  网关热更新；未配置回退内置默认。
+
 ---
 
 ## 2. 启动步骤
