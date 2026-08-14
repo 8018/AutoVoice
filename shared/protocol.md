@@ -162,7 +162,8 @@
   "payload": {
     "sessionId": "demo-1",
     "language": "zh-CN",
-    "protocolVersion": "1.0"
+    "protocolVersion": "1.0",
+    "serverTime": 1786716679554
   }
 }
 ```
@@ -172,6 +173,7 @@
 | `sessionId` | string | 会话 ID |
 | `language` | string | 识别与回复语言，如 `"zh-CN"` |
 | `protocolVersion` | string | 服务端采纳的协议版本 |
+| `serverTime` | number（可选） | 服务端墙钟毫秒（`System.currentTimeMillis()`）。客户端可据此估算设备与服务端的时钟偏移（offset ≈ serverTime + RTT/2 − 本地时刻），用于 telemetry 事件统一换算服务器时钟；旧客户端忽略该字段 |
 
 ### 4.2 decision（决策日志事件）
 

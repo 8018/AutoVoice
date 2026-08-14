@@ -80,6 +80,11 @@ class VoiceGatewayHandlerTest {
         assertTrue(p.has("sessionId"));
         assertEquals("zh-CN", p.get("language").asText());
         assertEquals("1.1", p.get("protocolVersion").asText());
+        // 时钟同步：ready 携带服务器墙钟毫秒（客户端估算偏移用）；±5s 容忍避免 flaky
+        assertTrue(p.has("serverTime"), "ready 应携带 serverTime");
+        long serverTime = p.get("serverTime").asLong();
+        assertTrue(Math.abs(serverTime - System.currentTimeMillis()) < 5_000L,
+                "serverTime 应近似当前时间，实际偏差 %d ms".formatted(System.currentTimeMillis() - serverTime));
         // 会话已登记（demo-1 不存在 → 新建）
         assertNotNull(registry.get(p.get("sessionId").asText()));
     }

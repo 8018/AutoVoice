@@ -66,7 +66,8 @@
           "properties": {
             "sessionId": { "type": "string" },
             "language": { "type": "string" },
-            "protocolVersion": { "type": "string" }
+            "protocolVersion": { "type": "string" },
+            "serverTime": { "type": "integer", "description": "服务端墙钟毫秒，客户端估算时钟偏移用（可选）" }
           }
         }
       }
