@@ -132,6 +132,18 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 数据平台与网关同进程同端口（8080）：端侧每轮事件经 HTTP 上报，服务端插桩落同库，
 面板 `http://47.94.4.204:8080/telemetry/`（SSE 实时列表 / 单轮时间线 / 音频回放 / 统计）。
 
+**访问方式**（面板 = 静态页，无需登录，公网直开）：
+
+```bash
+# 公网直接访问（8080 已放行安全组）
+open http://47.94.4.204:8080/telemetry/
+# 或 SSH 隧道（任意端口可达性不佳的场合）
+ssh -L 8080:127.0.0.1:8080 root@47.94.4.204
+# 然后浏览器打开 http://127.0.0.1:8080/telemetry/
+```
+
+> 目录地址 `/telemetry` 与 `/telemetry/` 会自动重定向到面板（子目录 index.html 修复）。
+
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `AUTOVOICE_TELEMETRY_ENABLED` | `true` | 数据平台开关（关 → 全部 Noop，零影响） |
@@ -172,8 +184,45 @@ java -jar tts-server/build/libs/tts-server-*.jar   # TTS_PORT=8082 可用 env �
 > 未配置 `SKILL_MANAGER_URL`（默认）时功能关闭：MCP 工具不注入，LLM 仅
 > car_control，行为与接入前一致。
 
+**访问方式**：
+
+```bash
+# 公网直接访问（8083 已放行安全组；根路径 /skill-manager /skill-manager/ 均自动重定向到面板）
+open http://47.94.4.204:8083/
+# 或 SSH 隧道（8083 未放行 / 外网不可达时）
+ssh -L 8083:127.0.0.1:8083 root@47.94.4.204
+# 然后浏览器打开 http://127.0.0.1:8083/
+```
+
+- 登录口令 = `SKILL_MANAGER_ADMIN_TOKEN`（服务器 `/etc/autovoice/.env`，查值：`ssh root@47.94.4.204 'grep SKILL_MANAGER_ADMIN_TOKEN /etc/autovoice/.env'`）
+- 面板可管理 skill 启停 / MCP 配置 / 系统提示词（`/api/config/system-prompt`，保存即热更新网关）
+- 命令行调管理 API：`curl -H 'X-Skill-Service-Token: <SKILL_SERVICE_TOKEN>' http://47.94.4.204:8083/api/skills`
+
 - LLM system prompt 亦由平台配置（`/api/config/system-prompt`，管理界面「系统提示词」面板），
   网关热更新；未配置回退内置默认。
+
+### 1.9 token 生成与轮换
+
+skill 平台涉及两个 token，都在服务器 `/etc/autovoice/.env`：
+
+| 变量 | 用途 |
+| --- | --- |
+| `SKILL_MANAGER_ADMIN_TOKEN` | 管理平台登录口令 + 管理 API 鉴权（仅人力操作，不进代码） |
+| `SKILL_SERVICE_TOKEN` | 网关 ↔ 平台内部鉴权（**两端必须同值**） |
+
+生成新 token：
+
+```bash
+openssl rand -hex 32        # 64 位 hex，如 3f9c…a1e2
+```
+
+轮换步骤：
+
+1. `ssh root@47.94.4.204`，编辑 `/etc/autovoice/.env`，替换对应变量值（两个 token 同改时保持 `SKILL_SERVICE_TOKEN` 两端一致）；
+2. `systemctl restart autovoice-skill-manager autovoice-gateway`；
+3. 验证：无 token 访问 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8083/api/skills` → `401`；带新 `X-Skill-Service-Token` → `200`；网关日志出现 skill 拉取/刷新记录。
+
+> 网关轮询周期默认 10 分钟（`SKILL_MANAGER_POLL_MS`），轮换后重启网关即时生效。
 
 ---
 
