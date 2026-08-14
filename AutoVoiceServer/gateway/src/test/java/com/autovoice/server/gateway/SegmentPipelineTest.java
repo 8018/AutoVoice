@@ -56,7 +56,9 @@ class SegmentPipelineTest {
     }
 
     RaceArbiter arbiter() {
-        return new RaceArbiter(SAFETY, GRACE, sched, sink);
+        // B3：与装配层（VoiceGatewayHandler）相同的接线——仲裁事件 → telemetry 插桩
+        return new RaceArbiter(SAFETY, GRACE, sched, sink,
+                (uid, e) -> SegmentPipeline.recordArbiterEvent(recorder, uid, e));
     }
 
     static AsrProvider asr(String text) {
@@ -218,7 +220,8 @@ class SegmentPipelineTest {
 
     @Test
     void recordsCloudAsrAndArbiterEvents() {
-        // 纯云端轮次（离线未命中）：cloud_asr ok 事件（text + durationMs）+ cloud_arbiter 决策事件
+        // 纯云端轮次（离线未命中）：cloud_asr ok 事件（text + durationMs）+
+        // B3 仲裁过程事件 received(llm) + won(llm, priority, decision=llm_reply)
         SegmentPipeline p = pipeline(asr("空调调到二十四度"), offlineMiss());
         p.handleSegment(PCM, CTX, "utt-9");
 
@@ -229,16 +232,25 @@ class SegmentPipelineTest {
         assertEquals("空调调到二十四度", asrEvent.payload().get("text"));
         assertTrue(asrEvent.payload().containsKey("durationMs"), "cloud_asr 事件应带 durationMs");
 
-        TelemetryEvent arbiterEvent = events.stream()
-                .filter(e -> TelemetryStages.CLOUD_ARBITER.equals(e.stage()))
+        TelemetryEvent receivedEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER_RECEIVED.equals(e.stage()))
                 .findFirst().orElseThrow();
-        assertEquals("info", arbiterEvent.level());
-        assertEquals("llm_reply", arbiterEvent.payload().get("reason"));
+        assertEquals("info", receivedEvent.level());
+        assertEquals("llm", receivedEvent.payload().get("route"));
+
+        TelemetryEvent wonEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER_WON.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("info", wonEvent.level());
+        assertEquals("llm", wonEvent.payload().get("route"));
+        assertEquals("priority", wonEvent.payload().get("reason"));
+        assertEquals("llm_reply", wonEvent.payload().get("decision"));
     }
 
     @Test
     void recordsOfflineWonArbiterEventAndAsrFailure() {
-        // ASR 失败 + 离线命中：cloud_asr warn 事件（error）+ cloud_arbiter（nlu-traditional/offline_won）
+        // ASR 失败 + 离线命中：cloud_asr warn 事件（error）+ B3 降级路径事件
+        // received(nlu-traditional) + won(nlu-traditional, priority, decision=offline_won)
         SegmentPipeline p = pipeline(asrFails(), offline("打开空调"));
         p.handleSegment(PCM, CTX, "utt-10");
 
@@ -248,10 +260,16 @@ class SegmentPipelineTest {
         assertEquals("warn", asrEvent.level());
         assertTrue(asrEvent.payload().containsKey("error"), "ASR 失败事件应带 error");
 
-        TelemetryEvent arbiterEvent = events.stream()
-                .filter(e -> TelemetryStages.CLOUD_ARBITER.equals(e.stage()))
+        TelemetryEvent receivedEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER_RECEIVED.equals(e.stage()))
                 .findFirst().orElseThrow();
-        assertEquals("nlu-traditional", arbiterEvent.payload().get("route"));
-        assertEquals("offline_won", arbiterEvent.payload().get("reason"));
+        assertEquals("nlu-traditional", receivedEvent.payload().get("route"));
+
+        TelemetryEvent wonEvent = events.stream()
+                .filter(e -> TelemetryStages.CLOUD_ARBITER_WON.equals(e.stage()))
+                .findFirst().orElseThrow();
+        assertEquals("nlu-traditional", wonEvent.payload().get("route"));
+        assertEquals("priority", wonEvent.payload().get("reason"));
+        assertEquals("offline_won", wonEvent.payload().get("decision"));
     }
 }

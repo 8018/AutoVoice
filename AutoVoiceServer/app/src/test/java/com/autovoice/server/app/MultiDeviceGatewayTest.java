@@ -170,13 +170,13 @@ class MultiDeviceGatewayTest {
         assertTrue(stages.containsAll(Set.of("utterance_start", "local_asr", "device_arbiter",
                 "execute", "tts_request", "tts_play")),
                 "端侧事件应汇合, 实际 stages: " + stages);
-        // 服务端插桩在采纳的 utteranceId 下实际记录的 stage 是 cloud_asr + cloud_arbiter（SegmentPipeline）。
-        // llm 现亦按 utteranceId 记录（3 参入口），但本类 llm 为 @MockBean 不产生事件
-        // ——故不断言 llm（brief 原文含之，实测不可达）。
-        assertTrue(stages.containsAll(Set.of("cloud_asr", "cloud_arbiter")),
+        // 服务端插桩在采纳的 utteranceId 下实际记录的 stage：cloud_asr + B3 拆分后的
+        // cloud_arbiter_received(llm) + cloud_arbiter_won(llm, priority, llm_reply)
+        // （ASR 文本非命令词 → 离线不命中；llm 为 @MockBean 自身不产生事件）。
+        assertTrue(stages.containsAll(Set.of("cloud_asr", "cloud_arbiter_received", "cloud_arbiter_won")),
                 "服务端插桩事件应汇合, 实际 stages: " + stages);
-        // 汇合总数精确断言（T9 硬化）：6 端侧事件 + cloud_asr + cloud_arbiter = 8
-        assertEquals(8, events.size(), "汇合事件数应为 8, 实际 events: " + events);
+        // 汇合总数精确断言（T9 硬化）：6 端侧事件 + cloud_asr + received(llm) + won(llm) = 9
+        assertEquals(9, events.size(), "汇合事件数应为 9, 实际 events: " + events);
     }
 
     /** 一条设备连接的封装：hello → ready → speak（audio_start/PCM/audio_end）→ awaitReply。 */

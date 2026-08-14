@@ -1,6 +1,7 @@
 package com.autovoice.server.arbitration;
 
 import com.autovoice.server.contracts.ArbiterDecision;
+import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
@@ -24,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 仲裁器测试（双候选竞速）：offline_won / llm_reply（含宽限期）/ safety_timeout
- * 三条收敛路径 + 单赢家守卫 + 旧单路入口委托。
+ * 三条收敛路径 + 单赢家守卫 + B3 过程事件（received/won/lost）+ 旧单路入口委托。
  */
 class RaceArbiterTest {
     static final long SAFETY = 1000;
@@ -34,6 +35,14 @@ class RaceArbiterTest {
     final ScheduledExecutorService sched = Executors.newScheduledThreadPool(4);
     final RaceArbiter arbiter = new RaceArbiter(SAFETY, GRACE, sched, sink);
     final SessionContext ctx = new SessionContext("s1", "zh-CN", Map.of());
+
+    /** B3 事件收集：带 eventSink 的仲裁器 + 按序记录 (utteranceId, event)。 */
+    record Event(String utteranceId, CloudArbiterEvent event) {
+    }
+
+    final List<Event> arbEvents = new ArrayList<>();
+    final RaceArbiter eventArbiter = new RaceArbiter(SAFETY, GRACE, sched, sink,
+            (uid, e) -> arbEvents.add(new Event(uid, e)));
 
     @AfterEach
     void shutdownPool() {
@@ -172,6 +181,81 @@ class RaceArbiterTest {
         arbiter.decide(CompletableFuture.completedFuture(null),
                 CompletableFuture.completedFuture(Reply.ofText("hi")), ctx, "utt-42").join();
         assertEquals("utt-42", log.get(0).utteranceId());
+    }
+
+    // ------------------------------------------------------------ B3 仲裁过程事件
+
+    /** 事件 → "utt|received(route)" / "utt|won(route,reason,decision)" / "utt|lost(route,reason)"。 */
+    private static String describe(Event e) {
+        CloudArbiterEvent ev = e.event();
+        return switch (ev.kind()) {
+            case RECEIVED -> "received(" + ev.route() + ")";
+            case WON -> "won(" + ev.route() + "," + ev.reason().wire() + "," + ev.decisionReason() + ")";
+            case LOST -> "lost(" + ev.route() + "," + ev.reason().wire() + ")";
+        };
+    }
+
+    private void assertEvents(String... expected) {
+        List<String> actual = arbEvents.stream()
+                .map(e -> e.utteranceId() + "|" + describe(e))
+                .toList();
+        assertEquals(List.of(expected), actual, "仲裁过程事件序列不符");
+    }
+
+    @Test
+    void commandHitWinsThenLateLlmLoses() {
+        // 命令词同步完成先到 → received(nlu-traditional) + won(priority/offline_won)；
+        // LLM 10ms 迟到 → received(llm) + lost(command_already_won)（决策不变，CAS 拒绝）
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
+        assertEquals("offline_won", d.reason());
+        sleep(50); // 等迟到 LLM 的事件回调（sched 线程）
+        assertEvents(
+                "utt-42|received(nlu-traditional)",
+                "utt-42|won(nlu-traditional,priority,offline_won)",
+                "utt-42|received(llm)",
+                "utt-42|lost(llm,command_already_won)");
+    }
+
+    @Test
+    void llmWinsAfterGraceThenLateOfflineLoses() {
+        // LLM 10ms 到达（离线未完成 → 宽限期），宽限期 300ms 到点 LLM 胜出；
+        // 离线命中 600ms 才到 → received(nlu-traditional) + lost(llm_already_won)
+        CompletableFuture<OfflineCommandHit> offline = offlineAt(600, hit("打开空调"));
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
+        assertEquals("llm_reply", d.reason());
+        sleep(650); // 等宽限期胜出 + 迟到离线事件
+        assertEvents(
+                "utt-42|received(llm)",
+                "utt-42|won(llm,priority,llm_reply)",
+                "utt-42|received(nlu-traditional)",
+                "utt-42|lost(nlu-traditional,llm_already_won)");
+    }
+
+    @Test
+    void graceWindowOfflineHitThenGraceTaskLateLlmLoses() {
+        // LLM 10ms 到达（宽限期起），离线 100ms 命中（< grace）→ 离线胜出；
+        // 宽限期 300ms 到点迟到 LLM → lost(command_already_won)
+        CompletableFuture<OfflineCommandHit> offline = offlineAt(100, hit("打开空调"));
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
+        assertEquals("offline_won", d.reason());
+        sleep(GRACE + 100); // 等宽限期任务触发迟到 lost
+        assertEvents(
+                "utt-42|received(llm)",
+                "utt-42|received(nlu-traditional)",
+                "utt-42|won(nlu-traditional,priority,offline_won)",
+                "utt-42|lost(llm,command_already_won)");
+    }
+
+    @Test
+    void safetyTimeoutEmitsWonOnly() {
+        // 双候选都不收敛 → safety 到点胜出（won(llm,llm_timeout,safety_timeout)）；
+        // 空结果/错误不是候选 → 无 received 事件
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        ArbiterDecision d = eventArbiter.decide(offline, llmF, ctx, "utt-42").join();
+        assertEquals("safety_timeout", d.reason());
+        assertEvents("utt-42|won(llm,llm_timeout,safety_timeout)");
     }
 
     // ------------------------------------------------------------ 旧单路入口委托

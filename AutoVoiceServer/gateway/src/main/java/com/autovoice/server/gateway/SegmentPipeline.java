@@ -5,6 +5,7 @@ import com.autovoice.server.arbitration.RaceArbiter;
 import com.autovoice.server.contracts.ArbiterDecision;
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
@@ -51,7 +52,6 @@ public final class SegmentPipeline {
     public static final String REASON_ARBITRATION_FAILED = "arbitration_failed_fallback";
 
     private static final String ARBITER_CLOUD = "cloud";
-    private static final String ROUTE_CLOUD = "cloud";
     /** LLM 胜出/安全兜底的路由（与 RaceArbiter sink 日志取值一致，Task 4 插桩复用）。 */
     private static final String ROUTE_LLM = "llm";
     private static final String ROUTE_NLU_TRADITIONAL = "nlu-traditional";
@@ -63,7 +63,7 @@ public final class SegmentPipeline {
     private final OfflineCommandService offline;
     private final long asrFailWaitMs;
     private final DecisionSink sink;
-    /** 链路事件记录器（Task 4 插桩：cloud_asr / cloud_arbiter；telemetry 禁用时是 Noop）。 */
+    /** 链路事件记录器（Task 4 插桩：cloud_asr / cloud_arbiter_received|won|lost；禁用时 Noop）。 */
     private final TelemetryRecorder recorder;
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SegmentPipeline.class);
@@ -106,7 +106,8 @@ public final class SegmentPipeline {
             ArbiterDecision decision = arbiter
                     .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId)
                     .join();
-            recordArbiter(utteranceId, routeOf(decision), decision.reason());
+            // 仲裁过程事件（received/won/lost）由 RaceArbiter 经 eventSink 发出（B3），
+            // 此处不再事后补记，避免与竞速时序冲突
             return toResult(decision, text, ctx, utteranceId);
         } catch (Exception e) {
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
@@ -115,17 +116,26 @@ public final class SegmentPipeline {
     }
 
     /**
-     * 决策路由（ArbiterDecision 不携带 route，按 reason 还原与 RaceArbiter sink 日志同源的
-     * 取值：offline_won → nlu-traditional，其余（llm_reply / safety_timeout）→ llm）。
+     * B3 事件映射：{@link CloudArbiterEvent} → telemetry 插桩（cloud_arbiter_received /
+     * cloud_arbiter_won / cloud_arbiter_lost）。静态方法：RaceArbiter 的 eventSink 由
+     * 装配方（VoiceGatewayHandler）以 {@code (uid, e) -> recordArbiterEvent(recorder, uid, e)}
+     * 注入；ASR 失败降级路径（不经过 RaceArbiter）在本类直调。
+     *
+     * @param recorder 链路事件记录器（telemetry 禁用时 Noop）
+     * @param utteranceId 事件所属轮次（迟到事件可能在任何后续段之后触发，必须绑定正确轮次）
+     * @param event      仲裁过程事件
      */
-    private static String routeOf(ArbiterDecision decision) {
-        return REASON_OFFLINE_WON.equals(decision.reason()) ? ROUTE_NLU_TRADITIONAL : ROUTE_LLM;
-    }
-
-    /** cloud_arbiter 事件（route/reason → 聚合列 cloud_decision，Task 4 插桩）。 */
-    private void recordArbiter(String utteranceId, String route, String reason) {
-        recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER, "info",
-                Map.of("route", route, "reason", reason));
+    static void recordArbiterEvent(TelemetryRecorder recorder, String utteranceId,
+                                   CloudArbiterEvent event) {
+        switch (event.kind()) {
+            case RECEIVED -> recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER_RECEIVED, "info",
+                    Map.of("route", event.route()));
+            case WON -> recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER_WON, "info",
+                    Map.of("route", event.route(), "reason", event.reason().wire(),
+                            "decision", event.decisionReason()));
+            case LOST -> recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER_LOST, "warn",
+                    Map.of("route", event.route(), "reason", event.reason().wire()));
+        }
     }
 
     /** ASR：失败或空白识别结果一律返回 null（决策日志由调用方按离线窗口后统一收敛）。 */
@@ -191,7 +201,9 @@ public final class SegmentPipeline {
             LOG.info("ASR failed but offline command hit: \"{}\" (utt={})", hit.get().text(), utteranceId);
             sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_NLU_TRADITIONAL, REASON_OFFLINE_WON,
                     utteranceId, System.currentTimeMillis()));
-            recordArbiter(utteranceId, ROUTE_NLU_TRADITIONAL, REASON_OFFLINE_WON);
+            recordArbiterEvent(recorder, utteranceId, CloudArbiterEvent.received(ROUTE_NLU_TRADITIONAL));
+            recordArbiterEvent(recorder, utteranceId, CloudArbiterEvent.won(ROUTE_NLU_TRADITIONAL,
+                    CloudArbiterEvent.Reason.PRIORITY, REASON_OFFLINE_WON));
             return offlineHitResult(hit.get());
         }
         return fallback(ctx, utteranceId, REASON_ASR_FAILED);
@@ -236,10 +248,14 @@ public final class SegmentPipeline {
         return new SegmentResult(null, SpeakTexts.speak(hit.intent()), hit.intent(), hit.text());
     }
 
-    /** 兜底收敛：记一条决策事件（reason 区分 ASR / 仲裁失败），返回兜底话术结果。 */
+    /**
+     * 兜底收敛：记一条决策事件（reason 区分 ASR / 仲裁失败）+ llm 路超时胜出事件
+     * （B3 映射：safety 兜底同源，reason=llm_timeout，decision=兜底 reason），返回兜底话术。
+     */
     private SegmentResult fallback(SessionContext ctx, String utteranceId, String reason) {
-        sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_CLOUD, reason, utteranceId, System.currentTimeMillis()));
-        recordArbiter(utteranceId, ROUTE_CLOUD, reason);
+        sink.log(new DecisionEntry(ARBITER_CLOUD, ROUTE_LLM, reason, utteranceId, System.currentTimeMillis()));
+        recordArbiterEvent(recorder, utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
+                CloudArbiterEvent.Reason.LLM_TIMEOUT, reason));
         return new SegmentResult(null, FALLBACK_TEXT, null, null); // 兜底无识别文本
     }
 }

@@ -460,7 +460,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         });
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final DecisionSink sink = pendingDecisions::add;
-        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink);
+        // B3：仲裁过程事件（received/won/lost）经 eventSink 映射为 telemetry 插桩；
+        // 迟到事件在 decide() 返回后仍可能触发（宽限期任务），utteranceId 随事件绑定正确轮次
+        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink,
+                (uid, event) -> SegmentPipeline.recordArbiterEvent(recorder, uid, event));
         final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink, recorder);
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
