@@ -82,7 +82,7 @@ class DeepSeekLlmProviderTest {
         assertTrue(body.path("messages").isArray());
         assertEquals(2, body.path("messages").size());
         assertEquals("system", body.path("messages").get(0).path("role").asText());
-        assertEquals(DeepSeekLlmProvider.SYSTEM_PROMPT,
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT,
                 body.path("messages").get(0).path("content").asText());
         assertEquals("user", body.path("messages").get(1).path("role").asText());
         assertEquals(USER_TEXT, body.path("messages").get(1).path("content").asText());
@@ -167,6 +167,50 @@ class DeepSeekLlmProviderTest {
         CompletionException ex = assertThrows(CompletionException.class,
                 () -> provider.chat(USER_TEXT, ctx("s4")).join());
         assertTrue(ex.getCause() instanceof RuntimeException);
+    }
+
+    /** helper：最近一次请求的 system 消息 content（照抄现有 :85 的请求体解析写法）。 */
+    private String capturedSystemContent() throws Exception {
+        okhttp3.mockwebserver.RecordedRequest req = server.takeRequest();
+        JsonNode body = mapper.readTree(req.getBody().readUtf8());
+        return body.path("messages").get(0).path("content").asText();
+    }
+
+    @Test
+    void customSystemPromptUsed() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-reply.json")));
+        String custom = "你是高冷助手。";
+        DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
+                server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, () -> custom);
+        p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
+        assertEquals(custom, capturedSystemContent());
+    }
+
+    @Test
+    void blankSupplierFallsBackToDefault() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-reply.json")));
+        DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
+                server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, () -> "  ");
+        p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT, capturedSystemContent());
+    }
+
+    @Test
+    void nullSupplierFallsBackToDefault() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-reply.json")));
+        DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
+                server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, null);
+        p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT, capturedSystemContent());
     }
 
     private static SessionContext ctx(String sessionId) {

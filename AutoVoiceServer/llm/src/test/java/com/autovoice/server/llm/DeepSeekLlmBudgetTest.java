@@ -49,7 +49,7 @@ class DeepSeekLlmBudgetTest {
         try {
             ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}"));
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
-                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 0, (n, a) -> "x");
+                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 0, (n, a) -> "x", null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
             assertEquals("直答文本", r.text());
         } finally {
@@ -87,7 +87,7 @@ class DeepSeekLlmBudgetTest {
             ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}"));
             ToolExecutor exec = (n, a) -> "ok";
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
-                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 60_000, exec);
+                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 60_000, exec, null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
             assertEquals("最终答复", r.text());
             assertEquals(3, calls.get());       // 2 轮带工具 + 1 轮强制直答
@@ -112,7 +112,7 @@ class DeepSeekLlmBudgetTest {
         server.start();
         try {
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
-                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, () -> List.of(), 0, (n, a) -> "x");
+                    server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, () -> List.of(), 0, (n, a) -> "x", null);
             // join()：future 异常完成 → CompletionException（RuntimeException 子类，与模块既有异常用例一致）
             assertThrows(RuntimeException.class, () -> provider.chat("hi",
                     new SessionContext("s", "zh", Map.of())).join());
@@ -149,7 +149,7 @@ class DeepSeekLlmBudgetTest {
             ToolExecutor exec = (n, a) -> { throw new RuntimeException("高德服务不可用"); };
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
                     server.url("/").toString(), NoopTelemetryRecorder.INSTANCE,
-                    () -> List.of(new FunctionTool("t", "d", "{}")), 5_000, exec);
+                    () -> List.of(new FunctionTool("t", "d", "{}")), 5_000, exec, null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
             assertEquals("抱歉，服务暂时不可用", r.text()); // 错误文本回 LLM → 兜底回复
         } finally {

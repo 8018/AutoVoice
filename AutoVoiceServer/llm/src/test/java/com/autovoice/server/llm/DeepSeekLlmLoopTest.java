@@ -73,7 +73,7 @@ class DeepSeekLlmLoopTest {
             };
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "test-key",
                     llm.url("/chat/completions").toString(), NoopTelemetryRecorder.INSTANCE,
-                    tools, 5_000, exec);
+                    tools, 5_000, exec, null);
             Reply r = provider.chat("导航去西湖", new SessionContext("s1", "zh", java.util.Map.of()))
                     .get(10, TimeUnit.SECONDS);
             assertEquals("text", r.kind());

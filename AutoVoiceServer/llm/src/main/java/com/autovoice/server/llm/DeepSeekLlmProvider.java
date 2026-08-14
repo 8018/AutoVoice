@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * DeepSeek（OpenAI 兼容 chat/completions）云端 LLM 适配器，带 function calling 与多轮工具循环。
@@ -72,7 +73,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     static final String MODEL = "deepseek-chat";
 
     /** 系统提示词：车控指令 → car_control 工具，其余口语回答。 */
-    static final String SYSTEM_PROMPT =
+    static final String DEFAULT_SYSTEM_PROMPT =
             "你是车载语音助手。用户发出车控指令（开关空调、调节温度等）时，调用 car_control 工具输出结构化语义；"
                     + "其他情况用简短口语化回答，不超过两句话。";
 
@@ -112,6 +113,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     private final ToolExecutor executor;
     /** 工具循环预算（毫秒）；0 表示不进行任何工具轮（首轮即直答）。 */
     private final long toolLoopBudgetMs;
+    /** system 提示词提供者（平台化配置）；null 或返回 null/空白 → 回退 {@link #DEFAULT_SYSTEM_PROMPT}。 */
+    private final Supplier<String> systemPrompt;
 
     /**
      * 默认工具集：仅 car_control 车控 skill。
@@ -133,7 +136,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint,
                                TelemetryRecorder recorder) {
         this(client, apiKey, endpoint, recorder, DeepSeekLlmProvider::defaultTools,
-                DEFAULT_TOOL_LOOP_BUDGET_MS, null);
+                DEFAULT_TOOL_LOOP_BUDGET_MS, null, null);
     }
 
     /**
@@ -144,9 +147,11 @@ public final class DeepSeekLlmProvider implements LlmProvider {
      * @param tools 注入 LLM 的工具提供者；null 时用 {@link #defaultTools()}
      * @param toolLoopBudgetMs 工具循环预算（毫秒）；0 表示首轮即直答（不带 tools），负数按 0 处理
      * @param executor 工具执行器；null 时工具调用以固定"不可用"文本回 LLM
+     * @param systemPrompt system 提示词提供者；null 或返回 null/空白时回退内置默认文案
      */
     public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint, TelemetryRecorder recorder,
-                               ToolProvider tools, long toolLoopBudgetMs, ToolExecutor executor) {
+                               ToolProvider tools, long toolLoopBudgetMs, ToolExecutor executor,
+                               Supplier<String> systemPrompt) {
         // 派生 callTimeout 10s，不改动调用方传入的 client
         this.client = client.newBuilder().callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS).build();
         this.apiKey = apiKey;
@@ -155,6 +160,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         this.tools = tools == null ? DeepSeekLlmProvider::defaultTools : tools;
         this.toolLoopBudgetMs = Math.max(0, toolLoopBudgetMs);
         this.executor = executor;
+        this.systemPrompt = systemPrompt;
     }
 
     @Override
@@ -338,11 +344,15 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         }
     }
 
-    /** system 消息（OpenAI 兼容）。 */
-    private static ObjectNode systemMessage() {
+    /** system 消息（OpenAI 兼容）；prompt 未配置（null/空白）回退内置默认。 */
+    private ObjectNode systemMessage() {
+        String prompt = systemPrompt == null ? null : systemPrompt.get();
+        if (prompt == null || prompt.isBlank()) {
+            prompt = DEFAULT_SYSTEM_PROMPT;
+        }
         ObjectNode m = MAPPER.createObjectNode();
         m.put("role", "system");
-        m.put("content", SYSTEM_PROMPT);
+        m.put("content", prompt);
         return m;
     }
 
