@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
 class SqliteSkillStoreTest {
 
@@ -37,5 +38,28 @@ class SqliteSkillStoreTest {
         assertTrue(store.findAll(true).isEmpty());
         assertEquals(2, store.findAll(false).size());
         assertEquals("secret-2", store.findById("amap-maps").authValue()); // 覆盖生效
+    }
+
+    @Test
+    void settingUpsertAndGet() throws Exception {
+        SqliteSkillStore store = new SqliteSkillStore(tmpDb());
+        store.init();
+        store.setSetting("system_prompt", "你是助手");
+        assertEquals(Optional.of("你是助手"), store.getSetting("system_prompt"));
+    }
+
+    @Test
+    void settingAbsentReturnsEmpty() throws Exception {
+        SqliteSkillStore store = new SqliteSkillStore(tmpDb());
+        store.init();
+        assertEquals(Optional.empty(), store.getSetting("system_prompt"));
+    }
+
+    @Test
+    void settingEmptyValueStored() throws Exception {
+        SqliteSkillStore store = new SqliteSkillStore(tmpDb());
+        store.init();
+        store.setSetting("system_prompt", "");
+        assertEquals(Optional.of(""), store.getSetting("system_prompt"));
     }
 }

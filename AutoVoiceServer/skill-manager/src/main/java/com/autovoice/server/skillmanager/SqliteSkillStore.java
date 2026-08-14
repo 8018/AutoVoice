@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /** skill 表 SQLite 存储：短连接 + busy_timeout，模式同 telemetry 存储。 */
 public final class SqliteSkillStore {
@@ -36,6 +37,8 @@ public final class SqliteSkillStore {
                     + "mcp_url TEXT NOT NULL, auth_header TEXT NOT NULL DEFAULT '', auth_value TEXT NOT NULL DEFAULT '',"
                     + "tools_json TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 0,"
                     + "updated_at INTEGER NOT NULL)");
+            st.execute("CREATE TABLE IF NOT EXISTS settings ("
+                    + "key TEXT PRIMARY KEY, value TEXT NOT NULL)");
         } catch (SQLException e) {
             throw new IllegalStateException("skill schema init failed: " + dbPath, e);
         }
@@ -75,6 +78,30 @@ public final class SqliteSkillStore {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("skill findById failed: " + id, e);
+        }
+    }
+
+    public Optional<String> getSetting(String key) {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(
+                "SELECT value FROM settings WHERE key=?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(rs.getString("value")) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("setting get failed: " + key, e);
+        }
+    }
+
+    public void setSetting(String key, String value) {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO settings (key, value) VALUES (?,?)"
+                        + " ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
+            ps.setString(1, key);
+            ps.setString(2, value);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("setting set failed: " + key, e);
         }
     }
 
