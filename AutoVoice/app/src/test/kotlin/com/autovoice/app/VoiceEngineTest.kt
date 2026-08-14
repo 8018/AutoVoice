@@ -238,7 +238,7 @@ class VoiceEngineTest {
             val roundEvents = roundBody.getJSONArray("events")
             val playInRound = (0 until roundEvents.length()).any { i ->
                 val e = roundEvents.getJSONObject(i)
-                e.getString("stage") == TelemetryStages.TTS_PLAY &&
+                e.getString("stage") == TelemetryStages.TTS_PLAY_START &&
                     e.getString("level") == "info" &&
                     e.getJSONObject("payload").getString("source") == "network" &&
                     e.getJSONObject("payload").getString("event") == "start"
@@ -254,7 +254,7 @@ class VoiceEngineTest {
             val eventsBody = JSONObject(eventsReq.body.readUtf8())
             assertEquals(utteranceId, eventsBody.getString("utteranceId"), "迟到事件应归属本轮 utteranceId")
             val late = eventsBody.getJSONArray("events").getJSONObject(0)
-            assertEquals(TelemetryStages.TTS_PLAY, late.getString("stage"))
+            assertEquals(TelemetryStages.TTS_PLAY_END, late.getString("stage"))
             assertEquals("info", late.getString("level"))
             assertEquals("network", late.getJSONObject("payload").getString("source"))
             assertEquals("completed", late.getJSONObject("payload").getString("event"))

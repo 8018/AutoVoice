@@ -131,18 +131,23 @@ class CachedTtsProviderTest {
         assertArrayEquals(WAV, first.data());
         Reply second = p.synthesize("打开空调", CTX, "utt-2"); // HIT → 回放缓存
 
-        assertEquals(2, rec.events.size(), "MISS 与 HIT 各记一条 tts_cache");
+        // B4 需求 1：每轮 = tts_cache_check + 结果（miss / hit），共 4 条
+        assertEquals(4, rec.events.size(), "两轮各 check+结果事件");
         assertEquals("utt-1", rec.utteranceIds.get(0));
-        assertEquals("utt-2", rec.utteranceIds.get(1));
+        assertEquals("utt-2", rec.utteranceIds.get(2));
 
-        var miss = rec.events.get(0);
-        assertEquals(TelemetryStages.TTS_CACHE, miss.stage());
+        var check = rec.events.get(0);
+        assertEquals(TelemetryStages.TTS_CACHE_CHECK, check.stage());
+        assertEquals("info", check.level());
+        assertEquals("打开空调", check.payload().get("text"));
+
+        var miss = rec.events.get(1);
+        assertEquals(TelemetryStages.TTS_CACHE_MISS, miss.stage());
         assertEquals("info", miss.level());
-        assertEquals(Boolean.FALSE, miss.payload().get("hit"));
-        assertEquals(WAV.length, miss.payload().get("bytes"));
 
-        var hit = rec.events.get(1);
-        assertEquals(Boolean.TRUE, hit.payload().get("hit"));
+        var hit = rec.events.get(3);
+        assertEquals(TelemetryStages.TTS_CACHE_HIT, hit.stage());
+        assertEquals("info", hit.level());
         assertEquals(WAV.length, hit.payload().get("bytes"));
     }
 
@@ -156,9 +161,11 @@ class CachedTtsProviderTest {
 
         assertThrows(RuntimeException.class, () -> p.synthesize("打开空调", CTX, "utt-3"));
 
-        assertEquals(1, rec.events.size());
-        assertEquals(TelemetryStages.TTS_CACHE, rec.events.get(0).stage());
-        assertEquals("error", rec.events.get(0).level());
+        // 合成失败事件由底层 provider 发 tts_synth_failed；缓存层只有 check + miss
+        assertEquals(2, rec.events.size());
+        assertEquals(TelemetryStages.TTS_CACHE_CHECK, rec.events.get(0).stage());
+        assertEquals(TelemetryStages.TTS_CACHE_MISS, rec.events.get(1).stage());
+        assertEquals("info", rec.events.get(0).level());
         assertEquals("utt-3", rec.utteranceIds.get(0));
     }
 }

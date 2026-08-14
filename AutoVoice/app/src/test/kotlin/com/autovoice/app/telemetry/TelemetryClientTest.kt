@@ -132,7 +132,7 @@ class TelemetryClientTest {
         server.enqueue(MockResponse().setResponseCode(200))
         val client = client()
         client.begin("utt-1")
-        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY_END, "info", mapOf("source" to "network"))
         client.end("utt-1")
 
         val req = server.takeRequest(5, TimeUnit.SECONDS)
@@ -141,7 +141,7 @@ class TelemetryClientTest {
         val events = JSONObject(req.body.readUtf8()).getJSONArray("events")
         assertEquals(1, events.length(), "匹配轮的 recordFor 事件应进 round 包")
         val e = events.getJSONObject(0)
-        assertEquals(TelemetryStages.TTS_PLAY, e.getString("stage"))
+        assertEquals(TelemetryStages.TTS_PLAY_END, e.getString("stage"))
         assertEquals("info", e.getString("level"))
         assertEquals("network", e.getJSONObject("payload").getString("source"))
         assertTrue(e.getLong("tsMs") > 0)
@@ -160,7 +160,7 @@ class TelemetryClientTest {
         client.end("utt-1")
         assertNotNull(server.takeRequest(5, TimeUnit.SECONDS), "round 应先收包")
 
-        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "error", mapOf("source" to "system", "result" to "failed"))
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY_END, "error", mapOf("source" to "system", "result" to "failed"))
         val req = server.takeRequest(5, TimeUnit.SECONDS)
         assertNotNull(req, "轮关闭后的迟到事件应 POST /api/telemetry/events")
         assertEquals("/api/telemetry/events", req!!.path)
@@ -169,7 +169,7 @@ class TelemetryClientTest {
         val events = body.getJSONArray("events")
         assertEquals(1, events.length())
         val e = events.getJSONObject(0)
-        assertEquals(TelemetryStages.TTS_PLAY, e.getString("stage"))
+        assertEquals(TelemetryStages.TTS_PLAY_END, e.getString("stage"))
         assertEquals("error", e.getString("level"))
         assertEquals("failed", e.getJSONObject("payload").getString("result"))
         assertTrue(e.getLong("tsMs") > 0)
@@ -185,7 +185,7 @@ class TelemetryClientTest {
         server.enqueue(MockResponse().setResponseCode(200)) // round POST
         val client = client()
         client.begin("utt-1")
-        client.recordFor("utt-2", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
+        client.recordFor("utt-2", TelemetryStages.TTS_PLAY_END, "info", mapOf("source" to "network"))
         client.end("utt-1")
 
         // 两个请求先后到达（顺序不依赖：HTTP 异步），按 path 区分
@@ -247,7 +247,7 @@ class TelemetryClientTest {
         client.onSessionId("srv-sess-1")
         client.begin("utt-1")
         client.record(TelemetryStages.VAD, "info", mapOf("bytes" to 1600))
-        client.recordFor("utt-1", TelemetryStages.TTS_PLAY, "info", mapOf("source" to "network"))
+        client.recordFor("utt-1", TelemetryStages.TTS_PLAY_END, "info", mapOf("source" to "network"))
         client.end("utt-1")
         client.uploadAudio("utt-1", ByteArray(4))
 

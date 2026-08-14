@@ -149,10 +149,13 @@ class AliyunTtsProviderTest {
         Reply reply = recording.synthesize(TEXT, ctx("s1"), "utt-9");
 
         assertEquals("audio", reply.kind());
-        assertEquals(1, rec.events.size());
+        // B4 需求 1：tts_synth_request（发起） + tts_synth_ok（成功）
+        assertEquals(2, rec.events.size(), "synth_request + synth_ok");
         assertEquals("utt-9", rec.utteranceIds.get(0));
-        var ev = rec.events.get(0);
-        assertEquals(TelemetryStages.TTS_SYNTH, ev.stage());
+        assertEquals(TelemetryStages.TTS_SYNTH_REQUEST, rec.events.get(0).stage());
+        assertEquals("info", rec.events.get(0).level());
+        var ev = rec.events.get(1);
+        assertEquals(TelemetryStages.TTS_SYNTH_OK, ev.stage());
         assertEquals("info", ev.level());
         assertEquals(WAV_BYTES.length, ev.payload().get("bytes"));
         assertTrue(((Number) ev.payload().get("durationMs")).longValue() >= 0, "应带合成耗时");
@@ -173,11 +176,13 @@ class AliyunTtsProviderTest {
 
         assertThrows(RuntimeException.class, () -> recording.synthesize(TEXT, ctx("s2"), "utt-9"));
 
-        assertEquals(1, rec.events.size());
+        // B4 需求 1：tts_synth_request + tts_synth_failed
+        assertEquals(2, rec.events.size(), "synth_request + synth_failed");
         assertEquals("utt-9", rec.utteranceIds.get(0));
-        assertEquals(TelemetryStages.TTS_SYNTH, rec.events.get(0).stage());
-        assertEquals("error", rec.events.get(0).level());
-        assertTrue(rec.events.get(0).payload().get("error").toString().contains("FAILED"));
+        assertEquals(TelemetryStages.TTS_SYNTH_REQUEST, rec.events.get(0).stage());
+        assertEquals(TelemetryStages.TTS_SYNTH_FAILED, rec.events.get(1).stage());
+        assertEquals("error", rec.events.get(1).level());
+        assertTrue(rec.events.get(1).payload().get("error").toString().contains("FAILED"));
     }
 
     @Test

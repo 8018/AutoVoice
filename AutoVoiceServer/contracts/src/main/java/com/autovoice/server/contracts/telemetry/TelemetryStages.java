@@ -17,10 +17,26 @@ public final class TelemetryStages {
     public static final String CLOUD_ARBITER_LOST = "cloud_arbiter_lost";
     public static final String DEVICE_ARBITER = "device_arbiter";
     public static final String EXECUTE = "execute";
-    public static final String TTS_REQUEST = "tts_request";
-    public static final String TTS_CACHE = "tts_cache";
-    public static final String TTS_SYNTH = "tts_synth";
-    public static final String TTS_PLAY = "tts_play";
+    /** TTS 播报请求（B4 需求 1：端侧 speakViaTts 发出播报请求 / 服务器 tts-server 收到）。 */
+    public static final String TTS_PLAY_REQUEST = "tts_play_request";
+    /** TTS 缓存检查（B4：合成前查缓存）。 */
+    public static final String TTS_CACHE_CHECK = "tts_cache_check";
+    /** TTS 缓存命中（B4：直接回放缓存）。 */
+    public static final String TTS_CACHE_HIT = "tts_cache_hit";
+    /** TTS 缓存未命中（B4：委托底层合成）。 */
+    public static final String TTS_CACHE_MISS = "tts_cache_miss";
+    /** TTS 生成请求（B4：发起语音合成）。 */
+    public static final String TTS_SYNTH_REQUEST = "tts_synth_request";
+    /** TTS 生成成功（B4：合成完成返回音频）。 */
+    public static final String TTS_SYNTH_OK = "tts_synth_ok";
+    /** TTS 生成失败（B4：合成异常/超时）。 */
+    public static final String TTS_SYNTH_FAILED = "tts_synth_failed";
+    /** TTS 播放开始（B4：MediaPlayer 实际起播）。 */
+    public static final String TTS_PLAY_START = "tts_play_start";
+    /** TTS 播放中断（B4：stop/新播放打断）。 */
+    public static final String TTS_PLAY_INTERRUPTED = "tts_play_interrupted";
+    /** TTS 播放结束（B4：completed ok / failed error）。 */
+    public static final String TTS_PLAY_END = "tts_play_end";
 
     private TelemetryStages() {
     }

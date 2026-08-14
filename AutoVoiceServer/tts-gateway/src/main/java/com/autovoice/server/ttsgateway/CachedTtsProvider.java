@@ -67,6 +67,9 @@ public final class CachedTtsProvider implements TtsProvider {
         if (text == null || text.isBlank()) {
             return delegate.synthesize(text, ctx, utteranceId); // 空文本不缓存，直接委托
         }
+        // B4 需求 1 事件细分：缓存检查 → 命中直接回放 / 未命中委托底层合成
+        // （合成成败事件由底层 provider 发 tts_synth_request/ok/failed，此处不重复）
+        recorder.record(utteranceId, TelemetryStages.TTS_CACHE_CHECK, "info", Map.of("text", text));
         byte[] cached = memory.get(text);
         if (cached == null && cacheDir != null) {
             cached = readDisk(text);
@@ -76,28 +79,21 @@ public final class CachedTtsProvider implements TtsProvider {
         }
         if (cached != null) {
             LOG.info("TTS cache HIT: \"{}\" -> {} bytes", text, cached.length);
-            recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "info",
-                    Map.of("text", text, "hit", true, "bytes", cached.length));
+            recorder.record(utteranceId, TelemetryStages.TTS_CACHE_HIT, "info",
+                    Map.of("text", text, "bytes", cached.length));
             return Reply.ofAudio("audio/wav", cached);
         }
-        try {
-            Reply reply = delegate.synthesize(text, ctx, utteranceId);
-            if ("audio".equals(reply.kind()) && reply.data() != null && reply.data().length > 0) {
-                byte[] data = reply.data();
-                memory.put(text, data);
-                if (cacheDir != null) {
-                    writeDisk(text, data);
-                }
-                LOG.info("TTS ok: \"{}\" -> {} bytes (cache MISS)", text, data.length);
-                recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "info",
-                        Map.of("text", text, "hit", false, "bytes", data.length));
+        recorder.record(utteranceId, TelemetryStages.TTS_CACHE_MISS, "info", Map.of("text", text));
+        Reply reply = delegate.synthesize(text, ctx, utteranceId);
+        if ("audio".equals(reply.kind()) && reply.data() != null && reply.data().length > 0) {
+            byte[] data = reply.data();
+            memory.put(text, data);
+            if (cacheDir != null) {
+                writeDisk(text, data);
             }
-            return reply;
-        } catch (RuntimeException e) {
-            recorder.record(utteranceId, TelemetryStages.TTS_CACHE, "error",
-                    Map.of("text", text, "hit", false, "error", String.valueOf(e.getMessage())));
-            throw e;
+            LOG.info("TTS ok: \"{}\" -> {} bytes (cache MISS)", text, data.length);
         }
+        return reply;
     }
 
     /** 读磁盘缓存；文件缺失或损坏（空文件/读失败）→ null（视为未命中，重新合成）。 */

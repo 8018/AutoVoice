@@ -50,7 +50,7 @@ class TtsControllerTest {
                 .andExpect(status().isOk());
 
         verify(tts).synthesize(eq("好的"), any(), eq("utt-5"));
-        verify(recorder).record(eq("utt-5"), eq(TelemetryStages.TTS_REQUEST), eq("info"), any());
+        verify(recorder).record(eq("utt-5"), eq(TelemetryStages.TTS_PLAY_REQUEST), eq("info"), any());
     }
 
     @Test
@@ -62,7 +62,7 @@ class TtsControllerTest {
                         .content("{\"text\":\"好的\",\"sessionId\":\"s1\",\"utteranceId\":\"utt-6\"}"))
                 .andExpect(status().isInternalServerError());
 
-        verify(recorder).record(eq("utt-6"), eq(TelemetryStages.TTS_REQUEST), eq("error"), any());
+        verify(recorder).record(eq("utt-6"), eq(TelemetryStages.TTS_PLAY_REQUEST), eq("error"), any());
     }
 
     @Test

@@ -151,8 +151,8 @@ class MultiDeviceGatewayTest {
                            {"stage":"local_asr","tsMs":1500,"level":"info","payload":{"text":"打开空调"}},
                            {"stage":"device_arbiter","tsMs":3000,"level":"info","payload":{"route":"cloud","reason":"cloud_won"}},
                            {"stage":"execute","tsMs":4000,"level":"info","payload":{"intent":"climate/set_temperature","result":"applied"}},
-                           {"stage":"tts_request","tsMs":4500,"level":"info","payload":{"text":"空调调到二十四度"}},
-                           {"stage":"tts_play","tsMs":4900,"level":"info","payload":{"source":"network","result":"ok"}}]}
+                           {"stage":"tts_play_request","tsMs":4500,"level":"info","payload":{"text":"空调调到二十四度"}},
+                           {"stage":"tts_play_end","tsMs":4900,"level":"info","payload":{"source":"network","result":"ok"}}]}
                 """;
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -168,7 +168,7 @@ class MultiDeviceGatewayTest {
                 .map(e -> String.valueOf(((Map<?, ?>) e).get("stage")))
                 .collect(Collectors.toSet());
         assertTrue(stages.containsAll(Set.of("utterance_start", "local_asr", "device_arbiter",
-                "execute", "tts_request", "tts_play")),
+                "execute", "tts_play_request", "tts_play_end")),
                 "端侧事件应汇合, 实际 stages: " + stages);
         // 服务端插桩在采纳的 utteranceId 下实际记录的 stage：cloud_asr + B3 拆分后的
         // cloud_arbiter_received(llm) + cloud_arbiter_won(llm, priority, llm_reply)

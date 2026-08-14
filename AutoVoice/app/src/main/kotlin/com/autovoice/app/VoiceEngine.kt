@@ -162,12 +162,19 @@ class VoiceEngine(
     init {
         // T7 评审 C1：网络播放事件绑定 telemetry（用 playUtteranceId 快照走 recordFor——
         // 异步回调晚于 end() 收包；轮已关闭/跨轮时单事件直传 /api/telemetry/events）。
-        // TtsPlayer 的详情 stage（start/completed/failed/interrupted）以 event 字段进 payload，
-        // level 由 TtsPlayer 给出 info/error/warn
+        // B4 需求 1 事件细分：TtsPlayer 的 stage（start/completed/failed/interrupted）→
+        // tts_play_start / tts_play_interrupted / tts_play_end（completed 与 failed
+        // 都是播放结束，level 由 TtsPlayer 给出 info/error/warn），原始 stage 以
+        // event 字段进 payload
         onTtsPlayEvent = { stage, level, payload ->
+            val ttsStage = when (stage) {
+                "start" -> TelemetryStages.TTS_PLAY_START
+                "interrupted" -> TelemetryStages.TTS_PLAY_INTERRUPTED
+                else -> TelemetryStages.TTS_PLAY_END
+            }
             telemetry.recordFor(
                 playUtteranceId,
-                TelemetryStages.TTS_PLAY,
+                ttsStage,
                 level,
                 payload + mapOf("source" to "network", "event" to stage),
             )
@@ -366,7 +373,8 @@ class VoiceEngine(
      */
     private fun speakViaTts(text: String) {
         if (text.isBlank()) return
-        telemetry.record(TelemetryStages.TTS_REQUEST, "info", mapOf("text" to text))
+        // B4 需求 1：tts 播报请求（端侧发出播报请求）→ tts_play_request
+        telemetry.record(TelemetryStages.TTS_PLAY_REQUEST, "info", mapOf("text" to text))
         scope.launch {
             tts.request(text)?.let(player::play) ?: speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
         }
@@ -391,14 +399,14 @@ class VoiceEngine(
     }
 
     /**
-     * T7 tts_play：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。
+     * B4 tts_play_end：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。
      * 用 [playUtteranceId] 快照走 [TelemetryClient.recordFor]（T7 评审 C1）：UtteranceProgressListener
      * 回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 → 单事件直传 /events。
      */
     private fun recordSystemTtsPlay(ok: Boolean) {
         telemetry.recordFor(
             playUtteranceId,
-            TelemetryStages.TTS_PLAY,
+            TelemetryStages.TTS_PLAY_END,
             if (ok) "info" else "error",
             mapOf("source" to "system", "result" to if (ok) "ok" else "failed"),
         )

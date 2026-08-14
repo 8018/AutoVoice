@@ -92,7 +92,7 @@ public final class AliyunTtsProvider implements TtsProvider {
         this(client, apiKey, endpoint, CALL_TIMEOUT_MS, recorder);
     }
 
-    /** 完整构造（Task 5）：recorder 为链路事件记录器（TTS_SYNTH 插桩）。 */
+    /** 完整构造（Task 5）：recorder 为链路事件记录器（B4 插桩：tts_synth_request/ok/failed）。 */
     public AliyunTtsProvider(OkHttpClient client, String apiKey, String endpoint, long timeoutMs,
                              TelemetryRecorder recorder) {
         this.client = client; // WS 不受 callTimeout 约束，超时由 future.get 兜底
@@ -120,6 +120,8 @@ public final class AliyunTtsProvider implements TtsProvider {
     @Override
     public Reply synthesize(String text, SessionContext ctx, String utteranceId) {
         long startedNanos = System.nanoTime();
+        // B4 需求 1 事件细分：生成请求（发起合成前）→ tts_synth_request
+        recorder.record(utteranceId, TelemetryStages.TTS_SYNTH_REQUEST, "info", Map.of("text", text));
         CompletableFuture<byte[]> audio = new CompletableFuture<>();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Request request = new Request.Builder().url(endpoint)
@@ -129,7 +131,7 @@ public final class AliyunTtsProvider implements TtsProvider {
         try {
             byte[] wav = audio.get(timeoutMs, TimeUnit.MILLISECONDS);
             Reply reply = Reply.ofAudio(OUTPUT_MIME, fixWavHeader(wav));
-            recorder.record(utteranceId, TelemetryStages.TTS_SYNTH, "info", Map.of(
+            recorder.record(utteranceId, TelemetryStages.TTS_SYNTH_OK, "info", Map.of(
                     "text", text, "bytes", reply.data().length, "durationMs", elapsedMs(startedNanos)));
             return reply;
         } catch (TimeoutException e) {
@@ -156,7 +158,7 @@ public final class AliyunTtsProvider implements TtsProvider {
     }
 
     private void recordSynthError(String utteranceId, String text, long startedNanos, RuntimeException e) {
-        recorder.record(utteranceId, TelemetryStages.TTS_SYNTH, "error", Map.of(
+        recorder.record(utteranceId, TelemetryStages.TTS_SYNTH_FAILED, "error", Map.of(
                 "text", text, "durationMs", elapsedMs(startedNanos), "error", String.valueOf(e.getMessage())));
     }
 

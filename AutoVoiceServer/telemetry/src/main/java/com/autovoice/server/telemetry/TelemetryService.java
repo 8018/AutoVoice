@@ -272,7 +272,8 @@ public class TelemetryService implements TelemetryRecorder {
     /**
      * 单事件 → 聚合列映射（record() 逐事件 upsert 与 recordDeviceRound() 批量推导共用）：
      * cloud_arbiter.route → cloud_decision；LLM.text → llm_reply；CLOUD_ASR.text →
-     * asr_cloud；tts_cache.hit → tts_cache_hit；端侧 stage（device_arbiter/local_asr/…）同规则。
+     * asr_cloud；tts_play_request.text → tts_text；tts_cache_hit/miss → tts_cache_hit；
+     * 端侧 stage（device_arbiter/local_asr/…）同规则。
      */
     private static Map<String, Object> aggregateFromEvent(TelemetryEvent e) {
         Map<String, Object> f = new HashMap<>();
@@ -298,22 +299,10 @@ public class TelemetryService implements TelemetryRecorder {
             case TelemetryStages.CLOUD_ASR -> putPayloadValue(f, "asr_cloud", payload, "text");
             case TelemetryStages.LLM -> putPayloadValue(f, "llm_reply", payload, "text");
             case TelemetryStages.EXECUTE -> putPayloadValue(f, "execute_result", payload, "result");
-            case TelemetryStages.TTS_REQUEST -> putPayloadValue(f, "tts_text", payload, "text");
-            case TelemetryStages.TTS_PLAY -> putPayloadValue(f, "playback_result", payload, "result");
-            case TelemetryStages.TTS_CACHE -> {
-                if (payload.get("hit") != null) {
-                    Object v = payload.get("hit");
-                    boolean hit;
-                    if (v instanceof Boolean b) {
-                        hit = b;
-                    } else if (v instanceof Number n) {
-                        hit = n.intValue() != 0;
-                    } else {
-                        hit = Boolean.parseBoolean(String.valueOf(v));
-                    }
-                    f.put("tts_cache_hit", hit ? 1 : 0);
-                }
-            }
+            case TelemetryStages.TTS_PLAY_REQUEST -> putPayloadValue(f, "tts_text", payload, "text");
+            case TelemetryStages.TTS_PLAY_END -> putPayloadValue(f, "playback_result", payload, "result");
+            case TelemetryStages.TTS_CACHE_HIT -> f.put("tts_cache_hit", 1);
+            case TelemetryStages.TTS_CACHE_MISS -> f.put("tts_cache_hit", 0);
             default -> {
                 // 未知 stage：无聚合列可推导
             }
