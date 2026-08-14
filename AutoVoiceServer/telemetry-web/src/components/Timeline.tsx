@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { TelemetryEvent } from "../types";
-import { stageLabel } from "../stages";
+import { stageLabel, stageOrder } from "../stages";
 
 interface Props {
   events: TelemetryEvent[];
@@ -47,15 +47,26 @@ function payloadPreview(payload: Record<string, unknown>): string {
     .join("  ");
 }
 
-/** 事件按 tsMs 升序的时间线：阶段中文标签 + 相对首事件耗时 + payload 关键字段。 */
+/**
+ * 时间线：按**语义链顺序**（stageOrder）为主键、tsMs 为次键排序。
+ * 端侧/服务器时钟存在偏差（旧 APK 未换算时可达数百 ms），纯按 tsMs 会把
+ * 服务器 TTS 请求排到端云仲裁之前；语义顺序兜底保证展示顺序正确，
+ * +X ms 相对耗时取事件最小 tsMs（跨端换算后端侧/服务器事件可对齐比较）。
+ */
 export default function Timeline({ events }: Props) {
-  const sorted = useMemo(() => [...events].sort((a, b) => a.tsMs - b.tsMs), [events]);
+  const sorted = useMemo(
+    () =>
+      [...events].sort(
+        (a, b) => stageOrder(a.stage) - stageOrder(b.stage) || a.tsMs - b.tsMs,
+      ),
+    [events],
+  );
 
   if (sorted.length === 0) {
     return <p className="hint">无事件</p>;
   }
 
-  const first = sorted[0].tsMs;
+  const first = Math.min(...events.map((e) => e.tsMs));
 
   return (
     <ol className="timeline">
