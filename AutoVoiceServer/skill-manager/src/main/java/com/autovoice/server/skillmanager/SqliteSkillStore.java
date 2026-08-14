@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** skill 表 SQLite 存储：短连接 + busy_timeout，模式同 telemetry 存储。 */
-public final class SqliteSkillStore {
+public class SqliteSkillStore {
 
     private final String dbPath;
 
