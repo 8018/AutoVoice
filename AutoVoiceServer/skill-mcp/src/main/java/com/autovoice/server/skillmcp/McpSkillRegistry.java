@@ -25,6 +25,7 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     private final SkillPlatformClient client;
     private final ToolInjector injector;
+    private final SystemPromptStore promptStore;
     private final long pollMs;
     private final long connectTimeoutMs;
     private final BiFunction<SkillConfig, Long, McpToolSession> sessionFactory;
@@ -39,10 +40,11 @@ public final class McpSkillRegistry implements AutoCloseable {
     private volatile long lastRefreshMs;
 
     public McpSkillRegistry(SkillPlatformClient client, ToolInjector injector,
-                            long pollMs, long connectTimeoutMs,
+                            SystemPromptStore promptStore, long pollMs, long connectTimeoutMs,
                             BiFunction<SkillConfig, Long, McpToolSession> sessionFactory) {
         this.client = client;
         this.injector = injector;
+        this.promptStore = promptStore;
         this.pollMs = pollMs < 1 ? 600_000 : pollMs;
         this.connectTimeoutMs = connectTimeoutMs < 1 ? 5_000 : connectTimeoutMs;
         this.sessionFactory = sessionFactory;
@@ -90,6 +92,12 @@ public final class McpSkillRegistry implements AutoCloseable {
         Map<String, McpToolSession> old = sessions;
         sessions = next;
         lastRefreshMs = System.currentTimeMillis();
+        String oldPrompt = promptStore.get();
+        String prompt = client.fetchSystemPrompt();
+        if (prompt != null && !prompt.equals(oldPrompt)) {
+            promptStore.set(prompt);
+            LOG.info("system prompt updated ({} chars)", prompt.length());
+        }
         for (McpToolSession s : old.values()) {
             if (!next.containsValue(s)) {
                 s.close();

@@ -44,7 +44,7 @@ class McpSkillRegistryTest {
     void refreshBuildsSnapshotFromEnabledSkills() throws Exception {
         FakePlatformClient client = new FakePlatformClient(List.of(cfg("a"), cfg("b")));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
-                60_000, 5_000, (c, timeout) -> session(c))) {
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
             assertEquals(4, reg.enabledToolSpecs().size()); // 2 skills × 2 工具
             assertEquals("找到 1 个结果：西湖", reg.callTool("poi_search", "{}")); // 路由到所属 session 执行
@@ -64,7 +64,7 @@ class McpSkillRegistryTest {
             }
         };
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
-                60_000, 5_000, (c, timeout) -> session(c))) {
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
             assertEquals(2, reg.enabledToolSpecs().size());
             reg.refresh(); // 平台挂了
@@ -77,7 +77,7 @@ class McpSkillRegistryTest {
         SkillConfig bad = cfg("bad");
         FakePlatformClient client = new FakePlatformClient(List.of(cfg("good"), bad));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
-                60_000, 5_000, (c, timeout) -> {
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> {
                     if ("bad".equals(c.id())) {
                         throw new IllegalStateException("mcp down");
                     }
@@ -92,7 +92,7 @@ class McpSkillRegistryTest {
     void callToolUnknownNameThrows() throws Exception {
         FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
-                60_000, 5_000, (c, timeout) -> session(c))) {
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
             assertThrows(McpToolException.class, () -> reg.callTool("ghost", "{}"));
         }
@@ -109,9 +109,52 @@ class McpSkillRegistryTest {
             }
         };
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
-                60_000, 5_000, (c, timeout) -> session(c))) {
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             assertDoesNotThrow(reg::refresh);
             assertEquals(0, reg.enabledToolSpecs().size()); // 空快照继续服务
+        }
+    }
+
+    @Test
+    void refreshPullsSystemPrompt() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        FakePlatformClient client = new FakePlatformClient(List.of()) {
+            @Override public String fetchSystemPrompt() { return "你是助手"; }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals("你是助手", store.get());
+        }
+    }
+
+    @Test
+    void fetchPromptFailureKeepsPrevious() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        store.set("旧值");
+        FakePlatformClient client = new FakePlatformClient(List.of()) {
+            @Override public String fetchSystemPrompt() { return null; } // 拉取失败
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals("旧值", store.get());
+        }
+    }
+
+    @Test
+    void platformDownKeepsPrompt() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        store.set("旧值");
+        FakePlatformClient client = new FakePlatformClient(null) {
+            @Override public List<SkillConfig> fetchEnabled() throws IOException {
+                throw new IOException("down");
+            }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals("旧值", store.get());
         }
     }
 
