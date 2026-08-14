@@ -20,6 +20,7 @@ export default function App() {
   const [form, setForm] = useState<FormState>(emptyForm());
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [prompt, setPrompt] = useState('');
 
   async function load() {
     try {
@@ -34,8 +35,21 @@ export default function App() {
     }
   }
 
+  async function loadPrompt() {
+    try {
+      setPrompt(await api.getSystemPrompt());
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false);
+        localStorage.removeItem('skill-authed');
+      } else {
+        setErr(String(e.message || e));
+      }
+    }
+  }
+
   useEffect(() => {
-    if (authed) load();
+    if (authed) { load(); loadPrompt(); }
   }, [authed]);
 
   async function doLogin() {
@@ -122,6 +136,38 @@ export default function App() {
     }
   }
 
+  async function doSavePrompt() {
+    setMsg(''); setErr('');
+    try {
+      await api.setSystemPrompt(prompt);
+      setMsg('系统提示词已保存（网关将热更新）');
+      await loadPrompt();
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false);
+        localStorage.removeItem('skill-authed');
+      } else {
+        setErr(String(e.message || e));
+      }
+    }
+  }
+
+  async function doResetPrompt() {
+    setPrompt('');
+    setMsg(''); setErr('');
+    try {
+      await api.setSystemPrompt('');
+      setMsg('已恢复默认系统提示词');
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false);
+        localStorage.removeItem('skill-authed');
+      } else {
+        setErr(String(e.message || e));
+      }
+    }
+  }
+
   function edit(s: Skill) {
     const checked: Record<string, boolean> = {};
     try {
@@ -155,6 +201,16 @@ export default function App() {
         <h1>Skill 管理平台</h1>
         <button onClick={() => { setAuthed(false); localStorage.removeItem('skill-authed'); }}>退出</button>
       </div>
+      <details className="prompt-pane">
+        <summary>系统提示词（LLM system prompt，保存后网关热更新）</summary>
+        <textarea value={prompt} rows={3}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="留空 = 使用内置默认提示词" />
+        <div className="prompt-actions">
+          <button onClick={doSavePrompt}>保存</button>
+          <button onClick={doResetPrompt}>恢复默认</button>
+        </div>
+      </details>
       <div className="main">
         <div className="list-pane">
           {skills.map((s) => (

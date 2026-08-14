@@ -53,3 +53,12 @@ export async function discoverTools(id: string, draft: SkillDraft): Promise<Tool
     body: JSON.stringify(body),
   });
 }
+
+export async function getSystemPrompt(): Promise<string> {
+  const r = await req('/api/config/system-prompt');
+  return r ? (r.value ?? '') : '';
+}
+
+export async function setSystemPrompt(value: string): Promise<void> {
+  await req('/api/config/system-prompt', { method: 'PUT', body: JSON.stringify({ value }) });
+}
