@@ -7,7 +7,16 @@ interface Props {
 }
 
 /** payload 摘要优先展示的关键字段，其余按原始顺序补齐。 */
-const PREFERRED_KEYS = ["text", "reason", "result", "hit", "route", "durationMs"];
+const PREFERRED_KEYS = [
+  "text",
+  "reason",
+  "decision",
+  "result",
+  "route",
+  "source",
+  "bytes",
+  "durationMs",
+];
 const MAX_KEYS = 3;
 const MAX_VALUE_LEN = 50;
 
