@@ -89,4 +89,28 @@ class ConfigControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.value").value(""));
     }
+
+    /** 缺失/null value 字段一律 400（防 {} 或拼错键名静默清空全平台 prompt；仅 {"value":""} 是显式恢复默认）。 */
+    @Test
+    void putMissingValueRejected() throws Exception {
+        String cookie = login();
+        mvc.perform(put("/api/config/system-prompt")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
+        mvc.perform(put("/api/config/system-prompt")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"vaule\":\"x\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
+        mvc.perform(put("/api/config/system-prompt")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").exists());
+    }
 }

@@ -38,7 +38,9 @@ public class ConfigController {
         if (!hasAdminCookie(request)) {
             return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
         }
-        String value = body.value() == null ? "" : body.value();
+        // 契约是 {"value":"..."}（空串合法=显式恢复默认）；缺失/null 视为笔误或恶意请求，拒绝而非静默清空
+        if (body.value() == null) return ResponseEntity.status(400).body(Map.of("error", "missing value field"));
+        String value = body.value();
         service.setSystemPrompt(value);
         return ResponseEntity.ok(Map.of("value", service.getSystemPrompt()));
     }
