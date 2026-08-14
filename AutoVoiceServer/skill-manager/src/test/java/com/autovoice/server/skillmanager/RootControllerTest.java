@@ -33,4 +33,11 @@ class RootControllerTest {
                 .andExpect(status().is3xxRedirection())
                 .andExpect(redirectedUrl("/skill-manager/index.html"));
     }
+
+    @Test
+    void skillManagerDirPathRedirectsToPanel() throws Exception {
+        mvc.perform(get("/skill-manager/"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/skill-manager/index.html"));
+    }
 }

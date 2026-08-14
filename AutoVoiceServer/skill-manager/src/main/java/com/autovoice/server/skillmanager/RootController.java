@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 @Controller
 public class RootController {
 
-    @GetMapping({"/", "/skill-manager"})
+    @GetMapping({"/", "/skill-manager", "/skill-manager/"})
     public String root() {
         return "redirect:/skill-manager/index.html";
     }
