@@ -116,6 +116,12 @@ class OnDeviceRaceArbiter(
                 onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
                 return RaceWinner.Intercepted
             }
+            // 拒识（语音拒识 = unknown 意图，需求 1 静默）：本地未命中语义不参与仲裁
+            // 胜出——云端超时场景直接失败（不执行不播报），避免 unknown 兜底胜出
+            if (intent.isUnknown()) {
+                onEvent(OnDeviceArbiterEvent.Lost("local", "unknown_intent"))
+                return RaceWinner.Failed
+            }
             onEvent(OnDeviceArbiterEvent.Won("local", "cloud_timeout"))
             sink.onDecision(decision(route = "local", reason = "cloud_timeout_use_local"))
             // 云端语义若在超时窗口边缘迟到（本地先赢）→ 记失败（已有命令词胜出）

@@ -16,6 +16,12 @@ class OnDeviceRaceArbiterTest {
     private val entries = mutableListOf<DecisionEntry>()
     private val sink = DecisionSink { entries.add(it) }
 
+    /** 正常（非 unknown）本地意图：规则命中形态，可在云端超时后仲裁胜出。 */
+    private fun normalIntent() = Intent(
+        schemaVersion = "1.0", domain = "vehicle", intent = "power_on",
+        slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
+    )
+
     @Test fun `cloud first wins`() = runBlocking {
         val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 2000, sink = sink)
         val cloud = CompletableDeferred<Reply>().also { it.complete(TextReply("hi")) }
@@ -28,10 +34,28 @@ class OnDeviceRaceArbiterTest {
     @Test fun `cloud timeout falls back to local`() = runBlocking {
         val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 100, sink = sink)
         val cloud = CompletableDeferred<Reply>() // 永不完成
-        val local = CompletableDeferred<Intent>().also { it.complete(Intent.unknown("t")) }
+        val local = CompletableDeferred<Intent>().also { it.complete(normalIntent()) }
         val w = arbiter.race(cloud, local)
         assertTrue(w is RaceWinner.Local)
         assertEquals("cloud_timeout_use_local", entries.last().reason)
+    }
+
+    /** 拒识（语音拒识 = unknown 意图）：本地未命中语义不参与仲裁胜出——云端超时直接失败。 */
+    @Test fun `unknown local intent after cloud timeout fails directly`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 50, sink = sink, onEvent = { events.add(it) })
+        val cloud = CompletableDeferred<Reply>() // 永不完成 → 云端超时
+        val local = CompletableDeferred<Intent>().also { it.complete(Intent.unknown("rule.nlu")) }
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Failed, "unknown 意图不应仲裁胜出，应直接失败")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Lost("local", "unknown_intent"),
+            ),
+            events,
+        )
+        assertEquals(0, entries.size, "拒识不写决策（unknown 无执行语义）")
     }
 
     @Test fun `cloud arrives within window even if late local`() = runBlocking {
@@ -95,7 +119,7 @@ class OnDeviceRaceArbiterTest {
         val events = mutableListOf<OnDeviceArbiterEvent>()
         val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 50, sink = sink, onEvent = { events.add(it) })
         val cloud = CompletableDeferred<Reply>() // 永不完成
-        val local = CompletableDeferred<Intent>().also { it.complete(Intent.unknown("t")) }
+        val local = CompletableDeferred<Intent>().also { it.complete(normalIntent()) }
         val w = arbiter.race(cloud, local)
         assertTrue(w is RaceWinner.Local)
         assertEquals(
@@ -113,7 +137,7 @@ class OnDeviceRaceArbiterTest {
         val events = mutableListOf<OnDeviceArbiterEvent>()
         val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 50, localFallbackMs = 2000, sink = sink, onEvent = { events.add(it) })
         val cloud = async { delay(100); TextReply("迟到的云端") }
-        val local = async { delay(150); Intent.unknown("t") }
+        val local = async { delay(150); normalIntent() }
         val w = arbiter.race(cloud, local)
         assertTrue(w is RaceWinner.Local)
         assertEquals(
