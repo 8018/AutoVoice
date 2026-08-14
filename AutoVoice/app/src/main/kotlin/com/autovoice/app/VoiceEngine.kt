@@ -6,6 +6,7 @@ import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
+import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.gatewayclient.GatewayClient
@@ -30,6 +31,7 @@ import com.autovoice.voicecore.session.ResultListener
 import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
 import com.google.gson.JsonObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
@@ -111,6 +113,12 @@ class VoiceEngine(
     private val tts: TtsRequester,
     private val player: AudioPlayer,
     private val speaker: TextSpeaker,
+    /**
+     * 端侧 TTS 缓存（架构变更：缓存从服务器移回端侧）：speakViaTts 先查缓存，
+     * 命中直接播（不请求服务器）；未命中走 [tts] 网络合成，回传写缓存再播。
+     * 默认仅内存（JVM 测试注入预置缓存/fake）；生产装配由 [create] 注入。
+     */
+    private val ttsCache: TtsCache = TtsCache(null),
     val vehicle: MockVehicleState,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onVehicleApplied: () -> Unit = {},
@@ -376,7 +384,17 @@ class VoiceEngine(
         // B4 需求 1：tts 播报请求（端侧发出播报请求）→ tts_play_request
         telemetry.record(TelemetryStages.TTS_PLAY_REQUEST, "info", mapOf("text" to text))
         scope.launch {
-            tts.request(text)?.let(player::play) ?: speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
+            // 架构变更（缓存移回端侧）：先查端侧缓存（tts_cache_check + 命中/未命中），
+            // 命中直接播（不请求服务器）；未命中走网络合成，回传写缓存再播
+            val cached = ttsCache.get(text)
+            if (cached != null) {
+                player.play(AudioReply(mime = "audio/wav", data = cached, speakText = text))
+            } else {
+                tts.request(text)?.let {
+                    ttsCache.put(text, it.data) // 网络合成音频写缓存（下次同文本直接命中）
+                    player.play(it)
+                } ?: speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
+            }
         }
     }
 
@@ -479,6 +497,17 @@ class VoiceEngine(
             val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope)
             // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
             clockOffsetProvider.set(cloudRunner::clockOffsetMs)
+            // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）
+            // + 事件桥（T7 recordFor 通道：speakViaTts 的 launch 晚于收口，current 已 null，
+            // record 会静默丢弃；用 playUtteranceId 快照走 recordFor——轮已关闭 → /events 直传）
+            var ttsCacheEngineRef: VoiceEngine? = null
+            val ttsCache = TtsCache(
+                File(context.filesDir, "tts_cache"),
+                onEvent = { stage, level, payload ->
+                    val engine = ttsCacheEngineRef ?: return@TtsCache
+                    telemetry.recordFor(engine.playUtteranceId, stage, level, payload)
+                },
+            )
             // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
             // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
             val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
@@ -521,6 +550,7 @@ class VoiceEngine(
                 local = buildLocalChain(cfg, context, scope, onLocalRecognized, offlineStageRef, telemetry),
                 cloud = cloudRunner,
                 tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
+                ttsCache = ttsCache, // 缓存移回端侧：查缓存命中直接播，未命中才走网络
                 player = player,
                 speaker = speaker,
                 vehicle = vehicle,
@@ -533,6 +563,7 @@ class VoiceEngine(
                 },
             )
             engineRef = engine
+            ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
             // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
             // （telemetry 为构造参数，构造即绑定），此处无需再装配
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）

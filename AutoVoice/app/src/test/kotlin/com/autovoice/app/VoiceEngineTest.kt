@@ -1,5 +1,6 @@
 package com.autovoice.app
 
+import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
@@ -110,6 +111,8 @@ class VoiceEngineTest {
         speaker: TextSpeaker = TextSpeaker { _, _ -> },
         /** A3 默认 TTS 失败（返回 null）→ speaker 兜底；用例可注入 fake 返回音频。 */
         tts: TtsRequester = TtsRequester { null },
+        /** 架构变更（缓存移回端侧）：默认空缓存，用例可注入预置/可查验实例。 */
+        ttsCache: TtsCache = TtsCache(null),
         debugBuild: Boolean = true,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
@@ -153,6 +156,7 @@ class VoiceEngineTest {
             tts = tts,
             player = player,
             speaker = speaker,
+            ttsCache = ttsCache,
             vehicle = vehicle,
             scope = scope,
             debugBuild = debugBuild,
@@ -181,6 +185,22 @@ class VoiceEngineTest {
             if (r.path == path) return r
         }
         return null
+    }
+
+    /**
+     * 聚合全部 /api/telemetry/events 直传事件（T7 recordFor 单事件直传：每次 POST 一条，
+     * 异步顺序不保证；取到超时为止）。cache 事件在 speakViaTts 的 launch 内产生，
+     * 晚于 round 收包 → 全部经此通道。
+     */
+    private fun collectLateEvents(server: MockWebServer): List<JSONObject> {
+        val events = mutableListOf<JSONObject>()
+        while (true) {
+            val r = server.takeRequest(2, TimeUnit.SECONDS) ?: break
+            if (r.path != "/api/telemetry/events") continue
+            val arr = JSONObject(r.body.readUtf8()).getJSONArray("events")
+            for (i in 0 until arr.length()) events.add(arr.getJSONObject(i))
+        }
+        return events
     }
 
     /**
@@ -715,6 +735,134 @@ class VoiceEngineTest {
         }
         assertTrue(ttsCalled, "TextReply 应先请求 TTS")
         assertEquals(listOf("已为您把空调调到 24 度"), spoken, "TTS 失败 → 系统 TTS 兜底播报文本")
+    }
+
+    // --------------------------------------------------- 架构变更：TTS 缓存移回端侧（TtsCache）
+
+    /** 缓存命中：直接播缓存音频，不发 tts_request（counting fake 断言 0 次），
+     *  事件记 cache_check + cache_hit（带 bytes），不记 cache_miss。
+     *  注：cache 事件在 speakViaTts 的 scope.launch 内记录，晚于 round 收包 →
+     *  经 /events 直传（T7 同机制），故从 /events 断言。 */
+    @Test
+    fun `tts cache hit plays cached audio without network request`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        server.enqueue(MockResponse().setResponseCode(200)) // /events POST（轮关闭后的 cache 事件）
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val cachedWav = ByteArray(32) { 7 }
+        var requested = 0
+        val played = mutableListOf<AudioReply>()
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                // 事件桥同生产 create()：recordFor 快照通道（launch 晚于收口，record 会丢弃）
+                var cacheEngineRef: VoiceEngine? = null
+                val cache = TtsCache(null, onEvent = { s, l, p ->
+                    val e = cacheEngineRef ?: return@TtsCache
+                    telemetry.recordFor(e.session.currentUtteranceId, s, l, p)
+                })
+                cache.put("好的，车窗已打开", cachedWav)
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { powerOnIntent() },
+                    cloud = CloudRunner { TextReply("好的，车窗已打开") },
+                    telemetry = telemetry,
+                    tts = TtsRequester { requested++; null },
+                    player = AudioPlayer { played.add(it) },
+                    ttsCache = cache,
+                )
+                cacheEngineRef = pair.first
+                utter(pair.first)
+            }
+            assertEquals(0, requested, "缓存命中不应发 tts_request")
+            assertEquals(1, played.size, "缓存音频应直接播放")
+            assertArrayEquals(cachedWav, played[0].data, "播放的应是缓存音频字节")
+            val events = collectLateEvents(server)
+            val check = events.find { it.getString("stage") == TelemetryStages.TTS_CACHE_CHECK }
+            assertNotNull(check, "缓存命中应记 tts_cache_check")
+            assertEquals(
+                "好的，车窗已打开",
+                check!!.getJSONObject("payload").getString("text"),
+                "cache_check payload 应带原文文本",
+            )
+            val hit = events.find { it.getString("stage") == TelemetryStages.TTS_CACHE_HIT }
+            assertNotNull(hit, "缓存命中应记 tts_cache_hit")
+            assertEquals(32, hit!!.getJSONObject("payload").getInt("bytes"), "cache_hit payload 应带字节数")
+            assertTrue(events.none { it.getString("stage") == TelemetryStages.TTS_CACHE_MISS }, "命中时不得记 cache_miss")
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
+    }
+
+    /** 缓存未命中：发 tts.request，返回音频 → 播放并写入缓存（put 后再次 get 命中），
+     *  事件记 cache_check + cache_miss（轮关闭后直传 /events，见命中用例注释）。 */
+    @Test
+    fun `tts cache miss requests audio writes cache and plays`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        server.enqueue(MockResponse().setResponseCode(200)) // /events POST（轮关闭后的 cache 事件）
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val requested = mutableListOf<String>()
+        val played = mutableListOf<AudioReply>()
+        lateinit var cache: TtsCache
+        val ttsAudio =
+            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "好的，车窗已打开")
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                // 事件桥同生产 create()：recordFor 快照通道（launch 晚于收口，record 会丢弃）
+                var cacheEngineRef: VoiceEngine? = null
+                cache = TtsCache(null, onEvent = { s, l, p ->
+                    val e = cacheEngineRef ?: return@TtsCache
+                    telemetry.recordFor(e.session.currentUtteranceId, s, l, p)
+                })
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { powerOnIntent() },
+                    cloud = CloudRunner { TextReply("好的，车窗已打开") },
+                    telemetry = telemetry,
+                    tts = TtsRequester { requested.add(it); ttsAudio },
+                    player = AudioPlayer { played.add(it) },
+                    ttsCache = cache,
+                )
+                cacheEngineRef = pair.first
+                utter(pair.first)
+            }
+            assertEquals(listOf("好的，车窗已打开"), requested, "未命中应先请求 TTS")
+            assertEquals(1, played.size, "网络音频应播放")
+            assertArrayEquals(ttsAudio.data, played[0].data)
+            assertArrayEquals(ttsAudio.data, cache.get("好的，车窗已打开"), "收到音频应写入缓存")
+            // launch 内 check+miss 直传 /events（断言处的 get 会再产生 check+hit，聚合后只断言存在性）
+            val events = collectLateEvents(server)
+            assertTrue(
+                events.any { it.getString("stage") == TelemetryStages.TTS_CACHE_CHECK },
+                "未命中也应先记 tts_cache_check",
+            )
+            assertTrue(
+                events.any { it.getString("stage") == TelemetryStages.TTS_CACHE_MISS },
+                "未命中应记 tts_cache_miss",
+            )
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
     }
 
     /**

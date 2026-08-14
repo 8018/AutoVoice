@@ -134,6 +134,11 @@
 设备收到 `reply` 后执行 `intent`（若为 action），再按回复文本发 `tts_request` 获取音频播放。
 服务端合成失败走 `error`（code `TTS_FAILED`），**不关闭连接**。
 
+**端侧缓存优先（架构变更）**：客户端发 `tts_request` 前先查**本地 TTS 缓存**（key =
+播报文本，磁盘 `sha256(text).wav`）；命中直接播放**不发** `tts_request`（telemetry 记
+`tts_cache_check` → `tts_cache_hit`），未命中才发送（记 `tts_cache_miss`），收到
+`tts_response` 音频后写入缓存。服务端无缓存层，`tts_cache_*` 事件全部由客户端记录。
+
 ```json
 {
   "type": "tts_request",

@@ -5,7 +5,8 @@ package com.autovoice.app.telemetry
  * AutoVoiceServer :contracts 的 TelemetryStages——T7 已逐串核对对齐）。
  * 端侧记录 utterance_start / vad / local_asr / execute / tts_play_request /
  * tts_play_start / tts_play_interrupted / tts_play_end / device_arbiter /
- * cloud_arbiter；cloud_asr / offline_pool / llm / tts_cache_check/hit/miss /
+ * cloud_arbiter / tts_cache_check/hit/miss（架构变更：缓存从服务器移回端侧，
+ * 缓存检查/命中/未命中由端侧 TtsCache 记录）；cloud_asr / offline_pool / llm /
  * tts_synth_request/ok/failed 由服务端插桩（T4/T5/B4），端侧不重复定义。
  */
 object TelemetryStages {
@@ -42,6 +43,15 @@ object TelemetryStages {
 
     /** TTS 播放结束（B4：completed ok / failed error；system 兜底播报结果也用此 stage）。 */
     const val TTS_PLAY_END = "tts_play_end"
+
+    /** TTS 缓存检查（架构变更：端侧 TtsCache.get 发起检查，含文本）。 */
+    const val TTS_CACHE_CHECK = "tts_cache_check"
+
+    /** TTS 缓存命中（端侧 TtsCache：直接回放缓存音频，不请求服务器，含文本与字节数）。 */
+    const val TTS_CACHE_HIT = "tts_cache_hit"
+
+    /** TTS 缓存未命中（端侧 TtsCache：走网络请求服务器合成，含文本）。 */
+    const val TTS_CACHE_MISS = "tts_cache_miss"
 
     /** 端侧仲裁器决策（OnDeviceRaceArbiter / VoiceSession 的 on-device 条目）。 */
     const val DEVICE_ARBITER = "device_arbiter"

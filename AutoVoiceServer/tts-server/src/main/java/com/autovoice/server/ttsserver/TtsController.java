@@ -47,15 +47,15 @@ public class TtsController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "text is required");
         }
         String utteranceId = request.utteranceId() == null ? "" : request.utteranceId();
-        // B4 需求 1：tts 播报请求（服务器收到播报请求）→ tts_play_request
-        recorder.record(utteranceId, TelemetryStages.TTS_PLAY_REQUEST, "info", Map.of("text", request.text()));
+        // 架构变更（缓存移回端侧）：tts_play_request / tts_cache_check/hit/miss 由端侧记录，
+        // 服务器只发合成事件——合成成败由 AliyunTtsProvider 记 tts_synth_request/ok/failed。
         try {
             Reply reply = tts.synthesize(request.text(),
                     new SessionContext(request.sessionId() == null ? "" : request.sessionId(), null, null),
                     utteranceId);
             if (reply == null || reply.data() == null || reply.data().length == 0) {
                 LOG.warn("TTS synthesize produced no audio: \"{}\"", request.text());
-                recorder.record(utteranceId, TelemetryStages.TTS_PLAY_REQUEST, "error",
+                recorder.record(utteranceId, TelemetryStages.TTS_SYNTH_FAILED, "error",
                         Map.of("text", request.text(), "error", "synthesize produced no audio"));
                 throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                         "synthesize produced no audio");
@@ -65,10 +65,9 @@ public class TtsController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (RuntimeException e) {
-            // 合成失败（网络/服务端拒绝）：网关按 TTS_FAILED 语义降级文本回复
+            // 合成失败（网络/服务端拒绝）：AliyunTtsProvider 已记 tts_synth_failed，不重复；
+            // 网关按 TTS_FAILED 语义降级文本回复
             LOG.warn("TTS synthesize failed: {}", String.valueOf(e.getMessage()));
-            recorder.record(utteranceId, TelemetryStages.TTS_PLAY_REQUEST, "error",
-                    Map.of("text", request.text(), "error", String.valueOf(e.getMessage())));
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                     "tts synthesize failed: " + e.getMessage());
         }
