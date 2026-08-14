@@ -34,16 +34,16 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns("/api/admin/login", "/api/admin/logout");
     }
 
-    /**
-     * 平台级配置（system prompt）。显式 @Bean 定义覆盖组件扫描装配（ConfigController
-     * 同时是 @RestController）：adminToken 由此方法注入，删掉本 @Bean 会让扫描装配
-     * 因构造参数缺失失败。
-     */
     @Bean
     public ConfigService configService(SqliteSkillStore store, SkillWebhookNotifier notifier) {
         return new ConfigService(store, notifier);
     }
 
+    /**
+     * 平台级配置（system prompt）。显式 @Bean 定义覆盖组件扫描装配（ConfigController
+     * 同时是 @RestController）：adminToken 由此方法注入，删掉本 @Bean 会让扫描装配
+     * 因构造参数缺失失败。
+     */
     @Bean
     public ConfigController configController(ConfigService service, SkillProperties props) {
         return new ConfigController(service, props);

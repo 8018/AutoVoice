@@ -3,6 +3,8 @@ package com.autovoice.server.skillmanager;
 /** 平台级配置：当前只有 system prompt；写操作后通知网关刷新（同 skill 变更语义）。 */
 public final class ConfigService {
 
+    // 两个命名空间故意不同：存储 key 用下划线（settings 表），webhook skillId 契约是连字符
+    // "system-prompt"（测试锁定，网关按此识别），勿"统一命名"改坏契约。
     static final String SYSTEM_PROMPT_KEY = "system_prompt";
 
     private final SqliteSkillStore store;

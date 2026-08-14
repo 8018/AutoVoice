@@ -44,13 +44,21 @@ public class AdminAuthInterceptor implements HandlerInterceptor {
     }
 
     private boolean checkCookie(HttpServletRequest request) {
-        Cookie[] cookies = request.getCookies();
+        return matchesAdminCookie(adminToken, request.getCookies());
+    }
+
+    /**
+     * admin cookie 校验（ConfigController 写操作同用）：cookie 值 = SHA-256(adminToken)
+     * 十六进制比对；先拒空（空值绝不等于任何配置 token，防 token 侧为空的静默开门）。
+     */
+    public static boolean matchesAdminCookie(String adminToken, Cookie[] cookies) {
         if (cookies == null) {
             return false;
         }
         String expected = AdminController.cookieValue(adminToken);
         for (Cookie c : cookies) {
             if (AdminController.COOKIE_NAME.equals(c.getName()) && c.getValue() != null
+                    && !c.getValue().isEmpty()
                     && MessageDigest.isEqual(c.getValue().getBytes(StandardCharsets.UTF_8),
                                               expected.getBytes(StandardCharsets.UTF_8))) {
                 return true;

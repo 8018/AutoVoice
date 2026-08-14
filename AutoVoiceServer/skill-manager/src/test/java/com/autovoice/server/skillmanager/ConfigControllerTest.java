@@ -4,6 +4,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -20,7 +21,14 @@ import org.springframework.test.web.servlet.MockMvc;
 class ConfigControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired SqliteSkillStore store;
     static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 共享 Spring 上下文/库文件：每用例前重置 system_prompt，保证用例间独立。 */
+    @BeforeEach
+    void cleanDb() {
+        store.setSetting("system_prompt", "");
+    }
 
     private String login() throws Exception {
         return mvc.perform(post("/api/admin/login")
