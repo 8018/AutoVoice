@@ -217,6 +217,8 @@ class VoiceSession(
                 is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
                 is RaceWinner.Local -> transition(SessionState.EXECUTING)
                 is RaceWinner.Failed -> Unit // 全败：不置执行/播报，直接回调后回 IDLE
+                // B2：非最新轮语义被拦截——结果已过期，不执行不播报，静默回 IDLE
+                is RaceWinner.Intercepted -> Unit
             }
             resultListener.onResult(winner)
         } finally {
@@ -258,6 +260,11 @@ class VoiceSession(
                 is RaceWinner.Cloud -> localD.cancel()
                 is RaceWinner.Local -> cloudD.cancel()
                 is RaceWinner.Failed -> {
+                    cloudD.cancel()
+                    localD.cancel()
+                }
+                // B2：非最新轮拦截——语义已过期，两端结果全部作废
+                is RaceWinner.Intercepted -> {
                     cloudD.cancel()
                     localD.cancel()
                 }

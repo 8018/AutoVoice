@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
+import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.audio.SystemTtsFallback
 import com.autovoice.app.audio.TtsPlayer
@@ -152,6 +153,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
                 if (recording) denoisedBlocks.add(block)
+            }
+        }
+        // B1/B2：VAD 段事件 → vad_start/vad_end 插桩（SpeechStart 由 engine 产生本轮
+        // utteranceId——vad start 的 uuid 就是 utteranceId，单一 id 贯穿全轮并同步仲裁器）
+        viewModelScope.launch {
+            recorder.vadEvents.collect { event ->
+                when (event) {
+                    VadEvent.SpeechStart -> engine.onVadStart()
+                    VadEvent.SpeechEnd -> engine.onVadEnd()
+                }
             }
         }
     }

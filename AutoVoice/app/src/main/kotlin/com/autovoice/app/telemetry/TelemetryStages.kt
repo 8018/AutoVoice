@@ -14,6 +14,16 @@ object TelemetryStages {
     /** VAD 切出的语音段（onTurnSegment，含字节数/时长与轮内聚合统计）。 */
     const val VAD = "vad"
 
+    /**
+     * VAD 语音段开始（录音实时，SpeechStart 触发）：本轮第一个段产生 utteranceId
+     * （vad start 的 uuid 就是 utteranceId，单一 id 贯穿全轮），并同步到端云仲裁器
+     * 做非最新轮拦截（B2）。
+     */
+    const val VAD_START = "vad_start"
+
+    /** VAD 语音段结束（录音实时，SpeechEnd 触发，与 [VAD_START] 配对）。 */
+    const val VAD_END = "vad_end"
+
     /** 本地 ASR + NLU（buildLocalChain，识别文本/意图/耗时）。 */
     const val LOCAL_ASR = "local_asr"
 
@@ -28,6 +38,15 @@ object TelemetryStages {
 
     /** 端侧仲裁器决策（OnDeviceRaceArbiter / VoiceSession 的 on-device 条目）。 */
     const val DEVICE_ARBITER = "device_arbiter"
+
+    /** 端侧仲裁收到候选（B2 需求 4：route=cloud 收到云端语义 / route=local 收到本地 ASR 命令词）。 */
+    const val DEVICE_ARBITER_RECEIVED = "device_arbiter_received"
+
+    /** 端侧仲裁胜出（B2：route + 原因 priority 优先 / cloud_timeout 超时未收到云端）。 */
+    const val DEVICE_ARBITER_WON = "device_arbiter_won"
+
+    /** 端侧仲裁失败（B2：route + 原因 cloud_already_won / command_already_won / not_latest_round）。 */
+    const val DEVICE_ARBITER_LOST = "device_arbiter_lost"
 
     /** 云端仲裁器决策（网关下行 decision 事件，arbiter=cloud）。 */
     const val CLOUD_ARBITER = "cloud_arbiter"

@@ -20,12 +20,14 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.arbiter.DecisionSink
+import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
+import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
 import com.google.gson.JsonObject
 import java.util.UUID
@@ -124,9 +126,10 @@ class VoiceEngine(
     var weakNetwork: Boolean = false
 
     /**
-     * 当前话语的链路追踪 ID（T6）：onListeningStart 生成，贯穿本轮全部插桩
+     * 当前话语的链路追踪 ID（T6）：**由 VAD 段开始（[onVadStart]，SpeechStart）产生**——
+     * vad start 的 uuid 就是 utteranceId，单一 id 贯穿本轮全部插桩
      * （audio_start/tts_request 上行 + telemetry 事件）；云端链在 IO 线程读取，
-     * volatile 可见。
+     * volatile 可见。无 VAD 场景（vadUnavailable）由 [onTurnSegment] 兜底产生。
      */
     @Volatile
     private var currentUtteranceId = ""
@@ -198,21 +201,49 @@ class VoiceEngine(
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
     /**
-     * 录音开始：生成本轮 utteranceId（一个"话语开始"一个 id，贯穿本轮全部插桩）并开启
-     * telemetry 轮；网络可用则重新启用云端路由（断网恢复场景），否则立即挂起云端
-     * （本轮起只跑本地链，reason `cloud_unreachable`），再进入 LISTENING。
+     * 录音开始：清空上一轮状态（utteranceId 由首个 VAD 段开始产生——vad start 的
+     * uuid 就是 utteranceId，需求 2 单一 id）；网络可用则重新启用云端路由（断网恢复
+     * 场景），否则立即挂起云端（本轮起只跑本地链，reason `cloud_unreachable`），
+     * 再进入 LISTENING。
      */
     fun onListeningStart() {
-        currentUtteranceId = UUID.randomUUID().toString()
-        // T7：会话也持有本轮 utteranceId——on-device 决策日志（仲裁器 provider / localOnly）带真实值
-        session.currentUtteranceId = currentUtteranceId
+        // 新一轮开始：utteranceId 清空，首个 SpeechStart（onVadStart）重新产生
+        currentUtteranceId = ""
+        session.currentUtteranceId = ""
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
-        telemetry.begin(currentUtteranceId)
-        telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
         if (networkAvailable()) session.onCloudAvailable() else session.onCloudUnavailable()
         session.onListeningStart()
+    }
+
+    /**
+     * VAD 语音段开始（录音实时，SpeechStart 触发，需求 2）：
+     *  - 本轮首个段：**产生 utteranceId**（vad start 的 uuid，单一 id 贯穿全轮）——
+     *    开启 telemetry 轮并记录话语开始；会话与云端链同步该 id（仲裁器 provider 读它，
+     *    非最新 uid 的会话语义被拦截，B2）；
+     *  - 同轮后续段：不重复产生，只记 vad_start。
+     * 守卫：非录音中（LISTENING）的杂散 SpeechStart 忽略。
+     */
+    fun onVadStart() {
+        if (session.state.value != SessionState.LISTENING) return
+        if (currentUtteranceId.isBlank()) {
+            currentUtteranceId = UUID.randomUUID().toString()
+            // T7：会话也持有本轮 utteranceId——on-device 决策日志（仲裁器 provider / localOnly）带真实值
+            session.currentUtteranceId = currentUtteranceId
+            telemetry.begin(currentUtteranceId)
+            telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
+        }
+        telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
+    }
+
+    /**
+     * VAD 语音段结束（录音实时，SpeechEnd 触发，需求 2）：记 vad_end 事件（与
+     * [onVadStart] 配对；无话语时静默跳过——防杂散事件）。
+     */
+    fun onVadEnd() {
+        if (currentUtteranceId.isBlank()) return
+        telemetry.record(TelemetryStages.VAD_END, "info", emptyMap())
     }
 
     /**
@@ -222,7 +253,7 @@ class VoiceEngine(
      * T7：累加本轮 VAD 聚合统计（段数/总时长，随 onTurnSegment 的 vad 事件上报）。
      */
     fun onCloudSegment(segment: ByteArray) {
-        if (currentUtteranceId.isNotBlank()) {
+        if (session.state.value == SessionState.LISTENING) {
             turnSegmentCount += 1
             turnSegmentsTotalMs += durationMs(segment.size)
         }
@@ -230,25 +261,31 @@ class VoiceEngine(
     }
 
     /**
-     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：记录 VAD 事件（含本轮聚合统计：
-     * 段数/总时长；maxProb 在 VadSegmenter 内、AudioRecorder 持有，此处不可得）+ 上传
-     * VAD 后 PCM 到数据平台（T6；未开始话语时静默跳过），再启动双路竞速收敛。
+     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：无 VAD 场景（vadUnavailable /
+     * 未切出语音段）兜底产生 utteranceId 并开启 telemetry 轮（首个 SpeechStart 缺席，
+     * 否则本轮事件全丢）；再记录 VAD 事件（含本轮聚合统计：段数/总时长；maxProb 在
+     * VadSegmenter 内、AudioRecorder 持有，此处不可得）+ 上传 VAD 后 PCM 到数据平台
+     * （T6），最后启动双路竞速收敛。
      */
     fun onTurnSegment(segment: ByteArray) {
-        if (currentUtteranceId.isNotBlank()) {
-            telemetry.record(
-                TelemetryStages.VAD,
-                "info",
-                mapOf(
-                    "bytes" to segment.size,
-                    "durationMs" to durationMs(segment.size),
-                    // 聚合：云端段数 + 本地整段 = 本轮 VAD 切段总数；总时长为云端段 + 本地段之和
-                    "segmentCount" to turnSegmentCount + 1,
-                    "totalMs" to turnSegmentsTotalMs + durationMs(segment.size),
-                ),
-            )
-            telemetry.uploadAudio(currentUtteranceId, segment)
+        if (currentUtteranceId.isBlank()) {
+            currentUtteranceId = UUID.randomUUID().toString()
+            session.currentUtteranceId = currentUtteranceId
+            telemetry.begin(currentUtteranceId)
+            telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
         }
+        telemetry.record(
+            TelemetryStages.VAD,
+            "info",
+            mapOf(
+                "bytes" to segment.size,
+                "durationMs" to durationMs(segment.size),
+                // 聚合：云端段数 + 本地整段 = 本轮 VAD 切段总数；总时长为云端段 + 本地段之和
+                "segmentCount" to turnSegmentCount + 1,
+                "totalMs" to turnSegmentsTotalMs + durationMs(segment.size),
+            ),
+        )
+        telemetry.uploadAudio(currentUtteranceId, segment)
         session.onTurnSegment(segment)
     }
 
@@ -291,6 +328,8 @@ class VoiceEngine(
                 telemetry.record(TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
                 speaker.speak(FALLBACK_PHRASE) { ok -> recordSystemTtsPlay(ok) }
             }
+            // B2：非最新轮语义被拦截——不播报不执行（轮照常收包，事件已含 lost 原因）
+            is RaceWinner.Intercepted -> Unit
         }
         // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
         telemetry.end(currentUtteranceId)
@@ -445,8 +484,28 @@ class VoiceEngine(
                     localFallbackMs = LOCAL_FALLBACK_MS,
                     clock = System::currentTimeMillis,
                     sink = telemetrySink,
-                    // T7：on-device 决策日志携带本轮真实 utteranceId（onListeningStart 写入会话）
+                    // T7：on-device 决策日志携带本轮真实 utteranceId（vad start 写入会话）
                     utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
+                    // B2：仲裁过程事件（收到/胜出/失败）→ device_arbiter_received/won/lost 插桩
+                    onEvent = { event ->
+                        when (event) {
+                            is OnDeviceArbiterEvent.Received -> telemetry.record(
+                                TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                                "info",
+                                mapOf("route" to event.route),
+                            )
+                            is OnDeviceArbiterEvent.Won -> telemetry.record(
+                                TelemetryStages.DEVICE_ARBITER_WON,
+                                "info",
+                                mapOf("route" to event.route, "reason" to event.reason),
+                            )
+                            is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                                TelemetryStages.DEVICE_ARBITER_LOST,
+                                "warn",
+                                mapOf("route" to event.route, "reason" to event.reason),
+                            )
+                        }
+                    },
                 ),
                 sink = telemetrySink,
                 telemetry = telemetry,

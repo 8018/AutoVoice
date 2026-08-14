@@ -13,6 +13,7 @@ import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
+import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
@@ -34,11 +35,13 @@ import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -110,6 +113,9 @@ class VoiceEngineTest {
         debugBuild: Boolean = true,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
+        // B2：仲裁器 utteranceId 延迟绑定引擎会话（生产 create() 同款 engineRef 模式，
+        // 非最新 uid 拦截在测试里与生产语义一致）
+        var engineRef: VoiceEngine? = null
         val engine = VoiceEngine(
             cfg = cfg(cloudWaitMs),
             arbiter = OnDeviceRaceArbiter(
@@ -117,6 +123,27 @@ class VoiceEngineTest {
                 localFallbackMs = localFallbackMs,
                 clock = System::currentTimeMillis,
                 sink = sink,
+                utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
+                // B2：仲裁过程事件 → telemetry 插桩（生产 create() 同款映射）
+                onEvent = { event ->
+                    when (event) {
+                        is OnDeviceArbiterEvent.Received -> telemetry.record(
+                            TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                            "info",
+                            mapOf("route" to event.route),
+                        )
+                        is OnDeviceArbiterEvent.Won -> telemetry.record(
+                            TelemetryStages.DEVICE_ARBITER_WON,
+                            "info",
+                            mapOf("route" to event.route, "reason" to event.reason),
+                        )
+                        is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                            TelemetryStages.DEVICE_ARBITER_LOST,
+                            "warn",
+                            mapOf("route" to event.route, "reason" to event.reason),
+                        )
+                    }
+                },
             ),
             sink = sink,
             telemetry = telemetry,
@@ -130,6 +157,7 @@ class VoiceEngineTest {
             scope = scope,
             debugBuild = debugBuild,
         )
+        engineRef = engine
         return engine to vehicle
     }
 
@@ -231,6 +259,245 @@ class VoiceEngineTest {
             assertEquals("network", late.getJSONObject("payload").getString("source"))
             assertEquals("completed", late.getJSONObject("payload").getString("event"))
             assertTrue(late.getLong("tsMs") > 0)
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
+    }
+
+    // ------------------------------------------------------------------ B1：vad_start / vad_end（需求 2）
+
+    /** 从 events 数组找指定 stage 的第一条（无则 null）。 */
+    private fun findEvent(events: JSONArray, stage: String): JSONObject? {
+        for (i in 0 until events.length()) {
+            val e = events.getJSONObject(i)
+            if (e.getString("stage") == stage) return e
+        }
+        return null
+    }
+
+    /** 统计 events 数组中指定 stage 的出现次数。 */
+    private fun countStage(events: JSONArray, stage: String): Int {
+        var n = 0
+        for (i in 0 until events.length()) {
+            if (events.getJSONObject(i).getString("stage") == stage) n++
+        }
+        return n
+    }
+
+    /** 指定 stage 全部事件的 tsMs 最小值（无该 stage 时返回 Long.MAX_VALUE）。 */
+    private fun minTsOf(events: JSONArray, stage: String): Long {
+        var min = Long.MAX_VALUE
+        for (i in 0 until events.length()) {
+            val e = events.getJSONObject(i)
+            if (e.getString("stage") == stage) min = minOf(min, e.getLong("tsMs"))
+        }
+        return min
+    }
+
+    /**
+     * B1（需求 2 修订）：vad start 产生 uuid——utteranceId 由首个 SpeechStart 产生（单一
+     * id 贯穿全轮，vadId 与 utteranceId 是同一个），vad_start/vad_end 配对落库并随 end()
+     * 一并 POST。守卫断言：录音外（非 LISTENING）的杂散 SpeechStart 忽略（不产生 id 不
+     * 记录）；同轮后续段不重复产生 utteranceId（一个 utterance 一轮）。
+     */
+    @Test
+    fun `onVadStart produces utteranceId once and pairs vad_start with vad_end`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { powerOnIntent() },
+                    cloud = CloudRunner { TextReply("好的") },
+                    telemetry = telemetry,
+                )
+                val engine = pair.first
+                engine.onVadStart() // 录音外（IDLE）的杂散 SpeechStart → 忽略，不产生 utteranceId
+                engine.onListeningStart()
+                engine.onVadStart() // 首个段：产生 utteranceId + utterance_start + vad_start
+                engine.onVadStart() // 同轮第二段：不重复产生 id，只记 vad_start
+                engine.onVadEnd() // 段 2 结束
+                engine.onVadEnd() // 段 1 结束（SpeechEnd 配对不校验顺序，同轮即可）
+                engine.onTurnSegment(segment)
+            }
+            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
+            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
+            val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
+            val start = findEvent(events, TelemetryStages.VAD_START)
+            val end = findEvent(events, TelemetryStages.VAD_END)
+            assertNotNull(start, "应记录 vad_start")
+            assertNotNull(end, "应记录 vad_end")
+            assertTrue(end!!.getLong("tsMs") >= start!!.getLong("tsMs"), "vad_end 不得早于 vad_start")
+            // 两个段：2 条 vad_start + 2 条 vad_end，但只 1 个 utterance_start（单 id 一轮）
+            assertEquals(2, countStage(events, TelemetryStages.VAD_START), "两个语音段应有 2 条 vad_start")
+            assertEquals(2, countStage(events, TelemetryStages.VAD_END), "两个语音段应有 2 条 vad_end")
+            assertEquals(1, countStage(events, TelemetryStages.UTTERANCE_START), "同轮 utteranceId 只产生一次")
+            // utterance_start 产生于首个 vad start（不晚于第一条 vad_start）
+            assertTrue(
+                findEvent(events, TelemetryStages.UTTERANCE_START)!!.getLong("tsMs") <= minTsOf(events, TelemetryStages.VAD_START),
+                "utteranceId 应产生于首个 vad start（utterance_start 不晚于第一条 vad_start）",
+            )
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
+    }
+
+    /**
+     * B1：onListeningStart 清空 utteranceId——新一轮开始后，旧轮的迟到 vad_end 被忽略
+     * （utteranceId 为空），新轮首个 SpeechStart 重新产生 id 并配对落库。
+     */
+    @Test
+    fun `onListeningStart resets utteranceId so stale vad_end is ignored`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { powerOnIntent() },
+                    cloud = CloudRunner { TextReply("好的") },
+                    telemetry = telemetry,
+                )
+                val engine = pair.first
+                engine.onListeningStart() // utt 轮 1
+                engine.onVadStart() // 产生 utt-1 + vad_start
+                engine.onListeningStart() // utt 轮 2：utteranceId 清空
+                engine.onVadEnd() // 旧轮残留 SpeechEnd → 忽略（utteranceId 为空）
+                engine.onVadStart() // 轮 2 首个段：重新产生 id
+                engine.onVadEnd()
+                engine.onTurnSegment(segment)
+            }
+            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
+            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
+            val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
+            assertEquals(1, countStage(events, TelemetryStages.VAD_START), "新轮只应有 1 条 vad_start")
+            assertEquals(1, countStage(events, TelemetryStages.VAD_END), "旧轮残留 vad_end 不得落库")
+            assertEquals(1, countStage(events, TelemetryStages.UTTERANCE_START), "新轮 utteranceId 只产生一次")
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
+    }
+
+    /**
+     * B2（需求 4）：云端快赢——round 内 device_arbiter_received(route=cloud) +
+     * device_arbiter_won(route=cloud, reason=priority) 事件；本地未到 → 无 lost 事件。
+     */
+    @Test
+    fun `device arbiter emits received and won events when cloud wins fast`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { delay(300); powerOnIntent() },
+                    cloud = CloudRunner { delay(5); TextReply("好的") },
+                    telemetry = telemetry,
+                )
+                utter(pair.first)
+            }
+            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
+            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
+            val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
+            val received = findEvent(events, TelemetryStages.DEVICE_ARBITER_RECEIVED)
+            assertNotNull(received, "应记录 device_arbiter_received")
+            assertEquals("cloud", received!!.getJSONObject("payload").getString("route"))
+            val won = findEvent(events, TelemetryStages.DEVICE_ARBITER_WON)
+            assertNotNull(won, "应记录 device_arbiter_won")
+            assertEquals("cloud", won!!.getJSONObject("payload").getString("route"))
+            assertEquals("priority", won.getJSONObject("payload").getString("reason"))
+            assertNull(findEvent(events, TelemetryStages.DEVICE_ARBITER_LOST), "本地未到不得有 lost 事件")
+        } finally {
+            telemetryScope.cancel()
+            server.shutdown()
+        }
+    }
+
+    /**
+     * B2（需求 2/4）：非最新 uid 的会话语义被拦截——云端链返回前 utteranceId 已刷新
+     * （新一轮 vad start），语义丢弃：不播报不执行、不写决策，round 内记录
+     * device_arbiter_lost(route=cloud, reason=not_latest_round)。
+     */
+    @Test
+    fun `stale round semantic is intercepted with not_latest_round lost event`() {
+        val server = MockWebServer()
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
+        server.enqueue(MockResponse().setResponseCode(200)) // round POST
+        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val spoken = mutableListOf<String>()
+        val entries = mutableListOf<DecisionEntry>()
+        lateinit var engine: VoiceEngine
+        try {
+            runBlocking {
+                val telemetry = TelemetryClient(
+                    okHttp = OkHttpClient(),
+                    baseUrl = "http://localhost:${server.port}",
+                    deviceId = "demo-1",
+                    scope = telemetryScope,
+                    enabled = true,
+                )
+                val pair = engine(
+                    scope = this,
+                    local = LocalChainRunner { delay(600); powerOnIntent() },
+                    cloud = CloudRunner {
+                        delay(200) // 云端语义返回前，模拟新一轮 vad start 已刷新 utteranceId
+                        engine.session.currentUtteranceId = "utt-new"
+                        TextReply("好的")
+                    },
+                    cloudWaitMs = 1000,
+                    localFallbackMs = 2000,
+                    telemetry = telemetry,
+                    sink = DecisionSink { entries.add(it) },
+                    speaker = TextSpeaker { text, _ -> spoken.add(text) },
+                )
+                engine = pair.first
+                utter(engine)
+            }
+            assertTrue(spoken.isEmpty(), "拦截的语义不得播报")
+            assertEquals(emptyList<String>(), entries.map { it.reason }, "拦截不写决策")
+            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
+            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
+            val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
+            val lost = findEvent(events, TelemetryStages.DEVICE_ARBITER_LOST)
+            assertNotNull(lost, "应记录 device_arbiter_lost(not_latest_round)")
+            assertEquals("cloud", lost!!.getJSONObject("payload").getString("route"))
+            assertEquals("not_latest_round", lost.getJSONObject("payload").getString("reason"))
+            assertNull(findEvent(events, TelemetryStages.DEVICE_ARBITER_WON), "拦截的语义不得有 won 事件")
         } finally {
             telemetryScope.cancel()
             server.shutdown()
