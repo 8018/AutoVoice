@@ -34,6 +34,11 @@ class TelemetryClient(
     private val deviceId: String?,
     private val scope: CoroutineScope,
     private val enabled: Boolean = true,
+    /**
+     * 打戳时钟（时钟同步）：默认设备墙钟；装配方可注入 `{ 设备时间 + 网关握手估算的时钟偏移 }`
+     * 把事件时间戳统一换算为服务器时钟（ready.serverTime 协议）。
+     */
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private var current: CurrentRound? = null
     private var sessionId: String = ""
@@ -48,7 +53,7 @@ class TelemetryClient(
     @Synchronized
     fun begin(utteranceId: String) {
         if (!enabled) return
-        current = CurrentRound(utteranceId, System.currentTimeMillis(), mutableListOf())
+        current = CurrentRound(utteranceId, clock(), mutableListOf())
     }
 
     /** 追加一条事件到当前轮（未 [begin] 时丢弃，防御）。 */
@@ -97,7 +102,7 @@ class TelemetryClient(
                 .put("deviceId", deviceId ?: "")
                 .put("source", "button")
                 .put("startMs", round.startMs)
-                .put("endMs", System.currentTimeMillis())
+                .put("endMs", clock())
                 .put("events", JSONArray(round.events)),
         )
     }
@@ -136,7 +141,7 @@ class TelemetryClient(
     private fun eventJson(stage: String, level: String, payload: Map<String, Any?>): JSONObject =
         JSONObject()
             .put("stage", stage)
-            .put("tsMs", System.currentTimeMillis())
+            .put("tsMs", clock())
             .put("level", level)
             .put("payload", JSONObject(payload))
 

@@ -50,8 +50,10 @@ class GatewayClientTest {
         return GatewayMessage(root.get("type").asString, root.getAsJsonObject("payload"))
     }
 
-    private fun readyFrame(sessionId: String) =
-        """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"}}"""
+    private fun readyFrame(sessionId: String, serverTime: Long? = null): String {
+        val st = serverTime?.let { ""","serverTime":$it""" } ?: ""
+        return """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"$st}}"""
+    }
 
     private fun decisionFrame() =
         """{"type":"decision","payload":{"arbiter":"cloud","route":"llm","reason":"llm_reply","utteranceId":"u-1","timestampMs":1723104000000}}"""
@@ -70,13 +72,16 @@ class GatewayClientTest {
         /** 收到 audio_end 后的服务端行为（先 decision 后 reply，协议 §5 时序）。 */
         var onAudioEnd: (WebSocket, GatewayMessage) -> Unit = { _, _ -> }
 
+        /** 时钟同步测试：非 null 时 ready 帧携带该 serverTime（服务器墙钟毫秒）。 */
+        var readyServerTime: Long? = null
+
         fun upgrade(): MockResponse =
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     val msg = parse(text)
                     frames.add(msg)
                     when (msg.type) {
-                        "hello" -> webSocket.send(readyFrame("srv-sess-1"))
+                        "hello" -> webSocket.send(readyFrame("srv-sess-1", readyServerTime))
                         "audio_end" -> onAudioEnd(webSocket, msg)
                         else -> Unit
                     }
@@ -194,6 +199,43 @@ class GatewayClientTest {
             assertArrayEquals(pcm, gateway.pcm.toByteArray())
 
             collector.cancel()
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    // ---------- 时钟同步：ready serverTime → 时钟偏移 ----------
+
+    @Test
+    fun `clock offset computed from ready serverTime`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        // 服务器墙钟比设备慢 500ms；本地 MockWebServer RTT < 50ms
+        gateway.readyServerTime = System.currentTimeMillis() - 500
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            val offset = client.clockOffsetMs()
+            // offset = serverTime + RTT/2 - t1 ≈ -500 + RTT/2
+            assertTrue(offset < 0, "设备钟快于服务器钟 → offset 应为负，实际: $offset")
+            assertTrue(offset in -600..-450, "offset 应 ≈ -500 ± RTT/2，实际: $offset")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `clock offset stays zero without serverTime`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            assertEquals(0L, client.clockOffsetMs(), "旧服务端无 serverTime → offset 恒 0")
         } finally {
             gateway.closeAll(client, okHttp)
         }

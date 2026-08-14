@@ -86,6 +86,17 @@ class GatewayClient(
     private var pcmBytesInSegment: Long = 0
 
     /**
+     * 设备端与服务器墙钟偏移（ms）：ready 携带 serverTime 时按
+     * `serverTime + RTT/2 − 本地时刻` 估算（RTT ≈ hello→ready 往返，对称假设）；
+     * 服务器未携带 serverTime（旧服务端）→ 恒 0（不做换算）。每次成功握手刷新。
+     */
+    @Volatile
+    private var clockOffsetMs = 0L
+
+    /** 当前时钟偏移（ms）：telemetry 打戳时 `本地时间 + offset` 换算为服务器时钟。 */
+    fun clockOffsetMs(): Long = clockOffsetMs
+
+    /**
      * 建立连接并等待 ready 后返回。
      *
      * 每次尝试：open → 发 hello → 等 ready（connectTimeoutMs 内未到即失败）。
@@ -263,9 +274,15 @@ class GatewayClient(
         }
         try {
             // open 后立即发 hello（OkHttp 排队到握手完成后发出）；ready 回执由 listener 完成
+            val t0 = System.currentTimeMillis()
             ws.send(helloFrame())
             val readyMsg = withTimeoutOrNull(connectTimeoutMs) { ready.await() }
                 ?: throw GatewayException("timeout waiting for ready within ${connectTimeoutMs}ms")
+            // 时钟同步：ready 带 serverTime（服务器墙钟毫秒）→ 估算时钟偏移；
+            // RTT ≈ hello→ready 往返（服务器处理微秒级可忽略），对称假设误差 ±RTT/2
+            val t1 = System.currentTimeMillis()
+            readyMsg.payload["serverTime"]?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                ?.let { clockOffsetMs = it.asLong + (t1 - t0) / 2 - t1 }
             webSocket = ws
             pcmBytesInSegment = 0
         } catch (e: Exception) {

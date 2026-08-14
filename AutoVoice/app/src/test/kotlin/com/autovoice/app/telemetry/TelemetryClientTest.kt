@@ -31,13 +31,14 @@ class TelemetryClientTest {
     private lateinit var okHttp: OkHttpClient
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private fun client(enabled: Boolean = true): TelemetryClient =
+    private fun client(enabled: Boolean = true, clock: () -> Long = System::currentTimeMillis): TelemetryClient =
         TelemetryClient(
             okHttp = okHttp,
             baseUrl = "http://localhost:${server.port}",
             deviceId = "demo-1",
             scope = scope,
             enabled = enabled,
+            clock = clock,
         )
 
     @BeforeEach
@@ -85,6 +86,27 @@ class TelemetryClientTest {
         val arbiter = events.getJSONObject(1)
         assertEquals(TelemetryStages.DEVICE_ARBITER, arbiter.getString("stage"))
         assertEquals("cloud_won", arbiter.getJSONObject("payload").getString("reason"))
+    }
+
+    @Test
+    fun `clock injection stamps server-synced timestamps`() {
+        server.enqueue(MockResponse().setResponseCode(200))
+        var now = 1_000_000L
+        val client = client(clock = { now })
+        client.onSessionId("srv-sess-1")
+        client.begin("utt-1")
+        now = 1_000_100L
+        client.record(TelemetryStages.VAD, "info", mapOf("bytes" to 1600))
+        now = 1_000_200L
+        client.end("utt-1")
+
+        val req = server.takeRequest(5, TimeUnit.SECONDS)
+        val body = JSONObject(req!!.body.readUtf8())
+        assertEquals(1_000_000L, body.getLong("startMs"), "startMs 应取 clock 值（时钟同步换算后）")
+        assertEquals(1_000_200L, body.getLong("endMs"), "endMs 应取 clock 值")
+        val events = body.getJSONArray("events")
+        assertEquals(1, events.length())
+        assertEquals(1_000_100L, events.getJSONObject(0).getLong("tsMs"), "事件 tsMs 应取 clock 值")
     }
 
     @Test

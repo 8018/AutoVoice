@@ -402,13 +402,18 @@ class VoiceEngine(
             onVehicleApplied: () -> Unit = {},
             onLocalRecognized: (String?) -> Unit = {},
         ): VoiceEngine {
-            // T6 遥测装配：telemetry 段未配置（enabled 缺省 false）→ enabled=false 全 no-op 实例
+            // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
+            // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
+            val clockOffsetProvider = AtomicReference<() -> Long>({ 0L })
+            // T6 遥测装配：telemetry 段未配置（enabled 缺省 false）→ enabled=false 全 no-op 实例；
+            // clock 注入偏移（ready.serverTime 握手估算），设备端事件统一换算服务器时钟
             val telemetry = TelemetryClient(
                 okHttp = OkHttpClient(),
                 baseUrl = cfg.cloud.telemetry?.url ?: telemetryBaseUrl(cfg.cloud.gatewayUrl),
                 deviceId = cfg.cloud.deviceId,
                 scope = scope,
                 enabled = cfg.cloud.telemetry?.enabled ?: false,
+                clock = { System.currentTimeMillis() + clockOffsetProvider.get().invoke() },
             )
             // T6 决策插桩：sink 收到端云两端的决策事件——on-device → device_arbiter，cloud → cloud_arbiter。
             // 在装配点包裹，仲裁器 / 会话 / 网关桥三条来源的决策都经此记录
@@ -425,6 +430,8 @@ class VoiceEngine(
                 sink.onDecision(entry)
             }
             val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope)
+            // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
+            clockOffsetProvider.set(cloudRunner::clockOffsetMs)
             // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
             // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
             val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
@@ -629,6 +636,9 @@ private class GatewayCloudRunner(
      */
     @Volatile
     var onReadySessionId: (String) -> Unit = {}
+
+    /** 时钟同步：委托网关客户端的时钟偏移（ready.serverTime 握手估算，每次握手刷新）。 */
+    fun clockOffsetMs(): Long = client.clockOffsetMs()
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
