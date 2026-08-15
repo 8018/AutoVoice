@@ -115,8 +115,8 @@ class OnDeviceRaceArbiter(
     private val pending: ReceiveChannel<Unit> = Channel(),
     /**
      * B5：收到 pending 后阶段 1 的扩展窗口。LLM 工具循环最长约 8s（服务端
-     * safety-timeout-ms=6500 是 final 硬上限，pending 早到 → 剩余等待 ≈6.2s），
-     * 12s 富余 5.8s 覆盖网络抖动；若服务端提高 safety-timeout-ms 需联动上调。
+     * safety-timeout-ms=6500 是 final 硬上限；窗口 3s 时 pending 早到 →
+     * 剩余等待 ≈9.5s），12s 富余充足；若服务端提高 safety-timeout-ms 需联动上调。
      */
     private val pendingWaitMs: Long = 12_000,
 ) {
@@ -141,7 +141,7 @@ class OnDeviceRaceArbiter(
         // 本地车窗开关 → 送 LocalWin 立即胜出（不等云端）；本地非车窗（unknown 拒识 /
         // misc 防御）→ 不发结果，不参与胜出只等云端；云端语义 → 送 Cloud 胜出。
         // B5：云端 pending 占位信号 → 送 Pending——非收敛：窗口延长至 pendingWaitMs
-        // 继续等最终语义（LLM 工具循环最长约 8s 超过 cloudWaitMs=6000，占位把窗口撑到
+        // 继续等最终语义（LLM 工具循环最长约 8s 超过 cloudWaitMs=3000，占位把窗口撑到
         // pendingWaitMs，推理完成后最终语义照常直接胜出）。
         // 首个真实候选即收敛；协程语义同旧实现：超时只把 withTimeoutOrNull 转换为
         // null，取消原样向上传播，不吞 CancellationException。
