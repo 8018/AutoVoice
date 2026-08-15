@@ -30,7 +30,7 @@ public final class GatewayCodec {
 
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
-            "hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "error", "bye",
+            "hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "pending", "reply", "error", "bye",
             "tts_request", "tts_response");
 
     /** reply 消息的合法 kind。 */
@@ -44,6 +44,7 @@ public final class GatewayCodec {
             Map.entry("ready", Set.of("sessionId", "language", "protocolVersion", "serverTime")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_partial", Set.of("sessionId", "text", "isFinal")),
+            Map.entry("pending", Set.of("segmentId", "text")),
             Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
             Map.entry("bye", Set.of("sessionId", "reason")),

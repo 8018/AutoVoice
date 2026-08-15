@@ -437,6 +437,23 @@ class GatewayClientTest {
         assertEquals("nlu.iflytek.api", reply.intent.source)
     }
 
+    /** B5：gateway-pending.json fixture（协议 §4.8）→ 信封 type=pending + payload.segmentId/text。 */
+    @Test
+    fun `pending fixture parses to pending gateway message`() {
+        val root = gson.fromJson(fixture("gateway-pending.json"), JsonObject::class.java)
+        val type = root.get("type")?.takeIf { it.isJsonPrimitive }?.asString
+        assertEquals("pending", type, "fixture 应声明 type=pending（独立占位消息，非 reply）")
+        val payload = root.getAsJsonObject("payload")
+        assertEquals("seg-1", payload.get("segmentId").asString, "pending 应携带 segmentId 供端侧对账")
+        assertTrue(payload.get("text").asString.isNotBlank(), "pending 应携带展示文案")
+        // 端侧桥的 pending 分支消费形态：GatewayMessage(type=pending, payload) 原样透传
+        // （listener 的 parseFrame 是通用信封解析，任何 type 都原样产出，此处按同构断言）
+        val msg = GatewayMessage("pending", payload)
+        assertEquals("pending", msg.type)
+        assertEquals("seg-1", msg.payload.get("segmentId").asString)
+        assertEquals("正在处理，请稍候", msg.payload.get("text").asString)
+    }
+
     @Test
     fun `parseReply invalid payload returns null`() {
         val client = parseClient()

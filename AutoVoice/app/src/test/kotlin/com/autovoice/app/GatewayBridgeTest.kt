@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -110,6 +111,10 @@ class GatewayBridgeTest {
         val seg = if (segmentId != null) ""","segmentId":"$segmentId"""" else ""
         return """{"type":"error","payload":{"code":"$code","message":"$message"$seg}}"""
     }
+
+    /** B5：pending 占位帧（协议 §4.8，LLM 处理中——独立消息，不是 reply）。 */
+    private fun pendingFrame(segmentId: String): String =
+        """{"type":"pending","payload":{"segmentId":"$segmentId","text":"正在处理，请稍候"}}"""
 
     // ------------------------------------------------------------------ 用例
 
@@ -236,6 +241,85 @@ class GatewayBridgeTest {
                 e
             }
             assertTrue(thrown.message!!.contains("CONNECTION_FAILED"), thrown.message)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    // ------------------------------------------------ B5：pending 占位帧（LLM 处理中）
+
+    @Test
+    fun `matching pending signals the arbiter channel and UI callback`() = runBlocking {
+        // pending 帧对账通过 → 仲裁器扩展窗口信号 + UI"处理中…"回调（不碰 reply 槽）
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val signals = Channel<Unit>(Channel.BUFFERED)
+        var uiCallback = 0
+        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        try {
+            client.connect()
+            val slot = bridge.newReplySlot("seg-1")
+            gateway.sendText(pendingFrame("seg-1"))
+            delay(150)
+            assertTrue(signals.tryReceive().getOrNull() != null, "匹配的 pending 应发出仲裁器信号")
+            assertEquals(1, uiCallback, "匹配的 pending 应触发 UI 回调")
+            assertFalse(slot.isCompleted, "pending 是占位消息，不得 complete reply 槽（final 还要来）")
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `stale pending from previous utterance is dropped`() = runBlocking {
+        // 上一轮迟到的 pending（旧 segmentId）→ 丢弃：不发信号、不触发 UI 回调、槽不受影响
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val signals = Channel<Unit>(Channel.BUFFERED)
+        var uiCallback = 0
+        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        try {
+            client.connect()
+            val slot = bridge.newReplySlot("seg-new")
+            gateway.sendText(pendingFrame("seg-old"))
+            delay(150)
+            assertTrue(signals.tryReceive().getOrNull() == null, "旧轮的 pending 不得发信号")
+            assertEquals(0, uiCallback, "旧轮的 pending 不得触发 UI 回调")
+            // 槽未被污染：本轮的 reply 随后仍正常完成
+            gateway.sendText(replyFrame("seg-new", "本轮回复"))
+            val reply = slot.await()
+            assertTrue(reply is TextReply)
+            assertEquals("本轮回复", (reply as TextReply).text)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `pending without reply slot is dropped`() = runBlocking {
+        // 无话语在途（无槽）→ pending 丢弃：不发信号、不触发 UI 回调
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val signals = Channel<Unit>(Channel.BUFFERED)
+        var uiCallback = 0
+        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        try {
+            client.connect()
+            gateway.sendText(pendingFrame("seg-orphan"))
+            delay(150)
+            assertTrue(signals.tryReceive().getOrNull() == null, "无槽时 pending 不得发信号")
+            assertEquals(0, uiCallback, "无槽时 pending 不得触发 UI 回调")
         } finally {
             bridgeScope.cancel()
             gateway.closeAll(client, okHttp)

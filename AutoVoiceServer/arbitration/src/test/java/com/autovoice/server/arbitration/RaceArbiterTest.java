@@ -162,6 +162,7 @@ class RaceArbiterTest {
         assertEquals("llm_reply", log.get(0).reason());
         sleep(50); // 等可能迟到的事件回调（sched 线程）
         assertEvents(
+                "utt-42|pending(llm)",
                 "utt-42|received(llm)",
                 "utt-42|won(llm,priority,llm_reply)");
     }
@@ -174,7 +175,72 @@ class RaceArbiterTest {
         ArbiterDecision d = eventArbiter.decide(offline, llmError(10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("safety_timeout", d.reason());
         assertEquals(1, log.size());
-        assertEvents("utt-42|won(llm,llm_timeout,safety_timeout)");
+        sleep(50); // 等 pending 事件回调（sched 线程）
+        assertEvents(
+                "utt-42|pending(llm)",
+                "utt-42|won(llm,llm_timeout,safety_timeout)");
+    }
+
+    // ------------------------------------------------------------ B5 pending 占位事件
+
+    @Test
+    void nonAirconOfflineHitEmitsPendingThenLlmWins() {
+        // 非空调命中（同步完成）+ LLM 500ms 未完成 → 先发 pending（带 segmentId 快照），
+        // LLM 到达后直接胜出（离线已完成 → 不花宽限期）
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(
+                new OfflineCommandHit("打开车窗", windowPowerIntent()));
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 500).chat("x", ctx), ctx, "utt-42", "seg-1").join();
+        assertEquals("llm_reply", d.reason());
+        assertEquals("LLM回答", d.reply().text());
+        assertEquals(1, log.size());
+        assertEquals("llm_reply", log.get(0).reason());
+        sleep(50);
+        assertEvents(
+                "utt-42|pending(llm)",
+                "utt-42|received(llm)",
+                "utt-42|won(llm,priority,llm_reply)");
+        assertEquals("seg-1", arbEvents.get(0).event().segmentId(), "pending 事件须携带话语快照 segmentId");
+        assertEquals("llm_pending", arbEvents.get(0).event().reason().wire());
+    }
+
+    @Test
+    void airconOfflineHitNeverEmitsPending() {
+        // 空调命中（同步完成）→ 直接胜出；LLM 500ms 迟到 → lost(command_already_won)。
+        // 全程无 pending——优先消息胜出即拦截后续所有同 id 消息（含占位）
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 100).chat("x", ctx), ctx, "utt-42", "seg-1").join();
+        assertEquals("offline_won", d.reason());
+        sleep(150); // 等迟到 LLM 的事件回调（sched 线程）
+        assertEvents(
+                "utt-42|received(nlu-traditional)",
+                "utt-42|won(nlu-traditional,priority,offline_won)",
+                "utt-42|received(llm)",
+                "utt-42|lost(llm,command_already_won)");
+    }
+
+    @Test
+    void pendingSkippedWhenLlmAlreadyDone() {
+        // 离线 100ms 完成空结果时 LLM（10ms）已完成 → 占位已无意义，跳过 pending
+        CompletableFuture<OfflineCommandHit> offline = offlineAt(100, null);
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42", "seg-1").join();
+        assertEquals("llm_reply", d.reason());
+        sleep(GRACE + 100); // 等宽限期到点胜出事件（LLM 到达时离线未完成 → 起宽限期）
+        assertEvents(
+                "utt-42|received(llm)",
+                "utt-42|won(llm,priority,llm_reply)");
+    }
+
+    @Test
+    void legacyDecideEmitsPendingWithoutSegmentId() {
+        // 旧单路入口（offline 恒空）：LLM 未完成 → 发 pending，但 segmentId 为 null（无快照）
+        Reply r = eventArbiter.decide("打开空调", llm("LLM回答", 500), ctx, "utt-42").join();
+        assertEquals("LLM回答", r.text());
+        sleep(50);
+        assertEvents(
+                "utt-42|pending(llm)",
+                "utt-42|received(llm)",
+                "utt-42|won(llm,priority,llm_reply)");
+        assertNull(arbEvents.get(0).event().segmentId());
     }
 
     // ------------------------------------------------------------ LLM 胜出
@@ -250,6 +316,7 @@ class RaceArbiterTest {
             case RECEIVED -> "received(" + ev.route() + ")";
             case WON -> "won(" + ev.route() + "," + ev.reason().wire() + "," + ev.decisionReason() + ")";
             case LOST -> "lost(" + ev.route() + "," + ev.reason().wire() + ")";
+            case PENDING -> "pending(" + ev.route() + ")";
         };
     }
 

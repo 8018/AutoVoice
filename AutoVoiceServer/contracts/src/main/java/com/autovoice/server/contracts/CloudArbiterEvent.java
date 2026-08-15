@@ -8,10 +8,10 @@ package com.autovoice.server.contracts;
  * 胜出（priority 优先、llm_timeout 超时未收到 llm）/ 失败（llm_already_won 已有 llm 胜出、
  * command_already_won 已有命令词胜出、not_latest_round 非最新轮）。</p>
  */
-public record CloudArbiterEvent(Kind kind, String route, Reason reason, String decisionReason) {
+public record CloudArbiterEvent(Kind kind, String route, Reason reason, String decisionReason, String segmentId) {
 
-    /** 事件类别：收到候选 / 胜出 / 失败。 */
-    public enum Kind { RECEIVED, WON, LOST }
+    /** 事件类别：收到候选 / 胜出 / 失败 / 处理中占位。 */
+    public enum Kind { RECEIVED, WON, LOST, PENDING }
 
     /**
      * 原因（wire 值 = telemetry payload 取值）：
@@ -26,7 +26,8 @@ public record CloudArbiterEvent(Kind kind, String route, Reason reason, String d
         LLM_TIMEOUT("llm_timeout"),
         LLM_ALREADY_WON("llm_already_won"),
         COMMAND_ALREADY_WON("command_already_won"),
-        NOT_LATEST_ROUND("not_latest_round");
+        NOT_LATEST_ROUND("not_latest_round"),
+        LLM_PENDING("llm_pending");
 
         private final String wire;
 
@@ -42,7 +43,7 @@ public record CloudArbiterEvent(Kind kind, String route, Reason reason, String d
 
     /** 收到候选（route：nlu-traditional 收到 asr 命令词 / llm 收到 llm 语义）。 */
     public static CloudArbiterEvent received(String route) {
-        return new CloudArbiterEvent(Kind.RECEIVED, route, null, null);
+        return new CloudArbiterEvent(Kind.RECEIVED, route, null, null, null);
     }
 
     /**
@@ -51,11 +52,19 @@ public record CloudArbiterEvent(Kind kind, String route, Reason reason, String d
      * 面板可展示细节。
      */
     public static CloudArbiterEvent won(String route, Reason reason, String decisionReason) {
-        return new CloudArbiterEvent(Kind.WON, route, reason, decisionReason);
+        return new CloudArbiterEvent(Kind.WON, route, reason, decisionReason, null);
     }
 
     /** 仲裁失败（reason：llm_already_won / command_already_won / not_latest_round）。 */
     public static CloudArbiterEvent lost(String route, Reason reason) {
-        return new CloudArbiterEvent(Kind.LOST, route, reason, null);
+        return new CloudArbiterEvent(Kind.LOST, route, reason, null, null);
+    }
+
+    /**
+     * LLM 处理中占位（非收敛事件）：离线命令未命中空调控制且 LLM 尚未完成时发射，
+     * 装配方据此下发 pending 消息（protocol.md §4.8）。segmentId 为话语快照，供端侧对账。
+     */
+    public static CloudArbiterEvent pending(String route, String segmentId) {
+        return new CloudArbiterEvent(Kind.PENDING, route, Reason.LLM_PENDING, null, segmentId);
     }
 }

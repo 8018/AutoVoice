@@ -3,6 +3,7 @@ package com.autovoice.server.gateway;
 import com.autovoice.server.arbitration.DecisionSink;
 import com.autovoice.server.arbitration.RaceArbiter;
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.Reply;
@@ -71,6 +72,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
     private static final long DEFAULT_OFFLINE_GRACE_MS = 1500;
+    /** pending 占位消息文案（B5：LLM 处理中，protocol.md §4.8）。 */
+    private static final String PENDING_TEXT = "正在处理，请稍候";
     private static final int DEFAULT_MAX_CONNECTIONS = 32;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -161,12 +164,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             closeQuietly(session, "connection limit reached");
             return; // 不登记：后续消息直接走 handleMessage 的 computeIfAbsent 兜底，但连接已关
         }
-        connections.computeIfAbsent(session, s -> new ConnectionState());
+        connections.computeIfAbsent(session, s -> new ConnectionState(s));
     }
 
     @Override
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
-        ConnectionState st = connections.computeIfAbsent(session, s -> new ConnectionState());
+        ConnectionState st = connections.computeIfAbsent(session, s -> new ConnectionState(s));
         if (message instanceof BinaryMessage bm) {
             if (st.audioActive) {
                 ByteBuffer buf = bm.getPayload();
@@ -309,7 +312,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             }
             SegmentPipeline.SegmentResult result;
             try {
-                result = st.pipeline.handleSegment(pcm, ctx, utteranceId);
+                result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId);
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
@@ -357,6 +360,24 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
             payload.put("segmentId", segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
         }
         send(session, "reply", payload);
+    }
+
+    /**
+     * pending 占位消息下发（B5，protocol.md §4.8）：LLM 处理中时随 PENDING 事件由
+     * offline 回调线程触发。send 在连接关闭时抛 IllegalStateException——try/catch 包裹，
+     * 不污染 offline 回调线程（连接拆除路径有 removeConnection 兜底，此处仅告警）。
+     */
+    private void sendPending(WebSocketSession session, String segmentId) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            if (segmentId != null) {
+                payload.put("segmentId", segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
+            }
+            payload.put("text", PENDING_TEXT);
+            send(session, "pending", payload);
+        } catch (RuntimeException e) {
+            LOG.warn("pending downlink failed (session closing?): {}", e.getMessage());
+        }
     }
 
     private void sendError(WebSocketSession session, ConnectionState st, String code, String message) {
@@ -452,6 +473,26 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
      * （CLQ：audio_start 的 clear 与 arbiter 回调 add 跨线程，M2）。
      */
     private final class ConnectionState {
+        /** 本连接 WS 会话（B5：pending 占位消息经此下发，eventSink 异步回调需要）。 */
+        final WebSocketSession session;
+
+        ConnectionState(WebSocketSession session) {
+            this.session = session;
+            // B3：仲裁过程事件（received/won/lost）经 eventSink 映射为 telemetry 插桩；
+            // 迟到事件在 decide() 返回后仍可能触发（宽限期任务），utteranceId 随事件绑定正确轮次。
+            // B5：PENDING 事件 → 额外下发 pending 占位消息（segmentId 用事件携带的快照，
+            // 不可读本类可变字段——回调可能已被下一轮 audio_start 覆盖）。
+            // 构造器内初始化：lambda 引用 final session，字段初始化器阶段它尚未赋值。
+            arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink,
+                    (uid, event) -> {
+                        SegmentPipeline.recordArbiterEvent(recorder, uid, event);
+                        if (event.kind() == CloudArbiterEvent.Kind.PENDING) {
+                            VoiceGatewayHandler.this.sendPending(session, event.segmentId());
+                        }
+                    });
+            pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink, recorder);
+        }
+
         /** 本连接串行工作线程（M2）：audio_end 后的段处理在此执行，不占 WS 消息线程。 */
         final ExecutorService connExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "gateway-conn-" + CONN_SEQ.incrementAndGet());
@@ -460,11 +501,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         });
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final DecisionSink sink = pendingDecisions::add;
-        // B3：仲裁过程事件（received/won/lost）经 eventSink 映射为 telemetry 插桩；
-        // 迟到事件在 decide() 返回后仍可能触发（宽限期任务），utteranceId 随事件绑定正确轮次
-        final RaceArbiter arbiter = new RaceArbiter(safetyTimeoutMs, offlineGraceMs, scheduler, sink,
-                (uid, event) -> SegmentPipeline.recordArbiterEvent(recorder, uid, event));
-        final SegmentPipeline pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink, recorder);
+        final RaceArbiter arbiter;
+        final SegmentPipeline pipeline;
         final ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         SessionContext ctx;
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）

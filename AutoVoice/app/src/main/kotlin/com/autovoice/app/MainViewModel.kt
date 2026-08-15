@@ -86,6 +86,11 @@ data class UiState(
      * arbiter=on-device 时按 route 更新，null = 尚无结果）。
      */
     val lastWinner: String? = null,
+    /**
+     * B5：云端 LLM 处理中占位（协议 §4.8）——收到 pending 帧 → true，最终语义到达 /
+     * 新一轮开始 → false。仅 UI 状态（Header 显示"处理中…"徽标），无执行无播报。
+     */
+    val cloudPending: Boolean = false,
 )
 
 /**
@@ -354,6 +359,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
             onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },
+            // B5：云端 LLM 处理中占位 → Header"处理中…"徽标（清除由引擎收口）
+            onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
         )
         engine.session.onState { state ->
             _uiState.update { it.copy(sessionState = state) }

@@ -6,6 +6,7 @@ import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.TextReply
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -306,5 +307,103 @@ class OnDeviceRaceArbiterTest {
             events,
         )
         assertEquals(0, entries.size, "拦截不写决策")
+    }
+
+    // ------------------------------------------- B5：云端 pending 占位扩展等待窗口
+
+    /** pending 占位到达 → 阶段 1 窗口延长至 pendingWaitMs，云端语义在扩展窗口内到达照常胜出。 */
+    @Test fun `pending extends window then cloud wins`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val pending = Channel<Unit>()
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 50, pendingWaitMs = 500, sink = sink,
+            onEvent = { events.add(it) }, pending = pending,
+        )
+        async { delay(10); pending.send(Unit) } // pending 占位在原窗口内到达
+        val cloud = async { delay(150); TextReply("hi") } // 旧逻辑 50ms 必超时；pending 撑到 500ms
+        val local = CompletableDeferred<Intent>() // 永不完成
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Cloud, "pending 扩展窗口内云端到达应胜出（旧逻辑 50ms 必超时）")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Pending("cloud"),
+                OnDeviceArbiterEvent.Received("cloud"),
+                OnDeviceArbiterEvent.Won("cloud", "priority"),
+            ),
+            events,
+        )
+        assertEquals("cloud_won", entries.last().reason)
+    }
+
+    /** pending 扩展窗口内本地车窗到达 → 照样立即胜出（扩展只延长时间，不推迟车窗优先）。 */
+    @Test fun `pending then window command wins immediately`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val pending = Channel<Unit>()
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 50, pendingWaitMs = 500, sink = sink,
+            onEvent = { events.add(it) }, pending = pending,
+        )
+        async { delay(10); pending.send(Unit) }
+        val cloud = CompletableDeferred<Reply>() // 永不完成
+        val local = async { delay(100); windowIntent() } // 原窗口（50ms）外、扩展窗口内到达
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Local, "pending 扩展窗口内车窗到达应立即胜出（local_command）")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Pending("cloud"),
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Won("local", "local_command"),
+            ),
+            events,
+        )
+        assertEquals("local_command_won", entries.last().reason)
+    }
+
+    /** pending 扩展窗口耗尽仍无云端 → 阶段 2 照常：本地 unknown → Failed（拒识不写决策）。 */
+    @Test fun `pending then timeout falls to phase two with unknown local`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val pending = Channel<Unit>()
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 50, pendingWaitMs = 200, sink = sink,
+            onEvent = { events.add(it) }, pending = pending,
+        )
+        async { delay(10); pending.send(Unit) }
+        val cloud = CompletableDeferred<Reply>() // 永不完成
+        val local = CompletableDeferred<Intent>().also { it.complete(Intent.unknown("rule.nlu")) }
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Failed, "pending 耗尽仍无云端 → 阶段 2 拒识失败")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Pending("cloud"),
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Lost("local", "unknown_intent"),
+            ),
+            events,
+        )
+        assertEquals(0, entries.size, "拒识不写决策")
+    }
+
+    /** pending 扩展窗口耗尽仍无云端 → 阶段 2 本地兜底：普通意图在 localFallbackMs 内到达 → Local。 */
+    @Test fun `pending then phase two local fallback wins`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val pending = Channel<Unit>()
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 50, pendingWaitMs = 200, localFallbackMs = 500, sink = sink,
+            onEvent = { events.add(it) }, pending = pending,
+        )
+        async { delay(10); pending.send(Unit) }
+        val cloud = CompletableDeferred<Reply>() // 永不完成
+        val local = async { delay(300); normalIntent() } // 阶段 2 窗口内到达（扩展耗尽后）
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Local, "pending 耗尽后阶段 2 本地兜底应胜出")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Pending("cloud"),
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Won("local", "cloud_timeout"),
+            ),
+            events,
+        )
+        assertEquals("cloud_timeout_use_local", entries.last().reason)
     }
 }

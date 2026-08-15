@@ -200,6 +200,34 @@ class VoiceGatewayHandlerTest {
         assertEquals("打开空调", p.get("asrText").asText(), "离线胜出时 asrText = 离线原文");
     }
 
+    @Test
+    void nonAirconOfflineHitEmitsPendingFrameBeforeLlmDecision() throws InterruptedException {
+        // B5 端到端：离线命中"打开车窗"（非空调 → 按未命中处理）+ LLM 慢 → 仲裁先发 pending 占位帧
+        // （带 segmentId，端侧对账用），随后 decision + reply 正常下发——占位不替代最终结果
+        VoiceGatewayHandler h = newHandler(asr("x"), slowLlm(300, "已为您打开车窗"), ttsOk(),
+                hitOffline("打开车窗"));
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(hello()));
+        String sid = parse(s.sent.get(0)).get("payload").get("sessionId").asText();
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        // pending 在 LLM 完成前同步下发（offline 已完成 + LLM 未 done → 立即发占位事件）
+        awaitSent(s, 4); // ready + pending + decision + reply
+        JsonNode pending = parse(s.sent.get(1));
+        assertEquals("pending", pending.get("type").asText());
+        assertEquals("seg-1", pending.get("payload").get("segmentId").asText(),
+                "pending 应回显 audio_start 的 segmentId（端侧按话语对账）");
+        assertEquals("正在处理，请稍候", pending.get("payload").get("text").asText());
+
+        // 最终结果不受 pending 影响：decision 先行、reply 照常（空调离线命中路径无 pending，见上一用例）
+        assertEquals("decision", parse(s.sent.get(2)).get("type").asText());
+        JsonNode reply = parse(s.sent.get(3));
+        assertEquals("reply", reply.get("type").asText());
+        assertEquals("已为您打开车窗", reply.get("payload").get("speakText").asText());
+    }
+
     // ---------- 独立 TTS 链路（tts_request/tts_response，TTS 解耦） ----------
 
     @Test
@@ -510,6 +538,18 @@ class VoiceGatewayHandlerTest {
 
     private static LlmProvider llm(String text) {
         return (t, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text));
+    }
+
+    /** LLM 慢响应（B5 pending 竞态用例用）：delayMs 后才返回文本回复，模拟工具循环推理耗时。 */
+    private static LlmProvider slowLlm(long delayMs, String text) {
+        return (t, ctx) -> CompletableFuture.supplyAsync(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Reply.ofText(text);
+        });
     }
 
     /** LLM function calling 产出 action 回复（speakText 由服务端模板生成）。 */

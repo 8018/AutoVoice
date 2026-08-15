@@ -93,6 +93,15 @@ public final class SegmentPipeline {
     }
 
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId) {
+        return handleSegment(pcm, ctx, utteranceId, null);
+    }
+
+    /**
+     * 处理一段录音（带 segmentId 快照版本）。segmentId 透传到仲裁器：
+     * pending 占位事件携带它（B5），端侧据此对账当前话语——异步回调不可读调用方的
+     * 可变字段（可能已被下一轮覆盖），必须走参数快照。
+     */
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId) {
         // 并行启动：离线命令识别（异步）∥ ASR（同步）——utteranceId 透传（llm/offline_pool
         // 事件按 utteranceId 汇入本轮，不再以 sessionId 建幽灵 round）
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
@@ -104,7 +113,7 @@ public final class SegmentPipeline {
         CompletableFuture<Reply> llmF = llm.chat(text, ctx, utteranceId);
         try {
             ArbiterDecision decision = arbiter
-                    .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId)
+                    .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId, segmentId)
                     .join();
             // 仲裁过程事件（received/won/lost）由 RaceArbiter 经 eventSink 发出（B3），
             // 此处不再事后补记，避免与竞速时序冲突
@@ -134,6 +143,8 @@ public final class SegmentPipeline {
                     Map.of("route", event.route(), "reason", event.reason().wire(),
                             "decision", event.decisionReason()));
             case LOST -> recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER_LOST, "warn",
+                    Map.of("route", event.route(), "reason", event.reason().wire()));
+            case PENDING -> recorder.record(utteranceId, TelemetryStages.CLOUD_ARBITER_PENDING, "info",
                     Map.of("route", event.route(), "reason", event.reason().wire()));
         }
     }

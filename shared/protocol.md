@@ -29,6 +29,7 @@
 | `ready` | 服务端 → 客户端 | 握手成功，服务端就绪 |
 | `decision` | 服务端 → 客户端 | 决策日志事件：本次请求由谁仲裁、走哪条路线及原因 |
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
+| `pending` | 服务端 → 客户端 | LLM 处理中占位：最终 `reply` 前的中间通知（可选，0..1 次） |
 | `reply` | 服务端 → 客户端 | 最终回复（文本 / 动作意图；**TTS 解耦后不再携带音频**） |
 | `tts_request` | 客户端 → 服务端 | 独立 TTS 请求：按文本合成播报音频（§3.4） |
 | `tts_response` | 服务端 → 客户端 | TTS 合成结果：音频数据（§4.6） |
@@ -101,8 +102,8 @@
 | `utteranceId` | string（可选） | 链路追踪 ID（端侧每轮 UUID）；服务端决策/插桩事件回带该值；缺省时服务端回退 `u-N` 自增 |
 
 > **关联语义**：`segmentId` 由客户端生成、每轮话语唯一、不重复使用。服务端收到后记录为该话语的标识，
-> 在随后的 `reply` 与 `error` payload 中原样回显（未携带时下行省略该字段）。客户端据此丢弃
-> 上一轮的迟到 `reply` / `error`，避免串话。服务端侧字段：见 §4.4 / §4.5。
+> 在随后的 `pending`、`reply` 与 `error` payload 中原样回显（未携带时下行省略该字段）。客户端据此丢弃
+> 上一轮的迟到 `pending` / `reply` / `error`，避免串话。服务端侧字段：见 §4.4 / §4.5 / §4.8。
 
 ### 3.3 audio_end
 
@@ -360,6 +361,34 @@
 | `sessionId` | string | 会话 ID |
 | `reason` | string | 结束原因，如 `session_complete` / `idle_timeout` / `error` |
 
+### 4.8 pending（LLM 处理中占位）
+
+LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗口，端侧会静默超时走本地兜底。
+服务端在**离线命令未命中空调控制、且 LLM 尚未完成**时，先下发一条 `pending` 占位消息，告知端侧
+"云端仍在处理中"，端侧据此**延长等待窗口**并显示处理中状态。
+
+```json
+{
+  "type": "pending",
+  "payload": {
+    "segmentId": "seg-1",
+    "text": "正在处理，请稍候"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `segmentId` | string（可选） | 回显 `audio_start` 携带的 `segmentId`（§3.2）；未携带时省略 |
+| `text` | string（可选） | 处理中文案（端侧可忽略，使用自身固定文案） |
+
+语义约束：
+
+- **占位消息不等于最终结果**：不得替代 `reply`，`reply` 一定仍会到达（或 `error` / `bye`）。
+- **至多一次**：每轮话语服务端至多下发一条 `pending`（离线回调仅触发一次，且 LLM 已完成时跳过）。
+- **空调控制优先**：离线命令命中空调控制时直接胜出，**不下发** `pending`（后续 LLM 结果被拦截）。
+- 端侧收到后仅延长等待窗口、更新 UI，**不执行、不播报**；迟到（本地已收敛）的 `pending` 按 §3.2 对账丢弃。
+
 ## 5. 时序（连接 → 录音段 → 结果）
 
 一轮完整对话（单段录音）：
@@ -381,6 +410,8 @@
      │ ◄───────────────────────────────────────────────── │
      │ 6. 文本帧 audio_end                                │
      │ ─────────────────────────────────────────────────► │
+     │ 6a. 文本帧 pending（LLM 处理中占位，可选，0..1 次）  │
+     │ ◄───────────────────────────────────────────────── │
      │ 7. 文本帧 decision（决策日志事件，必发）            │
      │ ◄───────────────────────────────────────────────── │
      │ 8. 文本帧 reply（action | text，无音频）            │
@@ -393,7 +424,7 @@
 
 1. **连接**：客户端发起 WS 连接 → 发 `hello`；服务端校验后回 `ready`。`ready` 之前客户端不得发送音频帧。
 2. **录音段**：客户端发 `audio_start`（携带 PCM 参数）→ 连续发送二进制音频帧 → 发 `audio_end`。录音期间服务端可持续下发 `asr_partial`。
-3. **结果**：服务端完成 ASR / 仲裁 / 回复生成后，先发 `decision`（日志事件，两端对齐），再发最终 `reply`，最后 `bye` 关闭连接。
+3. **结果**：服务端完成 ASR / 仲裁 / 回复生成后，先发 `decision`（日志事件，两端对齐），再发最终 `reply`，最后 `bye` 关闭连接。可选步骤：离线命令未命中空调控制且 LLM 尚未完成时，在 `decision` 前先发 `pending`（LLM 处理中占位，至多一次），端侧据此延长等待窗口（§4.8）。
 4. **TTS 解耦（v1.1）**：设备收到 `reply` 后（action 先执行 `intent`），按 `speakText` 另发
    `tts_request` 获取播报音频——该请求与话语的识别/仲裁**完全独立**，可随时发起（任意轮之间）：
    `tts_request` → `tts_response`；合成失败 → `error`（`TTS_FAILED`，不关连接）。
@@ -402,9 +433,9 @@
 ### 5.1 链路追踪（telemetry）
 
 链路追踪与 WS 协议消息**独立**：端侧每轮事件（`utterance_start` / `vad` / `local_asr` /
-`device_arbiter` / `execute` / `tts_request` / `tts_play`）经 HTTP `POST /api/telemetry/round`
+`device_arbiter` / `device_arbiter_pending` / `execute` / `tts_request` / `tts_play`）经 HTTP `POST /api/telemetry/round`
 上报（**非 WS 协议消息**）；服务端插桩事件（`cloud_asr` / `offline_pool` / `llm` /
-`cloud_arbiter` / `tts_request` / `tts_cache` / `tts_synth`）落同库；查询 API 与面板地址
+`cloud_arbiter` / `cloud_arbiter_pending` / `tts_request` / `tts_cache` / `tts_synth`）落同库；查询 API 与面板地址
 `/telemetry/`。上报为**尽力而为**：失败或禁用不影响业务。
 
 ## 6. 决策日志事件（decision）规范

@@ -254,6 +254,40 @@ class GatewayCodecTest {
     }
 
     @Test
+    void decodesValidPending() {
+        // LLM 处理中占位（B5）：S→C 独立消息，两字段均可选，宽松解析
+        Map<String, Object> msg = GatewayCodec.decode(TestFixtures.read("gateway-pending.json"));
+        assertEquals("pending", msg.get("type"));
+        Map<?, ?> payload = (Map<?, ?>) msg.get("payload");
+        assertEquals("seg-1", payload.get("segmentId"));
+        assertEquals("正在处理，请稍候", payload.get("text"));
+
+        // 仅 segmentId（text 可选）
+        Map<String, Object> bare = GatewayCodec.decode(
+                "{\"type\":\"pending\",\"payload\":{\"segmentId\":\"seg-2\"}}");
+        assertEquals("seg-2", ((Map<?, ?>) bare.get("payload")).get("segmentId"));
+    }
+
+    @Test
+    void encodePendingOnlyOutputsWhitelistFields() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("segmentId", "seg-1");
+        payload.put("text", "正在处理，请稍候");
+        payload.put("bogus", "x"); // 未知字段 → 绝不透传
+
+        JsonNode p = read(GatewayCodec.encode("pending", payload)).get("payload");
+        assertEquals("seg-1", p.get("segmentId").asText());
+        assertEquals("正在处理，请稍候", p.get("text").asText());
+        assertFalse(p.has("bogus"));
+        assertEquals(2, p.size());
+
+        // segmentId 缺席时省略（可选字段，与 reply 一致）
+        Map<String, Object> noSeg = new LinkedHashMap<>(payload);
+        noSeg.remove("segmentId");
+        assertFalse(read(GatewayCodec.encode("pending", noSeg)).get("payload").has("segmentId"));
+    }
+
+    @Test
     void encodeTtsResponseOmitsNullsAndFiltersUnknownFields() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("mime", "audio/wav");

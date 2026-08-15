@@ -15,6 +15,8 @@ public final class TelemetryStages {
     public static final String CLOUD_ARBITER_WON = "cloud_arbiter_won";
     /** 云端仲裁失败（B3：route + reason=llm_already_won / command_already_won / not_latest_round）。 */
     public static final String CLOUD_ARBITER_LOST = "cloud_arbiter_lost";
+    /** 云端仲裁 LLM 处理中占位（B5：离线未命中空调且 LLM 未完成 → 下发 pending，非收敛事件）。 */
+    public static final String CLOUD_ARBITER_PENDING = "cloud_arbiter_pending";
     public static final String DEVICE_ARBITER = "device_arbiter";
     public static final String EXECUTE = "execute";
     /** TTS 播报请求（B4 需求 1：端侧 speakViaTts 发出播报请求 / 服务器 tts-server 收到）。 */

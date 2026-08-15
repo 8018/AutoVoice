@@ -57,7 +57,7 @@ fun VoiceScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Header(state.sessionState)
+        Header(state.sessionState, state.cloudPending)
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
@@ -213,7 +213,7 @@ private fun RecordButton(
 }
 
 @Composable
-private fun Header(sessionState: SessionState) {
+private fun Header(sessionState: SessionState, cloudPending: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -234,7 +234,13 @@ private fun Header(sessionState: SessionState) {
             },
         ) {
             Text(
-                text = sessionState.displayName(),
+                // B5：云端 LLM 处理中占位 → "处理中…"徽标（不动 SessionState 状态机，
+                // pending 期间仍是 UNDERSTANDING；仅 UI 状态，无执行无播报）
+                text = if (cloudPending && sessionState == SessionState.UNDERSTANDING) {
+                    "处理中…"
+                } else {
+                    sessionState.displayName()
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),

@@ -89,17 +89,43 @@ public final class RaceArbiter {
     public CompletableFuture<ArbiterDecision> decide(CompletableFuture<OfflineCommandHit> offline,
                                                      CompletableFuture<Reply> llm,
                                                      SessionContext ctx, String utteranceId) {
+        return decide(offline, llm, ctx, utteranceId, null);
+    }
+
+    /**
+     * 双候选竞速入口（带 segmentId 快照的版本）。offline 以 {@code null} 表示"无命中"
+     * （调用方把 Optional 摊平）。
+     *
+     * @param offline     离线命令识别结果（{@code CompletableFuture<OfflineCommandHit>}，
+     *                    未命中/失败 → complete(null)）
+     * @param llm         LLM 语义结果
+     * @param utteranceId 本段话语唯一 ID（telemetry 贯通：决策事件填真实值，由调用方从
+     *                    audio_start 的端侧 utteranceId 或自增回退值传入）
+     * @param segmentId   本段话语快照（pending 占位消息回显给端侧对账用，可空——不可读
+     *                    调用方可变字段：whenComplete 回调异步，可能已被下一轮覆盖）
+     */
+    public CompletableFuture<ArbiterDecision> decide(CompletableFuture<OfflineCommandHit> offline,
+                                                     CompletableFuture<Reply> llm,
+                                                     SessionContext ctx, String utteranceId, String segmentId) {
         CompletableFuture<ArbiterDecision> out = new CompletableFuture<>();
         AtomicBoolean settled = new AtomicBoolean(false);
 
         // 候选 1：离线命令命中 → 立即胜出，不等 LLM。
         // 能力分级（2026-08-15）：只认空调控制（climate 域 power_on/power_off/
         // set_temperature）——非空调命中（window/misc/防御）按未命中处理：不发事件、
-        // 不参与 CAS，走 LLM 优先路径。
+        // 不参与 CAS，走 LLM 优先路径；此时若 LLM 尚未完成 → 发 pending 占位事件
+        // （B5：装配方据此下发"处理中"消息，protocol.md §4.8）。
         // 注意：不再以 settled 提前 return——迟到 offline（LLM 已胜出后命中）也要发
         // received（收到 asr 命令词）+ lost（llm_already_won）事件；决策仍由 CAS 守卫。
         offline.whenComplete((hit, err) -> {
-            if (err != null || hit == null || !isAirConControl(hit.intent())) return;
+            if (err != null) return;
+            if (hit == null || !isAirConControl(hit.intent())) {
+                // 未命中 / 非空调命中 + LLM 尚未完成 → 处理中占位（至多一次：whenComplete 只回调一次）
+                if (!llm.isDone()) {
+                    onEvent(utteranceId, CloudArbiterEvent.pending(ROUTE_LLM, segmentId));
+                }
+                return;
+            }
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_NLU_TRADITIONAL));
             if (settled.compareAndSet(false, true)) {
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));

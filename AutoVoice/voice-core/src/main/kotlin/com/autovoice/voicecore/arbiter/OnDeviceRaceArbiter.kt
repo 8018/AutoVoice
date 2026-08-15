@@ -5,6 +5,7 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.Reply
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -49,6 +50,12 @@ sealed class OnDeviceArbiterEvent {
      * not_latest_round 不是最新轮会话（语义被拦截）。
      */
     data class Lost(val route: String, val reason: String) : OnDeviceArbiterEvent()
+
+    /**
+     * B5：云端 pending 占位（LLM 处理中，协议 §4.8）——非收敛事件：收到后阶段 1
+     * 窗口延长至 pendingWaitMs 继续等最终语义；执行侧只改 UI 状态，无执行无播报。
+     */
+    data class Pending(val route: String) : OnDeviceArbiterEvent()
 }
 
 /**
@@ -64,6 +71,8 @@ sealed class OnDeviceArbiterEvent {
  *      （云端优先）；
  *    - 云端语义到达 → [RaceWinner.Cloud]（reason = `cloud_won`，胜出事件原因
  *      `priority` 优先）；
+ *    - 云端 pending 占位（B5，LLM 处理中，协议 §4.8）到达 → 不收敛：窗口延长至
+ *      `pendingWaitMs` 继续等最终语义（执行侧只改 UI 状态，无执行无播报）；
  *  - **阶段 2（云端超时）**：`withTimeoutOrNull(localFallbackMs) { local.await() }`
  *    非空 → [RaceWinner.Local]（reason = `cloud_timeout_use_local`，胜出事件原因
  *    `cloud_timeout` 超时未收到云端）；本地 unknown → [RaceWinner.Failed] 拒识；
@@ -75,6 +84,8 @@ sealed class OnDeviceArbiterEvent {
  *  - 胜出记 [OnDeviceArbiterEvent.Won]；胜出瞬间输家若已完成，记
  *    [OnDeviceArbiterEvent.Lost]（`cloud_already_won` 已有云端语义胜出 /
  *    `command_already_won` 已有命令词胜出——云端在超时窗口边缘迟到，但本地已赢）；
+ *  - **B5 pending 占位**：收到云端 pending 记 [OnDeviceArbiterEvent.Pending]（route=cloud）
+ *    ——非收敛事件，窗口延长后继续等最终语义；
  *  - **非最新轮拦截**：race 进入快照 [utteranceId]，候选到达时若 utteranceId 已刷新
  *    （新一轮 vad start 产生的 uuid），语义属于过期轮 → 记 [OnDeviceArbiterEvent.Lost]
  *    （`not_latest_round` 不是最新轮会话）并返回 [RaceWinner.Intercepted]（丢弃）。
@@ -97,14 +108,28 @@ class OnDeviceRaceArbiter(
     private val utteranceId: () -> String = { "" },
     /** B2：仲裁过程事件（收到候选/胜出/失败）→ 装配方转 telemetry 插桩。默认 no-op。 */
     private val onEvent: (OnDeviceArbiterEvent) -> Unit = {},
+    /**
+     * B5：云端 pending 占位信号（LLM 处理中，协议 §4.8）。用 Channel 而非 Deferred：
+     * Deferred 只完成一次，relaunch 循环里已完成 Deferred 会立刻再发 Pending → 死循环。
+     */
+    private val pending: ReceiveChannel<Unit> = Channel(),
+    /**
+     * B5：收到 pending 后阶段 1 的扩展窗口。LLM 工具循环最长约 8s（服务端
+     * safety-timeout-ms=6500 是 final 硬上限，pending 早到 → 剩余等待 ≈6.2s），
+     * 12s 富余 5.8s 覆盖网络抖动；若服务端提高 safety-timeout-ms 需联动上调。
+     */
+    private val pendingWaitMs: Long = 12_000,
 ) {
-    /** 阶段 1 收敛结果（能力分级 2026-08-15）：本地车窗开关 / 云端语义。 */
+    /** 阶段 1 收敛结果（能力分级 2026-08-15 + B5）：本地车窗开关 / 云端语义 / pending 占位。 */
     private sealed interface Outcome {
         /** 本地车窗开关到达（能力分级：直接胜出，不等云端）。 */
         data class LocalWin(val intent: Intent) : Outcome
 
         /** 云端语义到达（云端优先胜出）。 */
         data class Cloud(val reply: Reply) : Outcome
+
+        /** B5：云端 pending 占位（不收敛——窗口延长后继续等最终语义）。 */
+        data object Pending : Outcome
     }
 
     suspend fun race(cloud: Deferred<Reply>, local: Deferred<Intent>): RaceWinner {
@@ -115,89 +140,110 @@ class OnDeviceRaceArbiter(
         // 两端结果经 Channel 汇合，先注册本地分支（同时完成时本地车窗优先）。
         // 本地车窗开关 → 送 LocalWin 立即胜出（不等云端）；本地非车窗（unknown 拒识 /
         // misc 防御）→ 不发结果，不参与胜出只等云端；云端语义 → 送 Cloud 胜出。
+        // B5：云端 pending 占位信号 → 送 Pending——非收敛：窗口延长至 pendingWaitMs
+        // 继续等最终语义（LLM 工具循环最长约 8s 超过 cloudWaitMs=6000，占位把窗口撑到
+        // pendingWaitMs，推理完成后最终语义照常直接胜出）。
         // 首个真实候选即收敛；协程语义同旧实现：超时只把 withTimeoutOrNull 转换为
         // null，取消原样向上传播，不吞 CancellationException。
-        val outcome = withTimeoutOrNull(cloudWaitMs) {
-            coroutineScope {
-                val results = Channel<Outcome>(capacity = 2)
-                val localJob = launch {
-                    local.await().takeIf { it.isWindowPower() }
-                        ?.let { results.send(Outcome.LocalWin(it)) }
+        var waitMs = cloudWaitMs
+        while (true) {
+            val outcome = withTimeoutOrNull(waitMs) {
+                coroutineScope {
+                    val results = Channel<Outcome>(capacity = 3)
+                    val localJob = launch {
+                        local.await().takeIf { it.isWindowPower() }
+                            ?.let { results.send(Outcome.LocalWin(it)) }
+                    }
+                    val cloudJob = launch { results.send(Outcome.Cloud(cloud.await())) }
+                    val pendingJob = launch {
+                        pending.receive()
+                        results.send(Outcome.Pending)
+                    }
+                    val winner = results.receive()
+                    // 已收敛：取消仍挂在 await 上的输家子协程，coroutineScope 才会返回
+                    // （await 的取消不影响 deferred 本身——deferred 归调用方所有）
+                    localJob.cancel()
+                    cloudJob.cancel()
+                    pendingJob.cancel()
+                    winner
                 }
-                val cloudJob = launch { results.send(Outcome.Cloud(cloud.await())) }
-                val winner = results.receive()
-                // 已收敛：取消仍挂在 await 上的输家子协程，coroutineScope 才会返回
-                // （await 的取消不影响 deferred 本身——deferred 归调用方所有）
-                localJob.cancel()
-                cloudJob.cancel()
-                winner
-            }
-        }
-
-        when (outcome) {
-            // 本地车窗开关先到 → 能力分级直接胜出（reason = local_command_won，不等云端）
-            is Outcome.LocalWin -> {
-                onEvent(OnDeviceArbiterEvent.Received("local"))
-                if (isStale(uidAtStart)) {
-                    onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
-                    return RaceWinner.Intercepted
-                }
-                onEvent(OnDeviceArbiterEvent.Won("local", "local_command"))
-                sink.onDecision(decision(route = "local", reason = "local_command_won"))
-                // 单赢家：云端语义若已同时到达（本地先赢）→ 记失败（已有命令词胜出）
-                if (completedValue(cloud) != null) {
-                    onEvent(OnDeviceArbiterEvent.Received("cloud"))
-                    onEvent(OnDeviceArbiterEvent.Lost("cloud", "command_already_won"))
-                }
-                return RaceWinner.Local(outcome.intent)
             }
 
-            // 云端语义先到 → 云端胜出（reason = cloud_won，现逻辑）
-            is Outcome.Cloud -> {
-                onEvent(OnDeviceArbiterEvent.Received("cloud"))
-                if (isStale(uidAtStart)) {
-                    onEvent(OnDeviceArbiterEvent.Lost("cloud", "not_latest_round"))
-                    return RaceWinner.Intercepted
-                }
-                onEvent(OnDeviceArbiterEvent.Won("cloud", "priority"))
-                sink.onDecision(decision(route = "cloud", reason = "cloud_won"))
-                // 单赢家：本地命令词若已到达（云端先赢）→ 记失败（已有云端语义胜出）
-                if (completedValue(local) != null) {
-                    onEvent(OnDeviceArbiterEvent.Received("local"))
-                    onEvent(OnDeviceArbiterEvent.Lost("local", "cloud_already_won"))
-                }
-                return RaceWinner.Cloud(outcome.reply)
-            }
-
-            // 阶段 1 超时（cloudWaitMs 内无胜出）→ 阶段 2 本地兜底（现逻辑）
-            null -> {
-                val intent = withTimeoutOrNull(localFallbackMs) { local.await() }
-                if (intent != null) {
+            when (outcome) {
+                // 本地车窗开关先到 → 能力分级直接胜出（reason = local_command_won，不等云端）
+                is Outcome.LocalWin -> {
                     onEvent(OnDeviceArbiterEvent.Received("local"))
                     if (isStale(uidAtStart)) {
                         onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
                         return RaceWinner.Intercepted
                     }
-                    // 拒识（语音拒识 = unknown 意图，需求 1 静默）：本地未命中语义不参与仲裁
-                    // 胜出——云端超时场景直接失败（不执行不播报），避免 unknown 兜底胜出
-                    if (intent.isUnknown()) {
-                        onEvent(OnDeviceArbiterEvent.Lost("local", "unknown_intent"))
-                        return RaceWinner.Failed
-                    }
-                    onEvent(OnDeviceArbiterEvent.Won("local", "cloud_timeout"))
-                    sink.onDecision(decision(route = "local", reason = "cloud_timeout_use_local"))
-                    // 云端语义若在超时窗口边缘迟到（本地先赢）→ 记失败（已有命令词胜出）
+                    onEvent(OnDeviceArbiterEvent.Won("local", "local_command"))
+                    sink.onDecision(decision(route = "local", reason = "local_command_won"))
+                    // 单赢家：云端语义若已同时到达（本地先赢）→ 记失败（已有命令词胜出）
                     if (completedValue(cloud) != null) {
                         onEvent(OnDeviceArbiterEvent.Received("cloud"))
                         onEvent(OnDeviceArbiterEvent.Lost("cloud", "command_already_won"))
                     }
-                    return RaceWinner.Local(intent)
+                    return RaceWinner.Local(outcome.intent)
                 }
 
-                sink.onDecision(decision(route = "local", reason = "both_failed"))
-                return RaceWinner.Failed
+                // 云端语义先到 → 云端胜出（reason = cloud_won，现逻辑）
+                is Outcome.Cloud -> {
+                    onEvent(OnDeviceArbiterEvent.Received("cloud"))
+                    if (isStale(uidAtStart)) {
+                        onEvent(OnDeviceArbiterEvent.Lost("cloud", "not_latest_round"))
+                        return RaceWinner.Intercepted
+                    }
+                    onEvent(OnDeviceArbiterEvent.Won("cloud", "priority"))
+                    sink.onDecision(decision(route = "cloud", reason = "cloud_won"))
+                    // 单赢家：本地命令词若已到达（云端先赢）→ 记失败（已有云端语义胜出）
+                    if (completedValue(local) != null) {
+                        onEvent(OnDeviceArbiterEvent.Received("local"))
+                        onEvent(OnDeviceArbiterEvent.Lost("local", "cloud_already_won"))
+                    }
+                    return RaceWinner.Cloud(outcome.reply)
+                }
+
+                // B5：云端 pending 占位（LLM 处理中）→ 非收敛：窗口延长至 pendingWaitMs
+                // 继续等最终语义（pending 至多一次——服务端 llm.isDone() 守卫；扩展窗口内
+                // 本地车窗到达照样立即胜出）
+                is Outcome.Pending -> {
+                    onEvent(OnDeviceArbiterEvent.Pending("cloud"))
+                    waitMs = pendingWaitMs
+                    continue
+                }
+
+                // 阶段 1 超时（窗口内无真实候选）→ 跳出循环，进阶段 2 本地兜底
+                null -> break
             }
         }
+
+        // 阶段 2（云端超时）：withTimeoutOrNull(localFallbackMs) 内等本地 ASR 命令词
+        val intent = withTimeoutOrNull(localFallbackMs) { local.await() }
+        if (intent != null) {
+            onEvent(OnDeviceArbiterEvent.Received("local"))
+            if (isStale(uidAtStart)) {
+                onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
+                return RaceWinner.Intercepted
+            }
+            // 拒识（语音拒识 = unknown 意图，需求 1 静默）：本地未命中语义不参与仲裁
+            // 胜出——云端超时场景直接失败（不执行不播报），避免 unknown 兜底胜出
+            if (intent.isUnknown()) {
+                onEvent(OnDeviceArbiterEvent.Lost("local", "unknown_intent"))
+                return RaceWinner.Failed
+            }
+            onEvent(OnDeviceArbiterEvent.Won("local", "cloud_timeout"))
+            sink.onDecision(decision(route = "local", reason = "cloud_timeout_use_local"))
+            // 云端语义若在超时窗口边缘迟到（本地先赢）→ 记失败（已有命令词胜出）
+            if (completedValue(cloud) != null) {
+                onEvent(OnDeviceArbiterEvent.Received("cloud"))
+                onEvent(OnDeviceArbiterEvent.Lost("cloud", "command_already_won"))
+            }
+            return RaceWinner.Local(intent)
+        }
+
+        sink.onDecision(decision(route = "local", reason = "both_failed"))
+        return RaceWinner.Failed
     }
 
     /** B2：语义是否属于过期轮（utteranceId 已刷新）。provider 空（未接 telemetry）时不拦截。 */

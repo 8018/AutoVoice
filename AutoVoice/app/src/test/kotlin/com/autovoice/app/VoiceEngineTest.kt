@@ -10,6 +10,7 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.LocalConfig
 import com.autovoice.voicecore.MockConfig
+import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.VadConfig
@@ -26,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -131,6 +133,11 @@ class VoiceEngineTest {
         /** 导航执行器（spec §4.2）：默认未装配（导航意图记 skipped），用例注入 fake opener。 */
         navigation: NavigationExecutor? = null,
         debugBuild: Boolean = true,
+        /** B5：云端 pending 占位回调（生产 create() 装配 UI 状态；默认 no-op）。 */
+        onCloudPending: (Boolean) -> Unit = {},
+        /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
+         *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
+        pending: Channel<Unit> = Channel(),
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
         // B2：仲裁器 utteranceId 延迟绑定引擎会话（生产 create() 同款 engineRef 模式，
@@ -162,8 +169,15 @@ class VoiceEngineTest {
                             "warn",
                             mapOf("route" to event.route, "reason" to event.reason),
                         )
+                        // B5：pending 占位（非收敛事件）→ device_arbiter_pending 插桩
+                        is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                            TelemetryStages.DEVICE_ARBITER_PENDING,
+                            "info",
+                            mapOf("route" to event.route, "reason" to "llm_pending"),
+                        )
                     }
                 },
+                pending = pending,
             ),
             sink = sink,
             telemetry = telemetry,
@@ -177,6 +191,7 @@ class VoiceEngineTest {
             navigation = navigation,
             scope = scope,
             debugBuild = debugBuild,
+            onCloudPending = onCloudPending,
         )
         engineRef = engine
         return engine to vehicle
@@ -299,6 +314,54 @@ class VoiceEngineTest {
         } finally {
             telemetryScope.cancel()
             server.shutdown()
+        }
+    }
+
+    // ------------------------------------------------------------------ B5：pending 占位（LLM 处理中）
+
+    /**
+     * B5（协议 §4.8）：pending 占位只改 UI 状态（onCloudPending true → false 序列），
+     * 不触发执行/播报；窗口延长后最终语义到达照常云端胜出并播报。
+     * 时序要点：cloudWaitMs=100 是硬窗——pending 未生效时 150ms 处已走阶段 2 兜底
+     * （本地 unknown → Failed → 兜底话术），tts 非空即证明窗口未延长。
+     */
+    @Test
+    fun `pending placeholder only toggles cloud pending then final plays normally`() {
+        val pendingStates = mutableListOf<Boolean>()
+        val pendingSignals = Channel<Unit>(Channel.BUFFERED)
+        val cloudReply = CompletableDeferred<Reply>()
+        val ttsTexts = mutableListOf<String>()
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { Intent.unknown("rule.nlu") }, // 本地拒识：不参与胜出
+                cloud = CloudRunner { cloudReply.await() },
+                tts = TtsRequester { text ->
+                    ttsTexts.add(text)
+                    null // 只验证请求发出，不验证播放
+                },
+                onCloudPending = { pendingStates.add(it) },
+                pending = pendingSignals,
+            )
+            engine = pair.first
+            val vehicle = pair.second
+            utter(engine) // 竞速启动（cloudWaitMs=100）
+            // B5 pending 占位到达（生产路径：桥对账 → 信号延长窗口 + onPendingReceived → setCloudPending(true)）
+            pendingSignals.trySend(Unit)
+            engine.setCloudPending(true)
+            delay(150) // 越过原 cloudWaitMs=100：pending 未延长窗口时此处已兜底播报
+            // 序列：utter() 起始置 false（onListeningStart）→ pending 置 true
+            assertEquals(listOf(false, true), pendingStates.toList(), "pending 期间 UI 状态应为 true")
+            assertEquals(0, ttsTexts.size, "pending 本身不播报；窗口延长后仍在等云端（未走兜底）")
+            assertFalse(vehicle.isAcOn, "pending 无执行")
+            assertFalse(vehicle.isWindowsOpen, "pending 无执行")
+            // 最终语义到达 → 云端胜出：清除 pending + 正常播报
+            cloudReply.complete(TextReply("已为您打开车窗"))
+            // complete() 只安排协程恢复：让出事件循环等竞速收敛 + speakViaTts 子协程执行
+            delay(100)
+            assertEquals(listOf(false, true, false), pendingStates.toList(), "final 到达应清除 pending（置 false）")
+            assertEquals(listOf("已为您打开车窗"), ttsTexts, "final 照常播报")
         }
     }
 

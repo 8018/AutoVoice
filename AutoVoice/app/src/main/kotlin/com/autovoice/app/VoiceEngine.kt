@@ -39,6 +39,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -123,6 +125,11 @@ class VoiceEngine(
     private val debugBuild: Boolean = BuildConfig.DEBUG,
     /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
     private val onClose: () -> Unit = {},
+    /**
+     * B5：云端 pending 占位回调（LLM 处理中，协议 §4.8）：收到 pending 帧 → true，
+     * 最终语义到达 / 新一轮开始 → false。UI 据此显示"处理中…"徽标，无执行无播报。
+     */
+    private val onCloudPending: (Boolean) -> Unit = {},
 ) {
 
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
@@ -221,11 +228,22 @@ class VoiceEngine(
         // 新一轮开始：utteranceId 清空，首个 SpeechStart（onVadStart）重新产生
         currentUtteranceId = ""
         session.currentUtteranceId = ""
+        // B5：新一轮开始清除上一轮的"处理中"占位状态
+        setCloudPending(false)
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
         if (networkAvailable()) session.onCloudAvailable() else session.onCloudUnavailable()
         session.onListeningStart()
+    }
+
+    /**
+     * B5：云端 pending 占位状态（true = LLM 处理中，仅 UI 状态；false = 已清除）。
+     * 由 [GatewayCloudRunner.onPendingReceived]（收到 pending 帧）与
+     * [onTurnResult]（最终语义到达）调用。
+     */
+    fun setCloudPending(v: Boolean) {
+        onCloudPending(v)
     }
 
     /**
@@ -342,6 +360,8 @@ class VoiceEngine(
             // B2：非最新轮语义被拦截——不播报不执行（轮照常收包，事件已含 lost 原因）
             is RaceWinner.Intercepted -> Unit
         }
+        // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
+        setCloudPending(false)
         // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
         telemetry.end(currentUtteranceId)
     }
@@ -467,6 +487,8 @@ class VoiceEngine(
             onLocalRecognized: (String?) -> Unit = {},
             /** 导航执行器（spec §4.2）：null → 导航意图记 skipped。 */
             navigation: NavigationExecutor? = null,
+            /** B5：云端 LLM 处理中占位回调（收到 pending 帧 → true；最终语义/新一轮 → false）。 */
+            onCloudPending: (Boolean) -> Unit = {},
         ): VoiceEngine {
             // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
             // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
@@ -495,7 +517,11 @@ class VoiceEngine(
                 )
                 sink.onDecision(entry)
             }
-            val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope)
+            // B5：云端 pending 占位信号（LLM 处理中）——桥收到 pending 帧 → 此通道 →
+            // 端侧仲裁器阶段 1 窗口延长（pendingWaitMs）。BUFFERED：pending 帧到达时若
+            // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
+            val pendingSignals = Channel<Unit>(Channel.BUFFERED)
+            val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope, pendingSignals)
             // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
             clockOffsetProvider.set(cloudRunner::clockOffsetMs)
             // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）
@@ -525,6 +551,7 @@ class VoiceEngine(
                     // T7：on-device 决策日志携带本轮真实 utteranceId（vad start 写入会话）
                     utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
                     // B2：仲裁过程事件（收到/胜出/失败）→ device_arbiter_received/won/lost 插桩
+                    // B5：pending 占位 → device_arbiter_pending 插桩
                     onEvent = { event ->
                         when (event) {
                             is OnDeviceArbiterEvent.Received -> telemetry.record(
@@ -542,8 +569,15 @@ class VoiceEngine(
                                 "warn",
                                 mapOf("route" to event.route, "reason" to event.reason),
                             )
+                            is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                                TelemetryStages.DEVICE_ARBITER_PENDING,
+                                "info",
+                                mapOf("route" to event.route, "reason" to "llm_pending"),
+                            )
                         }
                     },
+                    // B5：pending 信号 → 阶段 1 窗口延长（pendingWaitMs=12s，见构造器注释）
+                    pending = pendingSignals,
                 ),
                 sink = telemetrySink,
                 telemetry = telemetry,
@@ -562,6 +596,7 @@ class VoiceEngine(
                     cloudRunner.close() // Task 21：模式切换时断开网关
                     offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
                 },
+                onCloudPending = onCloudPending,
             )
             engineRef = engine
             ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
@@ -569,6 +604,8 @@ class VoiceEngine(
             // （telemetry 为构造参数，构造即绑定），此处无需再装配
             // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
             cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
+            // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
+            cloudRunner.onPendingReceived = { engine.setCloudPending(true) }
             // T6：云端链发帧时读取引擎当前话语的 utteranceId
             cloudRunner.utteranceIdProvider = { engine.currentUtteranceId }
             // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
@@ -700,6 +737,8 @@ private class GatewayCloudRunner(
     private val cfg: CloudConfig,
     private val sink: DecisionSink,
     scope: CoroutineScope,
+    /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
+    private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
 ) : CloudRunner, TtsRequester {
 
     private val client = GatewayClient(
@@ -709,7 +748,7 @@ private class GatewayCloudRunner(
         deviceId = cfg.deviceId,
         authToken = cfg.authToken,
     )
-    private val bridge = GatewayBridge(client, sink, scope)
+    private val bridge = GatewayBridge(client, sink, scope, pendingSignals) { onPendingReceived() }
 
     /** 是否已收到 ready（含 sessionId）——据此区分 ready 前/后故障。 */
     @Volatile
@@ -720,6 +759,14 @@ private class GatewayCloudRunner(
 
     /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
+
+    /**
+     * B5：收到云端 pending 帧的回调（由 [VoiceEngine.create] 装配后绑定 →
+     * engine.setCloudPending(true)，UI 显示"处理中…"）。清除由 onTurnResult /
+     * onListeningStart 收口。
+     */
+    @Volatile
+    var onPendingReceived: () -> Unit = {}
 
     /**
      * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngine.create] 在 engine 装配完成后
@@ -824,6 +871,10 @@ internal class GatewayBridge(
     private val client: GatewayClient,
     private val sink: DecisionSink,
     scope: CoroutineScope,
+    /** B5：云端 pending 占位信号（LLM 处理中）→ 端侧仲裁器阶段 1 窗口延长。 */
+    private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
+    /** B5：pending 帧已对账通过的回调（装配方绑定 → UI"处理中…"状态）。 */
+    private val onPendingReceived: () -> Unit = {},
 ) {
 
     private class PendingSlot<T>(val segmentId: String, val deferred: CompletableDeferred<T>)
@@ -877,6 +928,16 @@ internal class GatewayBridge(
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
                 slot.deferred.completeExceptionally(GatewayException("网关传输错误：$code"))
+            }
+            "pending" -> {
+                // B5：pending 占位（LLM 处理中，协议 §4.8）——独立于 reply kind 的 S→C
+                // 消息：不能走 reply（会 complete replySlot 吞掉 final），只发信号改 UI
+                // 状态 + 延长仲裁等待窗口。对账同 reply：segmentId 不一致 → 他轮迟到丢弃；
+                // 无槽（无话语在途）→ 丢弃。trySend 幂等缓冲（BUFFERED 通道不挂起）。
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                pendingSignals.trySend(Unit)
+                onPendingReceived()
             }
             else -> Unit // ready / asr_partial / bye 当前不消费
         }

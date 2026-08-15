@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "pending", "reply", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -98,6 +98,19 @@
             "sessionId": { "type": "string" },
             "text": { "type": "string" },
             "isFinal": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "title": "pending (server -> client, LLM 处理中占位)",
+      "properties": {
+        "type": { "const": "pending" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "segmentId": { "type": "string", "description": "回显 audio_start 的 segmentId(§3.2),端侧据此对账当前话语" },
+            "text": { "type": "string", "description": "处理中文案(可选,端侧可忽略固定文案)" }
           }
         }
       }

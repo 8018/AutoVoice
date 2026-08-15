@@ -65,6 +65,9 @@ object TelemetryStages {
     /** 端侧仲裁失败（B2：route + 原因 cloud_already_won / command_already_won / not_latest_round）。 */
     const val DEVICE_ARBITER_LOST = "device_arbiter_lost"
 
+    /** 端侧仲裁云端 pending 占位（B5：LLM 处理中，协议 §4.8——非收敛事件，窗口延长继续等）。 */
+    const val DEVICE_ARBITER_PENDING = "device_arbiter_pending"
+
     /** 云端仲裁器决策（网关下行 decision 事件，arbiter=cloud）。 */
     const val CLOUD_ARBITER = "cloud_arbiter"
 }
