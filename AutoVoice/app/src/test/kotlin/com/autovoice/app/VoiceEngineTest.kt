@@ -108,8 +108,8 @@ class VoiceEngineTest {
             enabled = false,
         ),
         player: AudioPlayer = AudioPlayer {},
-        speaker: TextSpeaker = TextSpeaker { _, _ -> },
-        /** A3 默认 TTS 失败（返回 null）→ speaker 兜底；用例可注入 fake 返回音频。 */
+        /** 2026-08-15：统一网络 TTS（不用系统 TTS）。默认 TTS 失败（返回 null）→ 静默记
+         *  失败事件；用例可注入 fake 返回音频断言播放。 */
         tts: TtsRequester = TtsRequester { null },
         /** 架构变更（缓存移回端侧）：默认空缓存，用例可注入预置/可查验实例。 */
         ttsCache: TtsCache = TtsCache(null),
@@ -155,7 +155,6 @@ class VoiceEngineTest {
             cloud = cloud,
             tts = tts,
             player = player,
-            speaker = speaker,
             ttsCache = ttsCache,
             vehicle = vehicle,
             scope = scope,
@@ -479,7 +478,6 @@ class VoiceEngineTest {
         server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
         server.enqueue(MockResponse().setResponseCode(200)) // round POST
         val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val spoken = mutableListOf<String>()
         val entries = mutableListOf<DecisionEntry>()
         lateinit var engine: VoiceEngine
         try {
@@ -503,12 +501,10 @@ class VoiceEngineTest {
                     localFallbackMs = 2000,
                     telemetry = telemetry,
                     sink = DecisionSink { entries.add(it) },
-                    speaker = TextSpeaker { text, _ -> spoken.add(text) },
                 )
                 engine = pair.first
                 utter(engine)
             }
-            assertTrue(spoken.isEmpty(), "拦截的语义不得播报")
             assertEquals(emptyList<String>(), entries.map { it.reason }, "拦截不写决策")
             val roundReq = takeRequestUntil(server, "/api/telemetry/round")
             assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
@@ -561,9 +557,9 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `network unavailable → local only, cloud_unreachable, apply text spoken, cloud never ran`() {
+    fun `network unavailable → local only, cloud_unreachable, apply text via network tts, cloud never ran`() {
         val entries = mutableListOf<DecisionEntry>()
-        val spoken = mutableListOf<String>()
+        val ttsRequests = mutableListOf<String>()
         var cloudRan = false
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
@@ -577,7 +573,9 @@ class VoiceEngineTest {
                 },
                 networkAvailable = { false },
                 sink = DecisionSink { entries.add(it) },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
+                // 2026-08-15：本地胜出播报统一走网络 TTS（不再用系统 TTS）——
+                // 生产上 ready 未建立时 tts.request 返回 null（记失败事件），fake 记录请求文本
+                tts = TtsRequester { ttsRequests.add(it); null },
             )
             engine = pair.first
             vehicle = pair.second
@@ -585,7 +583,7 @@ class VoiceEngineTest {
         }
         assertFalse(cloudRan, "无网络时云端链不得启动")
         assertTrue(vehicle.isAcOn, "本地意图应执行")
-        assertEquals(listOf("已为您打开空调"), spoken, "播报本地 apply 的文本")
+        assertEquals(listOf("已为您打开空调"), ttsRequests, "本地 apply 的文本应走网络 TTS 请求")
         assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
     }
 
@@ -614,9 +612,9 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `both routes fail → Failed → fallback phrase spoken`() {
+    fun `both routes fail → Failed → fallback phrase via network tts`() {
         val entries = mutableListOf<DecisionEntry>()
-        val spoken = mutableListOf<String>()
+        val ttsRequests = mutableListOf<String>()
         lateinit var engine: VoiceEngine
         runBlocking {
             val pair = engine(
@@ -625,35 +623,41 @@ class VoiceEngineTest {
                 cloud = CloudRunner { awaitCancellation() },
                 localFallbackMs = 150,
                 sink = DecisionSink { entries.add(it) },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
+                // 2026-08-15：全败兜底话术同样走网络 TTS（不再用系统 TTS）
+                tts = TtsRequester { ttsRequests.add(it); null },
             )
             engine = pair.first
             utter(engine)
         }
         assertEquals(listOf("both_failed"), entries.map { it.reason })
-        assertEquals(listOf("网络开小差了，请稍后再试"), spoken)
+        assertEquals(listOf("网络开小差了，请稍后再试"), ttsRequests)
     }
 
     @Test
-    fun `cloud text reply routes to speaker`() {
-        val spoken = mutableListOf<String>()
+    fun `cloud text reply requests tts audio and plays it`() {
+        val requested = mutableListOf<String>()
+        val played = mutableListOf<AudioReply>()
+        val audio =
+            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到 24 度")
         lateinit var engine: VoiceEngine
         runBlocking {
             val pair = engine(
                 scope = this,
                 local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner { TextReply("已为您把空调调到 24 度") },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
+                tts = TtsRequester { requested.add(it); audio },
+                player = AudioPlayer { played.add(it) },
             )
             engine = pair.first
             utter(engine)
         }
-        assertEquals(listOf("已为您把空调调到 24 度"), spoken)
+        assertEquals(listOf("已为您把空调调到 24 度"), requested, "TextReply 应先请求 TTS 合成")
+        assertEquals(1, played.size, "合成音频应播放")
     }
 
     @Test
-    fun `cloud action reply applies intent and speaks its speakText`() {
-        val spoken = mutableListOf<String>()
+    fun `cloud action reply applies intent and requests tts for its speakText`() {
+        val requested = mutableListOf<String>()
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
         runBlocking {
@@ -666,22 +670,21 @@ class VoiceEngineTest {
                         speakText = "已为您把空调调到24度",
                     )
                 },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
+                tts = TtsRequester { requested.add(it); null },
             )
             engine = pair.first
             vehicle = pair.second
             utter(engine)
         }
         assertEquals(24.0, vehicle.acTemperature, "ActionReply 的 intent 应执行")
-        // A3 TTS 解耦：默认 tts 失败（null）→ 系统 TTS 兜底播报 speakText
-        assertEquals(listOf("已为您把空调调到24度"), spoken, "TTS 失败时兜底播报 ActionReply 的 speakText")
+        // 2026-08-15：ActionReply 的 speakText 走网络 TTS（不再用系统 TTS 兜底）
+        assertEquals(listOf("已为您把空调调到24度"), requested, "应请求 TTS 合成 speakText")
     }
 
     @Test
-    fun `cloud action reply requests tts audio and plays it instead of speaking`() {
+    fun `cloud action reply requests tts audio and plays it`() {
         val requested = mutableListOf<String>()
         val played = mutableListOf<AudioReply>()
-        val spoken = mutableListOf<String>()
         val ttsAudio =
             AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到24度")
         lateinit var engine: VoiceEngine
@@ -701,7 +704,6 @@ class VoiceEngineTest {
                     ttsAudio
                 },
                 player = AudioPlayer { played.add(it) },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             vehicle = pair.second
@@ -711,12 +713,10 @@ class VoiceEngineTest {
         assertEquals(listOf("已为您把空调调到24度"), requested, "TTS 请求文本 = ActionReply 的 speakText")
         assertEquals(1, played.size, "TTS 返回音频 → 播放")
         assertArrayEquals(ttsAudio.data, played[0].data)
-        assertTrue(spoken.isEmpty(), "TTS 成功时不得走系统播报兜底")
     }
 
     @Test
-    fun `cloud text reply falls back to speaker when tts times out`() {
-        val spoken = mutableListOf<String>()
+    fun `cloud text reply stays silent and records failure when tts times out`() {
         var ttsCalled = false
         lateinit var engine: VoiceEngine
         runBlocking {
@@ -728,13 +728,13 @@ class VoiceEngineTest {
                     ttsCalled = true
                     null // 模拟超时/合成失败
                 },
-                speaker = TextSpeaker { text, _ -> spoken.add(text) },
             )
             engine = pair.first
             utter(engine)
         }
         assertTrue(ttsCalled, "TextReply 应先请求 TTS")
-        assertEquals(listOf("已为您把空调调到 24 度"), spoken, "TTS 失败 → 系统 TTS 兜底播报文本")
+        // 2026-08-15：不再有系统 TTS 兜底——合成失败/超时静默（记 tts_play_end failed 事件，
+        // 由 recordFor 直传 /events；本用例 telemetry disabled，事件进 no-op 不断言）
     }
 
     // --------------------------------------------------- 架构变更：TTS 缓存移回端侧（TtsCache）
@@ -951,7 +951,6 @@ class VoiceEngineTest {
      */
     @Test
     fun `close cancels engine scope and returns in-flight turn to IDLE without result`() {
-        val spoken = mutableListOf<String>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val cloudStarted = CompletableDeferred<Unit>()
         val engine = VoiceEngine(
@@ -971,7 +970,6 @@ class VoiceEngineTest {
             },
             player = AudioPlayer {},
             tts = TtsRequester { null },
-            speaker = TextSpeaker { text, _ -> spoken.add(text) },
             vehicle = MockVehicleState(),
             scope = scope,
         )
@@ -989,6 +987,5 @@ class VoiceEngineTest {
         runBlocking {
             withTimeout(2_000) { engine.session.state.first { it == SessionState.IDLE } }
         }
-        assertTrue(spoken.isEmpty(), "取消的竞速不得产生播报")
     }
 }

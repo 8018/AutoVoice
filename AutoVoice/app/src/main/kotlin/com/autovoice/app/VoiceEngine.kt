@@ -51,17 +51,8 @@ fun interface AudioPlayer {
 }
 
 /**
- * 本地播报出口（应用层实现：SystemTtsFallback）。JVM 测试可注入 fake。
- * [onResult]（T7 数据平台插桩）：播报完成回调 ok=true，失败/未就绪回调 ok=false。
- * 不关心结果的调用方传 no-op 回调（如 `{ _ -> }`）。
- */
-fun interface TextSpeaker {
-    fun speak(text: String, onResult: (Boolean) -> Unit)
-}
-
-/**
  * 独立 TTS 播报请求（TTS 解耦 v1.1）：设备执行 intent 后按 speakText 向服务端
- * 请求合成音频；返回 null = 失败/超时（调用方以 [TextSpeaker] 兜底，不重试）。
+ * 请求合成音频；返回 null = 失败/超时（调用方静默处理并记失败事件，不重试）。
  * 生产实现：GatewayCloudRunner（tts_request/tts_response 独立槽）。
  */
 fun interface TtsRequester {
@@ -78,8 +69,9 @@ private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
  * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
  *
  * 持有装配好的 [VoiceSession]（本地链 + 云端链 + [OnDeviceRaceArbiter]，见 voice-core
- * §5.1 编排语义）与三个出口：[player]（云端音频播放）、[speaker]（本地播报）、
- * [vehicle]（车控执行）。结果路由（Task 20 交付物）：
+ * §5.1 编排语义）与两个出口：[player]（音频播放）、[vehicle]（车控执行）。
+ * 播报统一走网络 TTS（2026-08-15：不用系统 TTS，所有路径经 [speakViaTts]）。结果路由
+ * （Task 20 交付物）：
  *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
  *    ActionReply → 执行 intent + 播报自带 speakText；
  *  - [RaceWinner.Local]：`vehicle.apply(intent)` 成功 → 播报其返回文本（未知意图不播报）；
@@ -112,7 +104,6 @@ class VoiceEngine(
     cloud: CloudRunner,
     private val tts: TtsRequester,
     private val player: AudioPlayer,
-    private val speaker: TextSpeaker,
     /**
      * 端侧 TTS 缓存（架构变更：缓存从服务器移回端侧）：speakViaTts 先查缓存，
      * 命中直接播（不请求服务器）；未命中走 [tts] 网络合成，回传写缓存再播。
@@ -151,7 +142,7 @@ class VoiceEngine(
 
     /**
      * 发起播报时快照的 utteranceId（T7 评审 C1）：onTurnResult 收口处（本轮所有 player.play
-     * / speaker.speak / speakViaTts 的源头）取当前 utteranceId。播放完成/失败的异步回调
+     * / speakViaTts 的源头）取当前 utteranceId。播放完成/失败的异步回调
      * 晚于 [telemetry.end] 收包，必须用这个快照而非 current（后者可能已被下一轮覆盖）；
      * 回调经 [recordFor] 归属到快照轮（轮已关闭 → 单事件直传 /events，不并入下一轮）。
      */
@@ -315,7 +306,7 @@ class VoiceEngine(
     // ------------------------------------------------------------------ 结果路由
 
     private fun onTurnResult(winner: RaceWinner) {
-        // T7 评审 C1：本轮所有播报（player.play / speaker.speak / speakViaTts）由此发起，
+        // T7 评审 C1：本轮所有播报（player.play / speakViaTts）由此发起，
         // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
         playUtteranceId = currentUtteranceId
         when (winner) {
@@ -334,14 +325,14 @@ class VoiceEngine(
                 )
                 applied?.let { text ->
                     onVehicleApplied()
-                    speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
+                    speakViaTts(text)
                 }
             }
-            // 全败：播报兜底话术（按钮录音模式下需要明确反馈；
-            // 决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
+            // 全败：播报兜底话术（按钮录音模式下需要明确反馈；2026-08-15 起同样走网络 TTS，
+            // 不再用系统 TTS；决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
             is RaceWinner.Failed -> {
                 telemetry.record(TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
-                speaker.speak(FALLBACK_PHRASE) { ok -> recordSystemTtsPlay(ok) }
+                speakViaTts(FALLBACK_PHRASE)
             }
             // B2：非最新轮语义被拦截——不播报不执行（轮照常收包，事件已含 lost 原因）
             is RaceWinner.Intercepted -> Unit
@@ -355,8 +346,8 @@ class VoiceEngine(
      * 识别区（reply.asrText 非空才写，本地胜出/未携带时不覆盖本地识别文本）。
      * 之后按 kind 分发（v1.1 语义——回复不带音频，播报走独立 tts_request）：
      *  - Audio → 播放（协议层防御保留：旧服务端/兼容下行）；
-     *  - Text → 按文本请求 TTS，失败/超时 → [speaker] 兜底；
-     *  - Action → 执行 intent + 按 speakText 请求 TTS（兜底同上）。
+     *  - Text → 按文本请求 TTS，失败/超时静默（记失败事件）；
+     *  - Action → 执行 intent + 按 speakText 请求 TTS（失败同上）。
      */
     private fun routeCloudReply(reply: Reply) {
         if (reply.asrText.isNotBlank()) onLocalRecognized(reply.asrText)
@@ -374,10 +365,10 @@ class VoiceEngine(
     }
 
     /**
-     * TTS 解耦播报（A3）：后台请求服务端合成音频 → 播放；失败/超时（null）→
-     * 系统 TTS 兜底（不静默）。本地胜出路径不动（保持 [speaker] 直接播报）。
-     * T7 插桩：tts_request（合成请求）+ tts_play（system 兜底播报结果；network 播放
-     * 事件由 TtsPlayer 经 [onTtsPlayEvent] 上报）。
+     * 统一网络 TTS 播报（A3 + 2026-08-15：所有路径共用，不用系统 TTS）：后台请求服务端
+     * 合成音频 → 播放；失败/超时（null）静默，记 tts_play_end 失败事件（不静默到无痕）。
+     * T7 插桩：tts_request（合成请求）+ tts_play（network 播放/失败；播放事件由 TtsPlayer
+     * 经 [onTtsPlayEvent] 上报）。
      */
     private fun speakViaTts(text: String) {
         if (text.isBlank()) return
@@ -393,7 +384,7 @@ class VoiceEngine(
                 tts.request(text)?.let {
                     ttsCache.put(text, it.data) // 网络合成音频写缓存（下次同文本直接命中）
                     player.play(it)
-                } ?: speaker.speak(text) { ok -> recordSystemTtsPlay(ok) }
+                } ?: recordTtsPlayFailed()
             }
         }
     }
@@ -417,16 +408,17 @@ class VoiceEngine(
     }
 
     /**
-     * B4 tts_play_end：系统 TTS 播报结果（ok=false = 未就绪/失败/文本为空）。
-     * 用 [playUtteranceId] 快照走 [TelemetryClient.recordFor]（T7 评审 C1）：UtteranceProgressListener
-     * 回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 → 单事件直传 /events。
+     * B4 tts_play_end：网络 TTS 合成失败/超时（不再有系统 TTS 兜底，2026-08-15）。
+     * 用 [playUtteranceId] 快照走 [TelemetryClient.recordFor]（T7 评审 C1）：launch 内
+     * 的失败回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 →
+     * 单事件直传 /events。
      */
-    private fun recordSystemTtsPlay(ok: Boolean) {
+    private fun recordTtsPlayFailed() {
         telemetry.recordFor(
             playUtteranceId,
             TelemetryStages.TTS_PLAY_END,
-            if (ok) "info" else "error",
-            mapOf("source" to "system", "result" to if (ok) "ok" else "failed"),
+            "error",
+            mapOf("source" to "network", "result" to "failed"),
         )
     }
 
@@ -461,7 +453,6 @@ class VoiceEngine(
             networkAvailable: () -> Boolean = { context.hasActiveNetwork() },
             sink: DecisionSink,
             player: AudioPlayer,
-            speaker: TextSpeaker,
             vehicle: MockVehicleState,
             scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             onVehicleApplied: () -> Unit = {},
@@ -552,7 +543,6 @@ class VoiceEngine(
                 tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
                 ttsCache = ttsCache, // 缓存移回端侧：查缓存命中直接播，未命中才走网络
                 player = player,
-                speaker = speaker,
                 vehicle = vehicle,
                 scope = scope,
                 onVehicleApplied = onVehicleApplied,
@@ -783,7 +773,8 @@ private class GatewayCloudRunner(
 
     /**
      * 独立 TTS 播报（A3，TTS 解耦）：发 tts_request 等 tts_response，5s 超时返回 null
-     * （调用方以系统 TTS 兜底），**不重试**。ready 未建立（会话从未连上）直接 null。
+     * （调用方静默处理并记失败事件，2026-08-15 起不再有系统 TTS 兜底），**不重试**。
+     * ready 未建立（会话从未连上）直接 null。
      * 与 [run] 的 reply 槽互不干扰（bridge 独立 tts 槽，各自按 segmentId 对账）。
      */
     override suspend fun request(text: String): AudioReply? {
@@ -802,7 +793,7 @@ private class GatewayCloudRunner(
     }
 }
 
-/** 独立 TTS 请求超时（A3）：超过即放弃合成音频，改用系统 TTS 兜底。 */
+/** 独立 TTS 请求超时（A3）：超过即放弃合成音频，本次播报静默（记失败事件）。 */
 private const val TTS_TIMEOUT_MS = 5_000L
 
 /**

@@ -8,7 +8,6 @@ import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
 import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.app.audio.AudioRecorder
-import com.autovoice.app.audio.SystemTtsFallback
 import com.autovoice.app.audio.TtsPlayer
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.DecisionEntry
@@ -116,18 +115,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
 
-    /** 云端音频播放出口（生产实现：MediaPlayer + wav 临时文件）。 */
+    /** 音频播放出口（生产实现：MediaPlayer + wav 临时文件）。 */
     /**
-     * 云端音频播放（Task 18）。T7：播放事件（start/completed/failed/interrupted）转发到
+     * 音频播放（Task 18）。T7：播放事件（start/completed/failed/interrupted）转发到
      * 引擎的 [VoiceEngine.onTtsPlayEvent]（create() 已绑定 telemetry.record tts_play）；
      * engine 在 init 完成装配，播放必然发生在引擎就绪之后。
+     * 2026-08-15：全部播报统一走网络 TTS（TtsPlayer 播放服务端合成音频），不再用系统 TTS。
      */
     private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
         engine.onTtsPlayEvent(stage, level, payload)
     }
-
-    /** 本地播报出口（生产实现：系统 TextToSpeech，离线兜底）。 */
-    private val ttsFallback = SystemTtsFallback(application)
 
     /** 端侧引擎：VoiceSession + 双链路竞速 + 播报/执行路由（Task 20）。 */
     private lateinit var engine: VoiceEngine
@@ -202,7 +199,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!recording) return
         recording = false
         recorder.stop()
-        if (ttsPlayer.isSpeaking(ECHO_GUARD_MS) || ttsFallback.isSpeaking) {
+        if (ttsPlayer.isSpeaking(ECHO_GUARD_MS)) {
             val dropped = denoisedBlocks.sumOf { it.size }
             denoisedBlocks.clear()
             Log.i(TAG, "播报中/刚播完，丢弃本轮录音（回声抑制，${dropped}B）")
@@ -340,12 +337,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 ttsPlayer.play(reply)
             },
-            speaker = TextSpeaker { text, onResult ->
-                _uiState.update { s -> s.copy(lastReplyText = text) }
-                // T7 评审 C1：SystemTtsFallback 的播报结果（onDone/onError 回调）透传给引擎，
-                // 否则 recordSystemTtsPlay 的 ok/failed 结果在生产上永远进 no-op
-                ttsFallback.speak(text, onResult)
-            },
             vehicle = vehicleState,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
@@ -418,7 +409,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.close() // 断开网关 + 取消引擎作用域（Task 21）
         recorder.close()
         ttsPlayer.release()
-        ttsFallback.shutdown()
         super.onCleared()
     }
 
