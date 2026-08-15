@@ -87,6 +87,21 @@ class VoiceEngineTest {
             source = "test.local",
         )
 
+    /** 导航意图（spec §4.2：navigation/navigate {poiname, lat, lon}）。 */
+    private fun navigateIntent(poiname: String, lat: Double, lon: Double): Intent =
+        Intent(
+            schemaVersion = "1.0",
+            domain = NavigationExecutor.DOMAIN_NAVIGATION,
+            intent = NavigationExecutor.INTENT_NAVIGATE,
+            slots = mapOf(
+                NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(poiname),
+                NavigationExecutor.SLOT_LAT to SlotValue.Number(lat),
+                NavigationExecutor.SLOT_LON to SlotValue.Number(lon),
+            ),
+            confidence = 0.98,
+            source = "test.cloud",
+        )
+
     /**
      * 测试装配：真实 VoiceSession + 真实仲裁器，注入 fake 链与出口。
      * JVM 单测里 BuildConfig.DEBUG 恒为 false，弱网延迟 hook 需显式传 debugBuild=true 才生效。
@@ -113,6 +128,8 @@ class VoiceEngineTest {
         tts: TtsRequester = TtsRequester { null },
         /** 架构变更（缓存移回端侧）：默认空缓存，用例可注入预置/可查验实例。 */
         ttsCache: TtsCache = TtsCache(null),
+        /** 导航执行器（spec §4.2）：默认未装配（导航意图记 skipped），用例注入 fake opener。 */
+        navigation: NavigationExecutor? = null,
         debugBuild: Boolean = true,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
@@ -157,6 +174,7 @@ class VoiceEngineTest {
             player = player,
             ttsCache = ttsCache,
             vehicle = vehicle,
+            navigation = navigation,
             scope = scope,
             debugBuild = debugBuild,
         )
@@ -713,6 +731,60 @@ class VoiceEngineTest {
         assertEquals(listOf("已为您把空调调到24度"), requested, "TTS 请求文本 = ActionReply 的 speakText")
         assertEquals(1, played.size, "TTS 返回音频 → 播放")
         assertArrayEquals(ttsAudio.data, played[0].data)
+    }
+
+    @Test
+    fun `cloud navigate action reply opens amap navi uri and speaks speakText`() {
+        val opened = mutableListOf<String>()
+        val requested = mutableListOf<String>()
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner {
+                    com.autovoice.voicecore.ActionReply(
+                        intent = navigateIntent("杭州东站", 30.2896, 120.2108),
+                        speakText = "好的，已为您规划去杭州东站的导航",
+                    )
+                },
+                tts = TtsRequester { requested.add(it); null },
+                navigation = NavigationExecutor { uri -> opened.add(uri); true },
+            )
+            engine = pair.first
+            utter(engine)
+        }
+        // spec §4.2 URI 形状：androidamap://navi?sourceApplication=autovoice&poiname=<编码>&lat=<纬度>&lon=<经度>
+        assertEquals(1, opened.size, "应拉起一次高德导航")
+        assertEquals(
+            "androidamap://navi?sourceApplication=autovoice" +
+                "&poiname=%E6%9D%AD%E5%B7%9E%E4%B8%9C%E7%AB%99&lat=30.2896&lon=120.2108",
+            opened[0],
+        )
+        assertEquals(listOf("好的，已为您规划去杭州东站的导航"), requested, "speakText 走网络 TTS")
+    }
+
+    @Test
+    fun `navigate intent with missing slots is skipped and does not open amap`() {
+        val opened = mutableListOf<String>()
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner {
+                    com.autovoice.voicecore.ActionReply(
+                        intent = navigateIntent("", 0.0, 0.0), // poiname 空白 = 槽位缺失
+                        speakText = "好的，已为您打开导航",
+                    )
+                },
+                tts = TtsRequester { null },
+                navigation = NavigationExecutor { uri -> opened.add(uri); true },
+            )
+            engine = pair.first
+            utter(engine)
+        }
+        assertEquals(0, opened.size, "缺 poiname 不拉起高德")
     }
 
     @Test

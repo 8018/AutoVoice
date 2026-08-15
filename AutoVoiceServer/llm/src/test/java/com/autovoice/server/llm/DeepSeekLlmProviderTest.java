@@ -116,6 +116,36 @@ class DeepSeekLlmProviderTest {
     }
 
     @Test
+    void chatParsesNavigateToolCallIntoActionReply() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(fixture("deepseek-llm-navigate-call.json")));
+
+        Reply reply = provider.chat("导航去杭州东站", ctx("s1")).get(5, TimeUnit.SECONDS);
+
+        // tool_calls[0].function.arguments → navigate action 回复（speakText 模板生成）
+        assertEquals("action", reply.kind());
+        assertNotNull(reply.intent());
+        assertEquals("navigation", reply.intent().domain());
+        assertEquals("navigate", reply.intent().intent());
+        assertEquals("杭州东站", reply.intent().slots().get("poiname").value());
+        assertEquals(30.2896, ((Number) reply.intent().slots().get("lat").value()).doubleValue(), 0.0001);
+        assertEquals(120.2108, ((Number) reply.intent().slots().get("lon").value()).doubleValue(), 0.0001);
+        assertEquals("llm.navigate", reply.intent().source());
+        assertEquals("好的，已为您规划去杭州东站的导航", reply.speakText());
+
+        // 请求体必须携带两个终局工具（car_control + navigate）
+        RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
+        JsonNode body = mapper.readTree(req.getBody().readUtf8());
+        JsonNode tools = body.path("tools");
+        assertTrue(tools.isArray());
+        assertEquals(2, tools.size());
+        assertEquals("car_control", tools.get(0).path("function").path("name").asText());
+        assertEquals("navigate", tools.get(1).path("function").path("name").asText());
+    }
+
+    @Test
     void chatRecordsLlmTelemetryEvent() throws Exception {
         server.enqueue(new MockResponse()
                 .setResponseCode(200)

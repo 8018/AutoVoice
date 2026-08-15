@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://autovoice/shared/intent.schema.json",
   "title": "CanonicalIntent",
+  "$comment": "约定（spec 2026-08-15-amap-mcp-fuzzy-navigation-design §4.2）：导航意图 domain=navigation、intent=navigate，slots 携带 poiname(string 目的地名称)、lat(number)、lon(number)；端侧 NavigationExecutor 据此构建 androidamap://navi URI 拉起高德 App。",
   "type": "object",
   "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
   "properties": {

@@ -40,15 +40,17 @@ import java.util.function.Supplier;
  *
  * <p>多轮工具循环（spec §6）：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。第 1-2 次带 tools
  * （toolLoopBudgetMs 预算内）；第 3 次（最后）不带 tools 强制直答。每轮前检查
- * {@code now - start > budget} → 后续调用不带 tools。模型调用 {@code car_control} → 立即终局
- * （action 回复，不续轮）；MCP 工具 → {@link ToolExecutor#execute}（异常 → 错误文本作为
- * tool_result 回 LLM 续轮）；无 tools 的调用仍返回 tool_calls → {@link LlmException}。</p>
+ * {@code now - start > budget} → 后续调用不带 tools。模型调用终局工具（{@code car_control} /
+ * {@code navigate}）→ 立即终局（action 回复，不续轮）；MCP 工具 → {@link ToolExecutor#execute}
+ * （异常 → 错误文本作为 tool_result 回 LLM 续轮）；无 tools 的调用仍返回 tool_calls →
+ * {@link LlmException}。</p>
  *
  * <p>响应解析（两条路）：</p>
  * <ul>
- *   <li>模型调用 {@code car_control} 工具 → 解析 {@code tool_calls[].function.arguments}
- *       JSON（domain/action/temperature）→ {@link Intent} → {@link Reply#ofAction(Intent, String)}
- *       （speakText 按 domain/action 模板生成，不依赖模型自由文本）；</li>
+ *   <li>模型调用终局工具 → 解析 {@code tool_calls[].function.arguments} JSON
+ *       （car_control: domain/action/temperature；navigate: poiname/lat/lon）→ {@link Intent}
+ *       → {@link Reply#ofAction(Intent, String)}（speakText 按 domain/action 模板生成，
+ *       不依赖模型自由文本）；</li>
  *   <li>无工具调用（闲聊/拒识）→ {@code choices[0].message.content} →
  *       {@link Reply#ofText(String)}。</li>
  * </ul>
@@ -80,11 +82,22 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     /** 车控 skill：结构化语义由模型以工具调用产出（skill 定义见 {@link #defaultTools()}）。 */
     static final String TOOL_NAME = "car_control";
 
+    /** 导航 skill：目的地由模型以工具调用产出（spec §4.2）。 */
+    static final String NAVIGATE_TOOL_NAME = "navigate";
+
     /** intent.source 值：LLM 工具调用产出的意图。 */
     static final String INTENT_SOURCE = "llm.car_control";
 
+    /** navigate intent 的 source 值。 */
+    static final String NAVIGATE_INTENT_SOURCE = "llm.navigate";
+
     /** 槽位名（与端侧 RuleNluProvider / shared contracts 对齐）。 */
     static final String SLOT_TEMPERATURE = SpeakTexts.SLOT_TEMPERATURE;
+
+    /** 导航槽位名（与 intent.schema.json 的 navigate action 对齐）。 */
+    static final String SLOT_POINAME = SpeakTexts.SLOT_POINAME;
+    static final String SLOT_LAT = "lat";
+    static final String SLOT_LON = "lon";
 
     static final String HEADER_AUTHORIZATION = "Authorization";
 
@@ -102,6 +115,15 @@ public final class DeepSeekLlmProvider implements LlmProvider {
             "required":["domain","action"]}
             """;
 
+    /** OpenAI 兼容 tools 定义：navigate（poiname/lat/lon）的 parameters 对象文本。 */
+    private static final String NAVIGATE_PARAMETERS_JSON = """
+            {"type":"object","properties":{
+            "poiname":{"type":"string","description":"导航目的地名称"},
+            "lat":{"type":"number","description":"目的地纬度"},
+            "lon":{"type":"number","description":"目的地经度"}},
+            "required":["poiname","lat","lon"]}
+            """;
+
     private final OkHttpClient client;
     private final String apiKey;
     private final String endpoint;
@@ -117,13 +139,16 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     private final Supplier<String> systemPrompt;
 
     /**
-     * 默认工具集：仅 car_control 车控 skill。
+     * 默认工具集：car_control 车控 skill + navigate 导航 skill。
      *
-     * @return 单个 {@link FunctionTool}（car_control）
+     * @return 两个终局 {@link FunctionTool}
      */
     public static List<FunctionTool> defaultTools() {
-        return List.of(new FunctionTool(TOOL_NAME, "执行车载控制指令（开关空调、调节温度等）",
-                CAR_CONTROL_PARAMETERS_JSON));
+        return List.of(
+                new FunctionTool(TOOL_NAME, "执行车载控制指令（开关空调、调节温度等）",
+                        CAR_CONTROL_PARAMETERS_JSON),
+                new FunctionTool(NAVIGATE_TOOL_NAME, "发起去往目的地的导航（需目的地名称与经纬度）",
+                        NAVIGATE_PARAMETERS_JSON));
     }
 
     /**
@@ -225,8 +250,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
             if (!toolCalls.isArray() || toolCalls.isEmpty()) {
                 return textReply(message);
             }
-            if (isCarControl(toolCalls)) {
-                return carControlReply(toolCalls);   // 终局：action 回复
+            if (isTerminalTool(toolCalls)) {
+                return terminalReply(toolCalls);   // 终局：action 回复
             }
             if (tools.isEmpty()) {
                 throw new LlmException("deepseek llm called tool without tools enabled");
@@ -290,10 +315,11 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         return Reply.ofText(content.asText());
     }
 
-    /** tool_calls 中任一 function.name == car_control。 */
-    private static boolean isCarControl(JsonNode toolCalls) {
+    /** tool_calls 中任一 function.name 是终局工具（car_control / navigate）。 */
+    private static boolean isTerminalTool(JsonNode toolCalls) {
         for (JsonNode tc : toolCalls) {
-            if (TOOL_NAME.equals(tc.path("function").path("name").asText(""))) {
+            String name = tc.path("function").path("name").asText("");
+            if (TOOL_NAME.equals(name) || NAVIGATE_TOOL_NAME.equals(name)) {
                 return true;
             }
         }
@@ -301,32 +327,57 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     }
 
     /**
-     * 解析 tool_calls 中第一个 car_control → action 回复（多工具混合时优先 car_control 终局，
-     * 忽略其他工具调用）。
+     * 终局工具分发：car_control / navigate 均解析第一个对应工具调用 → action 回复
+     * （多工具混合时按调用顺序优先终局，忽略其他工具调用）。
      */
-    private static Reply carControlReply(JsonNode toolCalls) throws IOException {
+    private static Reply terminalReply(JsonNode toolCalls) throws IOException {
         for (JsonNode tc : toolCalls) {
             String name = tc.path("function").path("name").asText("");
-            if (!TOOL_NAME.equals(name)) {
-                continue;
-            }
             String arguments = tc.path("function").path("arguments").asText("");
-            JsonNode args = MAPPER.readTree(arguments);
-            String domain = args.path("domain").asText("");
-            String action = args.path("action").asText("");
-            if (domain.isBlank() || action.isBlank()) {
-                throw new LlmException("deepseek llm car_control missing domain/action: " + arguments);
+            if (TOOL_NAME.equals(name)) {
+                return carControlReply(arguments);
             }
-            Map<String, SlotValue> slots = new LinkedHashMap<>();
-            JsonNode temperature = args.path("temperature");
-            if (temperature.isNumber()) {
-                slots.put(SLOT_TEMPERATURE, SlotValue.number(temperature.asDouble()));
+            if (NAVIGATE_TOOL_NAME.equals(name)) {
+                return navigateReply(arguments);
             }
-            Intent intent = Intent.of("1.0", domain, action, slots, 1.0, INTENT_SOURCE, arguments);
-            return Reply.ofAction(intent, SpeakTexts.speak(intent));
         }
         throw new LlmException("deepseek llm called unexpected tool: "
                 + toolCalls.path(0).path("function").path("name").asText(""));
+    }
+
+    /** 解析 car_control arguments（domain/action/temperature）→ action 回复。 */
+    private static Reply carControlReply(String arguments) throws IOException {
+        JsonNode args = MAPPER.readTree(arguments);
+        String domain = args.path("domain").asText("");
+        String action = args.path("action").asText("");
+        if (domain.isBlank() || action.isBlank()) {
+            throw new LlmException("deepseek llm car_control missing domain/action: " + arguments);
+        }
+        Map<String, SlotValue> slots = new LinkedHashMap<>();
+        JsonNode temperature = args.path("temperature");
+        if (temperature.isNumber()) {
+            slots.put(SLOT_TEMPERATURE, SlotValue.number(temperature.asDouble()));
+        }
+        Intent intent = Intent.of("1.0", domain, action, slots, 1.0, INTENT_SOURCE, arguments);
+        return Reply.ofAction(intent, SpeakTexts.speak(intent));
+    }
+
+    /** 解析 navigate arguments（poiname/lat/lon）→ navigation/navigate action 回复（spec §4.2）。 */
+    private static Reply navigateReply(String arguments) throws IOException {
+        JsonNode args = MAPPER.readTree(arguments);
+        String poiname = args.path("poiname").asText("");
+        JsonNode lat = args.path("lat");
+        JsonNode lon = args.path("lon");
+        if (poiname.isBlank() || !lat.isNumber() || !lon.isNumber()) {
+            throw new LlmException("deepseek llm navigate missing poiname/lat/lon: " + arguments);
+        }
+        Map<String, SlotValue> slots = new LinkedHashMap<>();
+        slots.put(SLOT_POINAME, SlotValue.stringValue(poiname));
+        slots.put(SLOT_LAT, SlotValue.number(lat.asDouble()));
+        slots.put(SLOT_LON, SlotValue.number(lon.asDouble()));
+        Intent intent = Intent.of("1.0", "navigation", "navigate", slots, 1.0,
+                NAVIGATE_INTENT_SOURCE, arguments);
+        return Reply.ofAction(intent, SpeakTexts.speak(intent));
     }
 
     /**

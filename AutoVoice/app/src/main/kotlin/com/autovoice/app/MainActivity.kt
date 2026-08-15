@@ -48,9 +48,11 @@ class MainActivity : ComponentActivity() {
             }
 
             // 启动即申请权限：录音 + Android 13+ 媒体（照片/视频，等价 demo 的 XXPermissions 行为）
+            // + 定位（高德导航 §4.2：导航启动参数/附近搜索上下文）
             LaunchedEffect(Unit) {
                 val permissions = buildList {
                     add(Manifest.permission.RECORD_AUDIO)
+                    add(Manifest.permission.ACCESS_FINE_LOCATION)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         add(Manifest.permission.READ_MEDIA_IMAGES)
                         add(Manifest.permission.READ_MEDIA_VIDEO)

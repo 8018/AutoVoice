@@ -20,6 +20,10 @@
          READ_MEDIA_*，demo 的 XXPermissions 申请照片+视频，这里等价声明 + 运行时请求） -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- 定位（高德导航 §4.2）：导航启动参数/附近搜索上下文；运行时申请（Manifest 编译期
+         不需要 ACCESS_COARSE_LOCATION 也能用 FINE，但语义上二者并列声明，精确/粗略随授权粒度） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- usesCleartextTraffic：网关走明文 ws://（局域网/部署机，Task 51 真机验收修复）——
          Android 9+ 默认禁 cleartext，okhttp 在 TCP 前即拒绝，manifest 必须显式放行 -->

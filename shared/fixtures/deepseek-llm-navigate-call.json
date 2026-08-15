@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-3",
+  "object": "chat.completion",
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call-2",
+            "type": "function",
+            "function": {
+              "name": "navigate",
+              "arguments": "{\"poiname\":\"杭州东站\",\"lat\":30.2896,\"lon\":120.2108}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 32,
+    "completion_tokens": 22,
+    "total_tokens": 54
+  }
+}

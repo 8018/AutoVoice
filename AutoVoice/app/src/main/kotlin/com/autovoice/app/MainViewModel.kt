@@ -2,6 +2,8 @@ package com.autovoice.app
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent as AndroidIntent
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -338,6 +340,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ttsPlayer.play(reply)
             },
             vehicle = vehicleState,
+            // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；
+            // 未安装/无处理 Activity 时 runCatching 吞掉异常返回 false（记 skipped）
+            navigation = NavigationExecutor { uri ->
+                runCatching {
+                    getApplication<Application>().startActivity(
+                        AndroidIntent(AndroidIntent.ACTION_VIEW, Uri.parse(uri))
+                            .addFlags(AndroidIntent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    true
+                }.getOrDefault(false)
+            },
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
             onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },

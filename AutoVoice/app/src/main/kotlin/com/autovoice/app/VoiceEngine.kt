@@ -111,6 +111,11 @@ class VoiceEngine(
      */
     private val ttsCache: TtsCache = TtsCache(null),
     val vehicle: MockVehicleState,
+    /**
+     * 导航执行器（spec §4.2）：navigation/navigate 意图不走 vehicle，转高德 URI 拉起高德 App。
+     * null（测试/未装配）时导航意图记 skipped。
+     */
+    private val navigation: NavigationExecutor? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val onVehicleApplied: () -> Unit = {},
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
@@ -389,21 +394,24 @@ class VoiceEngine(
         }
     }
 
-    /** 车控执行：apply 成功（非未知意图）后通知应用层刷新车辆面板快照（T7：execute 事件）。 */
+    /**
+     * 意图执行（spec §4.2 起按域分发）：navigation 域 → [NavigationExecutor] 拉起高德 App
+     * （成功记 applied，未安装/失败记 skipped）；其余 → vehicle.apply（apply 成功即非未知
+     * 意图，通知应用层刷新车辆面板快照）。两路均记 T7 execute 事件。
+     */
     private fun applyAndNotify(intent: Intent) {
-        if (vehicle.apply(intent) != null) {
-            telemetry.record(
-                TelemetryStages.EXECUTE,
-                "info",
-                mapOf("intent" to intentSummary(intent), "result" to "applied"),
-            )
-            onVehicleApplied()
+        val applied = if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
+            navigation?.execute(intent) ?: false
         } else {
-            telemetry.record(
-                TelemetryStages.EXECUTE,
-                "info",
-                mapOf("intent" to intentSummary(intent), "result" to "skipped"),
-            )
+            vehicle.apply(intent) != null
+        }
+        telemetry.record(
+            TelemetryStages.EXECUTE,
+            "info",
+            mapOf("intent" to intentSummary(intent), "result" to if (applied) "applied" else "skipped"),
+        )
+        if (applied && intent.domain != NavigationExecutor.DOMAIN_NAVIGATION) {
+            onVehicleApplied()
         }
     }
 
@@ -457,6 +465,8 @@ class VoiceEngine(
             scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             onVehicleApplied: () -> Unit = {},
             onLocalRecognized: (String?) -> Unit = {},
+            /** 导航执行器（spec §4.2）：null → 导航意图记 skipped。 */
+            navigation: NavigationExecutor? = null,
         ): VoiceEngine {
             // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
             // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
@@ -544,6 +554,7 @@ class VoiceEngine(
                 ttsCache = ttsCache, // 缓存移回端侧：查缓存命中直接播，未命中才走网络
                 player = player,
                 vehicle = vehicle,
+                navigation = navigation,
                 scope = scope,
                 onVehicleApplied = onVehicleApplied,
                 onLocalRecognized = onLocalRecognized,
