@@ -22,6 +22,12 @@ class OnDeviceRaceArbiterTest {
         slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
     )
 
+    /** 车窗开关意图（能力分级 2026-08-15）：端侧命令词直接胜出触发条件。 */
+    private fun windowIntent() = Intent(
+        schemaVersion = "1.0", domain = "window", intent = "power_on",
+        slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
+    )
+
     @Test fun `cloud first wins`() = runBlocking {
         val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 2000, sink = sink)
         val cloud = CompletableDeferred<Reply>().also { it.complete(TextReply("hi")) }
@@ -201,6 +207,97 @@ class OnDeviceRaceArbiterTest {
         uid = "utt-2"
         val w = race.await()
         assertTrue(w is RaceWinner.Intercepted, "过期轮的本地语义应被拦截")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Lost("local", "not_latest_round"),
+            ),
+            events,
+        )
+        assertEquals(0, entries.size, "拦截不写决策")
+    }
+
+    // ------------------------------------------------------ 能力分级（2026-08-15）：本地车窗直接胜出
+
+    /** 本地车窗开关到达 → 立即胜出（不等云端超时）：reason = local_command_won。 */
+    @Test fun `window command wins immediately without waiting for cloud`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 2000, sink = sink, onEvent = { events.add(it) })
+        val cloud = CompletableDeferred<Reply>() // 永不完成——若等云端则 2s 超时
+        val local = CompletableDeferred<Intent>().also { it.complete(windowIntent()) }
+        val start = System.currentTimeMillis()
+        val w = arbiter.race(cloud, local)
+        val elapsed = System.currentTimeMillis() - start
+        assertTrue(w is RaceWinner.Local, "车窗命令应立即胜出，不等云端超时")
+        assertTrue(elapsed < 500, "应远小于 cloudWaitMs=2000（elapsed=${elapsed}ms）")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Won("local", "local_command"),
+            ),
+            events,
+        )
+        assertEquals("local_command_won", entries.last().reason)
+    }
+
+    /** 本地车窗与云端同时完成 → select 按注册顺序先检查本地：本地胜出，云端记 command_already_won。 */
+    @Test fun `window command beats simultaneously arrived cloud`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 2000, sink = sink, onEvent = { events.add(it) })
+        val cloud = CompletableDeferred<Reply>().also { it.complete(TextReply("云端回复")) }
+        val local = CompletableDeferred<Intent>().also { it.complete(windowIntent()) }
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Local, "本地车窗分支先注册，同时完成时本地胜出")
+        assertEquals("window", (w as RaceWinner.Local).intent.domain)
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Won("local", "local_command"),
+                OnDeviceArbiterEvent.Received("cloud"),
+                OnDeviceArbiterEvent.Lost("cloud", "command_already_won"),
+            ),
+            events,
+        )
+        assertEquals("local_command_won", entries.last().reason)
+    }
+
+    /** 本地 unknown 先到不参与胜出——云端窗口内到达仍云端胜出（云端优先）。 */
+    @Test fun `unknown local does not short-circuit cloud within window`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val arbiter = OnDeviceRaceArbiter(cloudWaitMs = 500, sink = sink, onEvent = { events.add(it) })
+        val cloud = async { delay(100); TextReply("云端回复") }
+        val local = async { delay(10); Intent.unknown("rule.nlu") }
+        val w = arbiter.race(cloud, local)
+        assertTrue(w is RaceWinner.Cloud, "本地 unknown 不参与胜出，云端窗口内到达应云端胜出")
+        assertEquals(
+            listOf(
+                OnDeviceArbiterEvent.Received("cloud"),
+                OnDeviceArbiterEvent.Won("cloud", "priority"),
+                OnDeviceArbiterEvent.Received("local"),
+                OnDeviceArbiterEvent.Lost("local", "cloud_already_won"),
+            ),
+            events,
+        )
+        assertEquals("cloud_won", entries.last().reason)
+    }
+
+    /** B2：本地车窗命令到达时轮已过期 → lost(local, not_latest_round) + Intercepted。 */
+    @Test fun `stale window command is intercepted with not_latest_round`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        var uid = "utt-1"
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 2000,
+            localFallbackMs = 2000,
+            sink = sink,
+            utteranceId = { uid },
+            onEvent = { events.add(it) },
+        )
+        val cloud = CompletableDeferred<Reply>() // 永不完成
+        val race = async { arbiter.race(cloud, async { delay(50); windowIntent() }) }
+        delay(10) // 让 race 先快照（utt-1）
+        uid = "utt-2" // 竞速中：新一轮 vad start 产生新 utteranceId
+        val w = race.await()
+        assertTrue(w is RaceWinner.Intercepted, "过期轮的车窗命令应被拦截")
         assertEquals(
             listOf(
                 OnDeviceArbiterEvent.Received("local"),

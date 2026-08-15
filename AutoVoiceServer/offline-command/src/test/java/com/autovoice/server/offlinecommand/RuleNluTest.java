@@ -28,9 +28,11 @@ class RuleNluTest {
     }
 
     @Test
-    void powerOnWindow() {
+    void powerOnWindowFallsBackToMisc() {
+        // 能力分级（2026-08-15）：云端命令词只负责空调——车窗别名已删除，
+        // "打开车窗" 兜底 misc/power_on（云端仲裁器视为非空调命中，走 LLM 优先路径）
         Intent i = RuleNlu.understand("打开车窗");
-        assertEquals("window", i.domain());
+        assertEquals("misc", i.domain());
         assertEquals("power_on", i.intent());
     }
 

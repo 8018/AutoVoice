@@ -63,6 +63,13 @@ data class Intent(
     /** 未识别意图（兜底路由）标记。 */
     fun isUnknown(): Boolean = intent == INTENT_UNKNOWN
 
+    /**
+     * 车窗开关命令（能力分级 2026-08-15）：端侧命令词只负责车窗打开/关闭，
+     * 端云仲裁器收到此意图直接胜出，不等云端超时。
+     */
+    fun isWindowPower(): Boolean =
+        domain == "window" && (intent == "power_on" || intent == "power_off")
+
     companion object {
         const val INTENT_UNKNOWN = "unknown"
 

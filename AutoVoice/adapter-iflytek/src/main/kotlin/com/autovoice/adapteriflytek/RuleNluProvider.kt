@@ -19,19 +19,18 @@ object RuleNluProvider {
 
     /**
      * 领域别名表：命令文本包含别名 → 领域。
-     * 例："空调"→climate（空调域）、"车窗"→window（车窗域）。
+     * 能力分级（2026-08-15）：端侧命令词只负责车窗；空调归云端命令词。
+     * 例："车窗"→window（车窗域）。
      */
     val DOMAIN_ALIASES: Map<String, String> = linkedMapOf(
-        "空调" to "climate",
         "车窗" to "window",
     )
 
     /**
      * 意图规则表：命中任一关键词即匹配该意图。
-     * [extractNumber] 为 true 时用正则提取首个数字 → temperature 槽位。
+     * 能力分级：端侧只留车窗开关（power_on/power_off）；空调调温归云端命令词。
      */
     val INTENT_RULES: List<IntentRule> = listOf(
-        IntentRule(intent = "set_temperature", keywords = setOf("调到", "调至"), extractNumber = true),
         IntentRule(intent = "power_on", keywords = setOf("打开")),
         IntentRule(intent = "power_off", keywords = setOf("关闭")),
     )

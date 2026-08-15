@@ -3,6 +3,7 @@ package com.autovoice.server.arbitration;
 import com.autovoice.server.contracts.ArbiterDecision;
 import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
+import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
@@ -20,8 +21,10 @@ import java.util.function.BiConsumer;
  *
  * <p>收敛规则（spec §5.2 修订，离线命令词为"传统链路"）：</p>
  * <ul>
- *   <li><b>offline 命中</b>（识别到命令词且规则映射非 unknown）→ 立即胜出，不等 LLM
- *       （route = {@code nlu-traditional}，reason = {@code offline_won}）；</li>
+ *   <li><b>offline 命中</b>（识别到命令词且规则映射非 unknown，且是空调控制
+ *       ——能力分级 2026-08-15：云端命令词只负责空调，见 {@link #isAirConControl}）
+ *       → 立即胜出，不等 LLM（route = {@code nlu-traditional}，reason =
+ *       {@code offline_won}）；非空调命中按未命中处理，走 LLM 优先路径；</li>
  *   <li><b>LLM 到达</b>：若 offline 已完成（无论命中与否）→ LLM 立即胜出；否则起
  *       {@code offlineGraceMs} 宽限期等 offline——宽限期内 offline 命中 → 离线胜出，
  *       到点未命中 → LLM 胜出（reason = {@code llm_reply}）；</li>
@@ -90,10 +93,13 @@ public final class RaceArbiter {
         AtomicBoolean settled = new AtomicBoolean(false);
 
         // 候选 1：离线命令命中 → 立即胜出，不等 LLM。
+        // 能力分级（2026-08-15）：只认空调控制（climate 域 power_on/power_off/
+        // set_temperature）——非空调命中（window/misc/防御）按未命中处理：不发事件、
+        // 不参与 CAS，走 LLM 优先路径。
         // 注意：不再以 settled 提前 return——迟到 offline（LLM 已胜出后命中）也要发
         // received（收到 asr 命令词）+ lost（llm_already_won）事件；决策仍由 CAS 守卫。
         offline.whenComplete((hit, err) -> {
-            if (err != null || hit == null) return; // 未命中/失败不发事件，不是候选
+            if (err != null || hit == null || !isAirConControl(hit.intent())) return;
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_NLU_TRADITIONAL));
             if (settled.compareAndSet(false, true)) {
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
@@ -134,6 +140,17 @@ public final class RaceArbiter {
             }
         }, safetyTimeoutMs, TimeUnit.MILLISECONDS);
         return out;
+    }
+
+    /**
+     * 能力分级（2026-08-15）：云端命令词只负责空调——空调控制（climate 域
+     * power_on / power_off / set_temperature）命中才直接胜出；其他领域命中
+     * （window/misc 等）视为未命中，走 LLM 优先路径。
+     */
+    private static boolean isAirConControl(Intent i) {
+        if (!"climate".equals(i.domain())) return false;
+        String intent = i.intent();
+        return "power_on".equals(intent) || "power_off".equals(intent) || "set_temperature".equals(intent);
     }
 
     /**

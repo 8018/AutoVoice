@@ -28,7 +28,8 @@ public final class RuleNlu {
 
     /**
      * 领域别名表：命令文本包含别名 → 领域（插入序保序，与端侧 linkedMapOf 对齐）。
-     * 例："空调"→climate（空调域）、"车窗"→window（车窗域）。
+     * 能力分级（2026-08-15）：云端命令词只负责空调；车窗归端侧命令词。
+     * 例："空调"→climate（空调域，含打开/关闭/调温）。
      */
     public static final Map<String, String> DOMAIN_ALIASES = aliases();
 
@@ -53,7 +54,6 @@ public final class RuleNlu {
     private static LinkedHashMap<String, String> aliases() {
         LinkedHashMap<String, String> map = new LinkedHashMap<>();
         map.put("空调", "climate");
-        map.put("车窗", "window");
         return map;
     }
 

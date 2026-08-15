@@ -8,6 +8,7 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.SlotValue;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -55,6 +56,15 @@ class RaceArbiterTest {
 
     static OfflineCommandHit hit(String text) {
         return new OfflineCommandHit(text, powerOnIntent());
+    }
+
+    static Intent windowPowerIntent() {
+        return Intent.of("1.0", "window", "power_on", Map.of(), 1.0, "test", null);
+    }
+
+    static Intent setTemperatureIntent(double degrees) {
+        return Intent.of("1.0", "climate", "set_temperature",
+                Map.of("temperature", SlotValue.number(degrees)), 1.0, "test", null);
     }
 
     CompletableFuture<OfflineCommandHit> offlineAt(long delayMs, OfflineCommandHit value) {
@@ -117,6 +127,54 @@ class RaceArbiterTest {
         ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("offline_won", d.reason());
         assertEquals(1, log.size());
+    }
+
+    // ------------------------------------------------ 能力分级（2026-08-15）：仅空调控制直接胜出
+
+    @Test
+    void airconSetTemperatureOfflineWins() {
+        // 调温（set_temperature）也是空调控制 → 直接胜出（offline_won）
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(
+                new OfflineCommandHit("空调调到26度", setTemperatureIntent(26.0)));
+        ArbiterDecision d = arbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
+        assertEquals("offline_won", d.reason());
+        assertEquals("空调调到26度", d.offlineText());
+        assertEquals("climate", d.reply().intent().domain());
+        assertEquals("set_temperature", d.reply().intent().intent());
+        assertEquals(1, log.size());
+        assertEquals("nlu-traditional", log.get(0).route());
+    }
+
+    @Test
+    void nonAirconOfflineHitDefersToLlm() {
+        // 非空调命中（window/misc）按未命中处理：不发 received 事件、不参与胜出，
+        // 离线已完成 → LLM 到达即胜出（不花宽限期），reason = llm_reply
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(
+                new OfflineCommandHit("打开车窗", windowPowerIntent()));
+        long start = System.currentTimeMillis();
+        ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
+        long elapsed = System.currentTimeMillis() - start;
+        assertEquals("llm_reply", d.reason());
+        assertEquals("LLM回答", d.reply().text());
+        assertNull(d.offlineText());
+        assertTrue(elapsed < GRACE, "离线已完成（非空调命中）时 LLM 应立即胜出（elapsed=" + elapsed + "ms）");
+        assertEquals(1, log.size());
+        assertEquals("llm_reply", log.get(0).reason());
+        sleep(50); // 等可能迟到的事件回调（sched 线程）
+        assertEvents(
+                "utt-42|received(llm)",
+                "utt-42|won(llm,priority,llm_reply)");
+    }
+
+    @Test
+    void nonAirconOfflineHitLlmErrorFallsBackToSafety() {
+        // 非空调命中 + LLM 失败 → 无候选收敛，safety 兜底
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(
+                new OfflineCommandHit("打开车窗", windowPowerIntent()));
+        ArbiterDecision d = eventArbiter.decide(offline, llmError(10).chat("x", ctx), ctx, "utt-42").join();
+        assertEquals("safety_timeout", d.reason());
+        assertEquals(1, log.size());
+        assertEvents("utt-42|won(llm,llm_timeout,safety_timeout)");
     }
 
     // ------------------------------------------------------------ LLM 胜出
