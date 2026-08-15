@@ -30,6 +30,12 @@ public final class McpDiscoveryClient {
         HttpClientStreamableHttpTransport.Builder tb = HttpClientStreamableHttpTransport
                 .builder(mcpUrl)
                 .connectTimeout(Duration.ofMillis(connectTimeoutMs));
+        // SDK 2.0.0：所有请求走 resolveUri(base, "/mcp")，Java URI.resolve 会丢弃 base 的
+        // query——URL 带 query 参数（如高德 ?key=）时 key 全部丢失，服务器报 INVALID_USER_KEY。
+        // 修复：query 存在时把 endpoint 设为带 query 的绝对 URL，resolve 后 query 保留。
+        if (URI.create(mcpUrl).getRawQuery() != null) {
+            tb.endpoint(mcpUrl);
+        }
         if (authHeader != null && !authHeader.isBlank()) {
             String header = authHeader;
             String value = authValue == null ? "" : authValue;

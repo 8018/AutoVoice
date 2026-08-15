@@ -38,8 +38,8 @@ import java.util.function.Supplier;
  * （system 提示词 + user 文本，工具轮追加 assistant tool_calls / tool 结果消息）
  * + {@code tools}（car_control skill + 注入的 MCP 工具）+ {@code stream:false}。</p>
  *
- * <p>多轮工具循环（spec §6）：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。第 1-2 次带 tools
- * （toolLoopBudgetMs 预算内）；第 3 次（最后）不带 tools 强制直答。每轮前检查
+ * <p>多轮工具循环（spec §6）：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。第 1-N-1 次带 tools
+ * （toolLoopBudgetMs 预算内）；第 N 次（最后）不带 tools 强制直答。每轮前检查
  * {@code now - start > budget} → 后续调用不带 tools。模型调用终局工具（{@code car_control} /
  * {@code navigate}）→ 立即终局（action 回复，不续轮）；MCP 工具 → {@link ToolExecutor#execute}
  * （异常 → 错误文本作为 tool_result 回 LLM 续轮）；无 tools 的调用仍返回 tool_calls →
@@ -65,11 +65,13 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     /** DeepSeek OpenAI 兼容端点默认地址。 */
     public static final String DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 
-    /** 工具循环预算（毫秒）：起算于首次 LLM 调用，超时后后续调用不再带 tools。 */
-    public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 5_000;
+    /** 工具循环预算（毫秒）：起算于首次 LLM 调用，超时后后续调用不再带 tools。
+     *  10000：模糊地点导航最多 4 次工具轮（search 未命中重试 → geo → navigate），留足预算。 */
+    public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 10_000;
 
-    /** 单次 chat 的最大 LLM 调用轮数（最后 1 轮不带 tools 强制直答）。 */
-    static final int MAX_LLM_ROUNDS = 3;
+    /** 单次 chat 的最大 LLM 调用轮数（最后 1 轮不带 tools 强制直答）。
+     *  5：高德 text_search 不返回坐标，模糊地名需 search(可重试) → geo 取坐标 → navigate 最多 4 次工具轮。 */
+    static final int MAX_LLM_ROUNDS = 5;
 
     /** OpenAI 兼容 model 名。 */
     static final String MODEL = "deepseek-chat";
@@ -264,7 +266,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
                 messages.add(toolResultMessage(id, runTool(name, args)));
             }
         }
-        // 不可达（第 3 轮必走上方 return/LlmException 分支：最后一轮 tools 为空，
+        // 不可达（最后一轮必走上方 return/LlmException 分支：最后一轮 tools 为空，
         // tool_calls 非空即抛 LlmException）——仅为编译器可达性，轮数契约见 MAX_LLM_ROUNDS
         throw new LlmException("deepseek llm tool loop ended without terminal result");
     }
