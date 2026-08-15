@@ -146,6 +146,37 @@ class DeepSeekLlmProviderTest {
     }
 
     @Test
+    void chatParsesNavigateWaypointsIntoActionReply() throws Exception {
+        // 多目的地（先去A再去B）：navigate 工具调用带 waypoints 数组
+        String arguments = "{\"poiname\":\"大旗杆\",\"lat\":38.8731,\"lon\":115.4737,"
+                + "\"waypoints\":[{\"poiname\":\"爱情广场\",\"lat\":38.8654,\"lon\":115.4696}]}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,"
+                        + "\"tool_calls\":[{\"id\":\"call-2\",\"type\":\"function\","
+                        + "\"function\":{\"name\":\"navigate\",\"arguments\":"
+                        + mapper.writeValueAsString(arguments) + "}}]}}]}"));
+
+        Reply reply = provider.chat("导航去爱情广场再去大旗杆", ctx("s1")).get(5, TimeUnit.SECONDS);
+
+        // 终点槽照常 + waypoints → string 槽（JSON 文本：SlotValue 无数组类型，
+        // 端侧 parseSlots 对数组 value 直接丢弃，string 槽全链路无损）
+        assertEquals("action", reply.kind());
+        assertEquals("navigation", reply.intent().domain());
+        assertEquals("navigate", reply.intent().intent());
+        assertEquals("大旗杆", reply.intent().slots().get("poiname").value());
+        JsonNode waypoints = mapper.readTree((String) reply.intent().slots().get("waypoints").value());
+        assertTrue(waypoints.isArray());
+        assertEquals(1, waypoints.size());
+        assertEquals("爱情广场", waypoints.get(0).path("poiname").asText());
+        assertEquals(38.8654, waypoints.get(0).path("lat").asDouble(), 0.0001);
+        assertEquals(115.4696, waypoints.get(0).path("lon").asDouble(), 0.0001);
+        // 话术：多途经点 → "先去A再去B的导航"
+        assertEquals("好的，已为您规划先去爱情广场再去大旗杆的导航", reply.speakText());
+    }
+
+    @Test
     void chatRecordsLlmTelemetryEvent() throws Exception {
         server.enqueue(new MockResponse()
                 .setResponseCode(200)

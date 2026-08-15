@@ -17,7 +17,9 @@ autovoice:
     # 未配置/空 → 空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
   arbitration:
-    safety-timeout-ms: 6500
+    # 15000：多目的地导航（先去A再去B）LLM 5-7 轮工具循环实测 7-14s，需放宽 hard 上限；
+    # 空调/单目的地轮不受影响（秒级收敛，safety 只兜 LLM 卡死/超长）。
+    safety-timeout-ms: 15000
     offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）
   offline:
     enabled: ${AUTOVOICE_OFFLINE_ENABLED:false}   # 阿里云部署置 true；Mac 本地保持 false（老链路）

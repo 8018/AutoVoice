@@ -290,6 +290,7 @@
 | `domain` | string | 领域，如 `climate` |
 | `intent` | string | 意图名，如 `set_temperature` |
 | `slots` | object | 槽位表：`{"<槽名>": {"type": "number|enum|string|boolean", "value": ..., "unit": "可选"}}` |
+| `slots` 特例 | string | 多目的地导航（先去A再去B）：`navigate` 意图加可选 `waypoints` 槽，type=string，value 为 `[{poiname,lat,lon}]` JSON 文本（SlotValue 无数组类型，数组 value 会被端侧 parseSlots 丢弃，故走 string 槽）；端侧据此拼 `amapuri://route/plan` 途经点参数（vian/vialons/vialats/vianames） |
 | `confidence` | number | 置信度，0 ~ 1 |
 | `source` | string | 来源，如 `nlu.iflytek.api`、`llm.deepseek` |
 | `rawSemantic` | string | 可选：上游原始语义 JSON 原文，用于排查 |

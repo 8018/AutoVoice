@@ -89,20 +89,30 @@ class VoiceEngineTest {
             source = "test.local",
         )
 
-    /** 导航意图（spec §4.2：navigation/navigate {poiname, lat, lon}）。 */
-    private fun navigateIntent(poiname: String, lat: Double, lon: Double): Intent =
-        Intent(
+    /** 导航意图（spec §4.2：navigation/navigate {poiname, lat, lon}；waypointsJson 可选，多目的地）。 */
+    private fun navigateIntent(
+        poiname: String,
+        lat: Double,
+        lon: Double,
+        waypointsJson: String? = null,
+    ): Intent {
+        val slots = mutableMapOf(
+            NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(poiname),
+            NavigationExecutor.SLOT_LAT to SlotValue.Number(lat),
+            NavigationExecutor.SLOT_LON to SlotValue.Number(lon),
+        )
+        if (waypointsJson != null) {
+            slots[NavigationExecutor.SLOT_WAYPOINTS] = SlotValue.StringValue(waypointsJson)
+        }
+        return Intent(
             schemaVersion = "1.0",
             domain = NavigationExecutor.DOMAIN_NAVIGATION,
             intent = NavigationExecutor.INTENT_NAVIGATE,
-            slots = mapOf(
-                NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(poiname),
-                NavigationExecutor.SLOT_LAT to SlotValue.Number(lat),
-                NavigationExecutor.SLOT_LON to SlotValue.Number(lon),
-            ),
+            slots = slots,
             confidence = 0.98,
             source = "test.cloud",
         )
+    }
 
     /**
      * 测试装配：真实 VoiceSession + 真实仲裁器，注入 fake 链与出口。
@@ -825,6 +835,72 @@ class VoiceEngineTest {
             opened[0],
         )
         assertEquals(listOf("好的，已为您规划去杭州东站的导航"), requested, "speakText 走网络 TTS")
+    }
+
+    @Test
+    fun `cloud navigate with waypoints opens amap route plan uri`() {
+        val opened = mutableListOf<String>()
+        val requested = mutableListOf<String>()
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner {
+                    com.autovoice.voicecore.ActionReply(
+                        intent = navigateIntent(
+                            poiname = "大旗杆",
+                            lat = 38.8731,
+                            lon = 115.4737,
+                            waypointsJson = """[{"poiname":"爱情广场","lat":38.8654,"lon":115.4696}]""",
+                        ),
+                        speakText = "好的，已为您规划先去爱情广场再去大旗杆的导航",
+                    )
+                },
+                tts = TtsRequester { requested.add(it); null },
+                navigation = NavigationExecutor { uri -> opened.add(uri); true },
+            )
+            engine = pair.first
+            utter(engine)
+        }
+        // 多目的地 URI 形状：amapuri://route/plan?…&dlat/dlon/dname=<终点>&vian=N&vialons/vialats/vianames=<途经|分隔>&t=0&dev=0
+        assertEquals(1, opened.size, "应拉起一次高德路线规划")
+        assertEquals(
+            "amapuri://route/plan?sourceApplication=autovoice" +
+                "&dlat=38.8731&dlon=115.4737&dname=%E5%A4%A7%E6%97%97%E6%9D%86" +
+                "&vian=1&vialons=115.4696&vialats=38.8654&vianames=%E7%88%B1%E6%83%85%E5%B9%BF%E5%9C%BA" +
+                "&t=0&dev=0",
+            opened[0],
+        )
+        assertEquals(listOf("好的，已为您规划先去爱情广场再去大旗杆的导航"), requested, "speakText 走网络 TTS")
+    }
+
+    @Test
+    fun `navigate with malformed waypoints json does not open amap`() {
+        val opened = mutableListOf<String>()
+        lateinit var engine: VoiceEngine
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { powerOnIntent() },
+                cloud = CloudRunner {
+                    com.autovoice.voicecore.ActionReply(
+                        intent = navigateIntent(
+                            poiname = "大旗杆",
+                            lat = 38.8731,
+                            lon = 115.4737,
+                            waypointsJson = "不是JSON",
+                        ),
+                        speakText = "好的，已为您打开导航",
+                    )
+                },
+                tts = TtsRequester { null },
+                navigation = NavigationExecutor { uri -> opened.add(uri); true },
+            )
+            engine = pair.first
+            utter(engine)
+        }
+        assertEquals(0, opened.size, "waypoints JSON 非法不拉起高德（静默回退会误导用户）")
     }
 
     @Test

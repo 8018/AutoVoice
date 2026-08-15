@@ -66,12 +66,14 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     public static final String DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 
     /** 工具循环预算（毫秒）：起算于首次 LLM 调用，超时后后续调用不再带 tools。
-     *  10000：模糊地点导航最多 4 次工具轮（search 未命中重试 → geo → navigate），留足预算。 */
-    public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 10_000;
+     *  20000：多目的地导航（先去A再去B）最多 6 次工具轮（search×2 → geo×2 → navigate，
+     *  含 search 重试余量），预算需覆盖完整工具循环（safety-timeout-ms 兜底才是最终上限）。 */
+    public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 20_000;
 
     /** 单次 chat 的最大 LLM 调用轮数（最后 1 轮不带 tools 强制直答）。
-     *  5：高德 text_search 不返回坐标，模糊地名需 search(可重试) → geo 取坐标 → navigate 最多 4 次工具轮。 */
-    static final int MAX_LLM_ROUNDS = 5;
+     *  7：高德 text_search 不返回坐标，多目的地需 search(可重试) → geo 取坐标 ×2 →
+     *  navigate 最多 6 次工具轮；单目的地仍秒级收敛（search → geo → navigate）。 */
+    static final int MAX_LLM_ROUNDS = 7;
 
     /** OpenAI 兼容 model 名。 */
     static final String MODEL = "deepseek-chat";
@@ -100,6 +102,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     static final String SLOT_POINAME = SpeakTexts.SLOT_POINAME;
     static final String SLOT_LAT = "lat";
     static final String SLOT_LON = "lon";
+    /** 导航途经点槽位名（多目的地"先去A再去B"：string 槽承载 [{poiname,lat,lon}] JSON 文本）。 */
+    static final String SLOT_WAYPOINTS = SpeakTexts.SLOT_WAYPOINTS;
 
     static final String HEADER_AUTHORIZATION = "Authorization";
 
@@ -117,12 +121,18 @@ public final class DeepSeekLlmProvider implements LlmProvider {
             "required":["domain","action"]}
             """;
 
-    /** OpenAI 兼容 tools 定义：navigate（poiname/lat/lon）的 parameters 对象文本。 */
+    /** OpenAI 兼容 tools 定义：navigate（poiname/lat/lon + 可选 waypoints 途经点）的 parameters 对象文本。 */
     private static final String NAVIGATE_PARAMETERS_JSON = """
             {"type":"object","properties":{
-            "poiname":{"type":"string","description":"导航目的地名称"},
-            "lat":{"type":"number","description":"目的地纬度"},
-            "lon":{"type":"number","description":"目的地经度"}},
+            "poiname":{"type":"string","description":"导航最终目的地名称"},
+            "lat":{"type":"number","description":"最终目的地纬度"},
+            "lon":{"type":"number","description":"最终目的地经度"},
+            "waypoints":{"type":"array","description":"途经点列表（用户说「先去A再去B」时A是途经点、B是最终目的地poiname，按用户说的顺序排列）",
+              "items":{"type":"object","properties":{
+              "poiname":{"type":"string","description":"途经点名称"},
+              "lat":{"type":"number","description":"途经点纬度"},
+              "lon":{"type":"number","description":"途经点经度"}},
+              "required":["poiname","lat","lon"]}}},
             "required":["poiname","lat","lon"]}
             """;
 
@@ -149,7 +159,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         return List.of(
                 new FunctionTool(TOOL_NAME, "执行车载控制指令（开关空调、调节温度等）",
                         CAR_CONTROL_PARAMETERS_JSON),
-                new FunctionTool(NAVIGATE_TOOL_NAME, "发起去往目的地的导航（需目的地名称与经纬度）",
+                new FunctionTool(NAVIGATE_TOOL_NAME,
+                        "发起去往目的地的导航（支持先去A再去B：途经点放 waypoints，最终目的地放 poiname）",
                         NAVIGATE_PARAMETERS_JSON));
     }
 
@@ -364,7 +375,7 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         return Reply.ofAction(intent, SpeakTexts.speak(intent));
     }
 
-    /** 解析 navigate arguments（poiname/lat/lon）→ navigation/navigate action 回复（spec §4.2）。 */
+    /** 解析 navigate arguments（poiname/lat/lon + 可选 waypoints）→ navigation/navigate action 回复（spec §4.2）。 */
     private static Reply navigateReply(String arguments) throws IOException {
         JsonNode args = MAPPER.readTree(arguments);
         String poiname = args.path("poiname").asText("");
@@ -377,6 +388,19 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         slots.put(SLOT_POINAME, SlotValue.stringValue(poiname));
         slots.put(SLOT_LAT, SlotValue.number(lat.asDouble()));
         slots.put(SLOT_LON, SlotValue.number(lon.asDouble()));
+        JsonNode waypoints = args.path(SLOT_WAYPOINTS);
+        if (waypoints.isArray() && !waypoints.isEmpty()) {
+            // 多目的地（先去A再去B）：逐项校验途经点 poiname/lat/lon 齐备后，整体序列化为
+            // JSON 文本走 string 槽——SlotValue 无数组类型，端侧 parseSlots 对数组 value
+            // 直接丢弃整个 reply（硬约束），string 槽全链路无损，端侧自行解析。
+            for (JsonNode wp : waypoints) {
+                if (wp.path("poiname").asText("").isBlank()
+                        || !wp.path("lat").isNumber() || !wp.path("lon").isNumber()) {
+                    throw new LlmException("deepseek llm navigate waypoint missing poiname/lat/lon: " + wp);
+                }
+            }
+            slots.put(SLOT_WAYPOINTS, SlotValue.stringValue(MAPPER.writeValueAsString(waypoints)));
+        }
         Intent intent = Intent.of("1.0", "navigation", "navigate", slots, 1.0,
                 NAVIGATE_INTENT_SOURCE, arguments);
         return Reply.ofAction(intent, SpeakTexts.speak(intent));

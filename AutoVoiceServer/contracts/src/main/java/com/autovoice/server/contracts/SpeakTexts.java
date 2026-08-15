@@ -1,5 +1,12 @@
 package com.autovoice.server.contracts;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 车控播报话术生成（从 DeepSeekLlmProvider 的 speakTemplate 提炼，供 LLM 工具调用与
  * 离线命令两条语义路共用）：规范化 {@link Intent} → 播报文本。
@@ -8,11 +15,16 @@ package com.autovoice.server.contracts;
  */
 public final class SpeakTexts {
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     /** temperature 槽位名（与 shared/contracts 的 slots 命名对齐）。 */
     public static final String SLOT_TEMPERATURE = "temperature";
 
     /** 导航目的地槽位名（spec §4.2：navigation/navigate {poiname, lat, lon}）。 */
     public static final String SLOT_POINAME = "poiname";
+
+    /** 导航途经点槽位名（多目的地"先去A再去B"：string 槽承载 [{poiname,lat,lon}] JSON 文本）。 */
+    public static final String SLOT_WAYPOINTS = "waypoints";
 
     private SpeakTexts() {
     }
@@ -33,12 +45,41 @@ public final class SpeakTexts {
                     : "好的，已为您调整" + device;
             case "navigate" -> {
                 SlotValue poiname = intent.slots() == null ? null : intent.slots().get(SLOT_POINAME);
-                yield poiname != null && poiname.value() instanceof String s && !s.isBlank()
-                        ? "好的，已为您规划去" + s + "的导航"
-                        : "好的，已为您打开导航";
+                if (poiname == null || !(poiname.value() instanceof String s) || s.isBlank()) {
+                    yield "好的，已为您打开导航";
+                }
+                // 多目的地（先去A再去B）：waypoints JSON 文本提取途经点名 → "先去A、B再去终点的导航"
+                SlotValue waypoints = intent.slots() == null ? null : intent.slots().get(SLOT_WAYPOINTS);
+                if (waypoints != null && waypoints.value() instanceof String wp && !wp.isBlank()) {
+                    String names = waypointNames(wp);
+                    if (!names.isBlank()) {
+                        yield "好的，已为您规划先去" + names + "再去" + s + "的导航";
+                    }
+                }
+                yield "好的，已为您规划去" + s + "的导航";
             }
             default -> "好的，已为您执行";
         };
+    }
+
+    /** 从 waypoints JSON 文本提取途经点名称（顿号连接）；解析失败/无有效名称 → 空串。 */
+    private static String waypointNames(String json) {
+        try {
+            JsonNode arr = MAPPER.readTree(json);
+            if (!arr.isArray() || arr.isEmpty()) {
+                return "";
+            }
+            List<String> names = new ArrayList<>();
+            for (JsonNode wp : arr) {
+                String name = wp.path("poiname").asText("");
+                if (!name.isBlank()) {
+                    names.add(name);
+                }
+            }
+            return String.join("、", names);
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     /** 温度数值展示：24.0 → "24"，24.5 → "24.5"。 */

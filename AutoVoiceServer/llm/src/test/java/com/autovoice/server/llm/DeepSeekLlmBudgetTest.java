@@ -90,7 +90,8 @@ class DeepSeekLlmBudgetTest {
                     server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 60_000, exec, null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
             assertEquals("最终答复", r.text());
-            assertEquals(5, calls.get());       // 4 轮带工具 + 1 轮强制直答
+            // MAX_LLM_ROUNDS=7：多目的地导航（search×2 → geo×2 → navigate + 重试余量）
+            assertEquals(7, calls.get());       // 6 轮带工具 + 1 轮强制直答
             assertEquals(1, noToolCalls.get());
         } finally {
             server.shutdown();
