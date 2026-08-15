@@ -87,10 +87,13 @@ public class TelemetryService implements TelemetryRecorder {
         if (utteranceId == null || utteranceId.isBlank() || event == null) {
             return;
         }
+        // created_ms 表示服务接收事件的时间，不能在异步 writer 真正执行时再读取时钟；
+        // 队列拥塞或测试推进时钟都会让保留期起点漂移。
+        long receivedAtMs = clock.getAsLong();
         submit(() -> {
             if (knownRounds.add(utteranceId)) {
                 store.upsertRound(utteranceId,
-                        Map.of("created_ms", clock.getAsLong(), "start_ms", event.tsMs()));
+                        Map.of("created_ms", receivedAtMs, "start_ms", event.tsMs()));
             }
             // Task 4 服务端插桩走 record() 路径：关键 stage 补聚合列——纯云端轮次（端侧不上报
             // /round）的决策/识别/LLM/TTS 缓存列不落 NULL，面板决策分布统计有数据
@@ -107,10 +110,11 @@ public class TelemetryService implements TelemetryRecorder {
         if (p == null || p.utteranceId() == null || p.utteranceId().isBlank()) {
             throw new IllegalArgumentException("utteranceId is required");
         }
+        long receivedAtMs = clock.getAsLong();
         submit(() -> {
             Map<String, Object> fields = new HashMap<>();
             if (knownRounds.add(p.utteranceId())) {
-                fields.put("created_ms", clock.getAsLong());
+                fields.put("created_ms", receivedAtMs);
             }
             putIfNotNull(fields, "session_id", p.sessionId());
             putIfNotNull(fields, "device_id", p.deviceId());
@@ -186,8 +190,9 @@ public class TelemetryService implements TelemetryRecorder {
 
     /** 清理超期轮次（created_ms < now - retentionDays）：rounds+events 行联动音频文件删除。 */
     public void cleanupOld() {
+        // 清理边界取调用时刻快照，避免 writer 排队期间边界继续向前漂移。
+        long cutoff = clock.getAsLong() - (long) props.retentionDays() * 86400000L;
         submit(() -> {
-            long cutoff = clock.getAsLong() - (long) props.retentionDays() * 86400000L;
             for (String id : store.deleteOlderThan(cutoff)) {
                 knownRounds.remove(id);
                 try {

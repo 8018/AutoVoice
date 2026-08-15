@@ -11,4 +11,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "AutoVoice"
-include(":voice-core", ":gateway-client", ":adapter-local", ":adapter-iflytek", ":app")
+include(":voice-core", ":gateway-client", ":adapter-local", ":adapter-iflytek", ":iflytek-sdk-stub", ":app")

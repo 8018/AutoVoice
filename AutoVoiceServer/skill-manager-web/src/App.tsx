@@ -58,7 +58,7 @@ export default function App() {
       localStorage.setItem('skill-authed', '1');
       setAuthed(true);
       setErr('');
-    } catch (e) {
+    } catch {
       setErr('口令错误');
     }
   }
@@ -71,7 +71,7 @@ export default function App() {
       const checked: Record<string, boolean> = {};
       tools.forEach((t) => (checked[t.name] = true));
       setForm({ ...form, tools, checked });
-    } catch (e) {
+    } catch {
       setErr('发现工具失败（MCP server 不可达？）');
     }
   }

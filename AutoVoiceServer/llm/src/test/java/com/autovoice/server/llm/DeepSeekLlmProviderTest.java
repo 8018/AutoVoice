@@ -11,6 +11,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -54,6 +56,7 @@ class DeepSeekLlmProviderTest {
 
     @AfterEach
     void tearDown() throws Exception {
+        provider.close();
         server.shutdown();
     }
 
@@ -228,6 +231,16 @@ class DeepSeekLlmProviderTest {
         CompletionException ex = assertThrows(CompletionException.class,
                 () -> provider.chat(USER_TEXT, ctx("s4")).join());
         assertTrue(ex.getCause() instanceof RuntimeException);
+    }
+
+    @Test
+    void cancellingFutureCancelsBlockedHttpCall() throws Exception {
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
+
+        CompletableFuture<Reply> future = provider.chat(USER_TEXT, ctx("cancelled"));
+        assertNotNull(server.takeRequest(5, TimeUnit.SECONDS));
+        assertTrue(future.cancel(true));
+        assertTrue(future.isCancelled());
     }
 
     /** helper：最近一次请求的 system 消息 content（照抄现有 :85 的请求体解析写法）。 */

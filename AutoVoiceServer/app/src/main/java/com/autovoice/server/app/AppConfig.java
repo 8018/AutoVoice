@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -59,7 +60,7 @@ public class AppConfig {
         /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32；
          *  skill-manager 缺省：平台空白（MCP 工具不注入）、轮询 600s。 */
         public AutovoiceProperties {
-            gateway = gateway == null ? new Gateway(false, "{}", 32) : gateway;
+            gateway = gateway == null ? new Gateway(false, "{}", 32, 1_920_000) : gateway;
             skillManager = skillManager == null ? new SkillManager("", "", 600_000) : skillManager;
         }
 
@@ -116,13 +117,19 @@ public class AppConfig {
          * 无 String→Map 转换器（ConverterNotFoundException），故组件按字符串接收、由
          * {@link #authDevicesMap()} 解析；max-connections 默认 32，超限新连接 close(4001)。
          */
-        public record Gateway(boolean authEnabled, String authDevices, int maxConnections) {
+        public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
 
             private static final ObjectMapper JSON = new ObjectMapper();
 
+            @ConstructorBinding
             public Gateway {
                 authDevices = authDevices == null || authDevices.isBlank() ? "{}" : authDevices;
                 maxConnections = maxConnections < 1 ? 32 : maxConnections;
+                maxAudioBytes = maxAudioBytes < 1 ? 1_920_000 : maxAudioBytes;
+            }
+
+            public Gateway(boolean authEnabled, String authDevices, int maxConnections) {
+                this(authEnabled, authDevices, maxConnections, 1_920_000);
             }
 
             /** 解析 {@code {deviceId: token}} 设备表；非法 JSON 快速失败（鉴权配置错误不应静默）。 */
@@ -336,7 +343,7 @@ public class AppConfig {
         return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
                 props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
-                recorder);
+                g.maxAudioBytes(), recorder);
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);

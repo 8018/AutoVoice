@@ -57,6 +57,12 @@ class TelemetryControllerTest {
                         .file(file).param("utteranceId", "utt-1"))
                 .andExpect(status().isOk());
         verify(svc).saveAudio(eq("utt-1"), any(byte[].class));
+
+        MockMultipartFile oversized = new MockMultipartFile("file", "large.pcm", "application/octet-stream",
+                new byte[(int) TelemetryController.MAX_AUDIO_UPLOAD_BYTES + 1]);
+        mvc.perform(multipart("/api/telemetry/audio")
+                        .file(oversized).param("utteranceId", "utt-large"))
+                .andExpect(status().isPayloadTooLarge());
     }
 
     @Test
@@ -76,6 +82,14 @@ class TelemetryControllerTest {
         mvc.perform(post("/api/telemetry/events")
                         .contentType("application/json").content("{not json"))
                 .andExpect(status().isBadRequest());
+
+        String event = "{\"stage\":\"local_asr\",\"tsMs\":1,\"level\":\"info\"}";
+        String oversized = "{\"utteranceId\":\"utt-large\",\"events\":["
+                + String.join(",", java.util.Collections.nCopies(
+                        TelemetryController.MAX_EVENTS_PER_REQUEST + 1, event)) + "]}";
+        mvc.perform(post("/api/telemetry/events")
+                        .contentType("application/json").content(oversized))
+                .andExpect(status().isPayloadTooLarge());
     }
 
     @Test

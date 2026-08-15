@@ -37,7 +37,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -65,7 +69,7 @@ import org.slf4j.LoggerFactory;
  * RaceArbiter）；demo 单线程同步处理段，吞吐不是目标。非法消息 → 下发 error（hello 类错误码 BAD_HELLO，
  * 其余 INTERNAL），不关闭连接。</p>
  */
-public final class VoiceGatewayHandler implements WebSocketHandler {
+public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseable {
 
     public static final String PROTOCOL_VERSION = "1.1";
     public static final String DEFAULT_LANGUAGE = "zh-CN";
@@ -75,6 +79,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     /** pending 占位消息文案（B5：LLM 处理中，protocol.md §4.8）。 */
     private static final String PENDING_TEXT = "正在处理，请稍候";
     private static final int DEFAULT_MAX_CONNECTIONS = 32;
+    /** 单段最多 60 秒 PCM（16kHz / 16bit / mono），防止连接持续推帧耗尽堆内存。 */
+    private static final int DEFAULT_MAX_AUDIO_BYTES = 60 * 16_000 * 2;
+    private static final int DEFAULT_TTS_WORKERS = 4;
+    private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 接入策略违规（鉴权失败 / 连接数超限）统一关闭码（protocol.md §8）。 */
@@ -97,6 +105,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
     private final Map<String, String> authDevices;
     /** 并发连接上限（含所有设备），超限新连接直接 close(4001) 不登记。 */
     private final int maxConnections;
+    /** 单段 PCM 累积上限。 */
+    private final int maxAudioBytes;
+    /** 原子连接配额；size()+put 不是原子操作，不能作为并发接入守卫。 */
+    private final AtomicInteger activeConnections = new AtomicInteger();
 
     /** 各连接共用的仲裁计时线程池（daemon，demo 规模足够）。 */
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
@@ -104,6 +116,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         t.setDaemon(true);
         return t;
     });
+
+    /** TTS 是阻塞 HTTP 调用：从 WS 收包线程移到有界池，队列满时快速失败。 */
+    private final ExecutorService ttsExecutor = new ThreadPoolExecutor(
+            DEFAULT_TTS_WORKERS, DEFAULT_TTS_WORKERS, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(DEFAULT_TTS_QUEUE_CAPACITY),
+            r -> {
+                Thread t = new Thread(r, "gateway-tts");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
 
     /** 链路事件记录器（Task 4 插桩，注入各连接 SegmentPipeline；telemetry 禁用时是 Noop）。 */
     private final TelemetryRecorder recorder;
@@ -131,7 +154,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs) {
         this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
-                false, Map.of(), DEFAULT_MAX_CONNECTIONS, NoopTelemetryRecorder.INSTANCE);
+                false, Map.of(), DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_AUDIO_BYTES,
+                NoopTelemetryRecorder.INSTANCE);
     }
 
     /**
@@ -143,6 +167,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                TelemetryRecorder recorder) {
+        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, DEFAULT_MAX_AUDIO_BYTES, recorder);
+    }
+
+    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder) {
         this.asr = asr;
         this.llm = llm;
         this.tts = tts;
@@ -154,25 +187,42 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         this.authEnabled = authEnabled;
         this.authDevices = authDevices;
         this.maxConnections = maxConnections;
+        this.maxAudioBytes = maxAudioBytes < 1 ? DEFAULT_MAX_AUDIO_BYTES : maxAudioBytes;
         this.recorder = recorder;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        if (connections.size() >= maxConnections) {
+        int admitted = activeConnections.incrementAndGet();
+        if (admitted > maxConnections) {
+            activeConnections.decrementAndGet();
             LOG.warn("connection limit reached ({}), rejecting {}", maxConnections, session.getId());
             closeQuietly(session, "connection limit reached");
-            return; // 不登记：后续消息直接走 handleMessage 的 computeIfAbsent 兜底，但连接已关
+            return;
         }
-        connections.computeIfAbsent(session, s -> new ConnectionState(s));
+        ConnectionState previous = connections.putIfAbsent(session, new ConnectionState(session));
+        if (previous != null) {
+            activeConnections.decrementAndGet();
+        }
     }
 
     @Override
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
-        ConnectionState st = connections.computeIfAbsent(session, s -> new ConnectionState(s));
+        ConnectionState st = connections.get(session);
+        if (st == null) {
+            closeQuietly(session, "connection not admitted");
+            return;
+        }
         if (message instanceof BinaryMessage bm) {
             if (st.audioActive) {
                 ByteBuffer buf = bm.getPayload();
+                if ((long) st.pcm.size() + buf.remaining() > maxAudioBytes) {
+                    st.audioActive = false;
+                    st.pcm.reset();
+                    sendError(session, st, "AUDIO_TOO_LARGE",
+                            "audio segment exceeds " + maxAudioBytes + " bytes");
+                    return;
+                }
                 byte[] bytes = new byte[buf.remaining()];
                 buf.get(bytes);
                 st.pcm.writeBytes(bytes);
@@ -215,6 +265,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         ConnectionState st = connections.remove(session);
         if (st != null) {
             st.connExecutor.shutdownNow();
+            activeConnections.decrementAndGet();
         }
     }
 
@@ -412,6 +463,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         // 链路插桩（Task 5）：tts_request 的 utteranceId（GatewayCodec 白名单，Task 2）透传合成链，缺省 ""
         String utteranceId = payload.get("utteranceId") != null ? String.valueOf(payload.get("utteranceId")) : "";
         try {
+            ttsExecutor.execute(() -> synthesizeAndSend(session, st, text, ttsSegmentId, utteranceId));
+        } catch (RejectedExecutionException e) {
+            sendError(session, st, "TTS_BUSY", "tts queue is full", ttsSegmentId);
+        }
+    }
+
+    private void synthesizeAndSend(WebSocketSession session, ConnectionState st, String text,
+                                   String ttsSegmentId, String utteranceId) {
+        try {
             Reply reply = tts.synthesize(text, st.ctx, utteranceId);
             if (!"audio".equals(reply.kind()) || reply.data() == null || reply.data().length == 0) {
                 throw new IllegalStateException("tts returned non-audio reply: kind=" + reply.kind());
@@ -431,8 +491,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
 
     private static void send(WebSocketSession session, String type, Map<String, Object> payload) {
         try {
-            if (session.isOpen()) {
-                session.sendMessage(new TextMessage(GatewayCodec.encode(type, payload)));
+            // Spring 的原始 WebSocketSession 不保证并发 send 安全；以 session 为锁统一串行下行。
+            synchronized (session) {
+                if (session.isOpen()) {
+                    session.sendMessage(new TextMessage(GatewayCodec.encode(type, payload)));
+                }
             }
         } catch (IOException e) {
             throw new IllegalStateException("failed to send " + type + " message", e);
@@ -511,5 +574,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler {
         boolean audioActive;
         volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
         long segmentSeq;
+    }
+
+    /** Spring 销毁 bean 时停止共享线程池；连接级 executor 逐一关闭。 */
+    @Override
+    public void close() {
+        for (ConnectionState st : connections.values()) {
+            st.connExecutor.shutdownNow();
+        }
+        connections.clear();
+        activeConnections.set(0);
+        ttsExecutor.shutdownNow();
+        scheduler.shutdownNow();
     }
 }

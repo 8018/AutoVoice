@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Call;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -27,7 +28,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /**
@@ -60,7 +68,7 @@ import java.util.function.Supplier;
  * {@link LlmException} —— 均在 supplyAsync lambda 内包装使 future 异常完成，
  * 由调用方（SegmentPipeline）safety 兜底收敛。</p>
  */
-public final class DeepSeekLlmProvider implements LlmProvider {
+public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
 
     /** DeepSeek OpenAI 兼容端点默认地址。 */
     public static final String DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
@@ -111,6 +119,9 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     private static final String BEARER_PREFIX = "Bearer ";
     private static final MediaType JSON_MEDIA_TYPE = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final AtomicInteger WORKER_SEQ = new AtomicInteger();
+    private static final int DEFAULT_WORKERS = 4;
+    private static final int DEFAULT_QUEUE_CAPACITY = 32;
 
     /** OpenAI 兼容 tools 定义：car_control（domain/action/temperature）的 parameters 对象文本。 */
     private static final String CAR_CONTROL_PARAMETERS_JSON = """
@@ -149,6 +160,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     private final long toolLoopBudgetMs;
     /** system 提示词提供者（平台化配置）；null 或返回 null/空白 → 回退 {@link #DEFAULT_SYSTEM_PROMPT}。 */
     private final Supplier<String> systemPrompt;
+    /** 阻塞 HTTP/MCP 工具循环使用专用有界池，避免占用 JVM common pool。 */
+    private final ExecutorService executorService;
 
     /**
      * 默认工具集：car_control 车控 skill + navigate 导航 skill。
@@ -199,6 +212,14 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         this.toolLoopBudgetMs = Math.max(0, toolLoopBudgetMs);
         this.executor = executor;
         this.systemPrompt = systemPrompt;
+        this.executorService = new ThreadPoolExecutor(
+                DEFAULT_WORKERS, DEFAULT_WORKERS, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "deepseek-llm-" + WORKER_SEQ.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override
@@ -209,30 +230,50 @@ public final class DeepSeekLlmProvider implements LlmProvider {
 
     @Override
     public CompletableFuture<Reply> chat(String text, SessionContext ctx, String utteranceId) {
-        // 同步 HTTP call 放进 supplyAsync（common pool），调用方立即可挂回调；
-        // IO 异常在 lambda 内包装为 RuntimeException，future 以该异常完成。
-        return CompletableFuture.supplyAsync(() -> {
+        CompletableFuture<Reply> result = new CompletableFuture<>();
+        AtomicReference<Call> activeCall = new AtomicReference<>();
+        AtomicReference<Future<?>> workerRef = new AtomicReference<>();
+        Runnable task = () -> {
             long start = System.currentTimeMillis();
             try {
-                Reply reply = callAndParse(text);
+                Reply reply = callAndParse(text, activeCall);
                 recorder.record(utteranceId, TelemetryStages.LLM, "info",
                         Map.of("text", text, "reply", replySummary(reply),
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
-                return reply;
+                result.complete(reply);
             } catch (IOException e) {
                 String msg = String.valueOf(e.getMessage());
                 recorder.record(utteranceId, TelemetryStages.LLM, "error",
                         Map.of("text", text, "error", msg,
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
-                throw new RuntimeException("deepseek llm request failed: " + msg, e);
+                result.completeExceptionally(new RuntimeException("deepseek llm request failed: " + msg, e));
             } catch (RuntimeException e) {
                 // LlmException（HTTP 非 2xx / 解析失败）等：记事件后原样抛（future 异常完成）
                 recorder.record(utteranceId, TelemetryStages.LLM, "error",
                         Map.of("text", text, "error", String.valueOf(e.getMessage()),
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
-                throw e;
+                result.completeExceptionally(e);
+            }
+        };
+        try {
+            Future<?> worker = ((ThreadPoolExecutor) executorService).submit(task);
+            workerRef.set(worker);
+            if (result.isCancelled()) {
+                worker.cancel(true);
+            }
+        } catch (RejectedExecutionException e) {
+            result.completeExceptionally(new LlmException("deepseek llm executor overloaded", e));
+            return result;
+        }
+        result.whenComplete((reply, error) -> {
+            if (result.isCancelled()) {
+                Call call = activeCall.get();
+                if (call != null) call.cancel();
+                Future<?> worker = workerRef.get();
+                if (worker != null) worker.cancel(true);
             }
         });
+        return result;
     }
 
     /** reply 摘要：action → intent 摘要（domain/intent），text → 截断 80 字符。 */
@@ -249,16 +290,19 @@ public final class DeepSeekLlmProvider implements LlmProvider {
      * 多轮工具循环：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。每轮前检查预算
      * （超预算 → 不带 tools），最后一轮强制直答。car_control 工具调用立即终局。
      */
-    private Reply callAndParse(String text) throws IOException {
+    private Reply callAndParse(String text, AtomicReference<Call> activeCall) throws IOException {
         List<ObjectNode> messages = new ArrayList<>();
         messages.add(systemMessage());
         messages.add(userMessage(text));
         long start = System.currentTimeMillis();
         for (int round = 1; round <= MAX_LLM_ROUNDS; round++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException("deepseek llm request cancelled");
+            }
             boolean budgetOk = toolLoopBudgetMs >= 1 && System.currentTimeMillis() - start <= toolLoopBudgetMs;
             boolean lastRound = round == MAX_LLM_ROUNDS;
             List<FunctionTool> tools = (budgetOk && !lastRound) ? this.tools.enabledTools() : List.of();
-            JsonNode message = callChat(messages, tools);
+            JsonNode message = callChat(messages, tools, activeCall);
             JsonNode toolCalls = message.path("tool_calls");
             if (!toolCalls.isArray() || toolCalls.isEmpty()) {
                 return textReply(message);
@@ -283,7 +327,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
     }
 
     /** 一次 LLM 调用：组装 messages + tools（空则不设 tools 字段），返回 choices[0].message。 */
-    private JsonNode callChat(List<ObjectNode> messages, List<FunctionTool> tools) throws IOException {
+    private JsonNode callChat(List<ObjectNode> messages, List<FunctionTool> tools,
+                              AtomicReference<Call> activeCall) throws IOException {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", MODEL);
         ArrayNode messagesArr = root.putArray("messages");
@@ -305,7 +350,9 @@ public final class DeepSeekLlmProvider implements LlmProvider {
                 .post(RequestBody.create(MAPPER.writeValueAsString(root), JSON_MEDIA_TYPE))
                 .header(HEADER_AUTHORIZATION, BEARER_PREFIX + apiKey)
                 .build();
-        try (Response response = client.newCall(request).execute()) {
+        Call call = client.newCall(request);
+        activeCall.set(call);
+        try (Response response = call.execute()) {
             String body = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) {
                 throw new LlmException("deepseek llm returned HTTP " + response.code() + ": " + body);
@@ -316,6 +363,8 @@ public final class DeepSeekLlmProvider implements LlmProvider {
                 throw new LlmException("deepseek llm response has no choices: " + body);
             }
             return choices.get(0).path("message");
+        } finally {
+            activeCall.compareAndSet(call, null);
         }
     }
 
@@ -411,6 +460,9 @@ public final class DeepSeekLlmProvider implements LlmProvider {
      * 错误文本作为 tool_result 回 LLM 续轮（不中断多轮循环）。
      */
     private String runTool(String name, String argumentsJson) {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new LlmException("tool call cancelled before execution: " + name);
+        }
         if (executor == null) {
             return "工具执行不可用";
         }
@@ -419,6 +471,11 @@ public final class DeepSeekLlmProvider implements LlmProvider {
         } catch (RuntimeException e) {
             return "工具执行失败：" + e.getMessage();   // 错误文本回 LLM 续轮
         }
+    }
+
+    @Override
+    public void close() {
+        executorService.shutdownNow();
     }
 
     /** system 消息（OpenAI 兼容）；prompt 未配置（null/空白）回退内置默认。 */

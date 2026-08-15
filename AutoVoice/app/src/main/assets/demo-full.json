@@ -15,7 +15,7 @@
     "gatewayUrl": "ws://47.94.4.204:8080/ws",
     "waitMs": 3000,
     "deviceId": "demo-1",
-    "authToken": "<token>",
+    "authToken": "be4bcd771b46e9b1a02f18cfa0060ec0",
     "telemetry": {
       "enabled": true,
       "url": ""

@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -231,13 +232,14 @@ class VoiceGatewayHandlerTest {
     // ---------- 独立 TTS 链路（tts_request/tts_response，TTS 解耦） ----------
 
     @Test
-    void ttsRequestAfterHandshakeSendsTtsResponse() {
+    void ttsRequestAfterHandshakeSendsTtsResponse() throws InterruptedException {
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
         StubSession s = open(h);
         handshake(h, s);
 
         h.handleMessage(s, new TextMessage(ttsRequest("好的，空调已打开", "tts-1")));
 
+        awaitSent(s, 2);
         assertEquals(2, s.sent.size(), "ready + tts_response");
         JsonNode res = parse(s.sent.get(1));
         assertEquals("tts_response", res.get("type").asText());
@@ -266,6 +268,7 @@ class VoiceGatewayHandlerTest {
         String sid = handshake(h, s);
 
         h.handleMessage(s, new TextMessage(ttsRequest("打开空调", "tts-9")));
+        awaitSent(s, 2);
         JsonNode error = parse(s.sent.get(1));
         assertEquals("error", error.get("type").asText());
         assertEquals("TTS_FAILED", error.get("payload").get("code").asText());
@@ -278,6 +281,58 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
         awaitSent(s, 4);
         assertEquals(4, s.sent.size(), "TTS 失败后连接仍可继续语音轮次（ready+error+decision+reply）");
+    }
+
+    @Test
+    void ttsRequestDoesNotBlockWebSocketMessageThread() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), (text, ctx) -> {
+            entered.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+            return Reply.ofAudio("audio/wav", WAV);
+        });
+        StubSession s = open(h);
+        handshake(h, s);
+
+        long started = System.nanoTime();
+        h.handleMessage(s, new TextMessage(ttsRequest("打开空调", "tts-async")));
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertTrue(elapsedMs < 200, "tts_request 应只入队，不在 WebSocket 收包线程等待合成");
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        assertEquals(1, s.sent.size(), "合成未完成前只有 ready");
+        release.countDown();
+        awaitSent(s, 2);
+        assertEquals("tts_response", parse(s.sent.get(1)).get("type").asText());
+    }
+
+    @Test
+    void oversizedAudioIsRejectedBeforeAsr() {
+        AtomicInteger asrCalls = new AtomicInteger();
+        VoiceGatewayHandler h = new VoiceGatewayHandler((pcm, ctx) -> {
+            asrCalls.incrementAndGet();
+            return "x";
+        }, llm("LLM"), ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32, 3,
+                NoopTelemetryRecorder.INSTANCE);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "too-big")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1, 2, 3, 4}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        assertEquals(2, s.sent.size(), "ready + AUDIO_TOO_LARGE");
+        JsonNode error = parse(s.sent.get(1));
+        assertEquals("AUDIO_TOO_LARGE", error.get("payload").get("code").asText());
+        assertEquals("too-big", error.get("payload").get("segmentId").asText());
+        assertEquals(0, asrCalls.get(), "超限段不得进入 ASR");
     }
 
     // ---------- 降级路径 ----------

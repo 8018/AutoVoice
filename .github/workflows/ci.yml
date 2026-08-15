@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  schema-fixtures:
+    name: Schema fixtures
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shared
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: shared/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  server-gradle:
+    name: Server tests and coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AutoVoiceServer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew test
+      - name: Upload server reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-test-and-coverage-reports
+          path: |
+            AutoVoiceServer/**/build/test-results/test/*.xml
+            AutoVoiceServer/**/build/reports/tests/test/**
+            AutoVoiceServer/**/build/reports/jacoco/test/**
+
+  android-gradle:
+    name: Android tests, lint and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AutoVoice
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - run: ./gradlew test lint :app:assembleDebug -PuseIflytekStub=true
+      - name: Upload Android reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-lint-and-coverage-reports
+          path: |
+            AutoVoice/**/build/test-results/**/*.xml
+            AutoVoice/**/build/reports/tests/**
+            AutoVoice/**/build/reports/lint-results-*
+            AutoVoice/**/build/reports/jacoco/test/**
+
+  web:
+    name: ${{ matrix.name }} lint, test, coverage and build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Telemetry Web
+            directory: AutoVoiceServer/telemetry-web
+            artifact: telemetry-web-coverage
+          - name: Skill Manager Web
+            directory: AutoVoiceServer/skill-manager-web
+            artifact: skill-manager-web-coverage
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run coverage
+      - run: npm run build
+      - name: Upload Web coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.directory }}/coverage

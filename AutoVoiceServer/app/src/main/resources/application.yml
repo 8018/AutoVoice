@@ -7,6 +7,10 @@ server:
 spring:
   main:
     banner-mode: off
+  servlet:
+    multipart:
+      max-file-size: 2MB
+      max-request-size: 3MB
 
 autovoice:
   gateway:
@@ -16,6 +20,7 @@ autovoice:
     # 由 Gateway record 解析 JSON（部署实测 Boot 无 String→Map 转换器，见 AppConfig.Gateway）；
     # 未配置/空 → 空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
+    max-audio-bytes: ${AUTOVOICE_GATEWAY_MAX_AUDIO_BYTES:1920000} # 单段 60s PCM 上限（16k/16bit/mono）
   arbitration:
     # 15000：多目的地导航（先去A再去B）LLM 5-7 轮工具循环实测 7-14s，需放宽 hard 上限；
     # 空调/单目的地轮不受影响（秒级收敛，safety 只兜 LLM 卡死/超长）。
@@ -47,6 +52,9 @@ autovoice:
     db-path: ${AUTOVOICE_TELEMETRY_DB:${java.io.tmpdir}/autovoice-telemetry/telemetry.db}
     audio-dir: ${AUTOVOICE_TELEMETRY_AUDIO_DIR:${java.io.tmpdir}/autovoice-telemetry/audio}
     retention-days: ${AUTOVOICE_TELEMETRY_RETENTION_DAYS:7}
+    # 空值保持本地/demo 兼容；公网生产必须配置，客户端携带 X-Telemetry-Token。
+    access-token: ${AUTOVOICE_TELEMETRY_ACCESS_TOKEN:}
+
   providers:
     llm: deepseek        # 语义由 LLM function calling 承担（原 NLU 链路已退役）
     asr: iflytek        # iflytek（在线听写） | aliyun（一句话识别）

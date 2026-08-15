@@ -10,6 +10,7 @@ autovoice:
     # 不在 yml 声明（占位符空串无法绑定 Map）——env 变量按宽松绑定自动映射到 gateway.auth-devices，
     # 未配置时绑定 null → record 默认空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
+    max-audio-bytes: ${AUTOVOICE_GATEWAY_MAX_AUDIO_BYTES:1920000} # 单段 60s PCM 上限
   arbitration:
     safety-timeout-ms: 6500
     offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）

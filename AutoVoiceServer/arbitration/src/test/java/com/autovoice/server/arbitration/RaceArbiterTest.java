@@ -205,17 +205,15 @@ class RaceArbiterTest {
 
     @Test
     void airconOfflineHitNeverEmitsPending() {
-        // 空调命中（同步完成）→ 直接胜出；LLM 500ms 迟到 → lost(command_already_won)。
-        // 全程无 pending——优先消息胜出即拦截后续所有同 id 消息（含占位）
+        // 空调命中（同步完成）→ 直接胜出并取消 LLM。
+        // 全程无 pending 或迟到事件——优先消息胜出即拦截后续所有同 id 消息（含占位）
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
         ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 100).chat("x", ctx), ctx, "utt-42", "seg-1").join();
         assertEquals("offline_won", d.reason());
         sleep(150); // 等迟到 LLM 的事件回调（sched 线程）
         assertEvents(
                 "utt-42|received(nlu-traditional)",
-                "utt-42|won(nlu-traditional,priority,offline_won)",
-                "utt-42|received(llm)",
-                "utt-42|lost(llm,command_already_won)");
+                "utt-42|won(nlu-traditional,priority,offline_won)");
     }
 
     @Test
@@ -329,32 +327,28 @@ class RaceArbiterTest {
 
     @Test
     void commandHitWinsThenLateLlmLoses() {
-        // 命令词同步完成先到 → received(nlu-traditional) + won(priority/offline_won)；
-        // LLM 10ms 迟到 → received(llm) + lost(command_already_won)（决策不变，CAS 拒绝）
+        // 命令词同步完成先到 → received(nlu-traditional) + won(priority/offline_won)，
+        // 同时取消仍在执行的 LLM，因此没有迟到事件。
         CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
         ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("offline_won", d.reason());
         sleep(50); // 等迟到 LLM 的事件回调（sched 线程）
         assertEvents(
                 "utt-42|received(nlu-traditional)",
-                "utt-42|won(nlu-traditional,priority,offline_won)",
-                "utt-42|received(llm)",
-                "utt-42|lost(llm,command_already_won)");
+                "utt-42|won(nlu-traditional,priority,offline_won)");
     }
 
     @Test
     void llmWinsAfterGraceThenLateOfflineLoses() {
-        // LLM 10ms 到达（离线未完成 → 宽限期），宽限期 300ms 到点 LLM 胜出；
-        // 离线命中 600ms 才到 → received(nlu-traditional) + lost(llm_already_won)
+        // LLM 10ms 到达（离线未完成 → 宽限期），宽限期 300ms 到点 LLM 胜出，
+        // 同时取消尚未完成的离线候选，因此没有迟到事件。
         CompletableFuture<OfflineCommandHit> offline = offlineAt(600, hit("打开空调"));
         ArbiterDecision d = eventArbiter.decide(offline, llm("LLM回答", 10).chat("x", ctx), ctx, "utt-42").join();
         assertEquals("llm_reply", d.reason());
         sleep(650); // 等宽限期胜出 + 迟到离线事件
         assertEvents(
                 "utt-42|received(llm)",
-                "utt-42|won(llm,priority,llm_reply)",
-                "utt-42|received(nlu-traditional)",
-                "utt-42|lost(nlu-traditional,llm_already_won)");
+                "utt-42|won(llm,priority,llm_reply)");
     }
 
     @Test
