@@ -9,6 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -107,11 +109,30 @@ class TelemetryServiceTest {
         TelemetryService svc = new TelemetryService(
                 new TelemetryProperties(true, tmp.resolve("t.db").toString(),
                         tmp.resolve("audio").toString(), 7), clock::get);
+        // 先用 listener 确定性阻塞 writer，模拟 CI 负载下 record 排队的情况。created_ms
+        // 必须取 record 调用时刻，而不能等 writer 恢复后才取已经推进 8 天的时钟。
+        CountDownLatch writerBlocked = new CountDownLatch(1);
+        CountDownLatch releaseWriter = new CountDownLatch(1);
+        svc.addListener(summary -> {
+            if ("utt-blocker".equals(summary.utteranceId())) {
+                writerBlocked.countDown();
+                try {
+                    releaseWriter.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        svc.recordDeviceRound(new TelemetryService.DeviceRoundPayload(
+                "utt-blocker", "s1", "demo", "test", 1L, 2L, List.of()));
+        assertTrue(writerBlocked.await(5, TimeUnit.SECONDS));
+
         svc.record("utt-old", TelemetryStages.UTTERANCE_START, "info", Map.of());
         svc.saveAudio("utt-old", new byte[1600]);
         // 推进时钟 8 天（retention 7）：created_ms=插入时刻 < cutoff，应被清理
         clock.addAndGet(8L * 86400000L);
         svc.cleanupOld();
+        releaseWriter.countDown();
         assertNull(svc.queryRound("utt-old"));
         assertFalse(Files.exists(tmp.resolve("audio/utt-old.wav")));
     }
