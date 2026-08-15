@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +38,10 @@ public final class McpSkillRegistry implements AutoCloseable {
     });
 
     private volatile Map<String, McpToolSession> sessions = Map.of();
+    /** 不可被外部 skill 覆盖的内置终局工具。 */
+    private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate");
+    /** 刷新时原子替换的唯一工具路由，避免调用期按 session 顺序选择同名工具。 */
+    private volatile Map<String, McpToolSession> toolOwners = Map.of();
     private volatile long lastRefreshMs;
 
     public McpSkillRegistry(SkillPlatformClient client, ToolInjector injector,
@@ -81,9 +86,27 @@ public final class McpSkillRegistry implements AutoCloseable {
             return; // 平台不可达：保留旧快照
         }
         Map<String, McpToolSession> next = new LinkedHashMap<>();
+        Map<String, McpToolSession> nextOwners = new LinkedHashMap<>();
         for (SkillConfig cfg : configs) {
             try {
                 McpToolSession s = sessionFactory.apply(cfg, connectTimeoutMs);
+                for (String toolName : s.tools().keySet()) {
+                    if (RESERVED_TOOL_NAMES.contains(toolName)) {
+                        closeAll(next.values());
+                        s.close();
+                        LOG.warn("skill registry refresh rejected: skill {} uses reserved tool {}",
+                                cfg.id(), toolName);
+                        return;
+                    }
+                    McpToolSession owner = nextOwners.putIfAbsent(toolName, s);
+                    if (owner != null) {
+                        closeAll(next.values());
+                        s.close();
+                        LOG.warn("skill registry refresh rejected: duplicate tool {} in skills {} and {}",
+                                toolName, owner.skillId(), cfg.id());
+                        return;
+                    }
+                }
                 next.put(cfg.id(), s);
             } catch (RuntimeException e) {
                 LOG.warn("skill {} mcp connect failed, skip", cfg.id(), e);
@@ -91,6 +114,7 @@ public final class McpSkillRegistry implements AutoCloseable {
         }
         Map<String, McpToolSession> old = sessions;
         sessions = next;
+        toolOwners = Map.copyOf(nextOwners);
         lastRefreshMs = System.currentTimeMillis();
         String oldPrompt = promptStore.get();
         String prompt = client.fetchSystemPrompt();
@@ -118,10 +142,9 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     /** 按工具名路由到所属 session 执行；未知工具抛 McpToolException。 */
     public String callTool(String toolName, String argumentsJson) {
-        for (McpToolSession s : sessions.values()) {
-            if (s.tools().containsKey(toolName)) {
-                return s.callTool(toolName, argumentsJson);
-            }
+        McpToolSession owner = toolOwners.get(toolName);
+        if (owner != null) {
+            return owner.callTool(toolName, argumentsJson);
         }
         throw new McpToolException("no skill owns tool: " + toolName);
     }
@@ -133,8 +156,12 @@ public final class McpSkillRegistry implements AutoCloseable {
     @Override
     public void close() {
         scheduler.shutdownNow();
-        for (McpToolSession s : sessions.values()) {
-            s.close();
-        }
+        closeAll(sessions.values());
+        sessions = Map.of();
+        toolOwners = Map.of();
+    }
+
+    private static void closeAll(Iterable<McpToolSession> values) {
+        for (McpToolSession s : values) s.close();
     }
 }

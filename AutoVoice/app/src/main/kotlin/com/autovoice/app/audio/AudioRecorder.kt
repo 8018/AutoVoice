@@ -1,5 +1,6 @@
 package com.autovoice.app.audio
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
@@ -265,6 +266,8 @@ class AudioRecorder(
 
     // ------------------------------------------------------------------ 资源
 
+    // Activity 在调用 start 前负责运行时授权；仍捕获 SecurityException 处理权限被撤回的竞态。
+    @SuppressLint("MissingPermission")
     private fun createAudioRecord(): AudioRecord? {
         val minBuffer = AudioRecord.getMinBufferSize(
             AudioFormat.SAMPLE_RATE,

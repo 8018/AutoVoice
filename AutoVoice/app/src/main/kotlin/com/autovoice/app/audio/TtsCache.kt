@@ -3,7 +3,6 @@ package com.autovoice.app.audio
 import com.autovoice.app.telemetry.TelemetryStages
 import java.io.File
 import java.security.MessageDigest
-import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -61,6 +60,8 @@ class TtsCache(
 
     /** 磁盘键：sha256(text UTF-8).hex + ".wav"（与服务器原 CachedTtsProvider 同方案）。 */
     private fun keyFile(text: String): String =
-        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))) +
+        MessageDigest.getInstance("SHA-256")
+            .digest(text.toByteArray(Charsets.UTF_8))
+            .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) } +
             ".wav"
 }

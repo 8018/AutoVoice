@@ -1,0 +1,12 @@
+{
+  "name": "autovoice-contract-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node validate-fixtures.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}

@@ -23,8 +23,11 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -44,7 +47,10 @@ import java.util.function.Consumer;
 @RequestMapping("/api/telemetry")
 @ConditionalOnProperty(prefix = "autovoice.telemetry", name = "enabled",
         havingValue = "true", matchIfMissing = true)
-public class TelemetryController {
+public class TelemetryController implements AutoCloseable {
+
+    static final long MAX_AUDIO_UPLOAD_BYTES = 1_920_000L;
+    static final int MAX_EVENTS_PER_REQUEST = 512;
 
     /** /events 转发 body（Task 5）：{utteranceId, events[]}。 */
     public record EventBatch(String utteranceId, List<TelemetryEvent> events) {
@@ -55,11 +61,13 @@ public class TelemetryController {
      * listener 回调在 telemetry 写线程上执行，直接 send 在客户端不读时会阻塞写线程连带
      * 查询卡死；这里只做入队（微秒级），实际 send 由 daemon 线程执行，阻塞只影响发送侧。
      */
-    private final ExecutorService sseSender = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "telemetry-sse-sender");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ExecutorService sseSender = new ThreadPoolExecutor(
+            2, 4, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(256),
+            r -> {
+                Thread t = new Thread(r, "telemetry-sse-sender");
+                t.setDaemon(true);
+                return t;
+            }, new ThreadPoolExecutor.AbortPolicy());
 
     private final TelemetryService service;
 
@@ -69,6 +77,9 @@ public class TelemetryController {
 
     @PostMapping("/round")
     public void recordRound(@RequestBody TelemetryService.DeviceRoundPayload payload) {
+        if (payload != null && payload.events() != null && payload.events().size() > MAX_EVENTS_PER_REQUEST) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "too many telemetry events");
+        }
         service.recordDeviceRound(payload);
     }
 
@@ -80,6 +91,9 @@ public class TelemetryController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "utteranceId and events are required");
         }
+        if (batch.events().size() > MAX_EVENTS_PER_REQUEST) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "too many telemetry events");
+        }
         for (TelemetryEvent e : batch.events()) {
             service.record(batch.utteranceId(), e);
         }
@@ -90,6 +104,10 @@ public class TelemetryController {
                             @RequestParam("file") MultipartFile file) throws IOException {
         if (file == null || file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "file is required");
+        }
+        if (file.getSize() > MAX_AUDIO_UPLOAD_BYTES) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "audio exceeds " + MAX_AUDIO_UPLOAD_BYTES + " bytes");
         }
         service.saveAudio(utteranceId, file.getBytes());
     }
@@ -115,13 +133,19 @@ public class TelemetryController {
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream() {
         SseEmitter emitter = new SseEmitter(0L); // 不超时
-        Consumer<RoundSummary> listener = summary -> sseSender.execute(() -> {
+        Consumer<RoundSummary> listener = summary -> {
             try {
-                emitter.send(SseEmitter.event().name("round").data(summary));
-            } catch (IOException ignored) {
-                // 面板断开/已发送后失效：忽略，下一轮再推
+                sseSender.execute(() -> {
+                    try {
+                        emitter.send(SseEmitter.event().name("round").data(summary));
+                    } catch (IOException ignored) {
+                        emitter.complete();
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                emitter.completeWithError(new IllegalStateException("SSE sender overloaded"));
             }
-        });
+        };
         service.addListener(listener);
         // 面板断开后自移除（review finding 2）：不留滞留 listener
         Runnable detach = () -> service.removeListener(listener);
@@ -154,5 +178,10 @@ public class TelemetryController {
     public ResponseEntity<String> badRequest(Exception ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ex.getMessage() == null ? "bad request" : ex.getMessage());
+    }
+
+    @Override
+    public void close() {
+        sseSender.shutdownNow();
     }
 }

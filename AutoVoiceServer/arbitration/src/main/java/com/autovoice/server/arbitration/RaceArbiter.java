@@ -30,7 +30,7 @@ import java.util.function.BiConsumer;
  *       到点未命中 → LLM 胜出（reason = {@code llm_reply}）；</li>
  *   <li><b>safety 兜底</b>：{@code safetyTimeoutMs} 内无一收敛 → 兜底文本
  *       （reason = {@code safety_timeout}）；</li>
- *   <li>迟到的 offline（LLM 已胜出后完成）被 {@link AtomicBoolean} 单赢家守卫拒绝，不抢结果。</li>
+ *   <li>任一路径胜出后主动取消仍在执行的另一候选，避免无效请求继续占用资源。</li>
  * </ul>
  *
  * <p>并发实现：单赢家 CAS——首个成功者 complete 结果并写日志；safety 与宽限期计时用
@@ -115,8 +115,7 @@ public final class RaceArbiter {
         // set_temperature）——非空调命中（window/misc/防御）按未命中处理：不发事件、
         // 不参与 CAS，走 LLM 优先路径；此时若 LLM 尚未完成 → 发 pending 占位事件
         // （B5：装配方据此下发"处理中"消息，protocol.md §4.8）。
-        // 注意：不再以 settled 提前 return——迟到 offline（LLM 已胜出后命中）也要发
-        // received（收到 asr 命令词）+ lost（llm_already_won）事件；决策仍由 CAS 守卫。
+        // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
         offline.whenComplete((hit, err) -> {
             if (err != null) return;
             if (hit == null || !isAirConControl(hit.intent())) {
@@ -128,6 +127,7 @@ public final class RaceArbiter {
             }
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_NLU_TRADITIONAL));
             if (settled.compareAndSet(false, true)) {
+                llm.cancel(true);
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
                 sink.log(entry(utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
                 onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_NLU_TRADITIONAL,
@@ -141,17 +141,16 @@ public final class RaceArbiter {
         });
 
         // 候选 2：LLM 结果 → 离线已完成则立即胜出，否则起宽限期等离线。
-        // 注意：不再以 settled 提前 return——迟到 LLM（命令词已胜出后到达）也要发
-        // received（收到 llm 语义）+ lost（command_already_won）事件；决策仍由 CAS 守卫。
+        // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
         llm.whenComplete((reply, err) -> {
             if (err != null || reply == null) return; // 失败留给 safety 兜底
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_LLM));
             if (offline.isDone()) {
                 // 离线已完成（空/失败）：没有更优候选可等 → LLM 立即胜出
-                settleLlm(settled, out, reply, utteranceId);
+                settleLlm(settled, out, reply, utteranceId, offline);
             } else {
                 // 宽限期：LLM 到达后等 offline 到 graceMs，到点未命中 → LLM 胜出
-                scheduler.schedule(() -> settleLlm(settled, out, reply, utteranceId),
+                scheduler.schedule(() -> settleLlm(settled, out, reply, utteranceId, offline),
                         offlineGraceMs, TimeUnit.MILLISECONDS);
             }
         });
@@ -159,6 +158,8 @@ public final class RaceArbiter {
         // safety 兜底：safetyTimeoutMs 内无一收敛
         scheduler.schedule(() -> {
             if (settled.compareAndSet(false, true)) {
+                offline.cancel(true);
+                llm.cancel(true);
                 sink.log(entry(utteranceId, ROUTE_LLM, "safety_timeout"));
                 onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                         CloudArbiterEvent.Reason.LLM_TIMEOUT, "safety_timeout"));
@@ -180,12 +181,12 @@ public final class RaceArbiter {
     }
 
     /**
-     * LLM 胜出收敛（即时与宽限期到点共用）：CAS 成功 → 胜出事件；失败 → 迟到 LLM
-     * 的 lost 事件（reason {@code command_already_won}，仅在命令词已胜出时；safety
-     * 收敛不触发 lost，需求原因枚举无对应项）。
+     * LLM 胜出收敛（即时与宽限期到点共用）：CAS 成功 → 胜出事件；若取消与完成竞态
+     * 导致 CAS 失败，则仅在命令词已胜出时发 lost 事件；safety 收敛不触发 lost。
      */
     private void settleLlm(AtomicBoolean settled, CompletableFuture<ArbiterDecision> out,
-                           Reply reply, String utteranceId) {
+                           Reply reply, String utteranceId,
+                           CompletableFuture<OfflineCommandHit> offline) {
         if (!settled.compareAndSet(false, true)) {
             if (settledBy(out, "offline_won")) {
                 onEvent(utteranceId, CloudArbiterEvent.lost(ROUTE_LLM,
@@ -193,6 +194,7 @@ public final class RaceArbiter {
             }
             return;
         }
+        offline.cancel(true);
         sink.log(entry(utteranceId, ROUTE_LLM, "llm_reply"));
         onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                 CloudArbiterEvent.Reason.PRIORITY, "llm_reply"));

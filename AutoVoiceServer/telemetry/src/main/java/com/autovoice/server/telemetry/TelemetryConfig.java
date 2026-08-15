@@ -7,6 +7,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * telemetry 装配。recorder 策略（enabled 由 {@code autovoice.telemetry.enabled} 控制，
@@ -26,7 +28,19 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @Configuration
 @EnableConfigurationProperties(TelemetryProperties.class)
 @EnableScheduling
-public class TelemetryConfig {
+public class TelemetryConfig implements WebMvcConfigurer {
+
+    private final TelemetryProperties properties;
+
+    public TelemetryConfig(TelemetryProperties properties) {
+        this.properties = properties;
+    }
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new TelemetryAuthInterceptor(properties.accessToken()))
+                .addPathPatterns("/api/telemetry/**");
+    }
 
     @Bean
     @ConditionalOnProperty(prefix = "autovoice.telemetry", name = "enabled",

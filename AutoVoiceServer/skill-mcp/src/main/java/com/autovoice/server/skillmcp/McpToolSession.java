@@ -170,7 +170,7 @@ public final class McpToolSession implements AutoCloseable {
     @Override
     public void close() {
         try {
-            client.closeGracefully();
+            client.close();
         } catch (RuntimeException ignored) {
             // 关闭失败不致命
         }

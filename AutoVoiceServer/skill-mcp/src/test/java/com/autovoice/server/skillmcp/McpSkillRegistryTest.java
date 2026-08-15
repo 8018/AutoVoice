@@ -31,6 +31,14 @@ class McpSkillRegistryTest {
         return new SkillConfig(id, id, "d", mcpUrl, "", "", "", true, 1L);
     }
 
+    private static SkillConfig cfgWithOnly(String id, String enabledTool) {
+        String tools = "[{\"name\":\"poi_search\",\"enabled\":"
+                + ("poi_search".equals(enabledTool) ? "true" : "false")
+                + "},{\"name\":\"route_plan\",\"enabled\":"
+                + ("route_plan".equals(enabledTool) ? "true" : "false") + "}]";
+        return new SkillConfig(id, id, "d", mcpUrl, "", "", tools, true, 1L);
+    }
+
     /** 真会话：McpToolSession.connect 走完整 SDK 握手（对 FakeMcpServer，无真实 MCP）。 */
     private static McpToolSession session(SkillConfig cfg) {
         try {
@@ -42,12 +50,33 @@ class McpSkillRegistryTest {
 
     @Test
     void refreshBuildsSnapshotFromEnabledSkills() throws Exception {
-        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a"), cfg("b")));
+        FakePlatformClient client = new FakePlatformClient(
+                List.of(cfgWithOnly("a", "poi_search"), cfgWithOnly("b", "route_plan")));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
                 new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
-            assertEquals(4, reg.enabledToolSpecs().size()); // 2 skills × 2 工具
+            assertEquals(2, reg.enabledToolSpecs().size()); // 两个 skill，各拥有一个唯一工具
             assertEquals("找到 1 个结果：西湖", reg.callTool("poi_search", "{}")); // 路由到所属 session 执行
+        }
+    }
+
+    @Test
+    void duplicateToolRefreshKeepsPreviousSnapshot() throws Exception {
+        AtomicInteger pulls = new AtomicInteger();
+        FakePlatformClient client = new FakePlatformClient(null) {
+            @Override
+            public List<SkillConfig> fetchEnabled() {
+                if (pulls.incrementAndGet() == 1) return List.of(cfg("stable"));
+                return List.of(cfg("conflict-a"), cfg("conflict-b"));
+            }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals(2, reg.enabledToolSpecs().size());
+            reg.refresh();
+            assertEquals(2, reg.enabledToolSpecs().size(), "冲突刷新不得替换上次成功快照");
+            assertEquals("找到 1 个结果：西湖", reg.callTool("poi_search", "{}"));
         }
     }
 
