@@ -1,0 +1,139 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      vars.AUTO_DEPLOY_PRODUCTION == 'true')
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      DEPLOY_HOST: ${{ vars.PROD_SSH_HOST || '47.94.4.204' }}
+      DEPLOY_USER: ${{ vars.PROD_SSH_USER || 'root' }}
+      DEPLOY_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
+
+    steps:
+      - name: Require main for manual deployments
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Production can only be deployed manually from main."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            AutoVoiceServer/telemetry-web/package-lock.json
+            AutoVoiceServer/skill-manager-web/package-lock.json
+
+      - name: Build embedded Web applications
+        run: |
+          npm --prefix AutoVoiceServer/telemetry-web ci
+          npm --prefix AutoVoiceServer/telemetry-web run build
+          npm --prefix AutoVoiceServer/skill-manager-web ci
+          npm --prefix AutoVoiceServer/skill-manager-web run build
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Build deployable jars
+        working-directory: AutoVoiceServer
+        run: ./gradlew :app:bootJar :tts-server:bootJar :skill-manager:bootJar
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          if [[ -z "$SSH_PRIVATE_KEY" || -z "$SSH_KNOWN_HOSTS" ]]; then
+            echo "::error::Configure PROD_SSH_PRIVATE_KEY and PROD_SSH_KNOWN_HOSTS in the production environment."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/autovoice-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/autovoice-ssh/id_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/autovoice-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/autovoice-ssh/id_key" "$RUNNER_TEMP/autovoice-ssh/known_hosts"
+
+      - name: Upload release
+        shell: bash
+        run: |
+          SSH_ARGS=(
+            -i "$RUNNER_TEMP/autovoice-ssh/id_key"
+            -p "$DEPLOY_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
+          )
+          SCP_ARGS=(
+            -i "$RUNNER_TEMP/autovoice-ssh/id_key"
+            -P "$DEPLOY_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
+          )
+          TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
+
+          ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
+          scp "${SCP_ARGS[@]}" \
+            AutoVoiceServer/app/build/libs/app.jar \
+            AutoVoiceServer/tts-server/build/libs/tts-server.jar \
+            AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
+            AutoVoiceServer/deploy/deploy-production.sh \
+            "$TARGET:$STAGING_DIR/"
+
+      - name: Activate release
+        shell: bash
+        run: |
+          SSH_ARGS=(
+            -i "$RUNNER_TEMP/autovoice-ssh/id_key"
+            -p "$DEPLOY_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
+          )
+          TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
+          ssh "${SSH_ARGS[@]}" "$TARGET" \
+            "bash '$STAGING_DIR/deploy-production.sh' '$DEPLOY_SHA' '$STAGING_DIR'"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          {
+            echo "## Production deployed"
+            echo
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Host: \`$DEPLOY_HOST\`"
+            echo "- Services: gateway, TTS, skill manager"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -3,6 +3,8 @@
 ## 服务器侧布局
 
 - `/opt/autovoice/app.jar` — 可执行 jar（`./gradlew :app:bootJar` 产出）
+- `/opt/autovoice/tts-server.jar` — TTS 服务 jar（端口 8082）
+- `/opt/autovoice/skill-manager/skill-manager.jar` — 技能管理服务 jar（端口 8083）
 - `/etc/autovoice/.env` — 密钥环境变量（**不入库**；按 `AutoVoiceServer/env.example`
   建模板，真实值由服务器管理员填写；改后 `systemctl restart autovoice-gateway`）
 - `/etc/systemd/system/autovoice-gateway.service` — systemd 服务（本目录同名文件），
@@ -60,6 +62,38 @@ AUTOVOICE_TTS_CACHE_DIR=/opt/autovoice/tts-cache
    `aikit/aeeLog.txt`）。
 
 ## 更新流程
+
+### GitHub Actions（推荐）
+
+仓库的 `.github/workflows/deploy.yml` 会构建两个 Web 前端和三个 Spring Boot
+jar，然后通过 SSH 发布。发布顺序为技能管理服务、TTS、网关；每个服务都要通过
+systemd 状态和本机端口检查。任一服务在 90 秒内未就绪，会自动恢复本次发布前的
+三个 jar 并重启服务。服务器上的 `.env`、离线 SDK、SQLite 数据和遥测数据不会被
+覆盖。
+
+在 GitHub 仓库的 `production` Environment 中配置：
+
+- Secret `PROD_SSH_PRIVATE_KEY`：有权登录部署用户的 SSH 私钥；
+- Secret `PROD_SSH_KNOWN_HOSTS`：服务器的 known_hosts 记录，用于严格校验主机身份；
+- 可选 Variable `PROD_SSH_HOST`（默认 `47.94.4.204`）、`PROD_SSH_USER`
+  （默认 `root`）、`PROD_SSH_PORT`（默认 `22`）。
+
+首次建议在 Actions 页面手动运行 **Deploy production**。确认稳定后，将仓库
+Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
+`main` 分支的 **CI** 成功时会自动发布对应 commit。未设置该变量时，CI 后的自动
+发布 job 会跳过，不会产生失败记录。
+
+`PROD_SSH_KNOWN_HOSTS` 应从已经验证过的管理机取得，不要在 workflow 中临时执行
+`ssh-keyscan`，否则无法防止中间人攻击。例如先确认当前连接使用的指纹，再读取：
+
+```bash
+ssh-keygen -F 47.94.4.204
+```
+
+每次发布的构建产物和发布前备份分别保存在 `/opt/autovoice/releases/<commit>` 与
+`/opt/autovoice/backups/<commit>-<UTC时间>`，便于审计和手工回退。
+
+### 手工更新
 
 ```bash
 # 本机
