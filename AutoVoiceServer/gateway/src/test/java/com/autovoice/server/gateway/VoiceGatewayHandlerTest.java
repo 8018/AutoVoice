@@ -4,12 +4,15 @@ import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.session.SessionRegistry;
+import com.autovoice.server.speechclassic.ClassicOnlineSpeechProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -44,8 +47,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 处理器接线测试：手写 WebSocketSession stub 捕获下行消息，验证
- * 握手回调、二进制帧累积、decision→reply 下发顺序与下行 kind 收敛（TTS 解耦：
- * reply 只携带语义，不再有 audio kind）。
+ * 握手回调、二进制帧累积、decision→reply 下发顺序与下行 kind 收敛（Classic 为
+ * text/action，S2S 为 audio）。
  * 测试环境用极短仲裁参数（safety 1s），fake providers 同步就绪。
  */
 class VoiceGatewayHandlerTest {
@@ -202,6 +205,30 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void s2sAudioReplyKeepsAudioTextAndIntentAfterCloudArbitration() throws InterruptedException {
+        Intent intent = Intent.of("1.0", "climate", "power_on", Map.of(), 1.0,
+                "qwen-omni.car_control", null);
+        OnlineSpeechProvider s2s = online(Reply.ofAudio("audio/wav", WAV, "好的，空调已打开", intent));
+        VoiceGatewayHandler h = new VoiceGatewayHandler(s2s, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "s2s-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 3);
+
+        JsonNode payload = parse(s.sent.get(2)).get("payload");
+        assertEquals("audio", payload.get("kind").asText());
+        assertEquals("audio/wav", payload.get("mime").asText());
+        assertArrayEquals(WAV, java.util.Base64.getDecoder().decode(payload.get("dataBase64").asText()));
+        assertEquals("好的，空调已打开", payload.get("speakText").asText());
+        assertEquals("power_on", payload.get("intent").get("intent").asText());
+        assertEquals("s2s-1", payload.get("segmentId").asText());
+    }
+
+    @Test
     void nonAirconOfflineHitEmitsPendingFrameBeforeLlmDecision() throws InterruptedException {
         // B5 端到端：离线命中"打开车窗"（非空调 → 按未命中处理）+ LLM 慢 → 仲裁先发 pending 占位帧
         // （带 segmentId，端侧对账用），随后 decision + reply 正常下发——占位不替代最终结果
@@ -315,10 +342,12 @@ class VoiceGatewayHandlerTest {
     @Test
     void oversizedAudioIsRejectedBeforeAsr() {
         AtomicInteger asrCalls = new AtomicInteger();
-        VoiceGatewayHandler h = new VoiceGatewayHandler((pcm, ctx) -> {
+        AsrProvider countingAsr = (pcm, ctx) -> {
             asrCalls.incrementAndGet();
             return "x";
-        }, llm("LLM"), ttsOk(), noopOffline(), registry,
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(countingAsr, llm("LLM")), ttsOk(), noopOffline(), registry,
                 SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32, 3,
                 NoopTelemetryRecorder.INSTANCE);
         StubSession s = open(h);
@@ -559,12 +588,14 @@ class VoiceGatewayHandlerTest {
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
                                            OfflineCommandService offline) {
-        return new VoiceGatewayHandler(asr, llm, tts, offline, registry, SAFETY, ASR_FAIL_WAIT);
+        return new VoiceGatewayHandler(new ClassicOnlineSpeechProvider(asr, llm), tts, offline,
+                registry, SAFETY, ASR_FAIL_WAIT);
     }
 
     /** 鉴权开启（M1）的 handler：设备表 + 连接上限可配。 */
     private VoiceGatewayHandler newAuthHandler(Map<String, String> devices, int maxConnections) {
-        return new VoiceGatewayHandler(asr("x"), llm("LLM"), ttsOk(), noopOffline(), registry,
+        return new VoiceGatewayHandler(new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")),
+                ttsOk(), noopOffline(), registry,
                 SAFETY, ASR_FAIL_WAIT, 1500, true, devices, maxConnections,
                 NoopTelemetryRecorder.INSTANCE);
     }
@@ -593,6 +624,22 @@ class VoiceGatewayHandlerTest {
 
     private static LlmProvider llm(String text) {
         return (t, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text));
+    }
+
+    private static OnlineSpeechProvider online(Reply reply) {
+        return new OnlineSpeechProvider() {
+            @Override
+            public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm16k, com.autovoice.server.contracts.SessionContext context,
+                    String utteranceId) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(reply, ""));
+            }
+
+            @Override
+            public String id() {
+                return "test-s2s";
+            }
+        };
     }
 
     /** LLM 慢响应（B5 pending 竞态用例用）：delayMs 后才返回文本回复，模拟工具循环推理耗时。 */

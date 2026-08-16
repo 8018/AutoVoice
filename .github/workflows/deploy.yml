@@ -2,6 +2,15 @@ name: Deploy production
 
 on:
   workflow_dispatch:
+    inputs:
+      voice_backend:
+        description: Online speech backend compiled into gateway
+        required: true
+        default: classic
+        type: choice
+        options:
+          - classic
+          - omni
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -29,6 +38,7 @@ jobs:
       DEPLOY_HOST: ${{ vars.PROD_SSH_HOST || '47.94.4.204' }}
       DEPLOY_USER: ${{ vars.PROD_SSH_USER || 'root' }}
       DEPLOY_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
+      VOICE_BACKEND: ${{ github.event_name == 'workflow_dispatch' && inputs.voice_backend || vars.VOICE_BACKEND || 'classic' }}
 
     steps:
       - name: Require main for manual deployments
@@ -65,7 +75,7 @@ jobs:
 
       - name: Build deployable jars
         working-directory: AutoVoiceServer
-        run: ./gradlew :app:bootJar :tts-server:bootJar :skill-manager:bootJar
+        run: ./gradlew :app:bootJar :tts-server:bootJar :skill-manager:bootJar -PvoiceBackend="$VOICE_BACKEND"
 
       - name: Configure SSH
         env:
@@ -135,5 +145,6 @@ jobs:
             echo
             echo "- Commit: \`$DEPLOY_SHA\`"
             echo "- Host: \`$DEPLOY_HOST\`"
+            echo "- Voice backend: \`$VOICE_BACKEND\`"
             echo "- Services: gateway, TTS, skill manager"
           } >> "$GITHUB_STEP_SUMMARY"

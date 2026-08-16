@@ -1,24 +1,16 @@
 package com.autovoice.server.app;
 
-import com.autovoice.server.asrgateway.AliyunAsrProvider;
-import com.autovoice.server.asrgateway.AliyunTokenClient;
-import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
-import com.autovoice.server.contracts.AsrProvider;
-import com.autovoice.server.contracts.FunctionTool;
-import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandProvider;
-import com.autovoice.server.contracts.ToolProvider;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.gateway.VoiceGatewayHandler;
-import com.autovoice.server.llm.DeepSeekLlmProvider;
 import com.autovoice.server.offlinecommand.NativeOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
-import com.autovoice.server.skillmcp.McpToolExecutor;
 import com.autovoice.server.skillmcp.McpToolSession;
 import com.autovoice.server.skillmcp.SkillPlatformClient;
 import com.autovoice.server.skillmcp.SystemPromptStore;
@@ -40,12 +32,12 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 
 /**
- * 云端 app 装配：按 {@code autovoice.*} 配置选择 provider 实现并注入
+ * 云端公共装配：构建参数 {@code -PvoiceBackend=classic|omni} 选择在线语音后端，
+ * 本类装配两种后端共用的 offline、TTS、Skill/MCP、Gateway 与遥测组件并注入
  * {@link VoiceGatewayHandler}（每连接 pipeline + RaceArbiter 由 handler 内部构建）。
  *
- * <p>provider 选择（application.yml {@code autovoice.providers.*}）：llm=deepseek
- * （语义由 LLM function calling 承担，原 NLU 链路已随讯飞 AIUI 下线退役）、asr 支持
- * {@code iflytek}（讯飞在线听写，默认）与 {@code aliyun}（一句话识别）、tts=aliyun。
+ * <p>Classic 变体仍读取 {@code autovoice.providers.llm/asr}；Omni 变体固定使用
+ * qwen3.5-omni-plus。TTS 保持独立服务，Skill/MCP 平台由两种变体共用。
  * secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
  */
 @Configuration
@@ -215,30 +207,6 @@ public class AppConfig {
     }
 
     /**
-     * LLM：多轮工具循环（Task 9）+ MCP 工具合并——tools = car_control 默认 skill + registry
-     * 启用快照（经注入策略），工具调用由 McpToolExecutor 按名路由回 registry（未知工具抛
-     * McpToolException，错误文本回 LLM 续轮）。
-     */
-    @Bean
-    public LlmProvider llmProvider(OkHttpClient client, AutovoiceProperties props,
-                                   TelemetryRecorder recorder, McpSkillRegistry registry,
-                                   SystemPromptStore promptStore) {
-        if (!"deepseek".equals(props.providers().llm())) {
-            throw new IllegalArgumentException(
-                    "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
-        }
-        ToolProvider merged = () -> {
-            List<FunctionTool> out = new ArrayList<>(DeepSeekLlmProvider.defaultTools());
-            out.addAll(registry.enabledToolSpecs());
-            return out;
-        };
-        return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
-                DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder, merged,
-                DeepSeekLlmProvider.DEFAULT_TOOL_LOOP_BUDGET_MS,
-                new McpToolExecutor(registry::callTool), promptStore::get);
-    }
-
-    /**
      * 平台 webhook 接收端点（/api/internal/skills/refresh）：service-token 校验后触发重拉。
      * 显式 @Bean 定义覆盖组件扫描装配（SkillRefreshController 同时是 @RestController）：
      * serviceToken 由此方法注入，删掉本 @Bean 会让扫描装配因 String 构造参数失败。
@@ -252,32 +220,6 @@ public class AppConfig {
                     "autovoice.skill-manager.service-token 不能为空（SKILL_SERVICE_TOKEN）：已配置 skill-manager.url");
         }
         return new SkillRefreshController(registry, sm.serviceToken());
-    }
-
-    /** NLS token 接口的 AK/SK 以明文 query 出现（该 API 设计固有，URL 会进代理日志）。 */
-    @Bean
-    public AliyunTokenClient aliyunTokenClient(OkHttpClient client, AutovoiceProperties props) {
-        return new AliyunTokenClient(client, props.secrets().aliyunAk(), props.secrets().aliyunSk());
-    }
-
-    /** 听写鉴权时间源（签名 date 字段）。 */
-    @Bean
-    public java.time.Clock clock() {
-        return java.time.Clock.systemUTC();
-    }
-
-    @Bean
-    public AsrProvider asrProvider(OkHttpClient client, AliyunTokenClient tokenClient,
-                                   java.time.Clock clock, AutovoiceProperties props) {
-        return switch (props.providers().asr()) {
-            case "iflytek" -> new IflytekIatAsrProvider(client, props.secrets().xfyunAppid(),
-                    props.secrets().xfyunApiKey(), props.secrets().xfyunApiSecret(),
-                    IflytekIatAsrProvider.DEFAULT_ENDPOINT, clock);
-            case "aliyun" -> new AliyunAsrProvider(client, props.secrets().aliyunNlsAppkey(),
-                    AliyunAsrProvider.DEFAULT_ENDPOINT, tokenClient::token);
-            default -> throw new IllegalArgumentException(
-                    "unknown providers.asr: " + props.providers().asr() + " (iflytek | aliyun)");
-        };
     }
 
     /** TTS 转发（M4 独立服务）：网关不本地合成，HTTP 转发 tts-server /tts（RemoteTtsProvider）。 */
@@ -334,14 +276,16 @@ public class AppConfig {
      * （鉴权/连接上限，M1）均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
      */
     @Bean
-    public VoiceGatewayHandler voiceGatewayHandler(AsrProvider asr, LlmProvider llm,
+    public VoiceGatewayHandler voiceGatewayHandler(OnlineSpeechProvider online,
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props,
                                                    TelemetryRecorder recorder) {
         AutovoiceProperties.Gateway g = props.gateway();
-        return new VoiceGatewayHandler(asr, llm, tts, offline, registry,
-                props.arbitration().safetyTimeoutMs(), props.offline().asrFailWaitMs(),
+        long safetyTimeoutMs = Math.max(
+                props.arbitration().safetyTimeoutMs(), online.minimumTurnTimeoutMs());
+        return new VoiceGatewayHandler(online, tts, offline, registry,
+                safetyTimeoutMs, props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
                 g.maxAudioBytes(), recorder);
     }

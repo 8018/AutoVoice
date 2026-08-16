@@ -576,7 +576,7 @@ class VoiceEngine(
                             )
                         }
                     },
-                    // B5：pending 信号 → 阶段 1 窗口延长（pendingWaitMs=16s，见构造器注释）
+                    // B5：pending 信号 → 阶段 1 窗口延长（默认 50s，覆盖 Omni 45s safety）
                     pending = pendingSignals,
                 ),
                 sink = telemetrySink,

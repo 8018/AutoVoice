@@ -115,11 +115,10 @@ class OnDeviceRaceArbiter(
     private val pending: ReceiveChannel<Unit> = Channel(),
     /**
      * B5：收到 pending 后阶段 1 的扩展窗口。LLM 工具循环最长约 15s（服务端
-     * safety-timeout-ms=15000 是 final 硬上限；多目的地导航 5-7 轮实测 7-14s；
-     * 窗口 3s 时 pending 早到 → 剩余等待 ≈14.7s），16s 留 1.3s 富余；
-     * 服务端 safety-timeout-ms 变更时需联动本值（≥ safety 方不被端侧先兜底）。
+     * Classic 工具循环约 15s；qwen3.5-omni-plus HTTP 文件模式由服务端保证至少 45s。
+     * 端侧使用 50s，确保 pending 后不会先于任一构建变体的服务端 safety 收敛。
      */
-    private val pendingWaitMs: Long = 16_000,
+    private val pendingWaitMs: Long = 50_000,
 ) {
     /** 阶段 1 收敛结果（能力分级 2026-08-15 + B5）：本地车窗开关 / 云端语义 / pending 占位。 */
     private sealed interface Outcome {

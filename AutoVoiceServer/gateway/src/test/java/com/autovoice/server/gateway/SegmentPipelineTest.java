@@ -8,6 +8,8 @@ import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandProvider;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
@@ -15,6 +17,7 @@ import com.autovoice.server.contracts.telemetry.TelemetryEvent;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
+import com.autovoice.server.speechclassic.ClassicOnlineSpeechProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +28,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -89,6 +93,21 @@ class SegmentPipelineTest {
                 Map.of("temperature", SlotValue.number(24)), 0.95, "test", null);
     }
 
+    static OnlineSpeechProvider online(CompletableFuture<OnlineSpeechResult> result) {
+        return new OnlineSpeechProvider() {
+            @Override
+            public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm16k, SessionContext context, String utteranceId) {
+                return result;
+            }
+
+            @Override
+            public String id() {
+                return "test-s2s";
+            }
+        };
+    }
+
     /** 离线提供者：固定文本 → 由 RuleNlu 决定命中与否（"打开空调" 命中、"我想听歌" unknown）。 */
     static OfflineCommandService offline(String text) {
         return new OfflineCommandService((pcm, ctx) ->
@@ -100,7 +119,8 @@ class SegmentPipelineTest {
     }
 
     SegmentPipeline pipeline(AsrProvider asr, OfflineCommandService offline) {
-        return new SegmentPipeline(asr, arbiter(), llmAction(), offline, ASR_FAIL_WAIT, sink, recorder);
+        return new SegmentPipeline(new ClassicOnlineSpeechProvider(asr, llmAction()), arbiter(),
+                offline, ASR_FAIL_WAIT, sink, recorder);
     }
 
     // ------------------------------------------------------------ 竞速收敛
@@ -137,8 +157,9 @@ class SegmentPipelineTest {
     @Test
     void offlineMissLlmTextReply() {
         // 离线未命中 + LLM 闲聊 → kind=text 且 text 与 speakText 同带（端侧 parseReply 强读 text）
-        SegmentPipeline p = new SegmentPipeline(asr("今天天气怎么样"), arbiter(),
-                llmText("今天天气不错"), offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
+        SegmentPipeline p = new SegmentPipeline(
+                new ClassicOnlineSpeechProvider(asr("今天天气怎么样"), llmText("今天天气不错")),
+                arbiter(), offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
         SegmentPipeline.SegmentResult r = p.handleSegment(PCM, CTX, "u-1");
         assertEquals("text", replyKind(r));
         assertEquals("今天天气不错", r.text());
@@ -149,10 +170,46 @@ class SegmentPipelineTest {
     }
 
     @Test
+    void offlineMissReleasesS2sAudioCandidate() {
+        byte[] wav = {'R', 'I', 'F', 'F', 1, 2};
+        OnlineSpeechProvider s2s = online(
+                CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAudio("audio/wav", wav, "好的", null), "")));
+        SegmentPipeline p = new SegmentPipeline(s2s, arbiter(), offlineMiss(),
+                ASR_FAIL_WAIT, sink, recorder);
+
+        SegmentPipeline.SegmentResult result = p.handleSegment(PCM, CTX, "u-s2s");
+
+        assertEquals("audio/wav", result.mime());
+        assertEquals("好的", result.speakText());
+        assertTrue(java.util.Arrays.equals(wav, result.audio()));
+        assertEquals("llm_reply", log.get(0).reason());
+    }
+
+    @Test
+    void cloudOfflineHitCancelsS2sCandidate() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                cancelled.set(true);
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        SegmentPipeline p = new SegmentPipeline(online(pending), arbiter(), offline("打开空调"),
+                ASR_FAIL_WAIT, sink, recorder);
+
+        SegmentPipeline.SegmentResult result = p.handleSegment(PCM, CTX, "u-s2s-cancel");
+
+        assertEquals("power_on", result.intent().intent());
+        assertTrue(cancelled.get(), "云端空调离线命中后必须向 S2S 会话传播取消");
+    }
+
+    @Test
     void llmErrorFallsBackToSafety() {
         // LLM future 异常完成 → RaceArbiter safety 兜底（safety_timeout + 兜底话术）
-        SegmentPipeline p = new SegmentPipeline(asr("x"), arbiter(), llmError(),
-                offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
+        SegmentPipeline p = new SegmentPipeline(new ClassicOnlineSpeechProvider(asr("x"), llmError()),
+                arbiter(), offlineMiss(), ASR_FAIL_WAIT, sink, recorder);
         SegmentPipeline.SegmentResult r = p.handleSegment(PCM, CTX, "u-1");
         assertEquals("safety_timeout", log.get(0).reason());
         assertEquals("网络开小差了，请稍后再试", r.speakText());
