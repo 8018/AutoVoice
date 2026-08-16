@@ -31,6 +31,7 @@
 | `ready` | 服务端 → 客户端 | 握手成功，服务端就绪 |
 | `decision` | 服务端 → 客户端 | 决策日志事件：本次请求由谁仲裁、走哪条路线及原因 |
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
+| `reply_partial` | 服务端 → 客户端 | 模型回答文本累计快照，音频播放期间增量上屏 |
 | `pending` | 服务端 → 客户端 | LLM 处理中占位：最终 `reply` 前的中间通知（可选，0..1 次） |
 | `reply` | 服务端 → 客户端 | 最终回复（文本 / 动作意图；**TTS 解耦后不再携带音频**） |
 | `audio_reply_start` | 服务端 → 客户端 | S2S 流式回复开始；后续二进制帧属于该回复 |
@@ -214,13 +215,15 @@
 
 ### 4.3 asr_partial
 
-云端 ASR 的流式中间结果，可在录音过程中持续下发（每帧一条）；`isFinal` 为 `true` 表示该 utterance 的最终识别文本。
+云端 ASR 的流式中间结果，可在录音过程中持续下发（PGS 每帧一条）；`isFinal` 为 `true`
+表示该 utterance 的最终识别文本。该消息独立于 NLU 和语义仲裁：只要属于当前 segment，
+客户端就立即更新识别框。
 
 ```json
 {
   "type": "asr_partial",
   "payload": {
-    "sessionId": "demo-1",
+    "segmentId": "seg-1",
     "text": "空调调到二十四",
     "isFinal": false
   }
@@ -229,9 +232,26 @@
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `sessionId` | string | 会话 ID |
+| `segmentId` | string | 当前录音段 ID，用于丢弃上一轮迟到结果 |
 | `text` | string | 当前已识别文本 |
 | `isFinal` | boolean | 是否为最终结果 |
+
+### 4.3.1 reply_partial
+
+模型回答文本的累计快照。S2S 后端在解析 `delta.content` 时持续发送；服务端先经过云端
+语义仲裁门，客户端再缓存至端侧仲裁确认云端胜出，随后与音频同步上屏，不必等待
+`audio_reply_end`。最终 `reply`/`audio_reply_end.speakText` 仍可覆盖收口。
+
+```json
+{
+  "type": "reply_partial",
+  "payload": {
+    "segmentId": "seg-1",
+    "text": "Sure, I can help",
+    "isFinal": false
+  }
+}
+```
 
 ### 4.4 reply
 
@@ -434,12 +454,14 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
 }
 ```
 
-`audio_reply_end.asrText` 是旁路 ASR 产生的用户原话，端侧用它更新识别输出框；
+`audio_reply_end.asrText` 是旁路 ASR 产生的用户原话最终快照，用于校正/收口；首次及中间
+识别展示走不受仲裁阻塞的 `asr_partial`。
 `audio_reply_end.intent` 可选，结构与 `reply/action.intent` 相同。音频不绕过 TTS 架构：端侧把 PCM
 块交给 TTS 模块新增的流式音频入口，由其统一负责 AudioTrack 播放、停止和 telemetry；它不再做文本合成。
 
-云端仲裁门先于任何 S2S 下行：同一输入音频从一开始便并发交给空调离线识别和 S2S；空调离线命中
-则丢弃缓存的 S2S 块并取消在线请求，未命中/失败才按原顺序放行。这里的“未命中才放行”不是
+云端仲裁门先于 S2S **回答字幕、音频和语义**下行；`asr_partial` 是明确的例外。同一输入音频从
+一开始便并发交给空调离线识别、旁路 ASR 和 S2S；空调离线命中则丢弃缓存的 S2S 回答并取消在线
+请求，但不拦截 ASR 展示。未命中/失败才按原顺序放行 S2S 回答。这里的“未命中才放行”不是
 “未命中才上传/调用模型”。
 
 ## 5. 时序（连接 → 录音段 → 结果）

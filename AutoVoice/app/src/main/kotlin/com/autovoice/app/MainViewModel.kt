@@ -369,6 +369,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
             onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },
+            onReplyText = { text -> _uiState.update { it.copy(lastReplyText = text) } },
             // B5：云端 LLM 处理中占位 → Header"处理中…"徽标（清除由引擎收口）
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
         )

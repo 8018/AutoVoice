@@ -26,8 +26,10 @@ object TelemetryStages {
     /** VAD 语音段结束（录音实时，SpeechEnd 触发，与 [VAD_START] 配对）。 */
     const val VAD_END = "vad_end"
 
-    /** 本地 ASR + NLU（buildLocalChain，识别文本/意图/耗时）。 */
+    /** 本地独立 ASR/PGS 识别文本。 */
     const val LOCAL_ASR = "local_asr"
+    /** 本地 NLU/2C 语义候选。 */
+    const val LOCAL_NLU = "local_nlu"
 
     /** 意图执行（车控 apply：applied/skipped；全败兜底：failed）。 */
     const val EXECUTE = "execute"

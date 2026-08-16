@@ -7,6 +7,7 @@ import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
+import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
@@ -384,7 +385,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             SegmentPipeline.SegmentResult result;
             try {
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
-                        streamSink(session, st, segmentId));
+                        streamSink(session, st, segmentId), asrSink(session, st, segmentId));
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
@@ -431,6 +432,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             }
 
             @Override
+            public void onReplyText(String text, boolean isFinal) {
+                if (!allowed() || segmentId == null || text == null || text.isBlank()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", segmentId);
+                payload.put("text", text);
+                payload.put("isFinal", isFinal);
+                send(session, "reply_partial", payload);
+            }
+
+            @Override
             public void onComplete(String speakText, Intent intent) {
                 onComplete(speakText, intent, "");
             }
@@ -445,6 +456,19 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (asrText != null && !asrText.isBlank()) payload.put("asrText", asrText);
                 send(session, "audio_reply_end", payload);
             }
+        };
+    }
+
+    /** ASR/PGS 旁路：不经过语义仲裁门，识别一出字就下发；仅拦截取消/过期轮。 */
+    private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st, String segmentId) {
+        return (text, isFinal) -> {
+            if (segmentId == null || !segmentId.equals(st.processingSegmentId)
+                    || isCancelled(st, segmentId) || text == null || text.isBlank()) return;
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("segmentId", segmentId);
+            payload.put("text", text);
+            payload.put("isFinal", isFinal);
+            send(session, "asr_partial", payload);
         };
     }
 

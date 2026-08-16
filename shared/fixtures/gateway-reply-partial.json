@@ -1,0 +1,8 @@
+{
+  "type": "reply_partial",
+  "payload": {
+    "segmentId": "seg-1",
+    "text": "Sure, I can",
+    "isFinal": false
+  }
+}

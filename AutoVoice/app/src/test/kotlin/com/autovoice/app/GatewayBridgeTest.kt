@@ -116,6 +116,9 @@ class GatewayBridgeTest {
     private fun pendingFrame(segmentId: String): String =
         """{"type":"pending","payload":{"segmentId":"$segmentId","text":"正在处理，请稍候"}}"""
 
+    private fun partialFrame(type: String, segmentId: String, text: String, isFinal: Boolean): String =
+        """{"type":"$type","payload":{"segmentId":"$segmentId","text":"$text","isFinal":$isFinal}}"""
+
     // ------------------------------------------------------------------ 用例
 
     @Test
@@ -247,6 +250,58 @@ class GatewayBridgeTest {
         }
     }
 
+    @Test
+    fun `matching ASR partial updates recognition before final reply`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val recognized = Channel<Pair<String, Boolean>>(Channel.BUFFERED)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onAsrResult = { text, isFinal -> recognized.trySend(text to isFinal) },
+        )
+        try {
+            client.connect()
+            val slot = bridge.newReplySlot("seg-1")
+            gateway.sendText(partialFrame("asr_partial", "seg-1", "打开车", false))
+            assertEquals("打开车" to false, recognized.receive())
+            assertFalse(slot.isCompleted, "ASR partial 只更新识别框，不应等待或完成语义回复")
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `matching reply partial updates reply text before audio or final reply`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val replies = Channel<Pair<String, Boolean>>(Channel.BUFFERED)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onReplyText = { text, isFinal -> replies.trySend(text to isFinal) },
+        )
+        try {
+            client.connect()
+            val slot = bridge.newReplySlot("seg-1")
+            gateway.sendText(partialFrame("reply_partial", "seg-1", "好的，正在", false))
+            assertEquals("好的，正在" to false, replies.receive())
+            assertFalse(slot.isCompleted, "回复文本 partial 应在音频流/最终回复完成前上屏")
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
     // ------------------------------------------------ B5：pending 占位帧（LLM 处理中）
 
     @Test
@@ -259,7 +314,13 @@ class GatewayBridgeTest {
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val signals = Channel<Unit>(Channel.BUFFERED)
         var uiCallback = 0
-        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            pendingSignals = signals,
+            onPendingReceived = { uiCallback++ },
+        )
         try {
             client.connect()
             val slot = bridge.newReplySlot("seg-1")
@@ -284,7 +345,13 @@ class GatewayBridgeTest {
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val signals = Channel<Unit>(Channel.BUFFERED)
         var uiCallback = 0
-        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            pendingSignals = signals,
+            onPendingReceived = { uiCallback++ },
+        )
         try {
             client.connect()
             val slot = bridge.newReplySlot("seg-new")
@@ -313,7 +380,13 @@ class GatewayBridgeTest {
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val signals = Channel<Unit>(Channel.BUFFERED)
         var uiCallback = 0
-        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope, signals) { uiCallback++ }
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            pendingSignals = signals,
+            onPendingReceived = { uiCallback++ },
+        )
         try {
             client.connect()
             gateway.sendText(pendingFrame("seg-orphan"))

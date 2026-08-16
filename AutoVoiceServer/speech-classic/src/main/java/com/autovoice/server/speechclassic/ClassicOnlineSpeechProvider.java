@@ -5,6 +5,8 @@ import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
+import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.SessionContext;
 
 import java.util.Objects;
@@ -25,12 +27,21 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
     @Override
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId) {
+        return process(pcm16k, context, utteranceId, OnlineAudioSink.NOOP, OnlineAsrSink.NOOP);
+    }
+
+    @Override
+    public CompletableFuture<OnlineSpeechResult> process(
+            byte[] pcm16k, SessionContext context, String utteranceId,
+            OnlineAudioSink replySink, OnlineAsrSink asrSink) {
         final String text;
         try {
             text = asr.transcribe(pcm16k, context);
             if (text == null || text.isBlank()) {
                 throw new CompletionException(new AsrException("ASR returned blank text"));
             }
+            // ASR 一完成立即独立输出，不等待 LLM/NLU，更不等待语义仲裁。
+            asrSink.onResult(text, true);
         } catch (Exception e) {
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);

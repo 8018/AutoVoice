@@ -9,6 +9,9 @@ public interface OnlineAudioSink {
 
     default void onChunk(byte[] pcm) {}
 
+    /** 模型回答文本的累计快照；用于在语音播放期间增量上屏。 */
+    default void onReplyText(String text, boolean isFinal) {}
+
     default void onComplete(String speakText, Intent intent) {}
 
     /**
