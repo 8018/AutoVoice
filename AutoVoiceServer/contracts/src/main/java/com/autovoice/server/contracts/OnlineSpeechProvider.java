@@ -21,6 +21,16 @@ public interface OnlineSpeechProvider {
         return process(pcm16k, context, utteranceId);
     }
 
+    /**
+     * ASR/NLU 解耦入口：asrSink 独立产出用户原话；audioSink 承载回答文本/音频。
+     * 旧实现保持兼容，未覆写时没有独立 ASR 事件。
+     */
+    default CompletableFuture<OnlineSpeechResult> process(
+            byte[] pcm16k, SessionContext context, String utteranceId,
+            OnlineAudioSink audioSink, OnlineAsrSink asrSink) {
+        return process(pcm16k, context, utteranceId, audioSink);
+    }
+
     /** 用于 ready、日志和遥测的稳定后端标识（classic / qwen-omni）。 */
     String id();
 

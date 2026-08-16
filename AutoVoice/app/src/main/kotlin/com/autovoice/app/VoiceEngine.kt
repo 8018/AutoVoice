@@ -12,12 +12,16 @@ import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.voicecore.ActionReply
+import com.autovoice.voicecore.AsrResult
+import com.autovoice.voicecore.AsrStage
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.Intent
+import com.autovoice.voicecore.NluResult
+import com.autovoice.voicecore.NluStage
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.StreamingAudioReply
@@ -142,6 +146,8 @@ class VoiceEngine(
      * 最终语义到达 / 新一轮开始 → false。UI 据此显示"处理中…"徽标，无执行无播报。
      */
     private val onCloudPending: (Boolean) -> Unit = {},
+    /** 云端语义通过端侧仲裁后释放其回复字幕；ASR 文本不受此门控。 */
+    private val onCloudWon: () -> Unit = {},
 ) {
 
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
@@ -345,8 +351,13 @@ class VoiceEngine(
         // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
         playUtteranceId = currentUtteranceId
         when (winner) {
-            is RaceWinner.Cloud -> routeCloudReply(winner.reply)
+            is RaceWinner.Cloud -> {
+                onCloudWon()
+                routeCloudReply(winner.reply)
+            }
             is RaceWinner.Local -> {
+                // ASR 已在语义仲裁前独立展示；2C/NLU 胜方若自带文本，再以胜方文本覆盖。
+                winner.recognizedText?.takeIf(String::isNotBlank)?.let(onLocalRecognized)
                 val applied = vehicle.apply(winner.intent)
                 // T7 execute：本地意图执行结果（未知意图 apply 返回 null → skipped，静默不播报）
                 telemetry.record(
@@ -503,6 +514,8 @@ class VoiceEngine(
             scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             onVehicleApplied: () -> Unit = {},
             onLocalRecognized: (String?) -> Unit = {},
+            /** 模型回答文本增量回调；S2S 播放期间即可更新回复框。 */
+            onReplyText: (String) -> Unit = {},
             /** 导航执行器（spec §4.2）：null → 导航意图记 skipped。 */
             navigation: NavigationExecutor? = null,
             /** B5：云端 LLM 处理中占位回调（收到 pending 帧 → true；最终语义/新一轮 → false）。 */
@@ -540,6 +553,12 @@ class VoiceEngine(
             // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
             val pendingSignals = Channel<Unit>(Channel.BUFFERED)
             val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope, pendingSignals)
+            cloudRunner.onAsrResult = { text, _ ->
+                if (text.isNotBlank()) onLocalRecognized(text)
+            }
+            cloudRunner.onReplyText = { text, _ ->
+                if (text.isNotBlank()) onReplyText(text)
+            }
             // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
             clockOffsetProvider.set(cloudRunner::clockOffsetMs)
             // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）
@@ -615,6 +634,7 @@ class VoiceEngine(
                     offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
                 },
                 onCloudPending = onCloudPending,
+                onCloudWon = cloudRunner::releaseReplyText,
             )
             engineRef = engine
             ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
@@ -682,10 +702,13 @@ class VoiceEngine(
                     }
                 }
             }
-            return LocalChainRunner { segment ->
-                val startMs = System.currentTimeMillis()
-                try {
-                    val command = when {
+            // 当前端侧 SDK 是 2C 命令词（文本+语义同源），不是通用 ASR；因此不能冒充
+            // ASR 提前上屏。demo-full 的独立 ASR 来自云端 asr_partial；后续接入本地 PGS
+            // 时只需替换本 stage，仲裁与 NLU 均无需改动。
+            val asr = AsrStage { _, _ -> null }
+            val nlu = NluStage { segment, _ ->
+                val command = try {
+                    when {
                         offlineStage != null -> try {
                             offlineStage.recognize(segment)
                         } catch (e: IllegalStateException) {
@@ -698,33 +721,56 @@ class VoiceEngine(
                         }
                         else -> FakeCommandAsrProvider.recognize(segment) // local.asr=iflytek.fake-cmd
                     }
-                    Log.i(TAG, "本地 ASR 识别文本: ${command ?: "(无结果)"}")
-                    onLocalRecognized(command)
-                    val intent = RuleNluProvider.understand(command ?: "")
-                    Log.i(TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
-                    // T7 local_asr：识别文本/意图/耗时（unknown 意图同样落库，供拒识分析）
-                    telemetry.record(
-                        TelemetryStages.LOCAL_ASR,
-                        "info",
-                        mapOf(
-                            "text" to (command ?: ""),
-                            "intent" to "${intent.domain}/${intent.intent}",
-                            "durationMs" to (System.currentTimeMillis() - startMs),
-                        ),
-                    )
-                    intent
                 } catch (t: Throwable) {
-                    // 本地链绝不抛出：任何 SDK 异常 → unknown 意图（不执行、不播报）
-                    Log.w(TAG, "本地链路异常，降级 unknown 意图", t)
-                    telemetry.record(
-                        TelemetryStages.LOCAL_ASR,
-                        "warn",
-                        mapOf(
-                            "intent" to "unknown/vehicle",
-                            "durationMs" to (System.currentTimeMillis() - startMs),
-                        ),
-                    )
-                    Intent.unknown("vehicle")
+                    Log.w(TAG, "本地 2C 命令词异常，按未命中继续", t)
+                    null
+                }
+                val intent = RuleNluProvider.understand(command.orEmpty())
+                // 2C 的文本属于 NLU 候选：不提前显示，只有该候选胜出时才覆盖识别框。
+                NluResult(intent = intent, recognizedText = command)
+            }
+            return object : LocalChainRunner {
+                override suspend fun run(segment: ByteArray): NluResult {
+                    val startMs = System.currentTimeMillis()
+                    return try {
+                        val asrResult = asr.recognize(segment) { result ->
+                            // 不等待 NLU、更不等待仲裁；PGS partial/final 都即时更新同一个识别框。
+                            if (result.text.isNotBlank()) {
+                                onLocalRecognized(result.text)
+                                telemetry.record(
+                                    TelemetryStages.LOCAL_ASR,
+                                    "info",
+                                    mapOf("text" to result.text, "isFinal" to result.isFinal),
+                                )
+                            }
+                        }
+                        val nluResult = nlu.understand(segment, asrResult)
+                        val intent = nluResult.intent
+                        Log.i(TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
+                        // ASR 与 NLU 分阶段落库；2C 自带文本归 NLU，不伪装成 ASR。
+                        telemetry.record(
+                            TelemetryStages.LOCAL_NLU,
+                            "info",
+                            mapOf(
+                                "text" to (nluResult.recognizedText ?: ""),
+                                "intent" to "${intent.domain}/${intent.intent}",
+                                "durationMs" to (System.currentTimeMillis() - startMs),
+                            ),
+                        )
+                        nluResult
+                    } catch (t: Throwable) {
+                        // 本地链绝不抛出：任何 SDK 异常 → unknown 意图（不执行、不播报）
+                        Log.w(TAG, "本地链路异常，降级 unknown 意图", t)
+                        telemetry.record(
+                            TelemetryStages.LOCAL_NLU,
+                            "warn",
+                            mapOf(
+                                "intent" to "unknown/vehicle",
+                                "durationMs" to (System.currentTimeMillis() - startMs),
+                            ),
+                        )
+                        NluResult(Intent.unknown("vehicle"))
+                    }
                 }
             }
         }
@@ -766,7 +812,22 @@ private class GatewayCloudRunner(
         deviceId = cfg.deviceId,
         authToken = cfg.authToken,
     )
-    private val bridge = GatewayBridge(client, sink, scope, pendingSignals) { onPendingReceived() }
+    private val bridge = GatewayBridge(
+        client,
+        sink,
+        scope,
+        pendingSignals,
+        { onPendingReceived() },
+        { text, final -> onAsrResult(text, final) },
+        { text, final -> handleReplyText(text, final) },
+    )
+
+    private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
+
+    private val pendingReplyText = AtomicReference<ReplyTextSnapshot?>(null)
+
+    @Volatile
+    private var replyTextReleased = false
 
     /** 是否已收到 ready（含 sessionId）——据此区分 ready 前/后故障。 */
     @Volatile
@@ -785,6 +846,29 @@ private class GatewayCloudRunner(
      */
     @Volatile
     var onPendingReceived: () -> Unit = {}
+
+    /** 独立 ASR/PGS 输出，不等待语义仲裁。 */
+    @Volatile
+    var onAsrResult: (String, Boolean) -> Unit = { _, _ -> }
+
+    /** 模型回答文本累计快照，用于音频播放期间上屏。 */
+    @Volatile
+    var onReplyText: (String, Boolean) -> Unit = { _, _ -> }
+
+    /**
+     * 回复字幕属于云端语义输出，必须等端侧仲裁确认云端胜出；确认后立即发布已缓存的
+     * 最新累计快照，后续 delta 则边播放边直达 UI。ASR 走独立回调，不经过这里。
+     */
+    fun releaseReplyText() {
+        replyTextReleased = true
+        pendingReplyText.get()?.let { onReplyText(it.text, it.isFinal) }
+    }
+
+    private fun handleReplyText(text: String, isFinal: Boolean) {
+        val snapshot = ReplyTextSnapshot(text, isFinal)
+        pendingReplyText.set(snapshot)
+        if (replyTextReleased) onReplyText(snapshot.text, snapshot.isFinal)
+    }
 
     /**
      * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngine.create] 在 engine 装配完成后
@@ -810,6 +894,8 @@ private class GatewayCloudRunner(
     }
 
     override suspend fun run(segment: ByteArray): Reply {
+        replyTextReleased = false
+        pendingReplyText.set(null)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
         val replySlot = bridge.newReplySlot(segmentId)
@@ -843,6 +929,8 @@ private class GatewayCloudRunner(
             if (wasReady) onCloudUnavailable()
             throw CloudUnavailableException("云端链路故障：${e.message}", e)
         } catch (e: CancellationException) {
+            replyTextReleased = false
+            pendingReplyText.set(null)
             runCatching { client.sendCancelTurn(segmentId) }
             bridge.cancelStream(segmentId)
             throw e
@@ -897,6 +985,10 @@ internal class GatewayBridge(
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     /** B5：pending 帧已对账通过的回调（装配方绑定 → UI"处理中…"状态）。 */
     private val onPendingReceived: () -> Unit = {},
+    /** ASR/PGS partial/final，按 segmentId 对账后立即交 UI。 */
+    private val onAsrResult: (String, Boolean) -> Unit = { _, _ -> },
+    /** 回答文本 partial/final，按 segmentId 对账后立即交 UI。 */
+    private val onReplyText: (String, Boolean) -> Unit = { _, _ -> },
 ) {
 
     private class PendingSlot<T>(val segmentId: String, val deferred: CompletableDeferred<T>)
@@ -949,6 +1041,20 @@ internal class GatewayBridge(
     private fun handle(msg: GatewayMessage) {
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
+            "asr_partial" -> {
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+                val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+                onAsrResult(text, final)
+            }
+            "reply_partial" -> {
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+                val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+                onReplyText(text, final)
+            }
             "reply" -> {
                 val slot = pendingReply.get() ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
@@ -1010,7 +1116,7 @@ internal class GatewayBridge(
                 pendingSignals.trySend(Unit)
                 onPendingReceived()
             }
-            else -> Unit // ready / asr_partial / bye 当前不消费
+            else -> Unit // ready / bye 当前不消费
         }
     }
 

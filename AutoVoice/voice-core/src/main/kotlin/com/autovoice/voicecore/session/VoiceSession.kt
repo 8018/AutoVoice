@@ -3,6 +3,7 @@ package com.autovoice.voicecore.session
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
+import com.autovoice.voicecore.NluResult
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
@@ -22,12 +23,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 端侧本地链路由（spec §5.1 本地兜底链路）：话语段 → 规范化意图。
- * ASR/NLU 装配由 Task 16/17 注入实现，[VoiceSession] 不直接依赖适配器。
+ * 端侧本地 NLU 链路由（spec §5.1 本地兜底链路）：话语段 → 语义候选。
+ * ASR 在链内先独立输出到 UI；这里只把 NLU 结果交给仲裁器。
  */
 fun interface LocalChainRunner {
-    suspend fun run(segment: ByteArray): Intent
+    suspend fun run(segment: ByteArray): NluResult
 }
+
+/** 兼容只返回 Intent 的旧装配/测试；新 2C 适配器应直接返回带文本的 [NluResult]。 */
+@Suppress("FunctionName")
+fun LocalChainRunner(block: suspend (ByteArray) -> Intent): LocalChainRunner =
+    object : LocalChainRunner {
+        override suspend fun run(segment: ByteArray): NluResult = NluResult(block(segment))
+    }
 
 /**
  * 云端链路由（spec §5.1 云端优先链路）：话语段 → 网关回复。

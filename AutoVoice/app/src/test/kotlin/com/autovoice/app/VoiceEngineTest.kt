@@ -147,6 +147,7 @@ class VoiceEngineTest {
         debugBuild: Boolean = true,
         /** B5：云端 pending 占位回调（生产 create() 装配 UI 状态；默认 no-op）。 */
         onCloudPending: (Boolean) -> Unit = {},
+        onCloudWon: () -> Unit = {},
         onRecognized: (String?) -> Unit = {},
         /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
@@ -206,6 +207,7 @@ class VoiceEngineTest {
             debugBuild = debugBuild,
             onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
+            onCloudWon = onCloudWon,
         )
         engineRef = engine
         return engine to vehicle
@@ -345,6 +347,7 @@ class VoiceEngineTest {
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
         val cloudReply = CompletableDeferred<Reply>()
         val ttsTexts = mutableListOf<String>()
+        var cloudTextReleased = 0
         lateinit var engine: VoiceEngine
         runBlocking {
             val pair = engine(
@@ -356,6 +359,7 @@ class VoiceEngineTest {
                     null // 只验证请求发出，不验证播放
                 },
                 onCloudPending = { pendingStates.add(it) },
+                onCloudWon = { cloudTextReleased++ },
                 pending = pendingSignals,
             )
             engine = pair.first
@@ -376,6 +380,7 @@ class VoiceEngineTest {
             delay(100)
             assertEquals(listOf(false, true, false), pendingStates.toList(), "final 到达应清除 pending（置 false）")
             assertEquals(listOf("已为您打开车窗"), ttsTexts, "final 照常播报")
+            assertEquals(1, cloudTextReleased, "回复字幕只在云端通过端侧仲裁后释放")
         }
     }
 
@@ -1243,7 +1248,11 @@ class VoiceEngineTest {
 
         assertFalse(scope.coroutineContext.isActive, "close 应取消引擎协程作用域")
         runBlocking {
-            withTimeout(2_000) { engine.session.state.first { it == SessionState.IDLE } }
+            // 等整个引擎 Job 完成，比在已取消调度器上轮询 StateFlow 更确定；runTurn 的
+            // finally 会在子协程退出前把状态收口到 IDLE。干净 CI runner 上编译/测试并发较高，
+            // 原 2s 墙钟等待偶发在 finally 获得调度前超时。
+            withTimeout(5_000) { scope.coroutineContext[kotlinx.coroutines.Job]!!.join() }
         }
+        assertEquals(SessionState.IDLE, engine.session.state.value)
     }
 }

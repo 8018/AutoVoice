@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "ready", "decision", "asr_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "ready", "decision", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -110,7 +110,23 @@
           "type": "object",
           "properties": {
             "sessionId": { "type": "string" },
+            "segmentId": { "type": "string" },
             "text": { "type": "string" },
+            "isFinal": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "title": "reply_partial (server -> client, 模型回答文本增量)",
+      "properties": {
+        "type": { "const": "reply_partial" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "text", "isFinal"],
+          "properties": {
+            "segmentId": { "type": "string" },
+            "text": { "type": "string", "description": "截至当前的累计回答文本" },
             "isFinal": { "type": "boolean" }
           }
         }

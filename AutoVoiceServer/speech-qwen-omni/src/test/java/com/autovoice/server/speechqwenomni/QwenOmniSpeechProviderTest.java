@@ -16,6 +16,7 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -46,6 +47,7 @@ class QwenOmniSpeechProviderTest {
         ByteArrayOutputStream streamed = new ByteArrayOutputStream();
         AtomicBoolean started = new AtomicBoolean();
         AtomicBoolean completed = new AtomicBoolean();
+        CopyOnWriteArrayList<String> replyTextUpdates = new CopyOnWriteArrayList<>();
         OnlineAudioSink sink = new OnlineAudioSink() {
             @Override public void onStart(int rate, int channels, String encoding) {
                 assertEquals(24_000, rate);
@@ -53,6 +55,9 @@ class QwenOmniSpeechProviderTest {
                 started.set(true);
             }
             @Override public void onChunk(byte[] pcm) { streamed.writeBytes(pcm); }
+            @Override public void onReplyText(String text, boolean isFinal) {
+                replyTextUpdates.add(text + ":" + isFinal);
+            }
             @Override public void onComplete(String text, Intent intent) { completed.set(true); }
         };
         OnlineSpeechResult result = provider.process(new byte[]{9, 8, 7, 6}, context(), "u1", sink)
@@ -66,6 +71,8 @@ class QwenOmniSpeechProviderTest {
                 java.util.Arrays.copyOfRange(result.reply().data(), 44, 48));
         assertTrue(started.get());
         assertTrue(completed.get());
+        assertEquals(java.util.List.of("好:false", "好的:false", "好的:true"), replyTextUpdates,
+                "回复文本应随 SSE delta 累积上屏，并在音频结束前形成 final 快照");
         assertArrayEquals(new byte[]{1, 2, 3, 4}, streamed.toByteArray());
 
         RecordedRequest request = server.takeRequest(1, TimeUnit.SECONDS);
@@ -82,6 +89,7 @@ class QwenOmniSpeechProviderTest {
     @Test
     void sidecarAsrAddsUserTranscriptToStreamEndAndResult() throws Exception {
         AtomicReference<String> endTranscript = new AtomicReference<>();
+        AtomicReference<String> earlyTranscript = new AtomicReference<>();
         OnlineSpeechProvider speech = new OnlineSpeechProvider() {
             @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
                     byte[] pcm, SessionContext ctx, String uid) {
@@ -105,10 +113,13 @@ class QwenOmniSpeechProviderTest {
                     @Override public void onComplete(String text, Intent intent, String asrText) {
                         endTranscript.set(asrText);
                     }
-                }).get(2, TimeUnit.SECONDS);
+                }, (text, isFinal) -> earlyTranscript.set(text + ":" + isFinal))
+                .get(2, TimeUnit.SECONDS);
 
         assertEquals("Could you open the window?", result.asrText());
         assertEquals("Could you open the window?", endTranscript.get());
+        assertEquals("Could you open the window?:true", earlyTranscript.get(),
+                "sidecar ASR 应通过独立通道上屏，不等待最终语义结果");
     }
 
     @Test

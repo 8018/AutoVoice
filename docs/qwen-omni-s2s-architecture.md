@@ -49,8 +49,13 @@
 密钥不进入构建产物，Omni 当前读取 `DASHSCOPE_API_KEY`。
 
 同一份 PCM 会并发进入 Qwen 和旁路 ASR。Qwen 的 text modality 是“回答字幕”，不是用户原话；
-旁路 ASR 的最终文本通过 `audio_reply_end.asrText` 下发，Android 用它更新既有识别输出框。
-旁路失败不阻断 S2S 回答。Qwen 提示词要求跟随用户当前语音语言回答，除非用户明确要求翻译。
+旁路 ASR 通过独立 `asr_partial(text, isFinal)` 通道即时更新识别框，最终结果仍随
+`audio_reply_end.asrText` 收口。ASR/PGS 不进入 NLU 仲裁门；旁路失败也不阻断 S2S 回答。
+Qwen 提示词要求跟随用户当前语音语言回答，除非用户明确要求翻译。
+
+端侧本地链显式拆为 `AsrStage` 与 `NluStage`：通用 ASR 的 partial/final 先上屏，再把最终
+ASR 结果交给 NLU；当前讯飞 2C 命令词是“文本+语义同源”，其文本归入 `NluResult`，不能冒充
+提前到达的 ASR。只有该 NLU 候选胜出时，才用其自带文本刷新识别框。
 
 ## 4. Omni 请求与工具复用
 
@@ -95,6 +100,13 @@ S2S 音频 → 音频输入入口 ─┘
 4. `TtsPlayer` 增加基于 `AudioTrack` 的 24k PCM 流输入，同时保留现有完整 WAV/MP3 入口。
 5. 任何一级高优先级候选胜出，都按 turn/segment ID 取消下游请求并清空对应缓冲。
 
+文字展示与音频播放分离：
+
+- 用户原话走 `asr_partial`，只校验 segment 是否仍有效，不等待云端或端侧语义仲裁。
+- Qwen 每个 `delta.content` 形成累计 `reply_partial` 快照；服务端先经过云端空调仲裁门，
+  Android 再缓存到端侧仲裁确认云端胜出，随后立即上屏，后续 delta 与音频播放同步更新。
+- `reply` / `audio_reply_end` 只负责最终校正和收口，不再是第一次显示文字的时点。
+
 ## 6. 已完成和后续任务
 
 | 阶段 | 内容 | 状态 |
@@ -105,6 +117,7 @@ S2S 音频 → 音频输入入口 ─┘
 | P4 | 服务端流式会话与云端仲裁 chunk 门控 | 已完成（待真实环境验收） |
 | P5 | Android 端侧仲裁 chunk 门控与 TTS AudioTrack 输入 | 已完成（待真机验收） |
 | P6 | 同语言回答、旁路 ASR 识别框与协议下发 | 已完成（待真机验收） |
+| P6.1 | ASR/NLU 拆分、PGS 独立显示、回复字幕随音频流式上屏 | 已完成（待真机验收） |
 | P7 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
 
 ## 7. 验证重点
@@ -112,6 +125,8 @@ S2S 音频 → 音频输入入口 ─┘
 - 云端空调离线命中时，Omni future 和底层 OkHttp Call 被取消。
 - 云端离线未命中时，流的 start/chunk/end 顺序稳定，并保留 speakText、asrText 和可选 Intent。
 - 端侧车窗命中时不播放云端音频、不执行云端 Intent。
+- ASR partial 在两级仲裁尚未收敛时仍能更新识别框；2C 文本仅在其 NLU 胜出后覆盖。
+- 回复字幕在端侧云端候选胜出后、音频播放结束前持续更新；本地车窗胜出时不泄漏云端字幕。
 - SSE 可处理任意 chunk 边界、多个 audio delta 和 tool arguments delta。
 - Classic 与 Omni Boot JAR 依赖互斥。
 - 真实 DashScope 与 Android 真机验收完成前，产品状态标注为“代码链路已流式、外部环境待验收”。

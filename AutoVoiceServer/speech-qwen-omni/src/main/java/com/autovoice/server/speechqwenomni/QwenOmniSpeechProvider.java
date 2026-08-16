@@ -292,7 +292,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             if (data.isEmpty() || "[DONE]".equals(data)) continue;
             JsonNode delta = MAPPER.readTree(data).path("choices").path(0).path("delta");
             JsonNode content = delta.path("content");
-            if (content.isTextual()) text.append(content.asText());
+            if (content.isTextual()) {
+                text.append(content.asText());
+                audioSink.onReplyText(text.toString(), false);
+            }
             JsonNode audioData = delta.path("audio").path("data");
             if (audioData.isTextual() && !audioData.asText().isEmpty()) {
                 // audio.data is one continuous Base64 value split across SSE deltas.
@@ -346,6 +349,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         if (streamStarted && !complete.isEmpty()) {
             throw new IOException("qwen omni mixed audio and tool_calls in one round");
         }
+        if (!text.isEmpty()) audioSink.onReplyText(text.toString(), true);
         return new StreamResult(text.toString(), audio.toByteArray(), complete);
     }
 

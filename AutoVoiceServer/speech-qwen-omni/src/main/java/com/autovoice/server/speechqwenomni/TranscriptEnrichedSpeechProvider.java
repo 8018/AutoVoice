@@ -3,6 +3,7 @@ package com.autovoice.server.speechqwenomni;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineAudioSink;
+import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.SessionContext;
@@ -38,12 +39,19 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
     @Override
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId) {
-        return process(pcm16k, context, utteranceId, OnlineAudioSink.NOOP);
+        return process(pcm16k, context, utteranceId, OnlineAudioSink.NOOP, OnlineAsrSink.NOOP);
     }
 
     @Override
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId, OnlineAudioSink downstream) {
+        return process(pcm16k, context, utteranceId, downstream, OnlineAsrSink.NOOP);
+    }
+
+    @Override
+    public CompletableFuture<OnlineSpeechResult> process(
+            byte[] pcm16k, SessionContext context, String utteranceId,
+            OnlineAudioSink downstream, OnlineAsrSink asrSink) {
         CompletableFuture<String> transcript = CompletableFuture.supplyAsync(() -> {
             try {
                 String text = asr.transcribe(pcm16k, context);
@@ -52,13 +60,19 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
                 // 识别框是旁路能力；失败不能打断 S2S 回答。
                 return "";
             }
-        }, ASR_WORKERS);
+        }, ASR_WORKERS).thenApply(text -> {
+            if (!text.isBlank()) asrSink.onResult(text, true);
+            return text;
+        });
         AtomicReference<StreamEnd> streamEnd = new AtomicReference<>();
         OnlineAudioSink bufferingSink = new OnlineAudioSink() {
             @Override public void onStart(int rate, int channels, String encoding) {
                 downstream.onStart(rate, channels, encoding);
             }
             @Override public void onChunk(byte[] pcm) { downstream.onChunk(pcm); }
+            @Override public void onReplyText(String text, boolean isFinal) {
+                downstream.onReplyText(text, isFinal);
+            }
             @Override public void onComplete(String text, Intent intent) {
                 streamEnd.set(new StreamEnd(text, intent));
             }

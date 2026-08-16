@@ -9,6 +9,7 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineAudioSink;
+import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
@@ -116,6 +117,12 @@ public final class SegmentPipeline {
 
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
                                        String segmentId, OnlineAudioSink downstreamAudio) {
+        return handleSegment(pcm, ctx, utteranceId, segmentId, downstreamAudio, OnlineAsrSink.NOOP);
+    }
+
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
+                                       String segmentId, OnlineAudioSink downstreamAudio,
+                                       OnlineAsrSink downstreamAsr) {
         // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
         // RaceArbiter 只拦截输出，空调离线命中时取消在线，否则放行在线结果。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
@@ -123,7 +130,8 @@ public final class SegmentPipeline {
         long onlineStart = System.currentTimeMillis();
         final CompletableFuture<OnlineSpeechResult> onlineF;
         try {
-            onlineF = online.process(pcm, ctx, utteranceId, audioGate);
+            // ASR 事件旁路 audioGate/RaceArbiter；只让 NLU reply 与回答音频/文本受仲裁。
+            onlineF = online.process(pcm, ctx, utteranceId, audioGate, downstreamAsr);
         } catch (RuntimeException e) {
             recordOnlineStartFailure(e, pcm, utteranceId, onlineStart);
             return waitOfflineFallback(offlineF, ctx, utteranceId);
@@ -351,6 +359,11 @@ public final class SegmentPipeline {
         public void onChunk(byte[] pcm) {
             byte[] snapshot = pcm.clone();
             submit(sink -> sink.onChunk(snapshot));
+        }
+
+        @Override
+        public void onReplyText(String text, boolean isFinal) {
+            submit(sink -> sink.onReplyText(text, isFinal));
         }
 
         @Override

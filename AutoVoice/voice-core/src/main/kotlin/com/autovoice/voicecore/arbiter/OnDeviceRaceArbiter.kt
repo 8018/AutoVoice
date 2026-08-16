@@ -2,6 +2,7 @@ package com.autovoice.voicecore.arbiter
 
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.Intent
+import com.autovoice.voicecore.NluResult
 import com.autovoice.voicecore.Reply
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.channels.Channel
@@ -18,7 +19,10 @@ sealed class RaceWinner {
     data class Cloud(val reply: Reply) : RaceWinner()
 
     /** 云端超时后，本地意图在 localFallbackMs 内到达。 */
-    data class Local(val intent: Intent) : RaceWinner()
+    data class Local(val nlu: NluResult) : RaceWinner() {
+        val intent: Intent get() = nlu.intent
+        val recognizedText: String? get() = nlu.recognizedText
+    }
 
     /** 云端与本地均超时。 */
     data object Failed : RaceWinner()
@@ -123,7 +127,7 @@ class OnDeviceRaceArbiter(
     /** 阶段 1 收敛结果（能力分级 2026-08-15 + B5）：本地车窗开关 / 云端语义 / pending 占位。 */
     private sealed interface Outcome {
         /** 本地车窗开关到达（能力分级：直接胜出，不等云端）。 */
-        data class LocalWin(val intent: Intent) : Outcome
+        data class LocalWin(val nlu: NluResult) : Outcome
 
         /** 云端语义到达（云端优先胜出）。 */
         data class Cloud(val reply: Reply) : Outcome
@@ -132,7 +136,7 @@ class OnDeviceRaceArbiter(
         data object Pending : Outcome
     }
 
-    suspend fun race(cloud: Deferred<Reply>, local: Deferred<Intent>): RaceWinner {
+    suspend fun race(cloud: Deferred<Reply>, local: Deferred<NluResult>): RaceWinner {
         // B2：非最新轮拦截——快照本轮 utteranceId，候选到达时若已过期则丢弃
         val uidAtStart = utteranceId()
 
@@ -151,7 +155,7 @@ class OnDeviceRaceArbiter(
                 coroutineScope {
                     val results = Channel<Outcome>(capacity = 3)
                     val localJob = launch {
-                        local.await().takeIf { it.isWindowPower() }
+                        local.await().takeIf { it.intent.isWindowPower() }
                             ?.let { results.send(Outcome.LocalWin(it)) }
                     }
                     val cloudJob = launch { results.send(Outcome.Cloud(cloud.await())) }
@@ -184,7 +188,7 @@ class OnDeviceRaceArbiter(
                         onEvent(OnDeviceArbiterEvent.Received("cloud"))
                         onEvent(OnDeviceArbiterEvent.Lost("cloud", "command_already_won"))
                     }
-                    return RaceWinner.Local(outcome.intent)
+                    return RaceWinner.Local(outcome.nlu)
                 }
 
                 // 云端语义先到 → 云端胜出（reason = cloud_won，现逻辑）
@@ -219,8 +223,8 @@ class OnDeviceRaceArbiter(
         }
 
         // 阶段 2（云端超时）：withTimeoutOrNull(localFallbackMs) 内等本地 ASR 命令词
-        val intent = withTimeoutOrNull(localFallbackMs) { local.await() }
-        if (intent != null) {
+        val nlu = withTimeoutOrNull(localFallbackMs) { local.await() }
+        if (nlu != null) {
             onEvent(OnDeviceArbiterEvent.Received("local"))
             if (isStale(uidAtStart)) {
                 onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
@@ -228,7 +232,7 @@ class OnDeviceRaceArbiter(
             }
             // 拒识（语音拒识 = unknown 意图，需求 1 静默）：本地未命中语义不参与仲裁
             // 胜出——云端超时场景直接失败（不执行不播报），避免 unknown 兜底胜出
-            if (intent.isUnknown()) {
+            if (nlu.intent.isUnknown()) {
                 onEvent(OnDeviceArbiterEvent.Lost("local", "unknown_intent"))
                 return RaceWinner.Failed
             }
@@ -239,7 +243,7 @@ class OnDeviceRaceArbiter(
                 onEvent(OnDeviceArbiterEvent.Received("cloud"))
                 onEvent(OnDeviceArbiterEvent.Lost("cloud", "command_already_won"))
             }
-            return RaceWinner.Local(intent)
+            return RaceWinner.Local(nlu)
         }
 
         sink.onDecision(decision(route = "local", reason = "both_failed"))

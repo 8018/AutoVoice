@@ -1,0 +1,8 @@
+{
+  "type": "asr_partial",
+  "payload": {
+    "segmentId": "seg-1",
+    "text": "Could you open",
+    "isFinal": false
+  }
+}
