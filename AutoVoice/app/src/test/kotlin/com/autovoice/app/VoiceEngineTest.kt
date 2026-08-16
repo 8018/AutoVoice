@@ -1248,7 +1248,11 @@ class VoiceEngineTest {
 
         assertFalse(scope.coroutineContext.isActive, "close 应取消引擎协程作用域")
         runBlocking {
-            withTimeout(2_000) { engine.session.state.first { it == SessionState.IDLE } }
+            // 等整个引擎 Job 完成，比在已取消调度器上轮询 StateFlow 更确定；runTurn 的
+            // finally 会在子协程退出前把状态收口到 IDLE。干净 CI runner 上编译/测试并发较高，
+            // 原 2s 墙钟等待偶发在 finally 获得调度前超时。
+            withTimeout(5_000) { scope.coroutineContext[kotlinx.coroutines.Job]!!.join() }
         }
+        assertEquals(SessionState.IDLE, engine.session.state.value)
     }
 }
