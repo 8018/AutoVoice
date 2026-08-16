@@ -8,12 +8,14 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
+ajv.addSchema(readJson("contracts/intent.schema.json"));
 const validators = new Map();
 
 function validate(schemaFile, dataFile, data = readJson(dataFile)) {
   let check = validators.get(schemaFile);
   if (!check) {
-    check = ajv.compile(readJson(schemaFile));
+    const schema = readJson(schemaFile);
+    check = ajv.getSchema(schema.$id) ?? ajv.compile(schema);
     validators.set(schemaFile, check);
   }
   if (!check(data)) {

@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.runBlocking
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -33,7 +34,9 @@ class GatewayListener(
     override fun onMessage(webSocket: WebSocket, text: String) {
         val msg = parseFrame(text)
         val emitted = msg ?: errorFrame("BAD_FRAME", "unparseable frame: $text")
-        events.tryEmit(emitted)
+        // Preserve protocol ordering and never drop S2S PCM when the consumer is slower
+        // than OkHttp's callback thread. Backpressure here naturally pauses socket reads.
+        runBlocking { events.emit(emitted) }
         if (emitted.type == "ready") {
             // connect 等待方可能已超时/取消：complete 返回 false 时忽略即可
             ready.complete(emitted)
@@ -46,7 +49,9 @@ class GatewayListener(
     }
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-        // 协议二进制帧仅客户端 → 服务端（PCM）；服务端下行二进制帧忽略。
+        runBlocking {
+            events.emit(GatewayMessage("audio_reply_chunk", JsonObject(), bytes.toByteArray()))
+        }
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

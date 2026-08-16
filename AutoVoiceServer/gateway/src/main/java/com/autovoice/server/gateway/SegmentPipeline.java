@@ -3,12 +3,12 @@ package com.autovoice.server.gateway;
 import com.autovoice.server.arbitration.DecisionSink;
 import com.autovoice.server.arbitration.RaceArbiter;
 import com.autovoice.server.contracts.ArbiterDecision;
-import com.autovoice.server.contracts.AsrException;
-import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
-import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
@@ -18,18 +18,21 @@ import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
- * 云端语音段处理流水线（spec §5.2 修订，双候选竞速链路）：
- * {@code audio_end 后并行启动 { 离线命令识别 , ASR → LLM } → RaceArbiter 竞速}。
+ * 云端语音段处理流水线（两候选并发、固定优先级仲裁）：
+ * {@code audio_end 后并行启动 { 空调离线命令识别, 编译时选中的在线语音后端 } → RaceArbiter}。
  *
  * <p>接线（按 RaceArbiter 双候选 API）：{@code arbiter.decide(offlineF, llmF, ctx, utteranceId).join()}——
  * 离线命令命中（规则映射非 unknown）立即胜出；LLM 到达后起离线宽限期等离线（离线已完成
- * 则 LLM 立即胜出）；safety 兜底。回复只携带语义（intent/speakText），<b>不再携带音频</b>
- * ——TTS 已解耦为独立 {@code tts_request/tts_response} 链路（S4）。</p>
+ * 则在线候选立即胜出）；safety 兜底。Classic 返回 text/action，Omni 可直接返回 audio；
+ * 普通文本播报仍走独立 {@code tts_request/tts_response} 链路。</p>
  *
  * <p>降级路径（shared/protocol.md §7.2 / §4.4）：</p>
  * <ul>
@@ -57,9 +60,8 @@ public final class SegmentPipeline {
     private static final String ROUTE_NLU_TRADITIONAL = "nlu-traditional";
     private static final String REASON_OFFLINE_WON = "offline_won";
 
-    private final AsrProvider asr;
+    private final OnlineSpeechProvider online;
     private final RaceArbiter arbiter;
-    private final LlmProvider llm;
     private final OfflineCommandService offline;
     private final long asrFailWaitMs;
     private final DecisionSink sink;
@@ -72,12 +74,11 @@ public final class SegmentPipeline {
      * @param asrFailWaitMs ASR 失败后等待离线结果的窗口（asr-fail-wait-ms，默认 2000）
      * @param recorder     链路事件记录器（Task 4 起；telemetry 未启用时由装配层注入 Noop）
      */
-    public SegmentPipeline(AsrProvider asr, RaceArbiter arbiter, LlmProvider llm,
+    public SegmentPipeline(OnlineSpeechProvider online, RaceArbiter arbiter,
                            OfflineCommandService offline, long asrFailWaitMs, DecisionSink sink,
                            TelemetryRecorder recorder) {
-        this.asr = asr;
+        this.online = online;
         this.arbiter = arbiter;
-        this.llm = llm;
         this.offline = offline;
         this.asrFailWaitMs = asrFailWaitMs;
         this.sink = sink;
@@ -85,11 +86,19 @@ public final class SegmentPipeline {
     }
 
     /**
-     * 一段录音的处理结果（TTS 解耦后不再携带音频）：
+     * 一段录音的处理结果：Classic 通常为 text/action，S2S 可带 mime/audio；
      * text 供 kind=text 下行（与 speakText 同带，端侧 parseReply 对 kind=text 强读 text 字段），
      * intent 非空时下行 kind=action；asrText = 离线胜出时的离线原文，否则 ASR 识别文本。
      */
-    public record SegmentResult(String text, String speakText, Intent intent, String asrText) {
+    public record SegmentResult(String text, String speakText, Intent intent, String asrText,
+                                String mime, byte[] audio, boolean streamed) {
+        public SegmentResult(String text, String speakText, Intent intent, String asrText) {
+            this(text, speakText, intent, asrText, null, null, false);
+        }
+
+        SegmentResult asStreamed() {
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true);
+        }
     }
 
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId) {
@@ -102,23 +111,48 @@ public final class SegmentPipeline {
      * 可变字段（可能已被下一轮覆盖），必须走参数快照。
      */
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId) {
-        // 并行启动：离线命令识别（异步）∥ ASR（同步）——utteranceId 透传（llm/offline_pool
-        // 事件按 utteranceId 汇入本轮，不再以 sessionId 建幽灵 round）
+        return handleSegment(pcm, ctx, utteranceId, segmentId, OnlineAudioSink.NOOP);
+    }
+
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
+                                       String segmentId, OnlineAudioSink downstreamAudio) {
+        // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
+        // RaceArbiter 只拦截输出，空调离线命中时取消在线，否则放行在线结果。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
-        String text = transcribe(pcm, ctx, utteranceId);
-        if (text == null) {
-            // ASR 失败：等离线窗口，窗口内命中则离线兜底，否则 asr_failed_fallback
+        CloudAudioGate audioGate = new CloudAudioGate(offlineF, downstreamAudio);
+        long onlineStart = System.currentTimeMillis();
+        final CompletableFuture<OnlineSpeechResult> onlineF;
+        try {
+            onlineF = online.process(pcm, ctx, utteranceId, audioGate);
+        } catch (RuntimeException e) {
+            recordOnlineStartFailure(e, pcm, utteranceId, onlineStart);
             return waitOfflineFallback(offlineF, ctx, utteranceId);
         }
-        CompletableFuture<Reply> llmF = llm.chat(text, ctx, utteranceId);
+        CompletableFuture<Reply> replyF = onlineF.thenApply(OnlineSpeechResult::reply);
         try {
             ArbiterDecision decision = arbiter
-                    .decide(offlineF.thenApply(o -> o.orElse(null)), llmF, ctx, utteranceId, segmentId)
+                    .decide(offlineF.thenApply(o -> o.orElse(null)), replyF, ctx, utteranceId, segmentId)
                     .join();
+            if ("offline_won".equals(decision.reason())) {
+                audioGate.reject();
+                onlineF.cancel(true);
+                return toResult(decision, "", ctx, utteranceId);
+            }
+            // RaceArbiter may release online after its finite offline grace period even if
+            // the offline future is still pending. Mirror that decision in the chunk gate
+            // so buffered audio cannot leak later, after a full fallback reply/connection close.
+            audioGate.release();
+            OnlineSpeechResult onlineResult = onlineF.isCompletedExceptionally()
+                    ? null : onlineF.getNow(null);
+            recordOnlineSuccess(onlineResult, utteranceId, onlineStart);
             // 仲裁过程事件（received/won/lost）由 RaceArbiter 经 eventSink 发出（B3），
             // 此处不再事后补记，避免与竞速时序冲突
-            return toResult(decision, text, ctx, utteranceId);
+            SegmentResult result = toResult(decision,
+                    onlineResult == null ? "" : onlineResult.asrText(), ctx, utteranceId);
+            return audioGate.streamed() && "audio".equals(decision.reply().kind())
+                    ? result.asStreamed() : result;
         } catch (Exception e) {
+            audioGate.reject();
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
             return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
         }
@@ -149,30 +183,20 @@ public final class SegmentPipeline {
         }
     }
 
-    /** ASR：失败或空白识别结果一律返回 null（决策日志由调用方按离线窗口后统一收敛）。 */
-    private String transcribe(byte[] pcm, SessionContext ctx, String utteranceId) {
-        // 诊断：ASR 失败被兜底吞掉后 server 无日志可查（端侧只看到 asr_failed_fallback）——
-        // 失败路径必须留痕：pcm 长度 + 异常/空白原因
-        long start = System.currentTimeMillis();
-        LOG.info("ASR start: pcm={}B ({}ms) utt={}", pcm.length, pcm.length * 1000 / (2 * 16000), utteranceId);
-        try {
-            String text = asr.transcribe(pcm, ctx);
-            if (text == null || text.isBlank()) {
-                LOG.warn("ASR returned blank text (pcm={}B utt={})", pcm.length, utteranceId);
-                recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "warn",
-                        Map.of("error", "blank text", "durationMs", elapsedMs(start)));
-                return null;
-            }
-            LOG.info("ASR ok: \"{}\" (utt={})", text, utteranceId);
-            recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "info",
-                    Map.of("text", text, "durationMs", elapsedMs(start)));
-            return text;
-        } catch (Exception e) {
-            LOG.error("ASR failed (pcm={}B utt={})", pcm.length, utteranceId, e);
-            recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "warn",
-                    Map.of("error", String.valueOf(e.getMessage()), "durationMs", elapsedMs(start)));
-            return null;
-        }
+    private void recordOnlineStartFailure(RuntimeException error, byte[] pcm,
+                                          String utteranceId, long start) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        LOG.error("{} online speech failed before candidate start (pcm={}B utt={})",
+                online.id(), pcm.length, utteranceId, cause);
+        recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "warn",
+                Map.of("backend", online.id(), "error", String.valueOf(cause.getMessage()),
+                        "durationMs", elapsedMs(start)));
+    }
+
+    private void recordOnlineSuccess(OnlineSpeechResult result, String utteranceId, long start) {
+        if (result == null || result.asrText().isBlank()) return;
+        recorder.record(utteranceId, TelemetryStages.CLOUD_ASR, "info",
+                Map.of("backend", online.id(), "text", result.asrText(), "durationMs", elapsedMs(start)));
     }
 
     /** 耗时（毫秒，最小 1 防止 0 被面板当缺省值）。 */
@@ -229,8 +253,15 @@ public final class SegmentPipeline {
                 // text + speakText 同带（端侧 parseReply 对 kind=text 强读 text 字段）
                 return new SegmentResult(text, text, null, textForAsr);
             }
+            case "audio" -> {
+                if (reply.mime() == null || reply.data() == null || reply.data().length == 0) {
+                    return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
+                }
+                return new SegmentResult(null, reply.speakText(), reply.intent(), textForAsr,
+                        reply.mime(), reply.data(), false);
+            }
             default -> {
-                // 防御：未知 kind（含旧的 audio）→ 文本化
+                // 防御：未知 kind → 文本化
                 String speakText = reply.speakText() != null ? reply.speakText() : reply.text();
                 if (speakText == null || speakText.isBlank()) {
                     return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
@@ -254,5 +285,92 @@ public final class SegmentPipeline {
         recordArbiterEvent(recorder, utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                 CloudArbiterEvent.Reason.LLM_TIMEOUT, reason));
         return new SegmentResult(null, FALLBACK_TEXT, null, null); // 兜底无识别文本
+    }
+
+    /** 服务端云端仲裁门：离线明确未命中/失败前只缓存在线音频事件。 */
+    private static final class CloudAudioGate implements OnlineAudioSink {
+        private enum State { PENDING, RELEASED, REJECTED }
+
+        private final OnlineAudioSink downstream;
+        private final List<Consumer<OnlineAudioSink>> buffered = new ArrayList<>();
+        private State state = State.PENDING;
+        private volatile boolean streamed;
+
+        CloudAudioGate(CompletableFuture<Optional<OfflineCommandHit>> offline,
+                       OnlineAudioSink downstream) {
+            this.downstream = downstream == null ? OnlineAudioSink.NOOP : downstream;
+            offline.whenComplete((hit, error) -> resolve(error == null && hit != null && hit.isPresent()
+                    && isAirConControl(hit.get().intent())));
+        }
+
+        private void resolve(boolean offlineWon) {
+            synchronized (this) {
+                if (state != State.PENDING) return;
+                state = offlineWon ? State.REJECTED : State.RELEASED;
+                if (offlineWon) {
+                    buffered.clear();
+                    return;
+                }
+                // Keep the lock while draining: a concurrently arriving chunk must not
+                // overtake the buffered start event after state changes to RELEASED.
+                buffered.forEach(event -> event.accept(downstream));
+                buffered.clear();
+            }
+        }
+
+        void release() {
+            resolve(false);
+        }
+
+        void reject() {
+            resolve(true);
+        }
+
+        private void submit(Consumer<OnlineAudioSink> event) {
+            boolean release;
+            synchronized (this) {
+                if (state == State.REJECTED) return;
+                if (state == State.PENDING) {
+                    buffered.add(event);
+                    return;
+                }
+                release = true;
+            }
+            if (release) event.accept(downstream);
+        }
+
+        @Override
+        public void onStart(int sampleRate, int channels, String encoding) {
+            submit(sink -> {
+                streamed = true;
+                sink.onStart(sampleRate, channels, encoding);
+            });
+        }
+
+        @Override
+        public void onChunk(byte[] pcm) {
+            byte[] snapshot = pcm.clone();
+            submit(sink -> sink.onChunk(snapshot));
+        }
+
+        @Override
+        public void onComplete(String speakText, Intent intent) {
+            submit(sink -> sink.onComplete(speakText, intent));
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            submit(sink -> sink.onError(error));
+        }
+
+        synchronized boolean streamed() {
+            return streamed;
+        }
+
+        private static boolean isAirConControl(Intent intent) {
+            if (intent == null || !"climate".equals(intent.domain())) return false;
+            return "power_on".equals(intent.intent()) || "power_off".equals(intent.intent())
+                    || "set_temperature".equals(intent.intent());
+        }
     }
 }

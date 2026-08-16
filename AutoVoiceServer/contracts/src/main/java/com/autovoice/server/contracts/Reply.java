@@ -39,6 +39,11 @@ public final class Reply {
         return new Reply("audio", null, null, mime, data, null);
     }
 
+    /** S2S 音频回复；可同时携带最终口语文本和需由端侧执行一次的 intent。 */
+    public static Reply ofAudio(String mime, byte[] data, String speakText, Intent intent) {
+        return new Reply("audio", null, speakText, mime, data, intent);
+    }
+
     public static Reply ofAction(Intent intent, String speakText) {
         return new Reply("action", null, speakText, null, null, intent);
     }
@@ -53,7 +58,7 @@ public final class Reply {
         return text;
     }
 
-    /** text / action 回复有值；audio 回复为 null（网关可用原始话语文本兜底朗读）。 */
+    /** text / action 回复有值；S2S audio 回复可携带最终口语文本。 */
     public String speakText() {
         return speakText;
     }
@@ -68,7 +73,7 @@ public final class Reply {
         return data;
     }
 
-    /** 仅 action 回复有值。 */
+    /** action 或带终局工具调用的 S2S audio 回复有值。 */
     public Intent intent() {
         return intent;
     }

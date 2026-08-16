@@ -17,6 +17,7 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.LocalConfig
 import com.autovoice.voicecore.MockConfig
+import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.SessionState
@@ -338,11 +339,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cfg = cfg,
             context = getApplication(),
             sink = DecisionSink { addDecision(it) },
-            player = AudioPlayer { reply ->
-                if (reply.speakText.isNotBlank()) {
-                    _uiState.update { s -> s.copy(lastReplyText = reply.speakText) }
+            player = object : AudioPlayer {
+                override fun play(reply: com.autovoice.voicecore.AudioReply) {
+                    if (reply.speakText.isNotBlank()) {
+                        _uiState.update { s -> s.copy(lastReplyText = reply.speakText) }
+                    }
+                    ttsPlayer.play(reply)
                 }
-                ttsPlayer.play(reply)
+                override suspend fun playStream(reply: StreamingAudioReply) {
+                    ttsPlayer.playStream(reply)
+                    val end = reply.completion.await()
+                    if (end.speakText.isNotBlank()) {
+                        _uiState.update { s -> s.copy(lastReplyText = end.speakText) }
+                    }
+                }
             },
             vehicle = vehicleState,
             // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；

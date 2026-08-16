@@ -2,10 +2,11 @@ package com.autovoice.server.gateway;
 
 import com.autovoice.server.arbitration.DecisionSink;
 import com.autovoice.server.arbitration.RaceArbiter;
-import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
-import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
@@ -32,6 +33,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
@@ -90,8 +92,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private static final Logger LOG = LoggerFactory.getLogger(VoiceGatewayHandler.class);
 
-    private final AsrProvider asr;
-    private final LlmProvider llm;
+    private final OnlineSpeechProvider online;
     private final TtsProvider tts;
     private final OfflineCommandService offline;
     private final SessionRegistry registry;
@@ -138,22 +139,22 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
     /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）；鉴权关、连接上限 32。 */
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry) {
-        this(asr, llm, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS,
+        this(online, tts, offline, registry, DEFAULT_SAFETY_TIMEOUT_MS, DEFAULT_ASR_FAIL_WAIT_MS,
                 DEFAULT_OFFLINE_GRACE_MS);
     }
 
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs) {
-        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, DEFAULT_OFFLINE_GRACE_MS);
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, DEFAULT_OFFLINE_GRACE_MS);
     }
 
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs) {
-        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
                 false, Map.of(), DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_AUDIO_BYTES,
                 NoopTelemetryRecorder.INSTANCE);
     }
@@ -162,22 +163,21 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
      * 完整构造：接入策略（鉴权开关/设备表/连接上限）由 AppConfig 从 {@code autovoice.gateway.*}
      * 注入；recorder 为链路事件记录器（Task 4，AppConfig 注入 TelemetryService/Noop）。
      */
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                TelemetryRecorder recorder) {
-        this(asr, llm, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
                 authEnabled, authDevices, maxConnections, DEFAULT_MAX_AUDIO_BYTES, recorder);
     }
 
-    public VoiceGatewayHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
                                OfflineCommandService offline, SessionRegistry registry,
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                int maxAudioBytes, TelemetryRecorder recorder) {
-        this.asr = asr;
-        this.llm = llm;
+        this.online = online;
         this.tts = tts;
         this.offline = offline;
         this.registry = registry;
@@ -244,6 +244,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
+            case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
             default -> {
                 // ready/decision/reply/error/bye/tts_response 为服务端消息，客户端不应发送，忽略
             }
@@ -347,7 +348,23 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         SessionContext ctx = st.ctx;
         String utteranceId = st.utteranceId;
         String segmentId = st.segmentId;
+        st.processingUtteranceId = utteranceId;
+        st.processingSegmentId = segmentId;
         st.connExecutor.submit(() -> processSegment(session, st, pcm, ctx, utteranceId, segmentId));
+    }
+
+    private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
+        String segmentId = String.valueOf(payload.get("segmentId"));
+        String cancelUtteranceId;
+        if (segmentId.equals(st.processingSegmentId)) {
+            cancelUtteranceId = st.processingUtteranceId;
+        } else if (segmentId.equals(st.segmentId)) {
+            cancelUtteranceId = st.utteranceId;
+        } else {
+            return;
+        }
+        st.cancelledSegments.add(segmentId);
+        online.cancel(cancelUtteranceId);
     }
 
     /**
@@ -361,9 +378,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (pcm.length == 0) {
                 return;
             }
+            if (isCancelled(st, segmentId)) {
+                return;
+            }
             SegmentPipeline.SegmentResult result;
             try {
-                result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId);
+                result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
+                        streamSink(session, st, segmentId));
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
@@ -373,14 +394,60 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
                 }));
             }
-            sendReply(session, st, result, segmentId);
+            if (!result.streamed() && !isCancelled(st, segmentId)) {
+                sendReply(session, st, result, segmentId);
+            }
         } finally {
+            if (segmentId != null) st.cancelledSegments.remove(segmentId);
+            if (segmentId != null && segmentId.equals(st.processingSegmentId)) {
+                st.processingSegmentId = null;
+                st.processingUtteranceId = null;
+            }
             st.processing = false;
         }
     }
 
+    private OnlineAudioSink streamSink(WebSocketSession session, ConnectionState st, String segmentId) {
+        return new OnlineAudioSink() {
+            private boolean allowed() {
+                return !isCancelled(st, segmentId);
+            }
+
+            @Override
+            public void onStart(int sampleRate, int channels, String encoding) {
+                if (!allowed()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", segmentId);
+                payload.put("mime", "audio/pcm");
+                payload.put("sampleRate", sampleRate);
+                payload.put("channels", channels);
+                payload.put("encoding", encoding);
+                send(session, "audio_reply_start", payload);
+            }
+
+            @Override
+            public void onChunk(byte[] pcm) {
+                if (allowed() && pcm.length > 0) sendBinary(session, pcm);
+            }
+
+            @Override
+            public void onComplete(String speakText, Intent intent) {
+                if (!allowed()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", segmentId);
+                if (speakText != null && !speakText.isBlank()) payload.put("speakText", speakText);
+                if (intent != null) payload.put("intent", intent);
+                send(session, "audio_reply_end", payload);
+            }
+        };
+    }
+
+    private static boolean isCancelled(ConnectionState st, String segmentId) {
+        return segmentId != null && st.cancelledSegments.contains(segmentId);
+    }
+
     /**
-     * 下行收敛（TTS 解耦，协议 v1.1）：reply 只携带语义——intent 非空 → kind=action
+     * 下行收敛（协议 v1.1）：S2S → kind=audio；其他 intent 非空 → kind=action
      * （intent + speakText）；纯文本 → kind=text 且 <b>text 与 speakText 同带</b>
      * （端侧 parseReply 对 kind=text 强读 text 字段，text 缺失会丢回复）。
      * asrText（Task 61：识别文本，端侧云端胜出时写进识别区）非空时附带。
@@ -392,7 +459,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (result.asrText() != null && !result.asrText().isBlank()) {
             payload.put("asrText", result.asrText());
         }
-        if (result.intent() != null) {
+        if (result.audio() != null) {
+            payload.put("kind", "audio");
+            payload.put("mime", result.mime());
+            payload.put("dataBase64", java.util.Base64.getEncoder().encodeToString(result.audio()));
+            if (result.speakText() != null && !result.speakText().isBlank()) {
+                payload.put("speakText", result.speakText());
+            }
+            if (result.intent() != null) {
+                payload.put("intent", result.intent());
+            }
+        } else if (result.intent() != null) {
             payload.put("kind", "action");
             payload.put("intent", result.intent());
             if (result.speakText() != null) {
@@ -502,6 +579,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
     }
 
+    private static void sendBinary(WebSocketSession session, byte[] bytes) {
+        try {
+            synchronized (session) {
+                if (session.isOpen()) session.sendMessage(new BinaryMessage(bytes));
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to send audio chunk", e);
+        }
+    }
+
     /** 接入策略关闭（4001）：send 已抛错时也尽力关；close 失败仅记日志不抛。 */
     private static void closeQuietly(WebSocketSession session, String reason) {
         try {
@@ -553,7 +640,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                             VoiceGatewayHandler.this.sendPending(session, event.segmentId());
                         }
                     });
-            pipeline = new SegmentPipeline(asr, arbiter, llm, offline, asrFailWaitMs, sink, recorder);
+            pipeline = new SegmentPipeline(online, arbiter, offline, asrFailWaitMs, sink, recorder);
         }
 
         /** 本连接串行工作线程（M2）：audio_end 后的段处理在此执行，不占 WS 消息线程。 */
@@ -571,6 +658,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）
         String utteranceId; // 端侧 utteranceId 或自增回退（u-N），决策事件/链路插桩复用
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
+        volatile String processingUtteranceId; // 工作线程当前处理轮快照（cancel_turn 不读下一轮字段）
+        volatile String processingSegmentId;
+        final Set<String> cancelledSegments = ConcurrentHashMap.newKeySet();
         boolean audioActive;
         volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
         long segmentSeq;

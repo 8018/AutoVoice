@@ -31,8 +31,18 @@ jobs:
       - run: npm test
 
   server-gradle:
-    name: Server tests and coverage
+    name: Server (${{ matrix.backend }}) tests and coverage
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: classic
+            test_args: test :app:bootJar
+          - backend: omni
+            # app E2E fixtures assert the Classic ASR/DeepSeek conversation; Omni has its own
+            # MockWebServer SSE/tool-loop tests while common modules still run below.
+            test_args: test -x :app:test :app:bootJar
     defaults:
       run:
         working-directory: AutoVoiceServer
@@ -43,12 +53,25 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew test
+      - run: ./gradlew ${{ matrix.test_args }} -PvoiceBackend=${{ matrix.backend }}
+      - name: Verify selected speech backend is exclusive
+        shell: bash
+        run: |
+          JAR=app/build/libs/app.jar
+          if [[ "${{ matrix.backend }}" == "classic" ]]; then
+            jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-classic.jar'
+            ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-qwen-omni.jar'
+          else
+            jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-qwen-omni.jar'
+            ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-classic.jar'
+            ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/llm.jar'
+            ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/asr-gateway.jar'
+          fi
       - name: Upload server reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: server-test-and-coverage-reports
+          name: server-${{ matrix.backend }}-test-and-coverage-reports
           path: |
             AutoVoiceServer/**/build/test-results/test/*.xml
             AutoVoiceServer/**/build/reports/tests/test/**

@@ -1,0 +1,7 @@
+{
+  "type": "audio_reply_end",
+  "payload": {
+    "segmentId": "seg-1",
+    "speakText": "好的"
+  }
+}

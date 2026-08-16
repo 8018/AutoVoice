@@ -2,9 +2,13 @@ package com.autovoice.app.audio
 
 import android.content.Context
 import android.media.MediaPlayer
+import android.media.AudioAttributes
+import android.media.AudioTrack
 import android.util.Log
 import com.autovoice.voicecore.AudioReply
+import com.autovoice.voicecore.StreamingAudioReply
 import java.io.File
+import kotlinx.coroutines.CancellationException
 
 /**
  * WAV/RIFF 头写入（44 字节，纯函数，JVM 可测）。
@@ -107,6 +111,9 @@ class TtsPlayer(
     private var player: MediaPlayer? = null
 
     @Volatile
+    private var streamPlayer: AudioTrack? = null
+
+    @Volatile
     private var currentFile: File? = null
 
     /** 播放代次：stop()/新 play() 使旧代次回调失效。 */
@@ -176,9 +183,83 @@ class TtsPlayer(
         }
     }
 
+    /** 24k PCM 流式输入：由两级仲裁放行后调用，使用 AudioTrack 边收边播。 */
+    suspend fun playStream(reply: StreamingAudioReply) {
+        require(reply.encoding == "pcm_s16le" && reply.channels == 1) {
+            "unsupported stream format: ${reply.encoding}/${reply.channels}ch"
+        }
+        stop()
+        val token = ++playToken
+        val channelMask = android.media.AudioFormat.CHANNEL_OUT_MONO
+        val queriedBuffer = AudioTrack.getMinBufferSize(
+            reply.sampleRate,
+            channelMask,
+            android.media.AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val minBuffer = queriedBuffer.takeIf { it > 0 } ?: (reply.sampleRate / 2)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                android.media.AudioFormat.Builder()
+                    .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(reply.sampleRate)
+                    .setChannelMask(channelMask)
+                    .build(),
+            )
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setBufferSizeInBytes(minBuffer)
+            .build()
+        streamPlayer = track
+        var bytes = 0L
+        try {
+            track.play()
+            isPlayingFlag = true
+            onPlayEvent("start", "info", mapOf("mime" to reply.mime, "streaming" to true))
+            for (chunk in reply.chunks) {
+                if (token != playToken) break
+                var offset = 0
+                while (offset < chunk.size && token == playToken) {
+                    val written = track.write(chunk, offset, chunk.size - offset, AudioTrack.WRITE_BLOCKING)
+                    if (written <= 0) throw IllegalStateException("AudioTrack.write failed: $written")
+                    offset += written
+                    bytes += written
+                }
+            }
+            if (token == playToken) {
+                reply.completion.await()
+                onPlayEvent("completed", "info", mapOf("bytes" to bytes, "streaming" to true))
+                onCompleted?.invoke()
+            }
+        } catch (cancelled: CancellationException) {
+            if (token == playToken) {
+                onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted", "streaming" to true))
+            }
+            throw cancelled
+        } catch (t: Throwable) {
+            if (token == playToken) {
+                Log.w(TAG, "stream playback failed", t)
+                onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
+                onError?.invoke(t)
+            }
+        } finally {
+            if (streamPlayer === track) streamPlayer = null
+            runCatching { track.stop() }
+            runCatching { track.release() }
+            if (token == playToken) {
+                isPlayingFlag = false
+                lastPlayEndMs = System.currentTimeMillis()
+            }
+        }
+    }
+
     /** 停止播放并释放（幂等）。 */
     fun stop() {
-        if (isPlayingFlag || player != null) {
+        if (isPlayingFlag || player != null || streamPlayer != null) {
             Log.i(TAG, "play interrupted by stop()")
             onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted"))
         }
@@ -187,6 +268,8 @@ class TtsPlayer(
         lastPlayEndMs = System.currentTimeMillis()
         val mp = player
         player = null
+        val audioTrack = streamPlayer
+        streamPlayer = null
         if (mp != null) {
             try {
                 if (mp.isPlaying) mp.stop()
@@ -196,6 +279,10 @@ class TtsPlayer(
                 mp.release()
             } catch (_: Throwable) {
             }
+        }
+        if (audioTrack != null) {
+            runCatching { audioTrack.stop() }
+            runCatching { audioTrack.release() }
         }
         deleteCurrentFile()
     }

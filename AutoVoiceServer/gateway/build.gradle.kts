@@ -17,14 +17,13 @@ dependencies {
     api(project(":contracts"))
     implementation(project(":arbitration"))
     implementation(project(":session"))
-    implementation(project(":llm"))
-    implementation(project(":asr-gateway"))
     implementation(project(":tts-gateway"))
     implementation(project(":offline-command"))
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.spring.boot.starter.json)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
+    testImplementation(project(":speech-classic"))
 }
 
 sourceSets.test { resources.srcDir("../../shared/fixtures") }

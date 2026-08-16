@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "pending", "reply", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "ready", "decision", "asr_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -53,6 +53,20 @@
           "properties": {
             "sessionId": { "type": "string" },
             "durationMs": { "type": "integer" }
+          }
+        }
+      }
+    },
+    {
+      "title": "cancel_turn (client -> server)",
+      "properties": {
+        "type": { "const": "cancel_turn" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId"],
+          "properties": {
+            "segmentId": { "type": "string" },
+            "reason": { "type": "string" }
           }
         }
       }
@@ -200,6 +214,38 @@
               "required": ["kind", "intent", "speakText"]
             }
           ]
+        }
+      }
+    },
+    {
+      "title": "audio_reply_start (server -> client, S2S PCM 流开始)",
+      "properties": {
+        "type": { "const": "audio_reply_start" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "mime", "sampleRate", "channels", "encoding"],
+          "properties": {
+            "segmentId": { "type": "string" },
+            "mime": { "type": "string", "const": "audio/pcm" },
+            "sampleRate": { "type": "integer", "minimum": 1 },
+            "channels": { "type": "integer", "minimum": 1 },
+            "encoding": { "type": "string", "const": "pcm_s16le" }
+          }
+        }
+      }
+    },
+    {
+      "title": "audio_reply_end (server -> client, S2S PCM 流结束)",
+      "properties": {
+        "type": { "const": "audio_reply_end" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId"],
+          "properties": {
+            "segmentId": { "type": "string" },
+            "speakText": { "type": "string" },
+            "intent": { "$ref": "intent.schema.json" }
+          }
         }
       }
     },

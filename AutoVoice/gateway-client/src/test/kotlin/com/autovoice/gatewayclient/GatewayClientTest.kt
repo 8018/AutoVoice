@@ -21,6 +21,7 @@ import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -198,6 +199,41 @@ class GatewayClientTest {
             assertEquals(50L, endPayload.get("durationMs").asLong, "1600 字节 @16kHz/S16LE = 50ms")
             assertArrayEquals(pcm, gateway.pcm.toByteArray())
 
+            collector.cancel()
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `s2s binary reply frames preserve ordering and bytes`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        val replyPcm = byteArrayOf(7, 8, 9, 10)
+        gateway.onAudioEnd = { ws, _ ->
+            ws.send(fixture("gateway-audio-reply-start.json"))
+            ws.send(replyPcm.toByteString())
+            ws.send(fixture("gateway-audio-reply-end.json"))
+        }
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            val received = mutableListOf<GatewayMessage>()
+            val collector = launch { client.messages.collect { received.add(it) } }
+            client.connect()
+            client.sendAudioStart("srv-sess-1", "seg-1")
+            client.sendAudioChunk(pcm)
+            client.sendAudioEnd("srv-sess-1")
+
+            assertTrue(awaitTrue {
+                received.map { it.type } == listOf(
+                    "ready", "audio_reply_start", "audio_reply_chunk", "audio_reply_end",
+                )
+            })
+            assertEquals(24_000, received[1].payload.get("sampleRate").asInt)
+            assertArrayEquals(replyPcm, received[2].binary)
+            assertEquals("seg-1", received[3].payload.get("segmentId").asString)
             collector.cancel()
         } finally {
             gateway.closeAll(client, okHttp)
