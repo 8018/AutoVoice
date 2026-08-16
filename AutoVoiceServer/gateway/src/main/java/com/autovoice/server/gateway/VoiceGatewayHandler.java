@@ -432,11 +432,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
             @Override
             public void onComplete(String speakText, Intent intent) {
+                onComplete(speakText, intent, "");
+            }
+
+            @Override
+            public void onComplete(String speakText, Intent intent, String asrText) {
                 if (!allowed()) return;
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("segmentId", segmentId);
                 if (speakText != null && !speakText.isBlank()) payload.put("speakText", speakText);
                 if (intent != null) payload.put("intent", intent);
+                if (asrText != null && !asrText.isBlank()) payload.put("asrText", asrText);
                 send(session, "audio_reply_end", payload);
             }
         };

@@ -40,11 +40,17 @@
 
 - 公共代码只依赖 `OnlineSpeechProvider`。
 - `src/classic/java` 装配 ASR、DeepSeek 和 `speech-classic`。
-- `src/omni/java` 装配 `speech-qwen-omni`。
-- CI 检查 Omni JAR 不包含 `speech-classic.jar`、`llm.jar`、`asr-gateway.jar`。
+- `src/omni/java` 装配 `speech-qwen-omni`，并复用 `asr-gateway` 作为识别框旁路；
+  ASR 不参与回答、工具调用或语义仲裁。
+- CI 检查 Omni JAR 包含 `speech-qwen-omni.jar` 和旁路 `asr-gateway.jar`，但不包含
+  `speech-classic.jar`、`llm.jar`。
 - 部署工作流通过 `voice_backend` 输入或仓库变量 `VOICE_BACKEND` 选择构建变体。
 
 密钥不进入构建产物，Omni 当前读取 `DASHSCOPE_API_KEY`。
+
+同一份 PCM 会并发进入 Qwen 和旁路 ASR。Qwen 的 text modality 是“回答字幕”，不是用户原话；
+旁路 ASR 的最终文本通过 `audio_reply_end.asrText` 下发，Android 用它更新既有识别输出框。
+旁路失败不阻断 S2S 回答。Qwen 提示词要求跟随用户当前语音语言回答，除非用户明确要求翻译。
 
 ## 4. Omni 请求与工具复用
 
@@ -98,12 +104,13 @@ S2S 音频 → 音频输入入口 ─┘
 | P3 | Classic/Omni 构建隔离、CI 矩阵、部署选择 | 已完成 |
 | P4 | 服务端流式会话与云端仲裁 chunk 门控 | 已完成（待真实环境验收） |
 | P5 | Android 端侧仲裁 chunk 门控与 TTS AudioTrack 输入 | 已完成（待真机验收） |
-| P6 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
+| P6 | 同语言回答、旁路 ASR 识别框与协议下发 | 已完成（待真机验收） |
+| P7 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
 
 ## 7. 验证重点
 
 - 云端空调离线命中时，Omni future 和底层 OkHttp Call 被取消。
-- 云端离线未命中时，流的 start/chunk/end 顺序稳定，并保留 speakText 和可选 Intent。
+- 云端离线未命中时，流的 start/chunk/end 顺序稳定，并保留 speakText、asrText 和可选 Intent。
 - 端侧车窗命中时不播放云端音频、不执行云端 Intent。
 - SSE 可处理任意 chunk 边界、多个 audio delta 和 tool arguments delta。
 - Classic 与 Omni Boot JAR 依赖互斥。

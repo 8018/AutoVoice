@@ -293,6 +293,7 @@ class GatewayClient(
         AudioStreamEnd(
             speakText = payload.get("speakText")?.stringOrNull() ?: "",
             intent = parseIntent(payload.get("intent")),
+            asrText = payload.get("asrText")?.stringOrNull() ?: "",
         )
 
     private suspend fun doConnect() {

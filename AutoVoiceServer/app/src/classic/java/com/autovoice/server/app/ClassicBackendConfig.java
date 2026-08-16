@@ -21,7 +21,7 @@ import org.springframework.context.annotation.Configuration;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Classic 构建变体专用装配；Omni 产物不会编译本类，也不会携带 ASR/DeepSeek 依赖。 */
+/** Classic 构建变体专用装配；Omni 产物不会编译本类，也不会携带 DeepSeek/Classic speech。 */
 @Configuration
 public class ClassicBackendConfig {
 

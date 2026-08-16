@@ -440,6 +440,18 @@ class GatewayClientTest {
     }
 
     @Test
+    fun `parseAudioStreamEnd carries user transcript for recognition box`() {
+        val client = parseClient()
+        val payload = gson.fromJson(
+            """{"segmentId":"seg-1","speakText":"Sure","asrText":"Could you open the window?"}""",
+            JsonObject::class.java,
+        )
+        val end = client.parseAudioStreamEnd(payload)
+        assertEquals("Sure", end.speakText)
+        assertEquals("Could you open the window?", end.asrText)
+    }
+
+    @Test
     fun `parseReply audio kind from fixture`() {
         val client = parseClient()
         val payload = gson.fromJson(fixture("gateway-reply-audio.json"), JsonObject::class.java)

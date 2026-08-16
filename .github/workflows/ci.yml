@@ -41,7 +41,7 @@ jobs:
             test_args: test :app:bootJar
           - backend: omni
             # app E2E fixtures assert the Classic ASR/DeepSeek conversation; Omni has its own
-            # MockWebServer SSE/tool-loop tests while common modules still run below.
+            # MockWebServer SSE/tool-loop/sidecar-transcript tests while common modules run below.
             test_args: test -x :app:test :app:bootJar
     defaults:
       run:
@@ -65,7 +65,8 @@ jobs:
             jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-qwen-omni.jar'
             ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/speech-classic.jar'
             ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/llm.jar'
-            ! jar tf "$JAR" | grep -q 'BOOT-INF/lib/asr-gateway.jar'
+            # Omni reuses ASR only as a parallel user-transcript sidecar for the recognition box.
+            jar tf "$JAR" | grep -q 'BOOT-INF/lib/asr-gateway.jar'
           fi
       - name: Upload server reports
         if: always()

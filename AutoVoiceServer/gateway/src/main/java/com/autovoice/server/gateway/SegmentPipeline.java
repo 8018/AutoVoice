@@ -359,6 +359,11 @@ public final class SegmentPipeline {
         }
 
         @Override
+        public void onComplete(String speakText, Intent intent, String asrText) {
+            submit(sink -> sink.onComplete(speakText, intent, asrText));
+        }
+
+        @Override
         public void onError(Throwable error) {
             submit(sink -> sink.onError(error));
         }
