@@ -1,5 +1,7 @@
 package com.autovoice.server.speechqwenomni;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
@@ -22,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -78,12 +81,20 @@ class QwenOmniSpeechProviderTest {
         RecordedRequest request = server.takeRequest(1, TimeUnit.SECONDS);
         assertNotNull(request);
         assertEquals("Bearer test-key", request.getHeader("Authorization"));
-        String body = request.getBody().readUtf8();
-        assertTrue(body.contains("qwen3.5-omni-plus"));
-        assertTrue(body.contains("input_audio"));
-        assertTrue(body.contains("data:audio/wav;base64,"));
-        assertTrue(body.contains("与用户相同的语言"));
-        assertTrue(!body.contains("简短中文语音回答"));
+        JsonNode body = new ObjectMapper().readTree(request.getBody().readUtf8());
+        assertEquals("qwen3.5-omni-plus", body.path("model").asText());
+        JsonNode messages = body.path("messages");
+        String systemPrompt = messages.path(0).path("content").asText();
+        assertTrue(systemPrompt.contains("respond only in that same language"));
+        assertTrue(systemPrompt.contains("tool results"));
+        JsonNode userContent = messages.path(1).path("content");
+        assertEquals(1, userContent.size(),
+                "用户消息只能包含原始音频，不能附加会把模型带向中文的文本或会话语言");
+        assertEquals("input_audio", userContent.path(0).path("type").asText());
+        assertTrue(userContent.path(0).path("input_audio").path("data").asText()
+                .startsWith("data:audio/wav;base64,"));
+        assertFalse(body.toString().contains("zh-CN"));
+        assertFalse(body.toString().contains("理解这段语音"));
     }
 
     @Test

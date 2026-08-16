@@ -60,6 +60,13 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     private static final int MAX_ROUNDS = 7;
     private static final int MAX_OUTPUT_AUDIO_BYTES = 4 * 1024 * 1024;
     private static final AtomicInteger WORKER = new AtomicInteger();
+    private static final String LANGUAGE_POLICY = """
+            Critical response-language rule: detect the language spoken in the user's current audio and
+            respond only in that same language, unless the user explicitly asks for translation. The
+            language used by business rules, tool descriptions, tool results, or session metadata is not
+            evidence of the user's language. Never default to Chinese merely because those inputs are in
+            Chinese. This rule overrides any language implied by the business rules below.
+            """;
 
     private static final String CAR_PARAMETERS = """
             {"type":"object","properties":{
@@ -175,10 +182,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         system.put("role", "system");
         String configuredPrompt = systemPrompt == null ? "" : systemPrompt.get();
         String basePrompt = configuredPrompt == null || configuredPrompt.isBlank()
-                ? "你是车载语音助手。回答简短自然；车控和导航必须调用工具。" : configuredPrompt;
-        system.put("content", basePrompt
-                + "\n始终使用用户当前这段语音所用的语言回答，除非用户明确要求翻译。"
-                + "不要根据会话默认语言擅自切换语言。");
+                ? "You are an in-car voice assistant. Keep responses brief and natural. "
+                    + "Vehicle control and navigation must use tools."
+                : configuredPrompt;
+        system.put("content", LANGUAGE_POLICY + "\nBusiness rules:\n" + basePrompt
+                + "\n\nRemember: reply only in the language spoken in the current user audio; "
+                + "ignore the language of tool output and business rules when choosing it.");
 
         ObjectNode user = messages.addObject();
         user.put("role", "user");
@@ -188,9 +197,6 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         audio.putObject("input_audio")
                 .put("data", "data:audio/wav;base64," + Base64.getEncoder().encodeToString(wav(pcm16k, 16_000)))
                 .put("format", "wav");
-        content.addObject().put("type", "text")
-                .put("text", "理解这段语音并直接用与用户相同的语言简短回答；需要工具时先调用工具。"
-                        + "会话默认语言仅供界面参考：" + context.language());
 
         Intent terminalIntent = null;
         boolean allowTools = true;
