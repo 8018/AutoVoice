@@ -137,7 +137,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         };
         task.set(workers.submit(() -> {
             try {
-                out.complete(runConversation(pcm16k, activeCall, sink));
+                out.complete(runConversation(pcm16k, context, activeCall, sink));
             } catch (Throwable error) {
                 if (!out.isCancelled()) sink.onError(error);
                 if (!out.isCancelled()) out.completeExceptionally(error);
@@ -166,15 +166,19 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         if (future != null) future.cancel(true);
     }
 
-    private OnlineSpeechResult runConversation(byte[] pcm16k, AtomicReference<Call> activeCall,
+    private OnlineSpeechResult runConversation(byte[] pcm16k, SessionContext context,
+                                               AtomicReference<Call> activeCall,
                                                OnlineAudioSink audioSink)
             throws IOException {
         ArrayNode messages = MAPPER.createArrayNode();
         ObjectNode system = messages.addObject();
         system.put("role", "system");
         String configuredPrompt = systemPrompt == null ? "" : systemPrompt.get();
-        system.put("content", configuredPrompt == null || configuredPrompt.isBlank()
-                ? "你是车载语音助手。回答简短自然；车控和导航必须调用工具。" : configuredPrompt);
+        String basePrompt = configuredPrompt == null || configuredPrompt.isBlank()
+                ? "你是车载语音助手。回答简短自然；车控和导航必须调用工具。" : configuredPrompt;
+        system.put("content", basePrompt
+                + "\n始终使用用户当前这段语音所用的语言回答，除非用户明确要求翻译。"
+                + "不要根据会话默认语言擅自切换语言。");
 
         ObjectNode user = messages.addObject();
         user.put("role", "user");
@@ -185,7 +189,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 .put("data", "data:audio/wav;base64," + Base64.getEncoder().encodeToString(wav(pcm16k, 16_000)))
                 .put("format", "wav");
         content.addObject().put("type", "text")
-                .put("text", "理解这段语音并直接用简短中文语音回答；需要工具时先调用工具。");
+                .put("text", "理解这段语音并直接用与用户相同的语言简短回答；需要工具时先调用工具。"
+                        + "会话默认语言仅供界面参考：" + context.language());
 
         Intent terminalIntent = null;
         boolean allowTools = true;
@@ -215,7 +220,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 String toolResult;
                 if ("car_control".equals(tc.name) || "navigate".equals(tc.name)) {
                     terminalIntent = parseTerminal(tc);
-                    toolResult = "动作已校验，将由车端执行。请生成简短确认语音。";
+                    toolResult = "The action was validated and will be executed by the vehicle. "
+                            + "Reply with a brief confirmation in the same language as the user's audio.";
                     allowTools = false;
                 } else {
                     toolResult = executeTool(tc);

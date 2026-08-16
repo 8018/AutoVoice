@@ -60,7 +60,7 @@ fun interface AudioPlayer {
         val pcm = ByteArrayOutputStream()
         for (chunk in reply.chunks) pcm.write(chunk)
         val end = reply.completion.await()
-        play(AudioReply("audio/pcm", pcm.toByteArray(), end.speakText, end.intent))
+        play(AudioReply("audio/pcm", pcm.toByteArray(), end.speakText, end.intent, end.asrText))
     }
 }
 
@@ -396,6 +396,7 @@ class VoiceEngine(
             is StreamingAudioReply -> scope.launch {
                 player.playStream(reply)
                 val end = reply.completion.await()
+                if (end.asrText.isNotBlank()) onLocalRecognized(end.asrText)
                 end.intent?.let(::applyAndNotify)
             }
             is TextReply -> speakViaTts(reply.text)

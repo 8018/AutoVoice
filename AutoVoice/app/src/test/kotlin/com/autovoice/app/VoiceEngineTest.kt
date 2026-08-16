@@ -147,6 +147,7 @@ class VoiceEngineTest {
         debugBuild: Boolean = true,
         /** B5：云端 pending 占位回调（生产 create() 装配 UI 状态；默认 no-op）。 */
         onCloudPending: (Boolean) -> Unit = {},
+        onRecognized: (String?) -> Unit = {},
         /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
         pending: Channel<Unit> = Channel(),
@@ -203,6 +204,7 @@ class VoiceEngineTest {
             navigation = navigation,
             scope = scope,
             debugBuild = debugBuild,
+            onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
         )
         engineRef = engine
@@ -1155,7 +1157,7 @@ class VoiceEngineTest {
         chunks.trySend(byteArrayOf(3, 4))
         chunks.close()
         val completion = CompletableDeferred(
-            AudioStreamEnd("已打开空调", powerOnIntent()),
+            AudioStreamEnd("The air conditioner is on", powerOnIntent(), "Turn on the air conditioner"),
         )
         val stream = StreamingAudioReply(
             mime = "audio/pcm",
@@ -1168,6 +1170,7 @@ class VoiceEngineTest {
         val played = mutableListOf<Byte>()
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
+        val recognized = mutableListOf<String?>()
         runBlocking {
             val pair = engine(
                 scope = this,
@@ -1179,12 +1182,14 @@ class VoiceEngineTest {
                         for (chunk in reply.chunks) played.addAll(chunk.toList())
                     }
                 },
+                onRecognized = recognized::add,
             )
             engine = pair.first
             vehicle = pair.second
             utter(engine)
         }
         assertEquals(listOf<Byte>(1, 2, 3, 4), played)
+        assertEquals(listOf("Turn on the air conditioner"), recognized)
         assertTrue(vehicle.isAcOn, "流结束携带的 intent 应只在云端胜出后执行")
     }
 

@@ -428,11 +428,13 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
   "type": "audio_reply_end",
   "payload": {
     "segmentId": "seg-1",
-    "speakText": "好的，已经为你设置"
+    "speakText": "Sure, the window is open.",
+    "asrText": "Could you open the window?"
   }
 }
 ```
 
+`audio_reply_end.asrText` 是旁路 ASR 产生的用户原话，端侧用它更新识别输出框；
 `audio_reply_end.intent` 可选，结构与 `reply/action.intent` 相同。音频不绕过 TTS 架构：端侧把 PCM
 块交给 TTS 模块新增的流式音频入口，由其统一负责 AudioTrack 播放、停止和 telemetry；它不再做文本合成。
 

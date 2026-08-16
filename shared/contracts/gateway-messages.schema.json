@@ -244,6 +244,7 @@
           "properties": {
             "segmentId": { "type": "string" },
             "speakText": { "type": "string" },
+            "asrText": { "type": "string", "description": "用户输入语音的最终识别文本" },
             "intent": { "$ref": "intent.schema.json" }
           }
         }

@@ -1,6 +1,7 @@
 package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.SessionContext;
@@ -74,6 +75,40 @@ class QwenOmniSpeechProviderTest {
         assertTrue(body.contains("qwen3.5-omni-plus"));
         assertTrue(body.contains("input_audio"));
         assertTrue(body.contains("data:audio/wav;base64,"));
+        assertTrue(body.contains("与用户相同的语言"));
+        assertTrue(!body.contains("简短中文语音回答"));
+    }
+
+    @Test
+    void sidecarAsrAddsUserTranscriptToStreamEndAndResult() throws Exception {
+        AtomicReference<String> endTranscript = new AtomicReference<>();
+        OnlineSpeechProvider speech = new OnlineSpeechProvider() {
+            @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return process(pcm, ctx, uid, OnlineAudioSink.NOOP);
+            }
+            @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink sink) {
+                sink.onStart(24_000, 1, "pcm_s16le");
+                sink.onChunk(new byte[]{1, 2});
+                sink.onComplete("Sure", null);
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        new OnlineSpeechResult(com.autovoice.server.contracts.Reply.ofAudio(
+                                "audio/wav", new byte[]{1, 2}, "Sure", null), ""));
+            }
+            @Override public String id() { return "fake-omni"; }
+        };
+        TranscriptEnrichedSpeechProvider provider = new TranscriptEnrichedSpeechProvider(
+                speech, (pcm, ctx) -> "Could you open the window?");
+        OnlineSpeechResult result = provider.process(new byte[]{3, 4}, context(), "u-sidecar",
+                new OnlineAudioSink() {
+                    @Override public void onComplete(String text, Intent intent, String asrText) {
+                        endTranscript.set(asrText);
+                    }
+                }).get(2, TimeUnit.SECONDS);
+
+        assertEquals("Could you open the window?", result.asrText());
+        assertEquals("Could you open the window?", endTranscript.get());
     }
 
     @Test

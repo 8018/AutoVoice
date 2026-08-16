@@ -127,6 +127,7 @@ data class AudioReply(
 data class AudioStreamEnd(
     val speakText: String = "",
     val intent: Intent? = null,
+    val asrText: String = "",
 )
 
 /**

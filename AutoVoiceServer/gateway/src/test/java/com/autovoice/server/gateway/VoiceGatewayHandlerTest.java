@@ -248,7 +248,7 @@ class VoiceGatewayHandlerTest {
                     String utteranceId, OnlineAudioSink sink) {
                 sink.onStart(24_000, 1, "pcm_s16le");
                 sink.onChunk(chunk);
-                sink.onComplete("流式回答", null);
+                sink.onComplete("Streaming reply", null, "What did I say?");
                 return CompletableFuture.completedFuture(new OnlineSpeechResult(
                         Reply.ofAudio("audio/wav", WAV, "流式回答", null), ""));
             }
@@ -270,7 +270,9 @@ class VoiceGatewayHandlerTest {
         byte[] actual = new byte[streamed.remaining()];
         streamed.get(actual);
         assertArrayEquals(chunk, actual);
-        assertEquals("audio_reply_end", parse(s.sent.get(3)).get("type").asText());
+        JsonNode audioEnd = parse(s.sent.get(3));
+        assertEquals("audio_reply_end", audioEnd.get("type").asText());
+        assertEquals("What did I say?", audioEnd.get("payload").get("asrText").asText());
         assertEquals("decision", parse(s.sent.get(4)).get("type").asText());
         assertEquals(5, s.sent.size(), "流式轮不得再发送完整 reply");
     }
