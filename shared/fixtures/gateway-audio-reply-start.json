@@ -1,0 +1,10 @@
+{
+  "type": "audio_reply_start",
+  "payload": {
+    "segmentId": "seg-1",
+    "mime": "audio/pcm",
+    "sampleRate": 24000,
+    "channels": 1,
+    "encoding": "pcm_s16le"
+  }
+}

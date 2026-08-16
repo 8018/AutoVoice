@@ -20,6 +20,8 @@ import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.TextReply
+import com.autovoice.voicecore.StreamingAudioReply
+import com.autovoice.voicecore.AudioStreamEnd
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
@@ -32,9 +34,11 @@ import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
 import com.google.gson.JsonObject
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,6 +54,14 @@ import okhttp3.OkHttpClient
 /** 云端音频回复播放出口（应用层实现：TtsPlayer）。JVM 测试可注入 fake。 */
 fun interface AudioPlayer {
     fun play(reply: AudioReply)
+
+    /** 默认实现累积后复用完整音频播放器；生产 TtsPlayer 覆盖为 AudioTrack 边收边播。 */
+    suspend fun playStream(reply: StreamingAudioReply) {
+        val pcm = ByteArrayOutputStream()
+        for (chunk in reply.chunks) pcm.write(chunk)
+        val end = reply.completion.await()
+        play(AudioReply("audio/pcm", pcm.toByteArray(), end.speakText, end.intent))
+    }
 }
 
 /**
@@ -380,6 +392,11 @@ class VoiceEngine(
             is AudioReply -> {
                 player.play(reply)
                 reply.intent?.let(::applyAndNotify)
+            }
+            is StreamingAudioReply -> scope.launch {
+                player.playStream(reply)
+                val end = reply.completion.await()
+                end.intent?.let(::applyAndNotify)
             }
             is TextReply -> speakViaTts(reply.text)
             is ActionReply -> {
@@ -824,6 +841,10 @@ private class GatewayCloudRunner(
             client.disconnect() // 断开失效连接，下次话语可干净重连
             if (wasReady) onCloudUnavailable()
             throw CloudUnavailableException("云端链路故障：${e.message}", e)
+        } catch (e: CancellationException) {
+            runCatching { client.sendCancelTurn(segmentId) }
+            bridge.cancelStream(segmentId)
+            throw e
         } finally {
             bridge.clearReplySlot(replySlot)
         }
@@ -878,9 +899,15 @@ internal class GatewayBridge(
 ) {
 
     private class PendingSlot<T>(val segmentId: String, val deferred: CompletableDeferred<T>)
+    private class ActiveStream(
+        val segmentId: String,
+        val chunks: Channel<ByteArray>,
+        val completion: CompletableDeferred<AudioStreamEnd>,
+    )
 
     private val pendingReply = AtomicReference<PendingSlot<Reply>?>(null)
     private val pendingTts = AtomicReference<PendingSlot<AudioReply>?>(null)
+    private val activeStream = AtomicReference<ActiveStream?>(null)
 
     init {
         scope.launch {
@@ -897,6 +924,14 @@ internal class GatewayBridge(
 
     fun clearReplySlot(deferred: CompletableDeferred<Reply>) {
         pendingReply.get()?.takeIf { it.deferred === deferred }?.let { pendingReply.compareAndSet(it, null) }
+    }
+
+    fun cancelStream(segmentId: String) {
+        val stream = activeStream.get() ?: return
+        if (stream.segmentId != segmentId || !activeStream.compareAndSet(stream, null)) return
+        val error = CancellationException("audio stream cancelled: $segmentId")
+        stream.chunks.close(error)
+        stream.completion.completeExceptionally(error)
     }
 
     /** 注册独立 TTS 播报槽（tts_response 对账用，与 reply 槽隔离）。 */
@@ -918,16 +953,51 @@ internal class GatewayBridge(
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 client.parseReply(msg.payload)?.let { slot.deferred.complete(it) }
             }
+            "audio_reply_start" -> {
+                val slot = pendingReply.get() ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+                val completion = CompletableDeferred<AudioStreamEnd>()
+                val reply = client.parseAudioStreamStart(msg.payload, chunks, completion) ?: return
+                val stream = ActiveStream(slot.segmentId, chunks, completion)
+                activeStream.getAndSet(stream)?.let { previous ->
+                    previous.chunks.close(CancellationException("replaced by a newer stream"))
+                    previous.completion.completeExceptionally(
+                        CancellationException("replaced by a newer stream"),
+                    )
+                }
+                slot.deferred.complete(reply)
+            }
+            "audio_reply_chunk" -> {
+                val stream = activeStream.get() ?: return
+                msg.binary?.let { bytes -> stream.chunks.trySend(bytes) }
+            }
+            "audio_reply_end" -> {
+                val stream = activeStream.get() ?: return
+                val msgSegmentId = msg.payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?: return
+                if (msgSegmentId != stream.segmentId) return
+                if (activeStream.compareAndSet(stream, null)) {
+                    stream.completion.complete(client.parseAudioStreamEnd(msg.payload))
+                    stream.chunks.close()
+                }
+            }
             "tts_response" -> {
                 val slot = pendingTts.get() ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 client.parseTtsResponse(msg.payload)?.let { slot.deferred.complete(it) }
             }
             "error" -> {
-                val slot = pendingReply.get() ?: return
-                if (!isForCurrentUtterance(msg.payload, slot)) return
                 val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
-                slot.deferred.completeExceptionally(GatewayException("网关传输错误：$code"))
+                val slot = pendingReply.get()
+                if (slot != null && isForCurrentUtterance(msg.payload, slot)) {
+                    slot.deferred.completeExceptionally(GatewayException("网关传输错误：$code"))
+                }
+                activeStream.getAndSet(null)?.let { stream ->
+                    val error = GatewayException("网关传输错误：$code")
+                    stream.chunks.close(error)
+                    stream.completion.completeExceptionally(error)
+                }
             }
             "pending" -> {
                 // B5：pending 占位（LLM 处理中，协议 §4.8）——独立于 reply kind 的 S→C

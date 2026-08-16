@@ -4,6 +4,7 @@ import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
@@ -40,12 +41,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 /**
- * qwen3.5-omni-plus HTTP/SSE 在线候选。输入为完整 16k PCM，输出累积模型的流式 PCM
- * 并标准化为 24k WAV；Gateway 的分块透传将在流式会话 SPI 阶段接管，目前先复用 v1.1
- * audio reply，确保云端仲裁和端侧仲裁语义不变。
+ * qwen3.5-omni-plus HTTP/SSE 在线候选。输入为完整 16k PCM；输出一边累积为兼容用
+ * 24k WAV，一边通过 OnlineAudioSink 增量发送 24k/mono/s16le PCM。
  */
 public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
 
@@ -56,6 +58,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int MAX_ROUNDS = 7;
+    private static final int MAX_OUTPUT_AUDIO_BYTES = 4 * 1024 * 1024;
     private static final AtomicInteger WORKER = new AtomicInteger();
 
     private static final String CAR_PARAMETERS = """
@@ -85,6 +88,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         thread.setDaemon(true);
         return thread;
     });
+    private final ConcurrentMap<String, CompletableFuture<OnlineSpeechResult>> active =
+            new ConcurrentHashMap<>();
 
     public QwenOmniSpeechProvider(OkHttpClient client, String apiKey, String endpoint,
                                   String model, String voice, ToolProvider tools,
@@ -108,11 +113,18 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     @Override
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId) {
+        return process(pcm16k, context, utteranceId, OnlineAudioSink.NOOP);
+    }
+
+    @Override
+    public CompletableFuture<OnlineSpeechResult> process(
+            byte[] pcm16k, SessionContext context, String utteranceId, OnlineAudioSink audioSink) {
         if (apiKey.isBlank()) {
             throw new IllegalStateException("QWEN_OMNI_API_KEY/DASHSCOPE_API_KEY is empty");
         }
         AtomicReference<Call> activeCall = new AtomicReference<>();
         AtomicReference<Future<?>> task = new AtomicReference<>();
+        OnlineAudioSink sink = audioSink == null ? OnlineAudioSink.NOOP : audioSink;
         CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
             @Override
             public boolean cancel(boolean mayInterruptIfRunning) {
@@ -125,11 +137,16 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         };
         task.set(workers.submit(() -> {
             try {
-                out.complete(runConversation(pcm16k, activeCall));
+                out.complete(runConversation(pcm16k, activeCall, sink));
             } catch (Throwable error) {
+                if (!out.isCancelled()) sink.onError(error);
                 if (!out.isCancelled()) out.completeExceptionally(error);
             }
         }));
+        if (utteranceId != null && !utteranceId.isBlank()) {
+            active.put(utteranceId, out);
+            out.whenComplete((ignored, error) -> active.remove(utteranceId, out));
+        }
         return out;
     }
 
@@ -143,7 +160,14 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         return 45_000;
     }
 
-    private OnlineSpeechResult runConversation(byte[] pcm16k, AtomicReference<Call> activeCall)
+    @Override
+    public void cancel(String utteranceId) {
+        CompletableFuture<OnlineSpeechResult> future = active.remove(utteranceId);
+        if (future != null) future.cancel(true);
+    }
+
+    private OnlineSpeechResult runConversation(byte[] pcm16k, AtomicReference<Call> activeCall,
+                                               OnlineAudioSink audioSink)
             throws IOException {
         ArrayNode messages = MAPPER.createArrayNode();
         ObjectNode system = messages.addObject();
@@ -166,9 +190,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         Intent terminalIntent = null;
         boolean allowTools = true;
         for (int round = 0; round < MAX_ROUNDS; round++) {
-            StreamResult result = call(messages, allowTools, activeCall);
+            StreamResult result = call(messages, allowTools, activeCall, audioSink);
             if (result.toolCalls.isEmpty()) {
                 if (result.audio.length > 0) {
+                    audioSink.onComplete(result.text, terminalIntent);
                     return new OnlineSpeechResult(
                             Reply.ofAudio("audio/wav", normalizeOutput(result.audio), result.text, terminalIntent), "");
                 }
@@ -204,7 +229,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         throw new IOException("qwen omni tool loop exceeded " + MAX_ROUNDS + " rounds");
     }
 
-    private StreamResult call(ArrayNode messages, boolean allowTools, AtomicReference<Call> activeCall)
+    private StreamResult call(ArrayNode messages, boolean allowTools, AtomicReference<Call> activeCall,
+                              OnlineAudioSink audioSink)
             throws IOException {
         ObjectNode body = MAPPER.createObjectNode();
         body.put("model", model);
@@ -241,16 +267,18 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             }
             if (response.body() == null) throw new IOException("qwen omni empty response body");
             return parseSse(new BufferedReader(new InputStreamReader(
-                    response.body().byteStream(), StandardCharsets.UTF_8)));
+                    response.body().byteStream(), StandardCharsets.UTF_8)), audioSink);
         } finally {
             activeCall.compareAndSet(call, null);
         }
     }
 
-    private static StreamResult parseSse(BufferedReader reader) throws IOException {
+    private static StreamResult parseSse(BufferedReader reader, OnlineAudioSink audioSink) throws IOException {
         StringBuilder text = new StringBuilder();
         ByteArrayOutputStream audio = new ByteArrayOutputStream();
+        StringBuilder audioBase64 = new StringBuilder();
         Map<Integer, MutableToolCall> calls = new LinkedHashMap<>();
+        boolean streamStarted = false;
         String line;
         while ((line = reader.readLine()) != null) {
             if (!line.startsWith("data:")) continue;
@@ -261,7 +289,24 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             if (content.isTextual()) text.append(content.asText());
             JsonNode audioData = delta.path("audio").path("data");
             if (audioData.isTextual() && !audioData.asText().isEmpty()) {
-                audio.write(Base64.getDecoder().decode(audioData.asText()));
+                // audio.data is one continuous Base64 value split across SSE deltas.
+                // Decode only complete quartets and retain 0..3 chars for the next delta.
+                audioBase64.append(audioData.asText());
+                int completeChars = audioBase64.length() - audioBase64.length() % 4;
+                if (completeChars > 0) {
+                    byte[] chunk = Base64.getDecoder().decode(audioBase64.substring(0, completeChars));
+                    audioBase64.delete(0, completeChars);
+                    if (audio.size() + chunk.length > MAX_OUTPUT_AUDIO_BYTES) {
+                        throw new IOException("qwen omni audio exceeded " + MAX_OUTPUT_AUDIO_BYTES + " bytes");
+                    }
+                    audio.write(chunk);
+                    if (!streamStarted) {
+                        audioSink.onStart(24_000, 1, "pcm_s16le");
+                        streamStarted = true;
+                    }
+                    // Official example decodes the concatenated bytes directly as int16 @ 24kHz.
+                    audioSink.onChunk(chunk);
+                }
             }
             for (JsonNode tc : delta.path("tool_calls")) {
                 int index = tc.path("index").asInt(0);
@@ -274,11 +319,26 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 }
             }
         }
+        if (!audioBase64.isEmpty()) {
+            byte[] tail = Base64.getDecoder().decode(audioBase64.toString());
+            if (audio.size() + tail.length > MAX_OUTPUT_AUDIO_BYTES) {
+                throw new IOException("qwen omni audio exceeded " + MAX_OUTPUT_AUDIO_BYTES + " bytes");
+            }
+            audio.write(tail);
+            if (!streamStarted) {
+                audioSink.onStart(24_000, 1, "pcm_s16le");
+                streamStarted = true;
+            }
+            audioSink.onChunk(tail);
+        }
         List<ToolCall> complete = new ArrayList<>();
         for (Map.Entry<Integer, MutableToolCall> entry : calls.entrySet()) {
             MutableToolCall tc = entry.getValue();
             complete.add(new ToolCall(tc.id.isBlank() ? "call_" + entry.getKey() : tc.id,
                     tc.name.toString(), tc.arguments.toString()));
+        }
+        if (streamStarted && !complete.isEmpty()) {
+            throw new IOException("qwen omni mixed audio and tool_calls in one round");
         }
         return new StreamResult(text.toString(), audio.toByteArray(), complete);
     }

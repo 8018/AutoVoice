@@ -7,6 +7,8 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.TextReply
+import com.autovoice.voicecore.AudioStreamEnd
+import com.autovoice.voicecore.StreamingAudioReply
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -14,6 +16,8 @@ import java.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -34,7 +38,7 @@ class GatewayException(message: String, cause: Throwable? = null) : Exception(me
  *
  * 会话流程：`connect()` 建立连接并发送 hello（payload 字段照 protocol.md §3.1；
  * sessionId 不预生成——服务端权威，由 ready 回执下发），收到 ready 后返回；
- * 之后 [messages] 事件流（ready/decision/asr_partial/reply/error/bye）才被填充。
+ * 之后 [messages] 事件流（含 reply、S2S start/chunk/end、error 等）才被填充。
  * 一轮话语：`sendAudioStart` → 二进制 `sendAudioChunk`（PCM S16LE/16kHz/单声道）→
  * `sendAudioEnd`（durationMs 由已发送字节数换算）；服务端回 decision + reply 事件。
  *
@@ -42,8 +46,8 @@ class GatewayException(message: String, cause: Throwable? = null) : Exception(me
  * 最多 [maxRetries] 次重试），仍失败抛 [GatewayException]。`disconnect()` 幂等。
  *
  * 背压决策：事件流 [messages] 为 SharedFlow，replay=1（connect 后订阅可补到 ready）、
- * extraBufferCapacity=64、onBufferOverflow=DROP_OLDEST——慢消费者丢最旧事件、保留最新事件
- * （reply 优先，单轮会话事件量远小于 64，正常消费不会丢）。
+ * extraBufferCapacity=64、onBufferOverflow=SUSPEND。WebSocket listener 使用挂起式 emit，
+ * 慢消费者会反压 socket 读取而不会静默丢失 PCM 分片。
  */
 class GatewayClient(
     private val url: String,
@@ -72,10 +76,10 @@ class GatewayClient(
         // 无订阅者期间被 emit，否则会被丢弃）；active 订阅者不受影响，事件照常下发。
         replay = 1,
         extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
 
-    /** 网关事件流：ready/decision/asr_partial/reply/error/bye；传输失败合成 error 事件。 */
+    /** 网关事件流：文本协议消息与 S2S 二进制 chunk；传输失败合成 error 事件。 */
     val messages: SharedFlow<GatewayMessage> = events.asSharedFlow()
 
     @Volatile
@@ -181,6 +185,16 @@ class GatewayClient(
         )
     }
 
+    /** 端侧车窗候选胜出：取消对应云端轮，服务端据此终止 Qwen Call。 */
+    fun sendCancelTurn(segmentId: String, reason: String = "device_local_won") {
+        sendFrame(
+            mapOf(
+                "type" to "cancel_turn",
+                "payload" to mapOf("segmentId" to segmentId, "reason" to reason),
+            ),
+        )
+    }
+
     /**
      * 独立 TTS 播报请求（protocol.md §3.4）：设备执行 intent 后按 speakText 调用。
      * 回复经 [parseTtsResponse] 对账（同一 segmentId）；与录音段流程互不干扰。
@@ -262,6 +276,25 @@ class GatewayClient(
         }
     }
 
+    fun parseAudioStreamStart(
+        payload: JsonObject,
+        chunks: ReceiveChannel<ByteArray>,
+        completion: Deferred<AudioStreamEnd>,
+    ): StreamingAudioReply? {
+        val mime = payload.get("mime")?.stringOrNull() ?: return null
+        val sampleRate = payload.get("sampleRate")?.numberOrNull()?.toInt() ?: return null
+        val channels = payload.get("channels")?.numberOrNull()?.toInt() ?: return null
+        val encoding = payload.get("encoding")?.stringOrNull() ?: return null
+        if (sampleRate <= 0 || channels <= 0) return null
+        return StreamingAudioReply(mime, sampleRate, channels, encoding, chunks, completion)
+    }
+
+    fun parseAudioStreamEnd(payload: JsonObject): AudioStreamEnd =
+        AudioStreamEnd(
+            speakText = payload.get("speakText")?.stringOrNull() ?: "",
+            intent = parseIntent(payload.get("intent")),
+        )
+
     private suspend fun doConnect() {
         val ready = CompletableDeferred<GatewayMessage>()
         val ws = try {
@@ -314,7 +347,7 @@ class GatewayClient(
     }
 
     /** intent 解析（与 shared/contracts/intent.schema.json 对齐）：字段缺失/类型不符 → null。 */
-    private fun parseIntent(element: JsonElement?): Intent? {
+    internal fun parseIntent(element: JsonElement?): Intent? {
         if (element == null || !element.isJsonObject) return null
         val o = element.asJsonObject
         val schemaVersion = o.get("schemaVersion")?.stringOrNull() ?: return null

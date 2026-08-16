@@ -1,6 +1,8 @@
 package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
+import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.SessionContext;
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
@@ -13,6 +15,8 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.io.ByteArrayOutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,16 +34,27 @@ class QwenOmniSpeechProviderTest {
 
     @Test
     void accumulatesSseTextAndAudioAndWrapsPcmAs24kWav() throws Exception {
-        byte[] first = {1, 2};
-        byte[] second = {3, 4};
+        String encoded = Base64.getEncoder().encodeToString(new byte[]{1, 2, 3, 4});
         server.enqueue(sse(
                 delta("content", "好"),
-                audio(first),
+                audioFragment(encoded.substring(0, 3)),
                 delta("content", "的"),
-                audio(second)));
+                audioFragment(encoded.substring(3))));
 
         QwenOmniSpeechProvider provider = provider((name, args) -> "unused");
-        OnlineSpeechResult result = provider.process(new byte[]{9, 8, 7, 6}, context(), "u1")
+        ByteArrayOutputStream streamed = new ByteArrayOutputStream();
+        AtomicBoolean started = new AtomicBoolean();
+        AtomicBoolean completed = new AtomicBoolean();
+        OnlineAudioSink sink = new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) {
+                assertEquals(24_000, rate);
+                assertEquals("pcm_s16le", encoding);
+                started.set(true);
+            }
+            @Override public void onChunk(byte[] pcm) { streamed.writeBytes(pcm); }
+            @Override public void onComplete(String text, Intent intent) { completed.set(true); }
+        };
+        OnlineSpeechResult result = provider.process(new byte[]{9, 8, 7, 6}, context(), "u1", sink)
                 .get(2, TimeUnit.SECONDS);
 
         assertEquals("audio", result.reply().kind());
@@ -48,6 +63,9 @@ class QwenOmniSpeechProviderTest {
         assertEquals('R', result.reply().data()[0]);
         assertArrayEquals(new byte[]{1, 2, 3, 4},
                 java.util.Arrays.copyOfRange(result.reply().data(), 44, 48));
+        assertTrue(started.get());
+        assertTrue(completed.get());
+        assertArrayEquals(new byte[]{1, 2, 3, 4}, streamed.toByteArray());
 
         RecordedRequest request = server.takeRequest(1, TimeUnit.SECONDS);
         assertNotNull(request);
@@ -104,7 +122,11 @@ class QwenOmniSpeechProviderTest {
     }
 
     private static String audio(byte[] pcm) {
+        return audioFragment(Base64.getEncoder().encodeToString(pcm));
+    }
+
+    private static String audioFragment(String base64) {
         return "{\"choices\":[{\"delta\":{\"audio\":{\"data\":\""
-                + Base64.getEncoder().encodeToString(pcm) + "\"}}}]}";
+                + base64 + "\"}}}]}";
     }
 }

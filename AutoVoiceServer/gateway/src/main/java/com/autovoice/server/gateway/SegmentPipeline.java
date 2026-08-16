@@ -8,6 +8,7 @@ import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OfflineCommandHit;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
@@ -17,9 +18,12 @@ import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
 
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 云端语音段处理流水线（两候选并发、固定优先级仲裁）：
@@ -87,9 +91,13 @@ public final class SegmentPipeline {
      * intent 非空时下行 kind=action；asrText = 离线胜出时的离线原文，否则 ASR 识别文本。
      */
     public record SegmentResult(String text, String speakText, Intent intent, String asrText,
-                                String mime, byte[] audio) {
+                                String mime, byte[] audio, boolean streamed) {
         public SegmentResult(String text, String speakText, Intent intent, String asrText) {
-            this(text, speakText, intent, asrText, null, null);
+            this(text, speakText, intent, asrText, null, null, false);
+        }
+
+        SegmentResult asStreamed() {
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true);
         }
     }
 
@@ -103,13 +111,19 @@ public final class SegmentPipeline {
      * 可变字段（可能已被下一轮覆盖），必须走参数快照。
      */
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId) {
+        return handleSegment(pcm, ctx, utteranceId, segmentId, OnlineAudioSink.NOOP);
+    }
+
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
+                                       String segmentId, OnlineAudioSink downstreamAudio) {
         // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
         // RaceArbiter 只拦截输出，空调离线命中时取消在线，否则放行在线结果。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
+        CloudAudioGate audioGate = new CloudAudioGate(offlineF, downstreamAudio);
         long onlineStart = System.currentTimeMillis();
         final CompletableFuture<OnlineSpeechResult> onlineF;
         try {
-            onlineF = online.process(pcm, ctx, utteranceId);
+            onlineF = online.process(pcm, ctx, utteranceId, audioGate);
         } catch (RuntimeException e) {
             recordOnlineStartFailure(e, pcm, utteranceId, onlineStart);
             return waitOfflineFallback(offlineF, ctx, utteranceId);
@@ -120,16 +134,25 @@ public final class SegmentPipeline {
                     .decide(offlineF.thenApply(o -> o.orElse(null)), replyF, ctx, utteranceId, segmentId)
                     .join();
             if ("offline_won".equals(decision.reason())) {
+                audioGate.reject();
                 onlineF.cancel(true);
                 return toResult(decision, "", ctx, utteranceId);
             }
+            // RaceArbiter may release online after its finite offline grace period even if
+            // the offline future is still pending. Mirror that decision in the chunk gate
+            // so buffered audio cannot leak later, after a full fallback reply/connection close.
+            audioGate.release();
             OnlineSpeechResult onlineResult = onlineF.isCompletedExceptionally()
                     ? null : onlineF.getNow(null);
             recordOnlineSuccess(onlineResult, utteranceId, onlineStart);
             // 仲裁过程事件（received/won/lost）由 RaceArbiter 经 eventSink 发出（B3），
             // 此处不再事后补记，避免与竞速时序冲突
-            return toResult(decision, onlineResult == null ? "" : onlineResult.asrText(), ctx, utteranceId);
+            SegmentResult result = toResult(decision,
+                    onlineResult == null ? "" : onlineResult.asrText(), ctx, utteranceId);
+            return audioGate.streamed() && "audio".equals(decision.reply().kind())
+                    ? result.asStreamed() : result;
         } catch (Exception e) {
+            audioGate.reject();
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
             return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
         }
@@ -235,7 +258,7 @@ public final class SegmentPipeline {
                     return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
                 }
                 return new SegmentResult(null, reply.speakText(), reply.intent(), textForAsr,
-                        reply.mime(), reply.data());
+                        reply.mime(), reply.data(), false);
             }
             default -> {
                 // 防御：未知 kind → 文本化
@@ -262,5 +285,92 @@ public final class SegmentPipeline {
         recordArbiterEvent(recorder, utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                 CloudArbiterEvent.Reason.LLM_TIMEOUT, reason));
         return new SegmentResult(null, FALLBACK_TEXT, null, null); // 兜底无识别文本
+    }
+
+    /** 服务端云端仲裁门：离线明确未命中/失败前只缓存在线音频事件。 */
+    private static final class CloudAudioGate implements OnlineAudioSink {
+        private enum State { PENDING, RELEASED, REJECTED }
+
+        private final OnlineAudioSink downstream;
+        private final List<Consumer<OnlineAudioSink>> buffered = new ArrayList<>();
+        private State state = State.PENDING;
+        private volatile boolean streamed;
+
+        CloudAudioGate(CompletableFuture<Optional<OfflineCommandHit>> offline,
+                       OnlineAudioSink downstream) {
+            this.downstream = downstream == null ? OnlineAudioSink.NOOP : downstream;
+            offline.whenComplete((hit, error) -> resolve(error == null && hit != null && hit.isPresent()
+                    && isAirConControl(hit.get().intent())));
+        }
+
+        private void resolve(boolean offlineWon) {
+            synchronized (this) {
+                if (state != State.PENDING) return;
+                state = offlineWon ? State.REJECTED : State.RELEASED;
+                if (offlineWon) {
+                    buffered.clear();
+                    return;
+                }
+                // Keep the lock while draining: a concurrently arriving chunk must not
+                // overtake the buffered start event after state changes to RELEASED.
+                buffered.forEach(event -> event.accept(downstream));
+                buffered.clear();
+            }
+        }
+
+        void release() {
+            resolve(false);
+        }
+
+        void reject() {
+            resolve(true);
+        }
+
+        private void submit(Consumer<OnlineAudioSink> event) {
+            boolean release;
+            synchronized (this) {
+                if (state == State.REJECTED) return;
+                if (state == State.PENDING) {
+                    buffered.add(event);
+                    return;
+                }
+                release = true;
+            }
+            if (release) event.accept(downstream);
+        }
+
+        @Override
+        public void onStart(int sampleRate, int channels, String encoding) {
+            submit(sink -> {
+                streamed = true;
+                sink.onStart(sampleRate, channels, encoding);
+            });
+        }
+
+        @Override
+        public void onChunk(byte[] pcm) {
+            byte[] snapshot = pcm.clone();
+            submit(sink -> sink.onChunk(snapshot));
+        }
+
+        @Override
+        public void onComplete(String speakText, Intent intent) {
+            submit(sink -> sink.onComplete(speakText, intent));
+        }
+
+        @Override
+        public void onError(Throwable error) {
+            submit(sink -> sink.onError(error));
+        }
+
+        synchronized boolean streamed() {
+            return streamed;
+        }
+
+        private static boolean isAirConControl(Intent intent) {
+            if (intent == null || !"climate".equals(intent.domain())) return false;
+            return "power_on".equals(intent.intent()) || "power_off".equals(intent.intent())
+                    || "set_temperature".equals(intent.intent());
+        }
     }
 }

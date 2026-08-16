@@ -6,6 +6,7 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
@@ -27,6 +28,7 @@ import org.springframework.web.socket.WebSocketSession;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.security.Principal;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -37,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -226,6 +229,91 @@ class VoiceGatewayHandlerTest {
         assertEquals("好的，空调已打开", payload.get("speakText").asText());
         assertEquals("power_on", payload.get("intent").get("intent").asText());
         assertEquals("s2s-1", payload.get("segmentId").asText());
+    }
+
+    @Test
+    void s2sStreamsOnlyAfterCloudOfflineMiss() throws InterruptedException {
+        byte[] chunk = {10, 11, 12, 13};
+        OnlineSpeechProvider streaming = new OnlineSpeechProvider() {
+            @Override
+            public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm16k, com.autovoice.server.contracts.SessionContext context,
+                    String utteranceId) {
+                throw new AssertionError("streaming overload expected");
+            }
+
+            @Override
+            public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm16k, com.autovoice.server.contracts.SessionContext context,
+                    String utteranceId, OnlineAudioSink sink) {
+                sink.onStart(24_000, 1, "pcm_s16le");
+                sink.onChunk(chunk);
+                sink.onComplete("流式回答", null);
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAudio("audio/wav", WAV, "流式回答", null), ""));
+            }
+
+            @Override public String id() { return "stream-test"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(streaming, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid, "stream-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 5);
+
+        assertEquals("audio_reply_start", parse(s.sent.get(1)).get("type").asText());
+        assertTrue(s.sent.get(2) instanceof BinaryMessage);
+        ByteBuffer streamed = ((BinaryMessage) s.sent.get(2)).getPayload();
+        byte[] actual = new byte[streamed.remaining()];
+        streamed.get(actual);
+        assertArrayEquals(chunk, actual);
+        assertEquals("audio_reply_end", parse(s.sent.get(3)).get("type").asText());
+        assertEquals("decision", parse(s.sent.get(4)).get("type").asText());
+        assertEquals(5, s.sent.size(), "流式轮不得再发送完整 reply");
+    }
+
+    @Test
+    void cancelTurnUsesProcessingSnapshotAfterNextAudioStart() throws InterruptedException {
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicReference<String> processingUtterance = new AtomicReference<>();
+        AtomicReference<String> cancelledUtterance = new AtomicReference<>();
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        OnlineSpeechProvider cancellable = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid,
+                    OnlineAudioSink audio) {
+                processingUtterance.set(uid);
+                started.countDown();
+                return pending;
+            }
+            @Override public void cancel(String uid) {
+                cancelledUtterance.set(uid);
+                pending.cancel(true);
+            }
+            @Override public String id() { return "cancel-test"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(cancellable, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid, "old-segment")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+
+        // A new recording may overwrite mutable connection fields while the old turn is processing.
+        h.handleMessage(s, new TextMessage(audioStart(sid, "new-segment")));
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"old-segment\"}}"));
+
+        assertEquals(processingUtterance.get(), cancelledUtterance.get());
     }
 
     @Test

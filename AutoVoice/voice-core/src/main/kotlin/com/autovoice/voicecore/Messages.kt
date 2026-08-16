@@ -2,6 +2,8 @@ package com.autovoice.voicecore
 
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.channels.ReceiveChannel
 
 /**
  * 槽位值，序列化输出 `{"type":...,"value":...}`，字段名与
@@ -121,6 +123,28 @@ data class AudioReply(
     override val kind: String = "audio"
 }
 
+/** 流式音频结束元数据；Intent 只在完整流结束后执行。 */
+data class AudioStreamEnd(
+    val speakText: String = "",
+    val intent: Intent? = null,
+)
+
+/**
+ * 云端流式 PCM 候选。收到 start 即可进入端侧仲裁；只有云端胜出后消费 [chunks]。
+ * 分片固定使用 [sampleRate]/[channels]/[encoding] 描述的格式。
+ */
+data class StreamingAudioReply(
+    val mime: String,
+    val sampleRate: Int,
+    val channels: Int,
+    val encoding: String,
+    val chunks: ReceiveChannel<ByteArray>,
+    val completion: Deferred<AudioStreamEnd>,
+    override val asrText: String = "",
+) : Reply() {
+    override val kind: String = "audio_stream"
+}
+
 /** 意图执行回复（供端侧执行器消费）。 */
 data class ActionReply(
     val intent: Intent,
@@ -143,4 +167,5 @@ data class DecisionEntry(
 data class GatewayMessage(
     val type: String,
     val payload: JsonObject,
+    val binary: ByteArray? = null,
 )

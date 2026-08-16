@@ -4,6 +4,8 @@ import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
+import com.autovoice.voicecore.AudioStreamEnd
+import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
@@ -1144,6 +1146,46 @@ class VoiceEngineTest {
         }
         assertEquals(listOf("cloud_won"), entries.map { it.reason }, "release 下 weakNetwork 不应改变竞速")
         assertEquals(1, played.size, "云端音频应正常播放")
+    }
+
+    @Test
+    fun `streaming cloud winner feeds audio player then applies end intent`() {
+        val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+        chunks.trySend(byteArrayOf(1, 2))
+        chunks.trySend(byteArrayOf(3, 4))
+        chunks.close()
+        val completion = CompletableDeferred(
+            AudioStreamEnd("已打开空调", powerOnIntent()),
+        )
+        val stream = StreamingAudioReply(
+            mime = "audio/pcm",
+            sampleRate = 24_000,
+            channels = 1,
+            encoding = "pcm_s16le",
+            chunks = chunks,
+            completion = completion,
+        )
+        val played = mutableListOf<Byte>()
+        lateinit var engine: VoiceEngine
+        lateinit var vehicle: MockVehicleState
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { delay(300); Intent.unknown("local") },
+                cloud = CloudRunner { stream },
+                player = object : AudioPlayer {
+                    override fun play(reply: AudioReply) = Unit
+                    override suspend fun playStream(reply: StreamingAudioReply) {
+                        for (chunk in reply.chunks) played.addAll(chunk.toList())
+                    }
+                },
+            )
+            engine = pair.first
+            vehicle = pair.second
+            utter(engine)
+        }
+        assertEquals(listOf<Byte>(1, 2, 3, 4), played)
+        assertTrue(vehicle.isAcOn, "流结束携带的 intent 应只在云端胜出后执行")
     }
 
     /** 等一轮话语收敛完毕（状态回到 IDLE）——多轮用例在 runBlocking 内串行推进。 */

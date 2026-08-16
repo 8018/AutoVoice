@@ -1,0 +1,7 @@
+{
+  "type": "cancel_turn",
+  "payload": {
+    "segmentId": "seg-1",
+    "reason": "local_won"
+  }
+}

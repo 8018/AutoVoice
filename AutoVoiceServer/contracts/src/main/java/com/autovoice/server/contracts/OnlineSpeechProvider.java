@@ -15,6 +15,12 @@ public interface OnlineSpeechProvider {
     CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId);
 
+    /** 支持增量音频的入口；Classic 默认退化为完整结果。 */
+    default CompletableFuture<OnlineSpeechResult> process(
+            byte[] pcm16k, SessionContext context, String utteranceId, OnlineAudioSink audioSink) {
+        return process(pcm16k, context, utteranceId);
+    }
+
     /** 用于 ready、日志和遥测的稳定后端标识（classic / qwen-omni）。 */
     String id();
 
@@ -22,4 +28,7 @@ public interface OnlineSpeechProvider {
     default long minimumTurnTimeoutMs() {
         return 0;
     }
+
+    /** 端侧高优先级候选胜出时按话语取消；不支持的后端可依赖 future 取消。 */
+    default void cancel(String utteranceId) {}
 }

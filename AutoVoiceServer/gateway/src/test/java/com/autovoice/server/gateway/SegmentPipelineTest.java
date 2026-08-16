@@ -10,6 +10,7 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
@@ -203,6 +204,82 @@ class SegmentPipelineTest {
 
         assertEquals("power_on", result.intent().intent());
         assertTrue(cancelled.get(), "云端空调离线命中后必须向 S2S 会话传播取消");
+    }
+
+    @Test
+    void s2sChunksStayBehindCloudGateUntilOfflineMissIsKnown() throws Exception {
+        CompletableFuture<Optional<String>> offlineRaw = new CompletableFuture<>();
+        OfflineCommandService delayedOffline = new OfflineCommandService((pcm, ctx) -> offlineRaw);
+        List<String> audioEvents = new java.util.concurrent.CopyOnWriteArrayList<>();
+        OnlineSpeechProvider streaming = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink sink) {
+                sink.onStart(24_000, 1, "pcm_s16le");
+                sink.onChunk(new byte[]{1, 2});
+                sink.onComplete("ok", null);
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAudio("audio/wav", new byte[]{1}, "ok", null), ""));
+            }
+            @Override public String id() { return "stream-test"; }
+        };
+        SegmentPipeline p = new SegmentPipeline(streaming, arbiter(), delayedOffline,
+                ASR_FAIL_WAIT, sink, recorder);
+        OnlineAudioSink downstream = new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) { audioEvents.add("start"); }
+            @Override public void onChunk(byte[] pcm) { audioEvents.add("chunk"); }
+            @Override public void onComplete(String text, Intent intent) { audioEvents.add("end"); }
+        };
+
+        CompletableFuture<SegmentPipeline.SegmentResult> result = CompletableFuture.supplyAsync(
+                () -> p.handleSegment(PCM, CTX, "u-gate", "seg-gate", downstream));
+        Thread.sleep(30);
+        assertTrue(audioEvents.isEmpty(), "离线仍 pending 时不得越过云端仲裁门");
+        offlineRaw.complete(Optional.empty());
+
+        assertTrue(result.get(1, java.util.concurrent.TimeUnit.SECONDS).streamed());
+        assertEquals(List.of("start", "chunk", "end"), audioEvents);
+    }
+
+    @Test
+    void s2sChunksReleaseWhenCloudArbiterGraceExpires() {
+        CompletableFuture<Optional<String>> offlineRaw = new CompletableFuture<>();
+        OfflineCommandService delayedOffline = new OfflineCommandService((pcm, ctx) -> offlineRaw);
+        List<String> audioEvents = new java.util.concurrent.CopyOnWriteArrayList<>();
+        OnlineSpeechProvider streaming = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink audio) {
+                audio.onStart(24_000, 1, "pcm_s16le");
+                audio.onChunk(new byte[]{3, 4});
+                audio.onComplete("ok", null);
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAudio("audio/wav", new byte[]{1}, "ok", null), ""));
+            }
+            @Override public String id() { return "stream-test"; }
+        };
+        RaceArbiter shortGrace = new RaceArbiter(SAFETY, 20, sched, sink,
+                (uid, event) -> SegmentPipeline.recordArbiterEvent(recorder, uid, event));
+        SegmentPipeline p = new SegmentPipeline(streaming, shortGrace, delayedOffline,
+                ASR_FAIL_WAIT, sink, recorder);
+        OnlineAudioSink downstream = new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) { audioEvents.add("start"); }
+            @Override public void onChunk(byte[] pcm) { audioEvents.add("chunk"); }
+            @Override public void onComplete(String text, Intent intent) { audioEvents.add("end"); }
+        };
+
+        SegmentPipeline.SegmentResult result = p.handleSegment(
+                PCM, CTX, "u-grace", "seg-grace", downstream);
+
+        assertTrue(result.streamed());
+        assertEquals("llm_reply", log.get(0).reason());
+        assertEquals(List.of("start", "chunk", "end"), audioEvents);
     }
 
     @Test

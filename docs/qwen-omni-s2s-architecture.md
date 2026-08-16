@@ -56,8 +56,14 @@ Omni 后端把 16kHz/mono/s16le PCM 封装为 WAV，通过 OpenAI-compatible
 - `audio.voice=Tina`
 - `audio.format=wav`
 
-SSE 解析器分别累计 text、audio 和按 index 分片的 tool call arguments。输出裸 PCM 时按
-24kHz/mono/s16le 封装 WAV。
+按[千问官方模型说明](https://platform.qianwenai.com/docs/developer-guides/speech/s2s-models)，
+该无后缀模型属于 HTTP 文件模式：当前实现是“整段输入、流式输出”，不是录音时同步上传给模型。
+若后续要求输入也实时流式，应另立变体切换 `qwen3.5-omni-plus-realtime` WebSocket API；该实时
+变体目前不支持 Function Calling，不能直接替换本方案的共享 Skills/MCP 工具循环。
+
+SSE 解析器分别累计 text、audio 和按 index 分片的 tool call arguments。`audio.data` 按官方示例
+作为一条跨 delta 的连续 Base64 串增量解码；输出裸 PCM 按 24kHz/mono/s16le 播放，兼容完整回复
+时再封装 WAV。
 
 工具来源与 Classic 相同：内置 `car_control`/`navigate` 加上
 `McpSkillRegistry.enabledToolSpecs()`。MCP 调用复用 `McpToolExecutor`；平台 system prompt
@@ -74,10 +80,7 @@ SSE 解析器分别累计 text、audio 和按 index 分片的 tool call argument
 S2S 音频 → 音频输入入口 ─┘
 ```
 
-当前第一阶段已打通协议 v1.1 的完整 `AudioReply`：Qwen 的 SSE 音频在服务端累计完成后，
-作为 WAV 进入现有 `TtsPlayer`。这满足功能闭环和两级仲裁，但还不是端到端边收边播。
-
-第二阶段需升级为流式会话：
+第一阶段的完整 `AudioReply` 仍作为兼容/回归路径保留。第二阶段已经打通端到端流式会话：
 
 1. `OnlineSpeechProvider` 增加 audio chunk 事件和可取消 session。
 2. 服务端在空调离线仲裁完成前缓存 chunk；离线未命中后下发
@@ -93,15 +96,15 @@ S2S 音频 → 音频输入入口 ─┘
 | P1 | `OnlineSpeechProvider` SPI、Classic 适配、现有云端仲裁回归 | 已完成 |
 | P2 | Omni HTTP/SSE、WAV、MCP/终局工具循环、完整 AudioReply | 已完成 |
 | P3 | Classic/Omni 构建隔离、CI 矩阵、部署选择 | 已完成 |
-| P4 | 服务端流式会话与云端仲裁 chunk 门控 | 待实施 |
-| P5 | Android 端侧仲裁 chunk 门控与 TTS AudioTrack 输入 | 待实施 |
+| P4 | 服务端流式会话与云端仲裁 chunk 门控 | 已完成（待真实环境验收） |
+| P5 | Android 端侧仲裁 chunk 门控与 TTS AudioTrack 输入 | 已完成（待真机验收） |
 | P6 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
 
 ## 7. 验证重点
 
 - 云端空调离线命中时，Omni future 和底层 OkHttp Call 被取消。
-- 云端离线未命中时，AudioReply 保留 mime、音频、speakText 和可选 Intent。
+- 云端离线未命中时，流的 start/chunk/end 顺序稳定，并保留 speakText 和可选 Intent。
 - 端侧车窗命中时不播放云端音频、不执行云端 Intent。
 - SSE 可处理任意 chunk 边界、多个 audio delta 和 tool arguments delta。
 - Classic 与 Omni Boot JAR 依赖互斥。
-- 流式阶段上线前，产品状态必须明确标注“完整音频播放”，不能把模型 SSE 流式等同于端到端流式。
+- 真实 DashScope 与 Android 真机验收完成前，产品状态标注为“代码链路已流式、外部环境待验收”。
