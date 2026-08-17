@@ -193,6 +193,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Activity 回到前台时提前恢复 WebSocket，避免第一句话承担握手时延。 */
+    fun onForeground() {
+        engine.onForeground()
+    }
+
     /**
      * 抬手结束录音（RecordButton 松开；幂等）：停止录音 → 先逐段喂云端路
      * （[AudioRecorder.finishSegments]：VAD 切段，时间顺序，必须先于本地路喂完）

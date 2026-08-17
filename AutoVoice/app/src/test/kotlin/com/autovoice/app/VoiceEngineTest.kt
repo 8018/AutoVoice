@@ -657,7 +657,7 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `network unavailable → local only, cloud_unreachable, apply text via network tts, cloud never ran`() {
+    fun `network hint unavailable does not hard gate a working cloud connection`() {
         val entries = mutableListOf<DecisionEntry>()
         val ttsRequests = mutableListOf<String>()
         var cloudRan = false
@@ -669,7 +669,7 @@ class VoiceEngineTest {
                 local = LocalChainRunner { powerOnIntent() },
                 cloud = CloudRunner {
                     cloudRan = true
-                    error("云端链不应被启动")
+                    TextReply("云端连接正常")
                 },
                 networkAvailable = { false },
                 sink = DecisionSink { entries.add(it) },
@@ -681,10 +681,10 @@ class VoiceEngineTest {
             vehicle = pair.second
             utter(engine)
         }
-        assertFalse(cloudRan, "无网络时云端链不得启动")
-        assertTrue(vehicle.isAcOn, "本地意图应执行")
-        assertEquals(listOf("已为您打开空调"), ttsRequests, "本地 apply 的文本应走网络 TTS 请求")
-        assertEquals(listOf("cloud_unreachable"), entries.map { it.reason })
+        assertTrue(cloudRan, "activeNetwork 短暂为 null 时仍应以真实连接结果为准")
+        assertFalse(vehicle.isAcOn, "云端正常胜出时不应执行本地候选")
+        assertEquals(listOf("云端连接正常"), ttsRequests)
+        assertEquals(listOf("cloud_won"), entries.map { it.reason })
     }
 
     @Test

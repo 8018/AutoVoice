@@ -163,6 +163,35 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void reconnectResumesSessionAndReplaysCompletedTurnWithoutRunningPipelineTwice() throws InterruptedException {
+        AtomicInteger asrCalls = new AtomicInteger();
+        VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
+            asrCalls.incrementAndGet();
+            return "导航到公司";
+        }, llm("已规划路线"), ttsOk());
+
+        StubSession first = open(h);
+        String sid = handshake(h, first);
+        h.handleMessage(first, new TextMessage(audioStartWithUtteranceId(sid, "seg-retry", "utt-retry")));
+        h.handleMessage(first, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(first, new TextMessage(audioEnd(sid)));
+        awaitSent(first, 4);
+
+        StubSession second = open(h);
+        h.handleMessage(second, new TextMessage(helloWithSessionId(sid)));
+        assertEquals(sid, parse(second.sent.get(0)).get("payload").get("sessionId").asText());
+        h.handleMessage(second, new TextMessage(audioStartWithUtteranceId(sid, "seg-retry", "utt-retry")));
+        h.handleMessage(second, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(second, new TextMessage(audioEnd(sid)));
+        awaitSent(second, 2); // ready + cached reply（不再重复 ASR/LLM/仲裁）
+
+        assertEquals(1, asrCalls.get());
+        JsonNode replay = parse(second.sent.get(1));
+        assertEquals("reply", replay.get("type").asText());
+        assertEquals("seg-retry", replay.get("payload").get("segmentId").asText());
+    }
+
+    @Test
     void textReplyCarriesTextAndSpeakTextOmitsIntent() throws InterruptedException {
         // LLM 文本回复（闲聊）：kind=text 且 text 与 speakText 同带（端侧 parseReply 强读 text）
         VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM回答"), ttsOk());
@@ -766,6 +795,11 @@ class VoiceGatewayHandlerTest {
         return TestFixtures.HELLO_JSON;
     }
 
+    private static String helloWithSessionId(String sessionId) {
+        return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\","
+                + "\"protocolVersion\":\"1.1\",\"sessionId\":\"" + sessionId + "\"}}";
+    }
+
     private static String audioStart(String sessionId) {
         return audioStart(sessionId, null);
     }
@@ -782,6 +816,13 @@ class VoiceGatewayHandlerTest {
         return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId
                 + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\""
                 + ",\"utteranceId\":\"" + utteranceId + "\"}}";
+    }
+
+
+    private static String audioStartWithUtteranceId(String sessionId, String segmentId, String utteranceId) {
+        return "{\"type\":\"audio_start\",\"payload\":{\"sessionId\":\"" + sessionId
+                + "\",\"sampleRate\":16000,\"channels\":1,\"encoding\":\"pcm_s16le\""
+                + ",\"segmentId\":\"" + segmentId + "\",\"utteranceId\":\"" + utteranceId + "\"}}";
     }
 
     private static String audioEnd(String sessionId) {

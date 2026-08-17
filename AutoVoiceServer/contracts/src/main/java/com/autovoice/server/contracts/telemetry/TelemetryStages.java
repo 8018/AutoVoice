@@ -39,6 +39,11 @@ public final class TelemetryStages {
     public static final String TTS_PLAY_INTERRUPTED = "tts_play_interrupted";
     /** TTS 播放结束（B4：completed ok / failed error）。 */
     public static final String TTS_PLAY_END = "tts_play_end";
+    public static final String WS_CONNECT_START = "ws_connect_start";
+    public static final String WS_READY = "ws_ready";
+    public static final String WS_RECONNECT_START = "ws_reconnect_start";
+    public static final String WS_RECONNECT_OK = "ws_reconnect_ok";
+    public static final String WS_RECONNECT_FAILED = "ws_reconnect_failed";
 
     private TelemetryStages() {
     }

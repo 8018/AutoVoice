@@ -12,6 +12,7 @@ import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.gatewayclient.GatewayClient
+import com.autovoice.gatewayclient.GatewayConnectionState
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AsrResult
@@ -43,6 +44,7 @@ import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -143,6 +145,8 @@ class VoiceEngine(
     private val debugBuild: Boolean = BuildConfig.DEBUG,
     /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
     private val onClose: () -> Unit = {},
+    /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
+    private val onForeground: () -> Unit = {},
     /**
      * B5：云端 pending 占位回调（LLM 处理中，协议 §4.8）：收到 pending 帧 → true，
      * 最终语义到达 / 新一轮开始 → false。UI 据此显示"处理中…"徽标，无执行无播报。
@@ -236,6 +240,8 @@ class VoiceEngine(
         scope.cancel()
     }
 
+    fun onForeground() = onForeground.invoke()
+
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
     /**
@@ -253,7 +259,10 @@ class VoiceEngine(
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
-        if (networkAvailable()) session.onCloudAvailable() else session.onCloudUnavailable()
+        // activeNetwork 只能作诊断提示，不能作为硬门禁：网络切换期间它可能短暂为 null，
+        // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
+        if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
+        session.onCloudAvailable()
         session.onListeningStart()
     }
 
@@ -564,6 +573,9 @@ class VoiceEngine(
             cloudRunner.onReplyText = { text, _ ->
                 if (text.isNotBlank()) onReplyText(text)
             }
+            cloudRunner.onConnectionEvent = { stage, level, payload ->
+                telemetry.record(stage, level, payload)
+            }
             // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
             clockOffsetProvider.set(cloudRunner::clockOffsetMs)
             // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）
@@ -638,6 +650,7 @@ class VoiceEngine(
                     cloudRunner.close() // Task 21：模式切换时断开网关
                     offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
                 },
+                onForeground = cloudRunner::warmUp,
                 onCloudPending = onCloudPending,
                 onCloudWon = cloudRunner::releaseReplyText,
             )
@@ -824,7 +837,7 @@ class VoiceEngine(
 private class GatewayCloudRunner(
     private val cfg: CloudConfig,
     private val sink: DecisionSink,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
@@ -832,10 +845,14 @@ private class GatewayCloudRunner(
 
     private val client = GatewayClient(
         url = cfg.gatewayUrl,
-        okHttp = OkHttpClient(),
+        okHttp = OkHttpClient.Builder()
+            .pingInterval(15, TimeUnit.SECONDS)
+            .build(),
         // M5 鉴权：hello 注入设备凭据（auth-enabled 网关必填；未配置则保持老 hello）
         deviceId = cfg.deviceId,
         authToken = cfg.authToken,
+        connectTimeoutMs = 3_000,
+        maxRetries = 0, // 当前话语层保留同一 utteranceId 做一次安全重试
     )
     private val bridge = GatewayBridge(
         client,
@@ -910,6 +927,9 @@ private class GatewayCloudRunner(
     @Volatile
     var onReadySessionId: (String) -> Unit = {}
 
+    @Volatile
+    var onConnectionEvent: (String, String, Map<String, Any?>) -> Unit = { _, _, _ -> }
+
     /** 时钟同步：委托网关客户端的时钟偏移（ready.serverTime 握手估算，每次握手刷新）。 */
     fun clockOffsetMs(): Long = client.clockOffsetMs()
 
@@ -918,73 +938,108 @@ private class GatewayCloudRunner(
         client.disconnect()
     }
 
+    /** 前台预热不影响当前会话；失败留给真正话语的 ensureReady 重试并降级。 */
+    fun warmUp() {
+        if (!cfg.enabled || cfg.gatewayUrl.isBlank()) return
+        scope.launch {
+            runCatching { ensureReady() }
+                .onFailure { Log.w("GatewayCloudRunner", "foreground warm-up failed", it) }
+        }
+    }
+
+    private suspend fun ensureReady() {
+        if (client.connectionState.value == GatewayConnectionState.READY && sessionId.isNotBlank()) return
+        readyReceived = false
+        sessionId = ""
+        onConnectionEvent(TelemetryStages.WS_CONNECT_START, "info", emptyMap())
+        client.connect()
+        val ready = client.messages.first { it.type == "ready" }
+        sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
+            ?: throw GatewayException("ready 事件缺少 sessionId")
+        readyReceived = true
+        onReadySessionId(sessionId)
+        onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
+    }
+
     override suspend fun run(segment: ByteArray): Reply {
         replyTextReleased = false
         pendingReplyText.set(null)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
-        val replySlot = bridge.newReplySlot(segmentId)
-        try {
-            if (!readyReceived) {
-                client.connect() // 失败（重试耗尽）抛 GatewayException
-                // connect 返回后 ready 事件已进流（replay=1），补拉出 sessionId；
-                // 桥接收集器可能尚未处理该事件，这里直接读流，避免时序竞态
-                val ready = client.messages.first { it.type == "ready" }
-                sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
-                    ?: throw GatewayException("ready 事件缺少 sessionId")
-                readyReceived = true
-                // T6 评审 C1：ready 的 sessionId 转发给遥测（round body 按会话关联）
-                onReadySessionId(sessionId)
+        var lastFailure: GatewayException? = null
+        for (attempt in 0..1) {
+            val replySlot = bridge.newReplySlot(segmentId)
+            try {
+                ensureReady()
+                if (attempt > 0) {
+                    onConnectionEvent(TelemetryStages.WS_RECONNECT_OK, "info", emptyMap())
+                }
+                val location = locationProvider()
+                client.sendAudioStart(
+                    sessionId,
+                    segmentId,
+                    utteranceIdProvider().takeIf { it.isNotBlank() },
+                    location?.first,
+                    location?.second,
+                    attempt,
+                )
+                var offset = 0
+                while (offset < segment.size) {
+                    val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
+                    client.sendAudioChunk(segment.copyOfRange(offset, end))
+                    offset = end
+                }
+                client.sendAudioEnd(sessionId)
+                return replySlot.await()
+            } catch (e: GatewayException) {
+                lastFailure = e
+                readyReceived = false
+                sessionId = ""
+                client.disconnect()
+                pendingReplyText.set(null)
+                if (attempt == 1) {
+                    onConnectionEvent(
+                        TelemetryStages.WS_RECONNECT_FAILED,
+                        "error",
+                        mapOf("message" to (e.message ?: "unknown")),
+                    )
+                    onCloudUnavailable()
+                    throw CloudUnavailableException("云端链路重试后仍故障：${e.message}", e)
+                }
+                onConnectionEvent(
+                    TelemetryStages.WS_RECONNECT_START,
+                    "warn",
+                    mapOf("message" to (e.message ?: "unknown")),
+                )
+            } catch (e: CancellationException) {
+                replyTextReleased = false
+                pendingReplyText.set(null)
+                runCatching { client.sendCancelTurn(segmentId) }
+                bridge.cancelStream(segmentId)
+                throw e
+            } finally {
+                bridge.clearReplySlot(replySlot)
             }
-            // T6：utteranceId 空串不发送（服务端视为未提供，保持旧协议形态）
-            val location = locationProvider()
-            client.sendAudioStart(
-                sessionId,
-                segmentId,
-                utteranceIdProvider().takeIf { it.isNotBlank() },
-                location?.first,
-                location?.second,
-            )
-            var offset = 0
-            while (offset < segment.size) {
-                val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
-                client.sendAudioChunk(segment.copyOfRange(offset, end))
-                offset = end
-            }
-            client.sendAudioEnd(sessionId)
-            return replySlot.await()
-        } catch (e: GatewayException) {
-            val wasReady = readyReceived
-            readyReceived = false
-            sessionId = ""
-            client.disconnect() // 断开失效连接，下次话语可干净重连
-            if (wasReady) onCloudUnavailable()
-            throw CloudUnavailableException("云端链路故障：${e.message}", e)
-        } catch (e: CancellationException) {
-            replyTextReleased = false
-            pendingReplyText.set(null)
-            runCatching { client.sendCancelTurn(segmentId) }
-            bridge.cancelStream(segmentId)
-            throw e
-        } finally {
-            bridge.clearReplySlot(replySlot)
         }
+        throw CloudUnavailableException("云端链路故障：${lastFailure?.message}", lastFailure)
     }
 
     /**
      * 独立 TTS 播报（A3，TTS 解耦）：发 tts_request 等 tts_response，5s 超时返回 null
      * （调用方静默处理并记失败事件，2026-08-15 起不再有系统 TTS 兜底），**不重试**。
-     * ready 未建立（会话从未连上）直接 null。
+     * ready 未建立时先在同一个 5s 总预算内尝试连接，失败返回 null。
      * 与 [run] 的 reply 槽互不干扰（bridge 独立 tts 槽，各自按 segmentId 对账）。
      */
     override suspend fun request(text: String): AudioReply? {
-        if (!readyReceived) return null
         val ttsId = UUID.randomUUID().toString()
         val ttsSlot = bridge.newTtsSlot(ttsId)
         return try {
-            // T6：关联当前话语 utteranceId（空串不发送，保持旧协议形态）
-            client.sendTtsRequest(text, ttsId, utteranceIdProvider().takeIf { it.isNotBlank() })
-            withTimeoutOrNull(TTS_TIMEOUT_MS) { ttsSlot.await() }
+            withTimeoutOrNull(TTS_TIMEOUT_MS) {
+                ensureReady()
+                // T6：关联当前话语 utteranceId（空串不发送，保持旧协议形态）
+                client.sendTtsRequest(text, ttsId, utteranceIdProvider().takeIf { it.isNotBlank() })
+                ttsSlot.await()
+            }
         } catch (e: GatewayException) {
             null // 连接未就绪等发送失败：本次播报直接兜底
         } finally {

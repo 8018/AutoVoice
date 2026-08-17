@@ -86,6 +86,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static final int DEFAULT_MAX_AUDIO_BYTES = 60 * 16_000 * 2;
     private static final int DEFAULT_TTS_WORKERS = 4;
     private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
+    private static final long TURN_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(2);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 接入策略违规（鉴权失败 / 连接数超限）统一关闭码（protocol.md §8）。 */
@@ -138,6 +139,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
+
+    /** 重连重发幂等缓存：同一设备/会话 + utteranceId 只复用已完成结果，不重复执行语义。 */
+    private final ConcurrentMap<TurnKey, CachedTurn> completedTurns = new ConcurrentHashMap<>();
 
     /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）；鉴权关、连接上限 32。 */
     public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
@@ -390,6 +394,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (isCancelled(st, segmentId)) {
                 return;
             }
+            TurnKey turnKey = new TurnKey(st.deviceId != null ? st.deviceId : ctx.sessionId(), utteranceId);
+            CachedTurn cached = completedTurns.get(turnKey);
+            if (cached != null && cached.expiresAtMs() > System.currentTimeMillis()) {
+                // 流式首发的重放改成单帧 reply；结果携带完整音频，端侧仍走统一播放器。
+                sendReply(session, st, cached.result(), segmentId);
+                return;
+            }
+            if (cached != null) completedTurns.remove(turnKey, cached);
             SegmentPipeline.SegmentResult result;
             try {
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
@@ -398,6 +410,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
             }
+            CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
+            completedTurns.put(turnKey, completed);
+            scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
             DecisionEntry entry;
             while ((entry = st.pendingDecisions.poll()) != null) {
                 send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
@@ -491,6 +506,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static boolean isCancelled(ConnectionState st, String segmentId) {
         return segmentId != null && st.cancelledSegments.contains(segmentId);
     }
+
+    private record TurnKey(String ownerId, String utteranceId) {}
+
+    private record CachedTurn(SegmentPipeline.SegmentResult result, long expiresAtMs) {}
 
     /**
      * 下行收敛（协议 v1.1）：S2S → kind=audio；其他 intent 非空 → kind=action
@@ -719,6 +738,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             st.connExecutor.shutdownNow();
         }
         connections.clear();
+        completedTurns.clear();
         activeConnections.set(0);
         ttsExecutor.shutdownNow();
         scheduler.shutdownNow();

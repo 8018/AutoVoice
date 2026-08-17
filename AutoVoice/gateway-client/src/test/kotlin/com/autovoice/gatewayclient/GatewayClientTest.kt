@@ -70,6 +70,9 @@ class GatewayClientTest {
         val pcm = ByteArrayOutputStream()
         val closed = CountDownLatch(1)
 
+        @Volatile
+        var latestSocket: WebSocket? = null
+
         /** 收到 audio_end 后的服务端行为（先 decision 后 reply，协议 §5 时序）。 */
         var onAudioEnd: (WebSocket, GatewayMessage) -> Unit = { _, _ -> }
 
@@ -78,6 +81,10 @@ class GatewayClientTest {
 
         fun upgrade(): MockResponse =
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                    latestSocket = webSocket
+                }
+
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     val msg = parse(text)
                     frames.add(msg)
@@ -122,6 +129,34 @@ class GatewayClientTest {
             delay(10)
         }
         return condition()
+    }
+
+    @Test
+    fun `server close clears current socket and next connect establishes a new session`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            assertEquals(GatewayConnectionState.READY, client.connectionState.value)
+
+            gateway.latestSocket!!.close(1012, "service restart")
+            assertTrue(awaitTrue { client.connectionState.value == GatewayConnectionState.DISCONNECTED })
+
+            client.connect()
+            assertEquals(GatewayConnectionState.READY, client.connectionState.value)
+            assertTrue(awaitTrue { gateway.frames.count { it.type == "hello" } == 2 })
+            assertEquals(
+                "srv-sess-1",
+                gateway.frames.filter { it.type == "hello" }[1].payload.get("sessionId").asString,
+                "重连应回带服务端此前签发的 sessionId",
+            )
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
     }
 
     @Test
@@ -194,6 +229,7 @@ class GatewayClientTest {
             assertEquals(1, startPayload.get("channels").asInt)
             assertEquals("pcm_s16le", startPayload.get("encoding").asString)
             assertEquals("seg-1", startPayload.get("segmentId").asString, "audio_start 应携带 segmentId")
+            assertEquals(0, startPayload.get("attempt").asInt)
             val endPayload = gateway.frames[2].payload
             assertEquals("srv-sess-1", endPayload.get("sessionId").asString)
             assertEquals(50L, endPayload.get("durationMs").asLong, "1600 字节 @16kHz/S16LE = 50ms")
