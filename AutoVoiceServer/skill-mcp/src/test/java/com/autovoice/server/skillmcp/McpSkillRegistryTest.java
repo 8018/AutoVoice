@@ -128,6 +128,22 @@ class McpSkillRegistryTest {
     }
 
     @Test
+    void selectorCanDiscoverAndExecuteRealTool() throws Exception {
+        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            String catalog = reg.callTool("mcp_tools_get", "{\"query\":\"poi_search\"}");
+            assertTrue(catalog.contains("poi_search"));
+            assertFalse(catalog.contains("route_plan"), "明确查询应只返回匹配工具 schema");
+
+            String result = reg.callTool("mcp_tools_execute",
+                    "{\"name\":\"poi_search\",\"arguments\":{}}");
+            assertEquals("找到 1 个结果：西湖", result);
+        }
+    }
+
+    @Test
     void unexpectedRuntimeExceptionDoesNotPropagate() throws Exception {
         // 未预期 RuntimeException 穿透 refresh 会让 scheduleWithFixedDelay 静默取消轮询：
         // 顶层守卫必须吞掉（仅 warn）

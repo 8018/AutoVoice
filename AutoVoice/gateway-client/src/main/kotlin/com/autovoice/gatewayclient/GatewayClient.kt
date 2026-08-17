@@ -36,7 +36,7 @@ import okio.ByteString.Companion.toByteString
 /**
  * 网关连接失败（重试耗尽 / 等待 ready 超时 / 传输错误）时抛出。
  */
-class GatewayException(message: String, cause: Throwable? = null) : Exception(message, cause)
+open class GatewayException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 enum class GatewayConnectionState {
     DISCONNECTED,

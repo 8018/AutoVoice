@@ -34,6 +34,7 @@ import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.session.CloudRunner
+import com.autovoice.voicecore.session.CloudRequestFailedException
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
@@ -86,6 +87,9 @@ private const val CLOUD_CHUNK_BYTES = 16_384
 
 /** 网关事件桥日志 TAG。 */
 private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
+
+/** 网关已返回的应用层错误；code 用于区分真实断线与 BUSY/provider 等请求错误。 */
+private class GatewayRemoteException(val code: String, message: String) : GatewayException(message)
 
 /**
  * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
@@ -991,6 +995,30 @@ private class GatewayCloudRunner(
                 }
                 client.sendAudioEnd(sessionId)
                 return replySlot.await()
+            } catch (e: GatewayRemoteException) {
+                pendingReplyText.set(null)
+                if (e.code == "CONNECTION_FAILED" || e.code == "CONNECTION_CLOSED") {
+                    // listener 合成的连接错误仍走原有一次重连；其余服务端错误保留健康 WS。
+                    readyReceived = false
+                    sessionId = ""
+                    client.disconnect()
+                    if (attempt == 1) {
+                        onConnectionEvent(
+                            TelemetryStages.WS_RECONNECT_FAILED,
+                            "error",
+                            mapOf("code" to e.code, "message" to (e.message ?: "unknown")),
+                        )
+                        onCloudUnavailable()
+                        throw CloudUnavailableException("云端链路重试后仍故障：${e.message}", e)
+                    }
+                    onConnectionEvent(
+                        TelemetryStages.WS_RECONNECT_START,
+                        "warn",
+                        mapOf("code" to e.code, "message" to (e.message ?: "unknown")),
+                    )
+                    continue
+                }
+                throw CloudRequestFailedException("云端请求失败（${e.code}）：${e.message}", e)
             } catch (e: GatewayException) {
                 lastFailure = e
                 readyReceived = false
@@ -1183,12 +1211,14 @@ internal class GatewayBridge(
             }
             "error" -> {
                 val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
+                val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?: "网关错误"
                 val slot = pendingReply.get()
                 if (slot != null && isForCurrentUtterance(msg.payload, slot)) {
-                    slot.deferred.completeExceptionally(GatewayException("网关传输错误：$code"))
+                    slot.deferred.completeExceptionally(GatewayRemoteException(code, "$message [$code]"))
                 }
                 activeStream.getAndSet(null)?.let { stream ->
-                    val error = GatewayException("网关传输错误：$code")
+                    val error = GatewayRemoteException(code, "$message [$code]")
                     stream.chunks.close(error)
                     stream.completion.completeExceptionally(error)
                 }

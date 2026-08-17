@@ -9,13 +9,10 @@ import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import java.util.concurrent.CopyOnWriteArrayList
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,16 +58,18 @@ fun interface ResultListener {
  */
 class CloudUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** 云端已连接但拒绝/处理失败；本轮转本地，不把健康连接误判为断网并重连。 */
+class CloudRequestFailedException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 /**
  * 语音会话：状态机（spec §7.1）+ 本地/云端双路由编排（spec §5.1）。
  *
  * 一轮话语的编排（Task 49 双路：录音音频分两路，一路 VAD 切段上云，一路整段本地识别）：
  *  1. [onListeningStart]：IDLE → LISTENING（Task 18 录音开始）；
  *  2. 录音期间：按顺序调 [onCloudSegment]（每个 VAD 语音段，调用方必须先于
- *     [onTurnSegment] 全部喂完）——云端链串行上传：段按 [onCloudSegment] 调用顺序
- *     排队（前一段完成后才启动后一段），最新在途上传挂在 [uploadTail] 上；
+ *     [onTurnSegment] 全部喂完）——会话只缓存片段，不把一轮话拆成多次模型调用；
  *  3. 抬手/话语结束：调 [onTurnSegment]（本地路整段音频）——LISTENING → UNDERSTANDING，
- *     并发启动本地链（整段）+ 云端收敛 Deferred（等待在途上传或直接取已完成回复），
+ *     按时间顺序拼接本轮 VAD 片段并只启动一次云端链，同时启动本地链（整段），
  *     Deferred 交 [OnDeviceRaceArbiter] 收敛（云端优先，cloudWaitMs 兜底本地）；
  *  4. 收敛后按 winner 置 EXECUTING（[RaceWinner.Local]）/ SPEAKING（[RaceWinner.Cloud]），
  *     [ResultListener.onResult] 发出后立即回 IDLE；[RaceWinner.Failed] 不置执行/播报，
@@ -121,18 +120,11 @@ class VoiceSession(
     private var cloudAvailable = true
 
     /**
-     * 云端段串行上传链尾（Task 49）：每个 [onCloudSegment] 在调用线程同步挂一个新
-     * Deferred 到链尾（旧尾成为"前驱"），上传协程先 await 前驱再跑云端链——多段
-     * 严格按调用顺序串行（网关单 pendingReply slot，不能并发）。
-     * @Volatile：调用线程（Main）写，runTurn 协程（Default）读，跨线程可见。
+     * 本轮云端 VAD 片段。S2S 在首个音频 chunk 到达时就返回 StreamingAudioReply，若把
+     * 每个 VAD 片段分别调用 cloud.run，下一片段会在上一回复仍播放/生成时撞上网关 BUSY，
+     * 且模型看不到完整话语。这里只收集片段，在 [onTurnSegment] 原子取快照并整轮调用一次。
      */
-    @Volatile
-    private var uploadTail: CompletableDeferred<Reply>? = null
-
-    /** 本会话全部云端上传协程（Task 49）：轮次收敛后立即取消——输家回复已无用，
-     *  且防止永不返回的云端链（挂死协程/测试挂死）在会话内泄漏。跨线程（调用线程
-     *  add / runTurn 协程 clear），CopyOnWriteArrayList 保迭代安全。 */
-    private val uploadJobs = CopyOnWriteArrayList<Job>()
+    private val cloudSegments = CopyOnWriteArrayList<ByteArray>()
 
     /**
      * 注册状态监听：立即以当前状态回调一次，此后每次状态切换同步回调
@@ -146,37 +138,26 @@ class VoiceSession(
     /** 录音开始（Task 18 调用）：IDLE → LISTENING；非 IDLE 时忽略（防御）。 */
     fun onListeningStart() {
         if (_state.value != SessionState.IDLE) return
+        cloudSegments.clear()
         transition(SessionState.LISTENING)
     }
 
     /** 录音中止（Task 18 调用）：LISTENING → IDLE；非 LISTENING 时忽略（防御）。 */
     fun onListeningStop() {
         if (_state.value != SessionState.LISTENING) return
+        cloudSegments.clear()
         transition(SessionState.IDLE)
     }
 
     /**
      * 云端路段入队（Task 49 双路：VAD 切出的一段语音，调用方按时间顺序喂入，
-     * 且必须在 [onTurnSegment] 之前全部喂完）。LISTENING 且云端启用时串行上传：
-     * 前一段完成后才启动后一段，回复挂在链尾 [uploadTail]，供本轮竞速取用。
+     * 且必须在 [onTurnSegment] 之前全部喂完）。LISTENING 且云端启用时缓存片段；
+     * 抬手后拼接为一个完整模型输入，经典/S2S 后端都只处理一次本轮话语。
      * 非 LISTENING / 云端未启用时忽略并返回（防御，不抛）。
      */
     fun onCloudSegment(segment: ByteArray) {
         if (!cloudRouteActive() || _state.value != SessionState.LISTENING) return
-        val prev = uploadTail
-        val d = CompletableDeferred<Reply>()
-        uploadTail = d
-        val job = scope.launch {
-            try {
-                prev?.await() // 串行：等前一段上传完成（含其失败传播）
-                val reply = cloud.run(segment)
-                d.complete(reply)
-            } catch (e: CloudUnavailableException) {
-                onCloudUnavailable()
-                d.completeExceptionally(e)
-            }
-        }
-        uploadJobs.add(job)
+        if (segment.isNotEmpty()) cloudSegments.add(segment.copyOf())
     }
 
     /**
@@ -187,8 +168,9 @@ class VoiceSession(
      */
     fun onTurnSegment(segment: ByteArray) {
         if (_state.value != SessionState.LISTENING) return
+        val cloudAudio = takeCloudAudio()
         transition(SessionState.UNDERSTANDING)
-        scope.launch { runTurn(segment) }
+        scope.launch { runTurn(segment, cloudAudio) }
     }
 
     /** 云端不可达（断网/认证失效等，spec §5.1 可达性检查）：此后只跑本地链。 */
@@ -207,14 +189,18 @@ class VoiceSession(
      * 状态机绝不冻结在 UNDERSTANDING。意外异常不吞，按协程语义继续传播；
      * [CloudUnavailableException]（云端链路故障）转本地单链兜底路径。
      */
-    private suspend fun runTurn(segment: ByteArray) {
+    private suspend fun runTurn(segment: ByteArray, cloudAudio: ByteArray?) {
         try {
-            val winner = if (uploadTail != null) {
+            val winner = if (cloudAudio != null) {
                 try {
-                    raceCloudVsLocal(segment)
+                    raceCloudVsLocal(segment, cloudAudio)
                 } catch (e: CloudUnavailableException) {
                     // 云端链故障（连接失败/ready 后中断，Task 15 M1）：转本地兜底路径
+                    onCloudUnavailable()
                     localOnly(segment)
+                } catch (e: CloudRequestFailedException) {
+                    // BUSY / provider error 等服务端业务错误不重连、不 latch 连接不可达。
+                    localOnly(segment, reason = "cloud_request_failed")
                 }
             } else {
                 // 本轮没有任何云端段（VAD 未切出 / 云端未启用）：跳过竞速，本地直接赢
@@ -230,11 +216,7 @@ class VoiceSession(
             }
             resultListener.onResult(winner)
         } finally {
-            // 轮次收敛：本轮在途云端上传立即取消（回复已无消费者，且防永不返回的云端
-            // 链挂死/泄漏），链尾清空，下一轮从零开始
-            uploadJobs.forEach { it.cancel() }
-            uploadJobs.clear()
-            uploadTail = null
+            cloudSegments.clear()
             transition(SessionState.IDLE)
         }
     }
@@ -254,13 +236,12 @@ class VoiceSession(
         return RaceWinner.Local(local.run(segment))
     }
 
-    private suspend fun raceCloudVsLocal(segment: ByteArray): RaceWinner =
+    private suspend fun raceCloudVsLocal(segment: ByteArray, cloudAudio: ByteArray): RaceWinner =
         coroutineScope {
-            // 云端收敛 Deferred：本轮最后一个在途上传完成 → 取其回复；无上传则永不完成
-            // （awaitCancellation，让仲裁器 cloudWaitMs 超时 → 本地兜底）。
-            // 注意：异常（CloudUnavailableException）从 await 原样上抛，经 race 到 runTurn 的
+            // 云端只接收一次本轮拼接后的 VAD 音频。注意：异常（CloudUnavailableException）
+            // 从 await 原样上抛，经 race 到 runTurn 的
             // catch 转本地兜底路径；取消语义同样不被 withTimeoutOrNull 吞掉（Task 14 M2）。
-            val cloudD = async { uploadTail?.await() ?: awaitCancellation() }
+            val cloudD = async { cloud.run(cloudAudio) }
             val localD = async { local.run(segment) }
             val winner = arbiter.race(cloudD, localD)
             // 单赢家原则（spec §5.3）：收敛后立即取消输家，不占资源
@@ -279,6 +260,21 @@ class VoiceSession(
             }
             winner
         }
+
+    /** 原子取走本轮 VAD 片段并按时间顺序拼接；空片段轮返回 null，走本地链。 */
+    private fun takeCloudAudio(): ByteArray? {
+        val snapshot = cloudSegments.toList()
+        cloudSegments.clear()
+        if (snapshot.isEmpty()) return null
+        val total = snapshot.sumOf { it.size }
+        val joined = ByteArray(total)
+        var offset = 0
+        snapshot.forEach { part ->
+            part.copyInto(joined, offset)
+            offset += part.size
+        }
+        return joined
+    }
 
     /** 云端链启动条件（spec §5.1 可达性）：配置开启且云端可达。 */
     private fun cloudRouteActive(): Boolean = cfg.cloud.enabled && cloudAvailable

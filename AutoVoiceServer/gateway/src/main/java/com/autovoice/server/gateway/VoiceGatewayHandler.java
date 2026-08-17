@@ -433,6 +433,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private OnlineAudioSink streamSink(WebSocketSession session, ConnectionState st, String segmentId) {
         return new OnlineAudioSink() {
+            private final long startedAtNanos = System.nanoTime();
+
             private boolean allowed() {
                 return !isCancelled(st, segmentId);
             }
@@ -483,9 +485,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             @Override
             public void onError(Throwable error) {
                 if (!allowed()) return;
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+                String errorType = error == null ? "unknown" : error.getClass().getName();
+                String errorMessage = error == null ? "online audio stream aborted"
+                        : String.valueOf(error.getMessage());
+                LOG.warn("online stream aborted: session={} segment={} elapsedMs={} errorType={} message={}",
+                        st.ctx == null ? "" : st.ctx.sessionId(), segmentId, elapsedMs,
+                        errorType, errorMessage, error);
                 sendError(session, st, "ONLINE_STREAM_ABORTED",
-                        error == null ? "online audio stream aborted" : String.valueOf(error.getMessage()),
-                        segmentId);
+                        errorMessage, segmentId);
             }
         };
     }

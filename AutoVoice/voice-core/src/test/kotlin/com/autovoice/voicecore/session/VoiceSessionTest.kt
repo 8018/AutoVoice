@@ -29,7 +29,8 @@ import org.junit.jupiter.api.Test
  * 全真实行为断言：fake runner 是 [LocalChainRunner]/[CloudRunner] 的接口实现，
  * 仲裁用真实 [OnDeviceRaceArbiter]（小 cloudWaitMs），时序用真实 delay 控制先后。
  * 双路喂料顺序（Task 49 契约）：先 [VoiceSession.onCloudSegment]（VAD 段，0..n 个）
- * 再 [VoiceSession.onTurnSegment]（本地整段）；倒序喂料时云端段被防御性丢弃。
+ * 再 [VoiceSession.onTurnSegment]（本地整段）；多个 VAD 段会按序拼接为一次云端调用，
+ * 倒序喂料时云端段被防御性丢弃。
  */
 class VoiceSessionTest {
 
@@ -287,17 +288,23 @@ class VoiceSessionTest {
         assertEquals(SessionState.IDLE, session.state.value)
     }
 
-    /**
-     * Task 49 双路：多个云端段严格串行（链式前驱等待），一轮只收敛一个结果。
-     * 云端慢 → 本地赢；慢云端段在轮次结束后被取消回收（runBlocking 不挂死）。
-     */
+    /** 多个 VAD 片段必须拼成一个完整输入，只调用一次云端，避免 S2S 流式回复期间 BUSY。 */
     @Test
-    fun `multiple cloud segments → one result per turn with serial upload`() {
+    fun `multiple cloud segments are concatenated into one cloud call`() {
+        val cloudCalls = AtomicInteger(0)
+        val cloudAudio = AtomicReference<ByteArray>()
         val t = turn(
             local = LocalChainRunner { delay(20); localIntent() },
-            cloud = CloudRunner { delay(500); TextReply("晚") },
+            cloud = CloudRunner {
+                cloudCalls.incrementAndGet()
+                cloudAudio.set(it)
+                delay(500)
+                TextReply("晚")
+            },
             cloudSegments = 2,
         )
+        assertEquals(1, cloudCalls.get())
+        assertEquals(segment.toList() + segment.toList(), cloudAudio.get().toList())
         assertEquals(1, t.results.size)
         assertTrue(t.results.single() is RaceWinner.Local)
         assertEquals(
@@ -353,6 +360,43 @@ class VoiceSessionTest {
         assertEquals(2, cloudCalls.get(), "恢复后云端链应重新启动")
         assertTrue(results.last() is RaceWinner.Local)
         assertEquals(SessionState.IDLE, session.state.value)
+    }
+
+    @Test
+    fun `cloud request error falls back without latching connection unavailable`() = runBlocking {
+        val entries = mutableListOf<DecisionEntry>()
+        val results = mutableListOf<RaceWinner>()
+        val cloudCalls = AtomicInteger(0)
+        var signal = CompletableDeferred<Unit>()
+        val session = VoiceSession(
+            cfg = cfg(),
+            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
+            sink = DecisionSink { entries.add(it) },
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner {
+                if (cloudCalls.incrementAndGet() == 1) throw CloudRequestFailedException("BUSY")
+                TextReply("recovered")
+            },
+            scope = this,
+            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+        )
+
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+        signal.await()
+        assertTrue(results.single() is RaceWinner.Local)
+        assertEquals("cloud_request_failed", entries.single().reason)
+
+        results.clear()
+        entries.clear()
+        signal = CompletableDeferred()
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+        signal.await()
+        assertEquals(2, cloudCalls.get(), "业务错误不能阻止下一轮继续使用现有云端连接")
+        assertTrue(results.single() is RaceWinner.Cloud)
     }
 
     @Test
