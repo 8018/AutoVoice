@@ -44,7 +44,9 @@ import java.util.function.Consumer;
  *   <li>LLM 超时/异常由 RaceArbiter safety 兜底（reason {@code safety_timeout}）。</li>
  * </ul>
  *
- * <p>本方法绝不向上抛异常：任何阶段的失败都在内部收敛为可播报的 {@link SegmentResult}。</p>
+ * <p>本方法绝不向上抛异常：任何阶段的失败都在内部收敛为可播报的 {@link SegmentResult}；
+ * 被 void 的轮（cancel_turn / superseded，见 {@link RaceArbiter#voidTurn}）返回 {@code null}
+ * （无结果，调用方丢弃——不产回复、不缓存）。</p>
  */
 public final class SegmentPipeline {
 
@@ -141,7 +143,16 @@ public final class SegmentPipeline {
             ArbiterDecision decision = arbiter
                     .decide(offlineF.thenApply(o -> o.orElse(null)), replyF, ctx, utteranceId, segmentId)
                     .join();
-            if ("offline_won".equals(decision.reason())) {
+            String reason = decision.reason();
+            if (RaceArbiter.REASON_CANCEL_TURN.equals(reason)
+                    || RaceArbiter.REASON_SUPERSEDED.equals(reason)) {
+                // 被 void 的轮（端侧已裁决 / 已被新话语取代）：无结果——清空音频门缓冲
+                // （不通知下游 onError）、不取消在线候选（拦截而非取消，其输出被门丢弃），
+                // 返回 null 由调用方丢弃。
+                audioGate.reject();
+                return null;
+            }
+            if ("offline_won".equals(reason)) {
                 audioGate.reject();
                 cancelOnline(onlineF, utteranceId);
                 return toResult(decision, "", ctx, utteranceId);

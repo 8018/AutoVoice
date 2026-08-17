@@ -27,11 +27,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -331,6 +334,95 @@ class SegmentPipelineTest {
         assertEquals("safety_timeout", log.get(0).reason());
         assertEquals("网络开小差了，请稍后再试", r.speakText());
         assertNull(r.intent());
+    }
+
+    // ------------------------------------------------------------ void（cancel_turn / superseded 拦截）
+
+    @Test
+    void voidTurnReturnsNullWithoutCancellingProvider() throws Exception {
+        // 在途轮被 void：handleSegment 立即返回 null（无结果），provider 与 future 都未被取消
+        // （拦截而非取消）；决策日志与 telemetry 事件均为空
+        AtomicBoolean providerCancelled = new AtomicBoolean();
+        AtomicBoolean futureCancelled = new AtomicBoolean();
+        CountDownLatch entered = new CountDownLatch(1);
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean interrupt) {
+                futureCancelled.set(true);
+                return super.cancel(interrupt);
+            }
+        };
+        OnlineSpeechProvider hung = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                entered.countDown();
+                return pending;
+            }
+            @Override public void cancel(String uid) { providerCancelled.set(true); }
+            @Override public String id() { return "hung"; }
+        };
+        RaceArbiter arb = arbiter();
+        // 离线候选保持 pending：void 前不会提前发 pending 事件（消掉前置竞态），
+        // void 后由 settledByVoid 守卫拦截——telemetry 事件全程为空
+        CompletableFuture<Optional<String>> offlineRaw = new CompletableFuture<>();
+        OfflineCommandService pendingOffline = new OfflineCommandService((pcm, ctx) -> offlineRaw);
+        SegmentPipeline p = new SegmentPipeline(hung, arb, pendingOffline, ASR_FAIL_WAIT, sink, recorder);
+
+        CompletableFuture<SegmentPipeline.SegmentResult> result = CompletableFuture.supplyAsync(
+                () -> p.handleSegment(PCM, CTX, "u-void", "seg-void"));
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertTrue(arb.voidTurn("u-void", RaceArbiter.REASON_CANCEL_TURN));
+
+        assertNull(result.get(1, TimeUnit.SECONDS), "被 void 的轮无结果");
+        assertFalse(providerCancelled.get(), "void 不取消 provider");
+        assertFalse(futureCancelled.get(), "void 不取消候选 future");
+        assertTrue(log.isEmpty());
+        assertTrue(events.isEmpty());
+    }
+
+    @Test
+    void voidTurnNeverReleasesBufferedAudioPastGate() throws Exception {
+        // void 后即使在线候选自行完成，缓冲音频也永不过仲裁门（gate 已 reject）
+        CompletableFuture<Optional<String>> offlineRaw = new CompletableFuture<>();
+        OfflineCommandService delayedOffline = new OfflineCommandService((pcm, ctx) -> offlineRaw);
+        List<String> audioEvents = new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        OnlineSpeechProvider streaming = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink sink) {
+                entered.countDown();
+                sink.onStart(24_000, 1, "pcm_s16le"); // 离线仍 pending：gate 只缓冲不放行
+                sink.onChunk(new byte[]{1, 2});
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAudio("audio/wav", new byte[]{1}, "ok", null), ""));
+            }
+            @Override public String id() { return "stream-gate"; }
+        };
+        RaceArbiter arb = arbiter();
+        SegmentPipeline p = new SegmentPipeline(streaming, arb, delayedOffline, ASR_FAIL_WAIT, sink, recorder);
+        OnlineAudioSink downstream = new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) { audioEvents.add("start"); }
+            @Override public void onChunk(byte[] pcm) { audioEvents.add("chunk"); }
+            @Override public void onComplete(String text, Intent intent) { audioEvents.add("end"); }
+        };
+
+        CompletableFuture<SegmentPipeline.SegmentResult> result = CompletableFuture.supplyAsync(
+                () -> p.handleSegment(PCM, CTX, "u-gate-void", "seg-gate-void", downstream));
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertTrue(arb.voidTurn("u-gate-void", RaceArbiter.REASON_SUPERSEDED));
+
+        assertNull(result.get(1, TimeUnit.SECONDS));
+        offlineRaw.complete(Optional.empty()); // 在线候选照常完成——输出已被 gate 拒绝
+        Thread.sleep(50);
+        assertTrue(audioEvents.isEmpty(), "void 后缓冲音频不得越过仲裁门");
+        assertTrue(log.isEmpty());
+        // 事件层面：至多 void 前已发出的 received（候选已完成的前置竞态），绝无 won/lost
+        assertTrue(events.stream().noneMatch(e -> TelemetryStages.CLOUD_ARBITER_WON.equals(e.stage())
+                        || TelemetryStages.CLOUD_ARBITER_LOST.equals(e.stage())),
+                "void 轮不得产生 won/lost 事件: " + events);
     }
 
     // ------------------------------------------------------------ ASR 失败路径

@@ -331,6 +331,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 ? clientUtteranceId
                 : "u-" + ++st.segmentSeq; // 兼容旧客户端：无 utteranceId 时回退自增
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        // 云端"最新会话拦截"（与端侧 isStale 同构）：处理中又来新话语（不同 utteranceId）→
+        // 立即 void 在途轮；同 utteranceId 的 attempt 重发不触发（幂等重放，protocol.md §3.2）。
+        // 不取消在途 provider 调用（拦截而非取消），其结果在仲裁器/音频门丢弃。
+        String processingUid = st.processingUtteranceId;
+        String processingSeg = st.processingSegmentId;
+        if (st.processing && processingUid != null && !st.utteranceId.equals(processingUid)) {
+            if (processingSeg != null) {
+                st.cancelledSegments.add(processingSeg); // 抑制旧段迟到下行帧
+            }
+            st.arbiter.voidTurn(processingUid, RaceArbiter.REASON_SUPERSEDED);
+        }
         Object latitude = payload.get("latitude");
         Object longitude = payload.get("longitude");
         if (latitude instanceof Number lat && longitude instanceof Number lon
@@ -368,16 +379,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
         String segmentId = String.valueOf(payload.get("segmentId"));
-        String cancelUtteranceId;
         if (segmentId.equals(st.processingSegmentId)) {
-            cancelUtteranceId = st.processingUtteranceId;
+            // 在途轮：标记拦截 + 立即 void 仲裁（拦截而非取消——不碰在途 provider 调用）
+            String cancelUtteranceId = st.processingUtteranceId;
+            st.cancelledSegments.add(segmentId);
+            if (cancelUtteranceId != null) {
+                st.arbiter.voidTurn(cancelUtteranceId, RaceArbiter.REASON_CANCEL_TURN);
+            }
         } else if (segmentId.equals(st.segmentId)) {
-            cancelUtteranceId = st.utteranceId;
-        } else {
-            return;
+            // 累积段尚未提交：无 decide() 在途，worker 起动时 isCancelled 早退即可
+            st.cancelledSegments.add(segmentId);
         }
-        st.cancelledSegments.add(segmentId);
-        online.cancel(cancelUtteranceId);
     }
 
     /**
@@ -410,6 +422,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
             }
+            if (result == null || isCancelled(st, segmentId)) {
+                // 被 void（cancel_turn / superseded）/ 竞态中取消的轮：不缓存、不下发决策、
+                // 不回复；finally 照常释放 processing
+                return;
+            }
             CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
             completedTurns.put(turnKey, completed);
             scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
@@ -422,6 +439,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 sendReply(session, st, result, segmentId);
             }
         } finally {
+            if (utteranceId != null) st.arbiter.clearVoid(utteranceId);
             if (segmentId != null) st.cancelledSegments.remove(segmentId);
             if (segmentId != null && segmentId.equals(st.processingSegmentId)) {
                 st.processingSegmentId = null;

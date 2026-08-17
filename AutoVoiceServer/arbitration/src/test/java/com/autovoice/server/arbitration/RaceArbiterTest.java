@@ -20,6 +20,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -393,5 +394,114 @@ class RaceArbiterTest {
         assertTrue(r.text().contains("网络开小差"));
         assertEquals(1, log.size());
         assertEquals("safety_timeout", log.get(0).reason());
+    }
+
+    // ------------------------------------------------ void（cancel_turn / superseded 最新会话拦截）
+
+    @Test
+    void voidTurnSettlesInFlightTurnImmediately() {
+        // 在途轮被 void：立即以给定 reason 收敛；不取消双候选（拦截而非取消）、
+        // 不写决策日志、不发仲裁事件；safety 迟到任务经 CAS 失效，全程零痕迹
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        CompletableFuture<ArbiterDecision> out = eventArbiter.decide(offline, llmF, ctx, "utt-void", "seg-void");
+        assertFalse(out.isDone());
+        long start = System.currentTimeMillis();
+        assertTrue(eventArbiter.voidTurn("utt-void", RaceArbiter.REASON_CANCEL_TURN));
+        ArbiterDecision d = out.join();
+        long elapsed = System.currentTimeMillis() - start;
+        assertEquals("cancel_turn", d.reason());
+        assertNull(d.reply());
+        assertNull(d.offlineText());
+        assertTrue(elapsed < SAFETY, "void 应立即收敛，不等 safety 兜底（elapsed=" + elapsed + "ms）");
+        assertFalse(offline.isCancelled(), "void 是拦截而非取消——离线候选不被取消");
+        assertFalse(llmF.isCancelled(), "void 是拦截而非取消——LLM 候选不被取消");
+        assertTrue(log.isEmpty(), "void 轮不得写决策日志");
+        assertTrue(arbEvents.isEmpty(), "void 轮不得发仲裁事件");
+        sleep(SAFETY + 100); // safety 迟到任务到点：CAS 已失，零影响
+        assertTrue(log.isEmpty());
+        assertTrue(arbEvents.isEmpty());
+    }
+
+    @Test
+    void voidTurnSupersededReasonPropagates() {
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        CompletableFuture<ArbiterDecision> out = eventArbiter.decide(offline, llmF, ctx, "utt-void", "seg-void");
+        assertTrue(eventArbiter.voidTurn("utt-void", RaceArbiter.REASON_SUPERSEDED));
+        assertEquals("superseded", out.join().reason());
+    }
+
+    @Test
+    void voidTurnWrongUtteranceIdReturnsFalse() {
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        CompletableFuture<ArbiterDecision> out = arbiter.decide(offline, llmF, ctx, "utt-1", "seg-1");
+        assertFalse(arbiter.voidTurn("utt-2", RaceArbiter.REASON_CANCEL_TURN), "uid 不匹配不得 void 在途轮");
+        assertFalse(out.isDone());
+        llmF.complete(Reply.ofText("hi"));
+        assertEquals("llm_reply", out.join().reason());
+        assertEquals(1, log.size());
+    }
+
+    @Test
+    void voidTurnAfterSettleLeavesDecisionUnchanged() {
+        // 已正常收敛后 void：决策与事件保持不变（void 只作用于在途轮）
+        CompletableFuture<OfflineCommandHit> offline = CompletableFuture.completedFuture(hit("打开空调"));
+        ArbiterDecision d = eventArbiter.decide(offline, new CompletableFuture<>(), ctx, "utt-1", "seg-1").join();
+        assertEquals("offline_won", d.reason());
+        eventArbiter.voidTurn("utt-1", RaceArbiter.REASON_CANCEL_TURN);
+        assertEquals("offline_won", d.reason());
+        assertEquals(1, log.size());
+        sleep(50);
+        assertEvents(
+                "utt-1|received(nlu-traditional)",
+                "utt-1|won(nlu-traditional,priority,offline_won)");
+    }
+
+    @Test
+    void voidTurnBeforeDecideRegistrationSettlesImmediately() {
+        // void 先于 decide 注册到达（注册前窗口：offline.recognize / online.process 起动中）：
+        // 标记被 decide 注册时消费，立即按该 reason 收敛
+        assertTrue(eventArbiter.voidTurn("utt-early", RaceArbiter.REASON_SUPERSEDED));
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        long start = System.currentTimeMillis();
+        ArbiterDecision d = eventArbiter.decide(offline, llmF, ctx, "utt-early", "seg-early").join();
+        long elapsed = System.currentTimeMillis() - start;
+        assertEquals("superseded", d.reason());
+        assertNull(d.reply());
+        assertTrue(elapsed < SAFETY, "注册前 void 标记应在注册时立即收敛（elapsed=" + elapsed + "ms）");
+        assertFalse(offline.isCancelled());
+        assertFalse(llmF.isCancelled());
+        assertTrue(log.isEmpty());
+        assertTrue(arbEvents.isEmpty());
+    }
+
+    @Test
+    void clearVoidRemovesPendingMark() {
+        // 装配方 finally 兜底清理：标记清除后 decide 正常竞速，不受 void 影响
+        assertTrue(arbiter.voidTurn("utt-x", RaceArbiter.REASON_CANCEL_TURN));
+        arbiter.clearVoid("utt-x");
+        ArbiterDecision d = arbiter.decide(CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("hi")), ctx, "utt-x").join();
+        assertEquals("llm_reply", d.reason());
+        assertEquals(1, log.size());
+    }
+
+    @Test
+    void voidTurnLateCandidatesStaySilent() {
+        // 被 void 的轮：迟到的离线命中（非空调 → 本会发 pending）与 LLM 回复
+        // 都不得产生 received/lost/pending 事件（仲裁拦截，不取消候选）
+        CompletableFuture<OfflineCommandHit> offline = new CompletableFuture<>();
+        CompletableFuture<Reply> llmF = new CompletableFuture<>();
+        CompletableFuture<ArbiterDecision> out = eventArbiter.decide(offline, llmF, ctx, "utt-void", "seg-void");
+        assertTrue(eventArbiter.voidTurn("utt-void", RaceArbiter.REASON_CANCEL_TURN));
+        assertEquals("cancel_turn", out.join().reason());
+        offline.complete(new OfflineCommandHit("打开车窗", windowPowerIntent()));
+        llmF.complete(Reply.ofText("LLM回答"));
+        sleep(100); // 等迟到回调（sched 线程）
+        assertTrue(log.isEmpty(), "void 后迟到的候选不得写决策日志");
+        assertTrue(arbEvents.isEmpty(), "void 后迟到候选不得产生任何仲裁事件（含 pending）");
     }
 }

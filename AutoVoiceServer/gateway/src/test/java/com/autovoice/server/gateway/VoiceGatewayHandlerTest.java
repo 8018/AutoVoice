@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -311,10 +312,17 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void cancelTurnUsesProcessingSnapshotAfterNextAudioStart() throws InterruptedException {
+        // 新 audio_start 覆盖可变字段后 cancel_turn 仍命中 processing 轮快照：
+        // 旧段被拦截零帧、挂起的 provider future 不被取消（拦截而非取消）
         CountDownLatch started = new CountDownLatch(1);
         AtomicReference<String> processingUtterance = new AtomicReference<>();
-        AtomicReference<String> cancelledUtterance = new AtomicReference<>();
-        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        AtomicBoolean futureCancelled = new AtomicBoolean();
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean interrupt) {
+                futureCancelled.set(true);
+                return super.cancel(interrupt);
+            }
+        };
         OnlineSpeechProvider cancellable = new OnlineSpeechProvider() {
             @Override public CompletableFuture<OnlineSpeechResult> process(
                     byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
@@ -326,10 +334,6 @@ class VoiceGatewayHandlerTest {
                 processingUtterance.set(uid);
                 started.countDown();
                 return pending;
-            }
-            @Override public void cancel(String uid) {
-                cancelledUtterance.set(uid);
-                pending.cancel(true);
             }
             @Override public String id() { return "cancel-test"; }
         };
@@ -347,7 +351,10 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"old-segment\"}}"));
 
-        assertEquals(processingUtterance.get(), cancelledUtterance.get());
+        assertNotNull(processingUtterance.get(), "processing 快照应已记录在途 utteranceId");
+        assertFalse(futureCancelled.get(), "cancel_turn 是拦截而非取消：provider future 不被取消");
+        Thread.sleep(100); // 等 void 收敛 + 工作线程收尾
+        assertNoErrorAndOnlyPreVoidPendingFor(s, "old-segment");
     }
 
     @Test
@@ -699,10 +706,146 @@ class VoiceGatewayHandlerTest {
                 "BUSY 应回显被拒段的 segmentId");
 
         release.countDown();
-        awaitSent(s, 5); // ready + BUSY + ASR + decision + reply
-        assertEquals("asr_partial", parse(s.sent.get(2)).get("type").asText());
-        assertEquals("decision", parse(s.sent.get(3)).get("type").asText());
-        assertEquals("reply", parse(s.sent.get(4)).get("type").asText());
+        // supersede 拦截：seg-1 已被新话语顶替，其 ASR/decision/reply 全部拦截不再下行
+        Thread.sleep(300);
+        assertEquals(2, s.sent.size(), "ready + BUSY（被顶替的 seg-1 零帧）");
+    }
+
+    // ---------- void（cancel_turn / superseded）：仲裁立即收敛 + processing 槽释放 ----------
+
+    @Test
+    void cancelTurnReleasesProcessingImmediately() throws InterruptedException {
+        // 修复目标：cancel_turn 后仲裁立即收敛（拦截而非取消），processing 槽毫秒级释放，
+        // 下一段 audio_end 不再 BUSY；被取消段零帧、挂起的 provider future 未被取消
+        AtomicBoolean futureCancelled = new AtomicBoolean();
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean interrupt) {
+                futureCancelled.set(true);
+                return super.cancel(interrupt);
+            }
+        };
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                if (calls.incrementAndGet() == 1) {
+                    firstStarted.countDown();
+                    return pending; // 首段挂起直到被 void
+                }
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("第二轮"), ""));
+            }
+            @Override public String id() { return "void-e2e"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-1", "utt-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+        long start = System.currentTimeMillis();
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"seg-1\"}}"));
+        Thread.sleep(50); // 等工作线程 void 收尾（µs 级，留调度余量）
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-2", "utt-2")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitReplyFor(s, "seg-2"); // seg-2 正常回复；被取消段零帧（无 BUSY）
+        long elapsed = System.currentTimeMillis() - start;
+        assertTrue(elapsed < 800, "cancel 后下一段应立即处理（elapsed=" + elapsed + "ms），"
+                + "不得等 SAFETY=" + SAFETY + " 兜底");
+        assertFalse(futureCancelled.get(), "cancel_turn 是拦截而非取消：挂起的 provider future 不被取消");
+        assertNoErrorAndOnlyPreVoidPendingFor(s, "seg-1");
+        JsonNode decision = findFrame(s, "decision");
+        assertEquals("utt-2", decision.get("payload").get("utteranceId").asText());
+    }
+
+    @Test
+    void newAudioStartSupersedesInFlightTurn() throws InterruptedException {
+        // 云端"最新会话拦截"（与端侧 isStale 同构）：seg-1 处理中新 audio_start（新 utteranceId）
+        // 立即 void 在途轮——下一段 audio_end 无 BUSY、正常回复，seg-1 零帧
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                if (calls.incrementAndGet() == 1) {
+                    firstStarted.countDown();
+                    return pending;
+                }
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("第二轮"), ""));
+            }
+            @Override public String id() { return "supersede-e2e"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-1", "utt-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+        long start = System.currentTimeMillis();
+        // 新一轮 vad start：新 utteranceId 上报 → 在途旧轮立即判定过期
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-2", "utt-2")));
+        Thread.sleep(50); // 等工作线程 void 收尾（µs 级，留调度余量）
+        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitReplyFor(s, "seg-2"); // seg-2 正常回复；被取代段零帧（无 BUSY）
+        long elapsed = System.currentTimeMillis() - start;
+        assertTrue(elapsed < 800, "被取代的轮应立即让位（elapsed=" + elapsed + "ms），"
+                + "不得等 SAFETY=" + SAFETY + " 兜底");
+        assertNoErrorAndOnlyPreVoidPendingFor(s, "seg-1");
+        JsonNode decision = findFrame(s, "decision");
+        assertEquals("utt-2", decision.get("payload").get("utteranceId").asText());
+    }
+
+    @Test
+    void audioStartWithSameUtteranceIdDoesNotSupersede() throws InterruptedException {
+        // 同 utteranceId 重发（幂等重放）不触发最新会话拦截：处理槽仍被占用 → BUSY 保留
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                firstStarted.countDown();
+                return pending;
+            }
+            @Override public String id() { return "same-uid"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-r1", "utt-r")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+        h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-r2", "utt-r")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        awaitSent(s, 3); // ready + pending（LLM 未完成占位）+ BUSY
+        JsonNode error = null;
+        for (WebSocketMessage<?> m : s.sent) {
+            JsonNode n = parse(m);
+            if ("error".equals(n.get("type").asText())) {
+                error = n;
+            }
+        }
+        assertNotNull(error, "同 utteranceId 重发不触发顶替：处理槽仍占用，应收到 BUSY");
+        assertEquals("BUSY", error.get("payload").get("code").asText());
+        Thread.sleep(SAFETY + 200); // 等 SAFETY 兜底收敛在途轮，避免 worker 泄漏到其他测试
     }
 
     // ---------- helpers ----------
@@ -850,6 +993,51 @@ class VoiceGatewayHandlerTest {
             Thread.sleep(20);
         }
         assertEquals(n, s.sent.size(), "5s 内应收到 " + n + " 条下行消息（异步处理）");
+    }
+
+    /** 等待携带指定 segmentId 的 reply 帧（void 用例：不依赖消息总数，容忍前置 pending 占位）。 */
+    private static JsonNode awaitReplyFor(StubSession s, String segmentId) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            JsonNode reply = findFrame(s, "reply");
+            if (reply != null && segmentId.equals(reply.get("payload").path("segmentId").asText())) {
+                return reply;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("5s 内未收到 segmentId=" + segmentId + " 的 reply");
+    }
+
+    /** 按类型查找第一条帧（线程安全快照遍历），无则返回 null。 */
+    private static JsonNode findFrame(StubSession s, String type) {
+        synchronized (s.sent) {
+            for (WebSocketMessage<?> m : s.sent) {
+                JsonNode n = parse(m);
+                if (type.equals(n.get("type").asText())) {
+                    return n;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * void 用例通用断言：无 error 帧；被拦截段（segmentId）至多出现 void 前已下发的
+     * pending 占位（offline 空结果 + LLM 未完成的前置竞态），其余下行一律拦截。
+     */
+    private static void assertNoErrorAndOnlyPreVoidPendingFor(StubSession s, String segmentId) {
+        synchronized (s.sent) {
+            for (WebSocketMessage<?> m : s.sent) {
+                JsonNode n = parse(m);
+                assertFalse("error".equals(n.get("type").asText()),
+                        "void 后不得出现 BUSY 等 error 帧: " + n);
+                JsonNode p = n.get("payload");
+                if (p != null && p.has("segmentId") && segmentId.equals(p.get("segmentId").asText())) {
+                    assertEquals("pending", n.get("type").asText(),
+                            "被拦截段仅允许 void 前已下发的 pending 占位: " + n);
+                }
+            }
+        }
     }
 
     /** 最小 WebSocketSession stub：记录所有下行消息与最近一次服务端关闭（closeStatus）。
