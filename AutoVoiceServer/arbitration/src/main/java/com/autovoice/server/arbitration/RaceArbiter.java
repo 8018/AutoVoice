@@ -10,10 +10,13 @@ import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SpeakTexts;
 
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 /**
@@ -30,6 +33,9 @@ import java.util.function.BiConsumer;
  *       到点未命中 → LLM 胜出（reason = {@code llm_reply}）；</li>
  *   <li><b>safety 兜底</b>：{@code safetyTimeoutMs} 内无一收敛 → 兜底文本
  *       （reason = {@code safety_timeout}）；</li>
+ *   <li><b>void（最新会话拦截）</b>：装配方调用 {@link #voidTurn}（cancel_turn /
+ *       superseded）→ 立即按对应 reason 收敛——不取消候选、不写决策日志、不发仲裁事件；
+ *       候选自然完成后经 settled CAS / settledByVoid 守卫静默丢弃（拦截而非取消）；</li>
  *   <li>任一路径胜出后主动取消仍在执行的另一候选，避免无效请求继续占用资源。</li>
  * </ul>
  *
@@ -58,6 +64,18 @@ public final class RaceArbiter {
     /** 仲裁过程事件出口（B3）：(utteranceId, event)，装配方映射 telemetry；缺省 no-op。 */
     private final BiConsumer<String, CloudArbiterEvent> eventSink;
 
+    /** 在途轮登记（并发：decide 在连接串行工作线程，voidTurn 在 WS 消息线程）。 */
+    private final AtomicReference<ActiveTurn> activeTurn = new AtomicReference<>();
+    /** 先于 decide 注册到达的 void 标记（uid → reason）；decide 注册时消费，clearVoid 兜底清理。 */
+    private final Map<String, String> pendingVoids = new ConcurrentHashMap<>();
+
+    /** 在途轮句柄：voidTurn 需要 settled CAS、out 与双候选；按 utteranceId 匹配。 */
+    private record ActiveTurn(String utteranceId, AtomicBoolean settled,
+                              CompletableFuture<ArbiterDecision> out,
+                              CompletableFuture<OfflineCommandHit> offline,
+                              CompletableFuture<Reply> llm) {
+    }
+
     public RaceArbiter(long safetyTimeoutMs, ScheduledExecutorService scheduler, DecisionSink sink) {
         this(safetyTimeoutMs, DEFAULT_OFFLINE_GRACE_MS, scheduler, sink, (uid, event) -> {});
     }
@@ -75,6 +93,49 @@ public final class RaceArbiter {
         this.scheduler = scheduler;
         this.sink = sink;
         this.eventSink = eventSink;
+    }
+
+    /** 端侧显式取消本轮的收敛原因（cancel_turn，端侧本地仲裁胜出）。 */
+    public static final String REASON_CANCEL_TURN = "cancel_turn";
+    /** 被更新话语取代的收敛原因（新 audio_start 携带不同 utteranceId，端侧 isStale 同构）。 */
+    public static final String REASON_SUPERSEDED = "superseded";
+
+    /**
+     * 云端"最新会话拦截"（与端侧 OnDeviceRaceArbiter.isStale 同构）：在途轮 utteranceId
+     * 匹配 → 立即按 reason 收敛；尚未注册 → 记录标记，decide 注册时收敛。
+     * 被 void 的轮不写决策日志、不发仲裁事件、不取消候选、无下行帧（拦截而非取消——
+     * 客户端已自行裁决/已推进，服务端候选自然完成后被仲裁拦截丢弃）。
+     *
+     * @return true = void 被采纳（已收敛或将在注册时收敛）；false = 在途轮属于其他
+     *         utteranceId（防御路径，正常串行流程不会发生）
+     */
+    public boolean voidTurn(String utteranceId, String reason) {
+        if (utteranceId == null) return false;
+        ActiveTurn turn = activeTurn.get();
+        if (turn != null) {
+            return utteranceId.equals(turn.utteranceId()) && settleVoided(turn, reason);
+        }
+        pendingVoids.put(utteranceId, reason);
+        return true;
+    }
+
+    /** 清理未及注册的 void 标记（worker 早退 / 已完成的轮由装配方在 finally 兜底调用）。 */
+    public void clearVoid(String utteranceId) {
+        if (utteranceId != null) pendingVoids.remove(utteranceId);
+    }
+
+    /** 内部收敛：CAS 命中 → 以给定原因 complete out（不取消候选、无决策日志、无仲裁事件）。 */
+    private boolean settleVoided(ActiveTurn turn, String reason) {
+        if (!turn.settled().compareAndSet(false, true)) return false;
+        turn.out().complete(new ArbiterDecision(null, reason, null));
+        return true;
+    }
+
+    /** 本轮是否已被 void（cancel_turn / superseded）——迟到候选据此静默丢弃。 */
+    private static boolean settledByVoid(CompletableFuture<ArbiterDecision> out) {
+        if (!out.isDone()) return false;
+        ArbiterDecision d = out.getNow(null);
+        return d != null && (REASON_CANCEL_TURN.equals(d.reason()) || REASON_SUPERSEDED.equals(d.reason()));
     }
 
     /**
@@ -109,6 +170,14 @@ public final class RaceArbiter {
                                                      SessionContext ctx, String utteranceId, String segmentId) {
         CompletableFuture<ArbiterDecision> out = new CompletableFuture<>();
         AtomicBoolean settled = new AtomicBoolean(false);
+        ActiveTurn turn = new ActiveTurn(utteranceId, settled, out, offline, llm);
+        activeTurn.set(turn);
+        // 先于注册到达的 void（注册前窗口：offline.recognize / online.process 起动中）：
+        // 立即按记录的原因收敛（settleVoided 内部 CAS 幂等）
+        String voidReason = utteranceId != null ? pendingVoids.remove(utteranceId) : null;
+        if (voidReason != null) {
+            settleVoided(turn, voidReason);
+        }
 
         // 候选 1：离线命令命中 → 立即胜出，不等 LLM。
         // 能力分级（2026-08-15）：只认空调控制（climate 域 power_on/power_off/
@@ -118,6 +187,7 @@ public final class RaceArbiter {
         // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
         offline.whenComplete((hit, err) -> {
             if (err != null) return;
+            if (settledByVoid(out)) return; // 已被 void：迟到离线候选静默丢弃（拦截而非取消）
             if (hit == null || !isAirConControl(hit.intent())) {
                 // 未命中 / 非空调命中 + LLM 尚未完成 → 处理中占位（至多一次：whenComplete 只回调一次）
                 if (!llm.isDone()) {
@@ -144,6 +214,7 @@ public final class RaceArbiter {
         // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
         llm.whenComplete((reply, err) -> {
             if (err != null || reply == null) return; // 失败留给 safety 兜底
+            if (settledByVoid(out)) return; // 已被 void：迟到 LLM 候选静默丢弃（拦截而非取消）
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_LLM));
             if (offline.isDone()) {
                 // 离线已完成（空/失败）：没有更优候选可等 → LLM 立即胜出
@@ -166,6 +237,8 @@ public final class RaceArbiter {
                 out.complete(new ArbiterDecision(Reply.ofText(SAFETY_TEXT), "safety_timeout", null));
             }
         }, safetyTimeoutMs, TimeUnit.MILLISECONDS);
+        // 收敛即注销在途轮（complete 的线程上同步执行，compareAndSet 防误清下一轮登记）
+        out.whenComplete((d, e) -> activeTurn.compareAndSet(turn, null));
         return out;
     }
 
