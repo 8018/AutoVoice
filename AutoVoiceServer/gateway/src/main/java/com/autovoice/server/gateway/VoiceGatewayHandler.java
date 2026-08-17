@@ -327,6 +327,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 ? clientUtteranceId
                 : "u-" + ++st.segmentSeq; // 兼容旧客户端：无 utteranceId 时回退自增
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        Object latitude = payload.get("latitude");
+        Object longitude = payload.get("longitude");
+        if (latitude instanceof Number lat && longitude instanceof Number lon
+                && lat.doubleValue() >= -90 && lat.doubleValue() <= 90
+                && lon.doubleValue() >= -180 && lon.doubleValue() <= 180) {
+            st.ctx = st.ctx.withAttr("latitude", lat.doubleValue())
+                    .withAttr("longitude", lon.doubleValue());
+        }
     }
 
     /**
@@ -455,6 +463,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (intent != null) payload.put("intent", intent);
                 if (asrText != null && !asrText.isBlank()) payload.put("asrText", asrText);
                 send(session, "audio_reply_end", payload);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                if (!allowed()) return;
+                sendError(session, st, "ONLINE_STREAM_ABORTED",
+                        error == null ? "online audio stream aborted" : String.valueOf(error.getMessage()),
+                        segmentId);
             }
         };
     }

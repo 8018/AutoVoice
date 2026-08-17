@@ -143,8 +143,15 @@ public final class SegmentPipeline {
                     .join();
             if ("offline_won".equals(decision.reason())) {
                 audioGate.reject();
-                onlineF.cancel(true);
+                cancelOnline(onlineF, utteranceId);
                 return toResult(decision, "", ctx, utteranceId);
+            }
+            if ("safety_timeout".equals(decision.reason())) {
+                cancelOnline(onlineF, utteranceId);
+                audioGate.abort(new java.util.concurrent.TimeoutException(
+                        "online speech timed out: " + utteranceId));
+                SegmentResult result = toResult(decision, "", ctx, utteranceId);
+                return audioGate.streamed() ? result.asStreamed() : result;
             }
             // RaceArbiter may release online after its finite offline grace period even if
             // the offline future is still pending. Mirror that decision in the chunk gate
@@ -160,10 +167,19 @@ public final class SegmentPipeline {
             return audioGate.streamed() && "audio".equals(decision.reply().kind())
                     ? result.asStreamed() : result;
         } catch (Exception e) {
-            audioGate.reject();
+            cancelOnline(onlineF, utteranceId);
+            audioGate.abort(e);
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
-            return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
+            SegmentResult result = fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
+            return audioGate.streamed() ? result.asStreamed() : result;
         }
+    }
+
+    private void cancelOnline(CompletableFuture<OnlineSpeechResult> future, String utteranceId) {
+        // Future cancellation stops the current worker; provider cancellation additionally aborts
+        // an in-flight HTTP call (or a tool round) so a timed-out turn cannot occupy the fixed pool.
+        online.cancel(utteranceId);
+        future.cancel(true);
     }
 
     /**
@@ -332,6 +348,16 @@ public final class SegmentPipeline {
 
         void reject() {
             resolve(true);
+        }
+
+        void abort(Throwable error) {
+            boolean notify;
+            synchronized (this) {
+                notify = state == State.RELEASED && streamed;
+                state = State.REJECTED;
+                buffered.clear();
+            }
+            if (notify) downstream.onError(error);
         }
 
         private void submit(Consumer<OnlineAudioSink> event) {

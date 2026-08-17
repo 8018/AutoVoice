@@ -356,6 +356,25 @@ class GatewayClientTest {
     }
 
     @Test
+    fun `audio start carries current coordinates when available`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendAudioStart("srv-sess-1", "seg-1", "utt-1", 30.2741, 120.1551)
+            assertTrue(awaitTrue { gateway.frames.any { it.type == "audio_start" } })
+            val payload = gateway.frames.first { it.type == "audio_start" }.payload
+            assertEquals(30.2741, payload.get("latitude").asDouble, 0.000001)
+            assertEquals(120.1551, payload.get("longitude").asDouble, 0.000001)
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `tts request carries utteranceId when provided`() = runBlocking {
         // T6：tts_request 同样可选携带 utteranceId（跨阶段按话语汇合）
         val gateway = FakeGateway()

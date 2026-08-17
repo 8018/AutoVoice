@@ -314,8 +314,12 @@ class GatewayCodecTest {
         audio.put("channels", 1);
         audio.put("encoding", "pcm_s16le");
         audio.put("utteranceId", "utt-1");
+        audio.put("latitude", 30.2741);
+        audio.put("longitude", 120.1551);
         JsonNode ap = read(GatewayCodec.encode("audio_start", audio)).get("payload");
         assertEquals("utt-1", ap.get("utteranceId").asText());
+        assertEquals(30.2741, ap.get("latitude").asDouble(), 0.000001);
+        assertEquals(120.1551, ap.get("longitude").asDouble(), 0.000001);
 
         Map<String, Object> tts = new LinkedHashMap<>();
         tts.put("text", "打开空调");

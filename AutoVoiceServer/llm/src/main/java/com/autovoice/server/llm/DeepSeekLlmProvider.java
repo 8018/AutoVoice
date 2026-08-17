@@ -236,7 +236,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         Runnable task = () -> {
             long start = System.currentTimeMillis();
             try {
-                Reply reply = callAndParse(text, activeCall);
+                Reply reply = callAndParse(text, ctx, activeCall);
                 recorder.record(utteranceId, TelemetryStages.LLM, "info",
                         Map.of("text", text, "reply", replySummary(reply),
                                 "durationMs", Math.max(1, System.currentTimeMillis() - start)));
@@ -290,9 +290,9 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
      * 多轮工具循环：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。每轮前检查预算
      * （超预算 → 不带 tools），最后一轮强制直答。car_control 工具调用立即终局。
      */
-    private Reply callAndParse(String text, AtomicReference<Call> activeCall) throws IOException {
+    private Reply callAndParse(String text, SessionContext ctx, AtomicReference<Call> activeCall) throws IOException {
         List<ObjectNode> messages = new ArrayList<>();
-        messages.add(systemMessage());
+        messages.add(systemMessage(ctx));
         messages.add(userMessage(text));
         long start = System.currentTimeMillis();
         for (int round = 1; round <= MAX_LLM_ROUNDS; round++) {
@@ -479,10 +479,19 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     }
 
     /** system 消息（OpenAI 兼容）；prompt 未配置（null/空白）回退内置默认。 */
-    private ObjectNode systemMessage() {
+    private ObjectNode systemMessage(SessionContext ctx) {
         String prompt = systemPrompt == null ? null : systemPrompt.get();
         if (prompt == null || prompt.isBlank()) {
             prompt = DEFAULT_SYSTEM_PROMPT;
+        }
+        Object lat = ctx == null ? null : ctx.attrs().get("latitude");
+        Object lon = ctx == null ? null : ctx.attrs().get("longitude");
+        if (lat instanceof Number && lon instanceof Number) {
+            prompt += "\n当前车辆位置：纬度=" + ((Number) lat).doubleValue()
+                    + "，经度=" + ((Number) lon).doubleValue()
+                    + "。模糊地点、最近地点或连锁门店优先使用周边搜索并以该坐标为中心；"
+                    + "若只能关键词搜索，选择离该坐标最近的结果。多站导航保持口述顺序："
+                    + "中间站放 waypoints，最后一站放 navigate 的 poiname/lat/lon。";
         }
         ObjectNode m = MAPPER.createObjectNode();
         m.put("role", "system");
