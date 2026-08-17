@@ -145,7 +145,13 @@ class GatewayClient(
      *                    onAudioStart 优先采纳端侧值（遥测按话语汇合）。非空才发送。
      * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
-    fun sendAudioStart(sessionId: String, segmentId: String? = null, utteranceId: String? = null) {
+    fun sendAudioStart(
+        sessionId: String,
+        segmentId: String? = null,
+        utteranceId: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
+    ) {
         val payload = linkedMapOf<String, Any>(
             "sessionId" to sessionId,
             "sampleRate" to sampleRate,
@@ -157,6 +163,10 @@ class GatewayClient(
         }
         if (utteranceId != null) {
             payload["utteranceId"] = utteranceId
+        }
+        if (latitude != null && longitude != null) {
+            payload["latitude"] = latitude
+            payload["longitude"] = longitude
         }
         sendFrame(mapOf("type" to "audio_start", "payload" to payload))
         pcmBytesInSegment = 0

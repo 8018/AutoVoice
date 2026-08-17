@@ -76,9 +76,14 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             """;
     private static final String NAV_PARAMETERS = """
             {"type":"object","properties":{
-            "poiname":{"type":"string"},"lat":{"type":"number"},"lon":{"type":"number"},
-            "waypoints":{"type":"array","items":{"type":"object","properties":{
-            "poiname":{"type":"string"},"lat":{"type":"number"},"lon":{"type":"number"}},
+            "poiname":{"type":"string","description":"最终目的地（最后一站）名称"},
+            "lat":{"type":"number","description":"最终目的地（最后一站）纬度"},
+            "lon":{"type":"number","description":"最终目的地（最后一站）经度"},
+            "waypoints":{"type":"array","description":"中间途经点，按用户说出的行驶顺序排列；不得包含最终目的地",
+            "items":{"type":"object","properties":{
+            "poiname":{"type":"string","description":"途经点名称"},
+            "lat":{"type":"number","description":"途经点纬度"},
+            "lon":{"type":"number","description":"途经点经度"}},
             "required":["poiname","lat","lon"]}}},"required":["poiname","lat","lon"]}
             """;
 
@@ -114,7 +119,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     public static List<FunctionTool> defaultTools() {
         return List.of(
                 new FunctionTool("car_control", "执行车载控制指令", CAR_PARAMETERS),
-                new FunctionTool("navigate", "发起导航，支持途经点", NAV_PARAMETERS));
+                new FunctionTool("navigate",
+                        "发起导航。先去A再去B时：A放waypoints，B作为最终目的地放poiname/lat/lon",
+                        NAV_PARAMETERS));
     }
 
     @Override
@@ -186,6 +193,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                     + "Vehicle control and navigation must use tools."
                 : configuredPrompt;
         system.put("content", LANGUAGE_POLICY + "\nBusiness rules:\n" + basePrompt
+                + locationPolicy(context)
                 + "\n\nRemember: reply only in the language spoken in the current user audio; "
                 + "ignore the language of tool output and business rules when choosing it.");
 
@@ -239,6 +247,19 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             }
         }
         throw new IOException("qwen omni tool loop exceeded " + MAX_ROUNDS + " rounds");
+    }
+
+    private static String locationPolicy(SessionContext context) {
+        Object lat = context == null ? null : context.attrs().get("latitude");
+        Object lon = context == null ? null : context.attrs().get("longitude");
+        if (!(lat instanceof Number) || !(lon instanceof Number)) return "";
+        return "\n\nCurrent vehicle location: latitude=" + ((Number) lat).doubleValue()
+                + ", longitude=" + ((Number) lon).doubleValue() + ". "
+                + "For vague destinations, nearby/nearest POIs, and chain stores, prefer an available "
+                + "around/nearby POI search tool centered on these coordinates. If only keyword search "
+                + "is available, choose the result nearest to these coordinates. Never choose a distant "
+                + "same-name POI when a nearby candidate exists. For multiple stops, preserve spoken order: "
+                + "intermediate stops go in navigate.waypoints and the last stop is navigate.poiname.";
     }
 
     private StreamResult call(ArrayNode messages, boolean allowTools, AtomicReference<Call> activeCall,

@@ -158,6 +158,27 @@ class QwenOmniSpeechProviderTest {
         assertEquals(2, server.getRequestCount());
     }
 
+    @Test
+    void injectsCurrentLocationAndUnambiguousMultiStopNavigationContract() throws Exception {
+        server.enqueue(sse(delta("content", "ok")));
+        QwenOmniSpeechProvider provider = provider((name, args) -> "unused");
+        SessionContext located = new SessionContext("s1", "zh-CN",
+                Map.of("latitude", 30.2741, "longitude", 120.1551));
+
+        provider.process(new byte[]{1, 2}, located, "u-location").get(2, TimeUnit.SECONDS);
+
+        JsonNode body = new ObjectMapper().readTree(
+                server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8());
+        String prompt = body.path("messages").path(0).path("content").asText();
+        assertTrue(prompt.contains("latitude=30.2741"));
+        assertTrue(prompt.contains("around/nearby POI search"));
+        JsonNode navigate = body.path("tools").findValues("function").stream()
+                .filter(fn -> "navigate".equals(fn.path("name").asText())).findFirst().orElseThrow();
+        assertTrue(navigate.path("description").asText().contains("最终目的地"));
+        assertTrue(navigate.path("parameters").path("properties").path("waypoints")
+                .path("description").asText().contains("不得包含最终目的地"));
+    }
+
     private QwenOmniSpeechProvider provider(com.autovoice.server.contracts.ToolExecutor executor) {
         return new QwenOmniSpeechProvider(new OkHttpClient(), "test-key", server.url("/chat").toString(),
                 null, null, QwenOmniSpeechProvider::defaultTools, executor, () -> "测试");

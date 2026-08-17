@@ -90,7 +90,9 @@
     "sampleRate": 16000,
     "channels": 1,
     "encoding": "pcm_s16le",
-    "segmentId": "seg-1"
+    "segmentId": "seg-1",
+    "latitude": 30.2741,
+    "longitude": 120.1551
   }
 }
 ```
@@ -103,6 +105,8 @@
 | `encoding` | string | 编码，固定 `"pcm_s16le"` |
 | `segmentId` | string（可选） | 每轮话语的唯一 ID（客户端生成，如 UUID）。demo 单连接多轮往返时，服务端无法凭 `sessionId` 区分话语，客户端需以此关联 `reply` / `error`（服务端原样回显） |
 | `utteranceId` | string（可选） | 链路追踪 ID（端侧每轮 UUID）；服务端决策/插桩事件回带该值；缺省时服务端回退 `u-N` 自增 |
+| `latitude` | number（可选） | 当前车辆纬度；定位授权且系统已有最近定位时发送，用于周边 POI 检索 |
+| `longitude` | number（可选） | 当前车辆经度；与 `latitude` 成对发送；缺失时服务端退化为普通关键词检索 |
 
 > **关联语义**：`segmentId` 由客户端生成、每轮话语唯一、不重复使用。服务端收到后记录为该话语的标识，
 > 在随后的 `pending`、`reply` 与 `error` payload 中原样回显（未携带时下行省略该字段）。客户端据此丢弃

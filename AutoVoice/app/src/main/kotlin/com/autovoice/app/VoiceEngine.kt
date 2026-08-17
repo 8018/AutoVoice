@@ -1,6 +1,8 @@
 package com.autovoice.app
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
@@ -552,7 +554,10 @@ class VoiceEngine(
             // 端侧仲裁器阶段 1 窗口延长（pendingWaitMs）。BUFFERED：pending 帧到达时若
             // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
             val pendingSignals = Channel<Unit>(Channel.BUFFERED)
-            val cloudRunner = GatewayCloudRunner(cfg.cloud, telemetrySink, scope, pendingSignals)
+            val cloudRunner = GatewayCloudRunner(
+                cfg.cloud, telemetrySink, scope, pendingSignals,
+                locationProvider = { context.lastKnownCoordinates() },
+            )
             cloudRunner.onAsrResult = { text, _ ->
                 if (text.isNotBlank()) onLocalRecognized(text)
             }
@@ -786,6 +791,25 @@ class VoiceEngine(
             Log.d(TAG, "hasActiveNetwork: active=$active all=${cm.allNetworks.toList()}")
             return active != null
         }
+
+        /**
+         * 读取系统已有的最近定位。语音链不主动启动持续定位，避免额外耗电；没有授权或
+         * 系统尚无定位缓存时返回 null，服务端会自然退化为普通关键词搜索。
+         */
+        private fun Context.lastKnownCoordinates(): Pair<Double, Double>? {
+            val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!permitted) return null
+            val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+            val latest = runCatching {
+                manager.allProviders.mapNotNull { provider ->
+                    runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+                }.maxByOrNull { it.time }
+            }.getOrNull() ?: return null
+            return latest.latitude to latest.longitude
+        }
     }
 }
 
@@ -803,6 +827,7 @@ private class GatewayCloudRunner(
     scope: CoroutineScope,
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
+    private val locationProvider: () -> Pair<Double, Double>? = { null },
 ) : CloudRunner, TtsRequester {
 
     private val client = GatewayClient(
@@ -912,7 +937,14 @@ private class GatewayCloudRunner(
                 onReadySessionId(sessionId)
             }
             // T6：utteranceId 空串不发送（服务端视为未提供，保持旧协议形态）
-            client.sendAudioStart(sessionId, segmentId, utteranceIdProvider().takeIf { it.isNotBlank() })
+            val location = locationProvider()
+            client.sendAudioStart(
+                sessionId,
+                segmentId,
+                utteranceIdProvider().takeIf { it.isNotBlank() },
+                location?.first,
+                location?.second,
+            )
             var offset = 0
             while (offset < segment.size) {
                 val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
