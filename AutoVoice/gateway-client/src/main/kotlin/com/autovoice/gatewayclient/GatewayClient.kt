@@ -20,8 +20,13 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -32,6 +37,13 @@ import okio.ByteString.Companion.toByteString
  * 网关连接失败（重试耗尽 / 等待 ready 超时 / 传输错误）时抛出。
  */
 class GatewayException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+enum class GatewayConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    READY,
+    CLOSING,
+}
 
 /**
  * AutoVoiceServer 网关 WebSocket 客户端（shared/protocol.md §5 时序）。
@@ -82,6 +94,11 @@ class GatewayClient(
     /** 网关事件流：文本协议消息与 S2S 二进制 chunk；传输失败合成 error 事件。 */
     val messages: SharedFlow<GatewayMessage> = events.asSharedFlow()
 
+    private val mutableConnectionState = MutableStateFlow(GatewayConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<GatewayConnectionState> = mutableConnectionState.asStateFlow()
+
+    private val connectMutex = Mutex()
+
     @Volatile
     private var webSocket: WebSocket? = null
 
@@ -97,6 +114,10 @@ class GatewayClient(
     @Volatile
     private var clockOffsetMs = 0L
 
+    /** 首次握手由服务端生成；重连 hello 回带以恢复同一会话上下文。 */
+    @Volatile
+    private var serverSessionId: String? = null
+
     /** 当前时钟偏移（ms）：telemetry 打戳时 `本地时间 + offset` 换算为服务器时钟。 */
     fun clockOffsetMs(): Long = clockOffsetMs
 
@@ -107,15 +128,19 @@ class GatewayClient(
      * 失败按指数退避重试（1s/2s/4s…），超过 [maxRetries] 次重试仍失败抛 [GatewayException]；
      * 协程取消原样传播（不吞）。
      */
-    suspend fun connect() {
+    suspend fun connect() = connectMutex.withLock {
+        if (mutableConnectionState.value == GatewayConnectionState.READY && webSocket != null) return
         var attempt = 0
         while (true) {
             try {
+                mutableConnectionState.value = GatewayConnectionState.CONNECTING
                 doConnect()
                 return
             } catch (e: CancellationException) {
+                mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
                 throw e
             } catch (e: Exception) {
+                mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
                 if (attempt >= maxRetries) {
                     throw GatewayException(
                         "connect to $url failed after ${attempt + 1} attempts: ${e.message}",
@@ -130,9 +155,11 @@ class GatewayClient(
 
     /** 断开连接（幂等）：发送 1000 正常关闭帧；未连接时为 no-op。 */
     fun disconnect() {
+        mutableConnectionState.value = GatewayConnectionState.CLOSING
         val ws = webSocket
         webSocket = null
         ws?.close(1000, "client disconnect")
+        mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
     }
 
     /**
@@ -151,6 +178,7 @@ class GatewayClient(
         utteranceId: String? = null,
         latitude: Double? = null,
         longitude: Double? = null,
+        attempt: Int = 0,
     ) {
         val payload = linkedMapOf<String, Any>(
             "sessionId" to sessionId,
@@ -168,6 +196,7 @@ class GatewayClient(
             payload["latitude"] = latitude
             payload["longitude"] = longitude
         }
+        payload["attempt"] = attempt
         sendFrame(mapOf("type" to "audio_start", "payload" to payload))
         pcmBytesInSegment = 0
     }
@@ -311,11 +340,12 @@ class GatewayClient(
         val ws = try {
             okHttp.newWebSocket(
                 Request.Builder().url(url).build(),
-                GatewayListener(events, gson, ready),
+                GatewayListener(events, gson, ready, ::markDisconnected),
             )
         } catch (e: Exception) {
             throw GatewayException("cannot open websocket to $url: ${e.message}", e)
         }
+        webSocket = ws
         try {
             // open 后立即发 hello（OkHttp 排队到握手完成后发出）；ready 回执由 listener 完成
             val t0 = System.currentTimeMillis()
@@ -327,12 +357,26 @@ class GatewayClient(
             val t1 = System.currentTimeMillis()
             readyMsg.payload["serverTime"]?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
                 ?.let { clockOffsetMs = it.asLong + (t1 - t0) / 2 - t1 }
-            webSocket = ws
+            readyMsg.payload["sessionId"]?.takeIf { it.isJsonPrimitive }?.asString
+                ?.takeIf { it.isNotBlank() }?.let { serverSessionId = it }
+            if (webSocket !== ws) {
+                throw GatewayException("websocket disconnected before ready completed")
+            }
+            mutableConnectionState.value = GatewayConnectionState.READY
             pcmBytesInSegment = 0
         } catch (e: Exception) {
+            if (webSocket === ws) webSocket = null
             ws.cancel()
             throw e
         }
+    }
+
+    /** 只允许当前连接改变状态；旧连接迟到的 close/failure 不得击穿新连接。 */
+    private fun markDisconnected(socket: WebSocket): Boolean {
+        if (webSocket !== socket) return false
+        webSocket = null
+        mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
+        return true
     }
 
     /** hello 文本帧：payload 字段照 protocol.md §3.1；sessionId 服务端权威，客户端不预生成。 */
@@ -343,6 +387,8 @@ class GatewayClient(
                 "payload" to buildMap {
                     put("client", CLIENT_NAME)
                     put("protocolVersion", PROTOCOL_VERSION)
+                    // 仅回带服务端此前签发的 ID；首次连接仍不由客户端预生成。
+                    serverSessionId?.let { put("sessionId", it) }
                     // M5 鉴权：配置了凭据才带（auth-disabled 网关保持老 hello 形态）
                     deviceId?.let { put("deviceId", it) }
                     authToken?.let { put("authToken", it) }

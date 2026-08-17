@@ -41,6 +41,7 @@
             "encoding": { "type": "string" },
             "segmentId": { "type": "string", "description": "客户端每轮生成的话语 ID，下行原样回显" },
             "utteranceId": { "type": "string", "description": "链路追踪：端侧每轮生成的 UUID，随 audio_start 上传，服务端插桩复用（可选，向后兼容）" },
+            "attempt": { "type": "integer", "minimum": 0, "description": "同一 utteranceId 的发送次数；首次为 0，重连重发递增" },
             "latitude": { "type": "number", "minimum": -90, "maximum": 90, "description": "当前车辆纬度（可选），用于周边 POI 检索" },
             "longitude": { "type": "number", "minimum": -180, "maximum": 180, "description": "当前车辆经度（可选），用于周边 POI 检索" }
           }

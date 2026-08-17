@@ -64,7 +64,7 @@
 | --- | --- | --- |
 | `client` | string | 客户端标识，如 `autovoice-android` |
 | `protocolVersion` | string | 协议版本，当前 `"1.1"`（v1.1：TTS 解耦——reply 不再携带音频，新增 `tts_request`/`tts_response`） |
-| `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；携带时服务端优先采纳，未登记的会话自动创建 |
+| `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；重连时回带最近一次 `ready` 的值以恢复 Skills/MCP 上下文；携带时服务端优先采纳，未登记的会话自动创建 |
 | `deviceId` | string（可选） | 设备标识（多设备加固 M1/M5）。网关 `auth-enabled` 时**必填**（与 `authToken` 一同校验），未启用鉴权时携带亦无副作用 |
 | `authToken` | string（可选） | 设备令牌，与 `deviceId` 配对（服务器 `AUTOVOICE_GATEWAY_AUTH_DEVICES` 设备表）。鉴权失败 → `error(BAD_AUTH)` + 连接关闭（4001） |
 
@@ -105,6 +105,7 @@
 | `encoding` | string | 编码，固定 `"pcm_s16le"` |
 | `segmentId` | string（可选） | 每轮话语的唯一 ID（客户端生成，如 UUID）。demo 单连接多轮往返时，服务端无法凭 `sessionId` 区分话语，客户端需以此关联 `reply` / `error`（服务端原样回显） |
 | `utteranceId` | string（可选） | 链路追踪 ID（端侧每轮 UUID）；服务端决策/插桩事件回带该值；缺省时服务端回退 `u-N` 自增 |
+| `attempt` | integer（可选） | 同一 `utteranceId` 的发送次数，首次为 0；服务端按设备/会话 + `utteranceId` 幂等复用已完成结果 |
 | `latitude` | number（可选） | 当前车辆纬度；定位授权且系统已有最近定位时发送，用于周边 POI 检索 |
 | `longitude` | number（可选） | 当前车辆经度；与 `latitude` 成对发送；缺失时服务端退化为普通关键词检索 |
 

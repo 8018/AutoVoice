@@ -72,4 +72,10 @@ object TelemetryStages {
 
     /** 云端仲裁器决策（网关下行 decision 事件，arbiter=cloud）。 */
     const val CLOUD_ARBITER = "cloud_arbiter"
+
+    const val WS_CONNECT_START = "ws_connect_start"
+    const val WS_READY = "ws_ready"
+    const val WS_RECONNECT_START = "ws_reconnect_start"
+    const val WS_RECONNECT_OK = "ws_reconnect_ok"
+    const val WS_RECONNECT_FAILED = "ws_reconnect_failed"
 }

@@ -29,6 +29,7 @@ class GatewayListener(
     private val events: MutableSharedFlow<GatewayMessage>,
     private val gson: Gson = Gson(),
     private val ready: CompletableDeferred<GatewayMessage>,
+    private val onDisconnected: (WebSocket) -> Boolean,
 ) : WebSocketListener() {
 
     override fun onMessage(webSocket: WebSocket, text: String) {
@@ -55,12 +56,26 @@ class GatewayListener(
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-        events.tryEmit(errorFrame("CONNECTION_FAILED", t.message ?: "websocket failure"))
+        if (onDisconnected(webSocket)) {
+            events.tryEmit(errorFrame("CONNECTION_FAILED", t.message ?: "websocket failure"))
+        }
         ready.completeExceptionally(t)
     }
 
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+        // 收到 peer close 后连接已不可再发送；不能等 onClosed 才清状态，否则未主动回 close
+        // 的 listener 会永久保留一条“看似 READY”的死连接。
+        if (onDisconnected(webSocket)) {
+            events.tryEmit(errorFrame("CONNECTION_CLOSED", "code=$code reason=$reason"))
+        }
+        ready.completeExceptionally(GatewayException("connection closing before ready: code=$code $reason"))
+        webSocket.close(code, reason)
+    }
+
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-        events.tryEmit(errorFrame("CONNECTION_CLOSED", "code=$code reason=$reason"))
+        if (onDisconnected(webSocket)) {
+            events.tryEmit(errorFrame("CONNECTION_CLOSED", "code=$code reason=$reason"))
+        }
         ready.completeExceptionally(GatewayException("connection closed before ready: code=$code $reason"))
     }
 
