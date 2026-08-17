@@ -1,6 +1,8 @@
 package com.autovoice.server.skillmcp;
 
 import com.autovoice.server.contracts.FunctionTool;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +25,8 @@ import java.util.function.BiFunction;
 public final class McpSkillRegistry implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(McpSkillRegistry.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int SELECTOR_RESULT_LIMIT = 8;
 
     private final SkillPlatformClient client;
     private final ToolInjector injector;
@@ -39,7 +43,8 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     private volatile Map<String, McpToolSession> sessions = Map.of();
     /** 不可被外部 skill 覆盖的内置终局工具。 */
-    private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate");
+    private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate",
+            SelectorToolInjector.GET, SelectorToolInjector.EXECUTE);
     /** 刷新时原子替换的唯一工具路由，避免调用期按 session 顺序选择同名工具。 */
     private volatile Map<String, McpToolSession> toolOwners = Map.of();
     private volatile long lastRefreshMs;
@@ -142,11 +147,74 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     /** 按工具名路由到所属 session 执行；未知工具抛 McpToolException。 */
     public String callTool(String toolName, String argumentsJson) {
+        if (SelectorToolInjector.GET.equals(toolName)) return searchTools(argumentsJson);
+        if (SelectorToolInjector.EXECUTE.equals(toolName)) return executeSelectedTool(argumentsJson);
         McpToolSession owner = toolOwners.get(toolName);
         if (owner != null) {
             return owner.callTool(toolName, argumentsJson);
         }
         throw new McpToolException("no skill owns tool: " + toolName);
+    }
+
+    private String searchTools(String argumentsJson) {
+        try {
+            String query = JSON.readTree(argumentsJson).path("query").asText("").toLowerCase();
+            List<FunctionTool> all = rawToolSpecs();
+            List<FunctionTool> matched = all.stream()
+                    .filter(tool -> query.isBlank()
+                            || query.contains(tool.name().toLowerCase())
+                            || containsQueryTerm(query, tool.description().toLowerCase()))
+                    .limit(SELECTOR_RESULT_LIMIT)
+                    .toList();
+            if (matched.isEmpty()) matched = all.stream().limit(SELECTOR_RESULT_LIMIT).toList();
+            List<Map<String, Object>> result = matched.stream().map(tool -> Map.<String, Object>of(
+                    "name", tool.name(),
+                    "description", tool.description(),
+                    "parameters", parseJson(tool.parametersJson()))).toList();
+            return JSON.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new McpToolException("invalid mcp_tools_get arguments: " + e.getMessage());
+        }
+    }
+
+    private String executeSelectedTool(String argumentsJson) {
+        try {
+            JsonNode args = JSON.readTree(argumentsJson);
+            String name = args.path("name").asText("");
+            JsonNode actual = args.path("arguments");
+            if (name.isBlank() || !actual.isObject()) {
+                throw new IllegalArgumentException("name and object arguments are required");
+            }
+            // 只允许真实 MCP 工具，禁止 meta 工具递归调用自身。
+            McpToolSession owner = toolOwners.get(name);
+            if (owner == null) throw new McpToolException("no skill owns tool: " + name);
+            return owner.callTool(name, JSON.writeValueAsString(actual));
+        } catch (McpToolException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new McpToolException("invalid mcp_tools_execute arguments: " + e.getMessage());
+        }
+    }
+
+    private List<FunctionTool> rawToolSpecs() {
+        List<FunctionTool> all = new ArrayList<>();
+        for (McpToolSession session : sessions.values()) all.addAll(session.tools().values());
+        return all;
+    }
+
+    private static boolean containsQueryTerm(String query, String description) {
+        for (String term : query.split("[\\s,，。！？?]+")) {
+            if (term.length() >= 2 && description.contains(term)) return true;
+        }
+        return false;
+    }
+
+    private static Object parseJson(String json) {
+        try {
+            return JSON.readTree(json);
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     public long lastRefreshMs() {

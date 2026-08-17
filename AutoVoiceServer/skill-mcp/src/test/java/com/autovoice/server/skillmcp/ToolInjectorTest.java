@@ -25,10 +25,11 @@ class ToolInjectorTest {
     }
 
     @Test
-    void moreThanEightStillDirectInV1() {
+    void moreThanEightUsesSelectorMetaTools() {
         List<FunctionTool> all = tools(9);
         List<FunctionTool> out = ToolInjectors.forCount(all.size()).inject(all);
-        assertEquals(all, out); // v1：>8 只告警，仍全量注入（selector 为扩展点）
+        assertEquals(List.of("mcp_tools_get", "mcp_tools_execute"),
+                out.stream().map(FunctionTool::name).toList());
     }
 
     @Test

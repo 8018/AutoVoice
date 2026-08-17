@@ -39,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
@@ -106,7 +107,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     public QwenOmniSpeechProvider(OkHttpClient client, String apiKey, String endpoint,
                                   String model, String voice, ToolProvider tools,
                                   ToolExecutor toolExecutor, Supplier<String> systemPrompt) {
-        this.client = Objects.requireNonNull(client, "client");
+        // SSE 可能在模型推理或工具调用期间长时间没有字节。OkHttp 默认 10s read timeout
+        // 会把健康流误判为中断；整轮上限由网关 safety timeout + cancel(Call) 统一管理。
+        this.client = Objects.requireNonNull(client, "client").newBuilder()
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .callTimeout(0, TimeUnit.MILLISECONDS)
+                .build();
         this.apiKey = apiKey == null ? "" : apiKey;
         this.endpoint = endpoint == null || endpoint.isBlank() ? DEFAULT_ENDPOINT : endpoint;
         this.model = model == null || model.isBlank() ? DEFAULT_MODEL : model;

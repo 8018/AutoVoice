@@ -98,6 +98,25 @@ class QwenOmniSpeechProviderTest {
     }
 
     @Test
+    void disablesReadTimeoutForSilentSseInferenceWindow() throws Exception {
+        server.enqueue(sse(delta("content", "ok"))
+                .setBodyDelay(300, TimeUnit.MILLISECONDS));
+        OkHttpClient shortLivedBase = new OkHttpClient.Builder()
+                .readTimeout(100, TimeUnit.MILLISECONDS)
+                .build();
+        QwenOmniSpeechProvider provider = new QwenOmniSpeechProvider(
+                shortLivedBase, "test-key", server.url("/chat").toString(),
+                null, null, QwenOmniSpeechProvider::defaultTools,
+                (name, args) -> "unused", () -> "test");
+
+        OnlineSpeechResult result = provider.process(new byte[]{1, 2}, context(), "u-slow-sse")
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("ok", result.reply().speakText(),
+                "SSE 静默超过基础 client 的 read timeout 仍应由网关整轮超时统一收敛");
+    }
+
+    @Test
     void sidecarAsrAddsUserTranscriptToStreamEndAndResult() throws Exception {
         AtomicReference<String> endTranscript = new AtomicReference<>();
         AtomicReference<String> earlyTranscript = new AtomicReference<>();
