@@ -677,8 +677,10 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void audioEndWhileProcessingSendsBusyError() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
+            entered.countDown();
             try {
                 release.await(10, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
@@ -693,6 +695,10 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        // 确定性：等工作线程越过 isCancelled 早退检查、进入 ASR 后再发下一段——
+        // 否则 supersede 的 cancelledSegments 标记可能先于 worker 起动到达，
+        // worker 在 :394 早退释放 processing，seg-2 不再 BUSY（合法但非本用例目标）
+        assertTrue(entered.await(5, TimeUnit.SECONDS), "流水线应在工作线程启动并进入 ASR");
 
         // 上一段处理中再来一轮：audio_start 正常累积 PCM，audio_end → BUSY（同步下发）
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
