@@ -81,6 +81,22 @@ SSE 解析器分别累计 text、audio 和按 index 分片的 tool call argument
 复用 `SystemPromptStore`。车控/导航只生成 Intent，由 Android 执行一次；模型通过下一轮
 生成最终确认语音。
 
+### 工具循环与导航延迟
+
+- Omni 当前硬上限是 **7 次模型调用**，这是异常兜底，不是正常导航的目标轮数。
+- 单地点正常目标：地点查询 → `navigate` → 确认语音，共约 3 次模型调用。
+- 多地点的 POI 查询互不依赖，启用 `parallel_tool_calls` 后应在同一模型轮返回多个查询；
+  查询结果齐全后只调用一次 `navigate`。同名同参的重复工具请求复用首次结果，不再访问高德。
+- Skill 平台的非空 `toolsJson` 是明确勾选清单，未列出的 MCP 工具必须禁用；否则高德全部
+  15 个工具会错误触发 selector，凭空增加 `mcp_tools_get` / `mcp_tools_execute` 轮次。
+- 推荐只启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_geo`；导航
+  不让模型调用路径规划、schema 拉起、距离或天气工具。生产提示词模板见
+  [`prompts/qwen-omni-navigation.txt`](prompts/qwen-omni-navigation.txt)。
+
+当前 `Reply` 只能携带一个终局 `Intent`。因此“导航去山姆，同时打开车窗”这类跨域复合指令
+不能靠提示词可靠完成两个动作：若模型同轮输出两个终局工具，现实现只保留最后一个。完整支持
+需要把下行契约升级为有序 `intents[]`（或批处理 action），端侧逐项执行并分别回报结果。
+
 ## 5. 音频与 TTS
 
 目标形态：

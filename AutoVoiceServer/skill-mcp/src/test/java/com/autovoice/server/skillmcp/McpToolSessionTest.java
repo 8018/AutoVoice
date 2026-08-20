@@ -40,6 +40,20 @@ class McpToolSessionTest {
     }
 
     @Test
+    void nonEmptyToolsJsonDisablesToolsOmittedByPlatformSelection() throws Exception {
+        try (FakeMcpServer fake = new FakeMcpServer()) {
+            SkillConfig cfg = new SkillConfig("amap-maps", "高德地图", "导航",
+                    fake.url(), "", "",
+                    "[{\"name\":\"poi_search\",\"enabled\":true}]",
+                    true, 1L);
+            try (McpToolSession s = McpToolSession.connect(cfg, 5000)) {
+                assertEquals(java.util.Set.of("poi_search"), s.tools().keySet(),
+                        "平台只返回已勾选项时，未列出的 MCP 工具不能被静默重新启用");
+            }
+        }
+    }
+
+    @Test
     void listToolsFailureClosesSessionAndThrowsIOException() throws Exception {
         try (FakeMcpServer fake = new FakeMcpServer(true)) {
             SkillConfig cfg = new SkillConfig("amap-maps", "高德地图", "导航",

@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.io.ByteArrayOutputStream;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -95,6 +96,8 @@ class QwenOmniSpeechProviderTest {
                 .startsWith("data:audio/wav;base64,"));
         assertFalse(body.toString().contains("zh-CN"));
         assertFalse(body.toString().contains("理解这段语音"));
+        assertTrue(body.path("parallel_tool_calls").asBoolean(),
+                "多地点的独立 POI 查询应允许模型在同一轮规划");
     }
 
     @Test
@@ -175,6 +178,62 @@ class QwenOmniSpeechProviderTest {
         assertEquals("weather:{\"city\":\"杭州\"}", invocation.get());
         assertEquals("audio", result.reply().kind());
         assertEquals(2, server.getRequestCount());
+    }
+
+    @Test
+    void executesMultipleIndependentToolCallsFromOneModelRound() throws Exception {
+        server.enqueue(sse("{\"choices\":[{\"delta\":{\"tool_calls\":["
+                + "{\"index\":0,\"id\":\"call-a\",\"function\":{\"name\":\"poi_search\","
+                + "\"arguments\":\"{\\\"query\\\":\\\"山姆\\\"}\"}},"
+                + "{\"index\":1,\"id\":\"call-b\",\"function\":{\"name\":\"poi_search\","
+                + "\"arguments\":\"{\\\"query\\\":\\\"AI创新中心\\\"}\"}}]}}]}"));
+        server.enqueue(sse(delta("content", "已开始导航")));
+        CopyOnWriteArrayList<String> calls = new CopyOnWriteArrayList<>();
+        QwenOmniSpeechProvider provider = new QwenOmniSpeechProvider(
+                new OkHttpClient(), "test-key", server.url("/chat").toString(),
+                null, null,
+                () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
+                        "poi_search", "地点搜索", "{\"type\":\"object\"}")),
+                (name, args) -> {
+                    calls.add(name + ":" + args);
+                    return "resolved:" + args;
+                }, () -> "测试");
+
+        provider.process(new byte[]{1, 2}, context(), "u-parallel").get(2, TimeUnit.SECONDS);
+
+        assertEquals(2, calls.size());
+        RecordedRequest second = server.takeRequest(1, TimeUnit.SECONDS);
+        assertNotNull(second);
+        second = server.takeRequest(1, TimeUnit.SECONDS);
+        assertNotNull(second);
+        JsonNode messages = new ObjectMapper().readTree(second.getBody().readUtf8()).path("messages");
+        assertEquals(2, messages.findValues("tool_call_id").size(),
+                "同一模型轮返回的每个查询结果都必须按 call id 回填");
+    }
+
+    @Test
+    void reusesIdenticalToolResultAcrossRounds() throws Exception {
+        String sameCall = "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
+                + "\"id\":\"%s\",\"function\":{\"name\":\"poi_search\","
+                + "\"arguments\":\"{\\\"query\\\":\\\"山姆\\\"}\"}}]}}]}";
+        server.enqueue(sse(sameCall.formatted("call-1")));
+        server.enqueue(sse(sameCall.formatted("call-2")));
+        server.enqueue(sse(delta("content", "已找到")));
+        AtomicInteger executions = new AtomicInteger();
+        QwenOmniSpeechProvider provider = new QwenOmniSpeechProvider(
+                new OkHttpClient(), "test-key", server.url("/chat").toString(),
+                null, null,
+                () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
+                        "poi_search", "地点搜索", "{\"type\":\"object\"}")),
+                (name, args) -> {
+                    executions.incrementAndGet();
+                    return "resolved";
+                }, () -> "测试");
+
+        provider.process(new byte[]{1, 2}, context(), "u-dedup").get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, executions.get(), "同名同参的重复工具调用不应再次请求高德");
+        assertEquals(3, server.getRequestCount());
     }
 
     @Test

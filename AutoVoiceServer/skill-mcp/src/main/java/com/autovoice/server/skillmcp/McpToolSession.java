@@ -91,9 +91,12 @@ public final class McpToolSession implements AutoCloseable {
             throw new IOException("mcp list_tools failed for " + config.id() + ": " + e.getMessage(), e);
         }
         Map<String, Boolean> chosen = parseToolsJson(config.toolsJson());
+        boolean explicitSelection = !chosen.isEmpty();
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         for (Tool t : listed.tools()) {
-            if (chosen.getOrDefault(t.name(), true)) { // 勾选清单为空 = 全选
+            // 平台保存的是用户明确勾选的工具，而不是 MCP server 的完整工具清单。
+            // 因此非空清单中未出现的工具必须视为未启用；只有空清单才兼容旧配置为全选。
+            if (!explicitSelection || chosen.getOrDefault(t.name(), false)) {
                 // 2.0.0 的 Tool.inputSchema() 返回 Map<String,Object>（非 JsonNode/字符串），
                 // writeValueAsString(Map) 同样产出合法 JSON 文本
                 String schema = t.inputSchema() == null
