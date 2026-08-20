@@ -262,6 +262,89 @@ class QwenOmniSpeechProviderTest {
                 null, null, QwenOmniSpeechProvider::defaultTools, executor, () -> "测试");
     }
 
+    // ------------------------------------------------------------ 工具循环上限与优雅降级
+
+    @Test
+    void toolChainBeyondSevenRoundsCompletes() throws Exception {
+        // 多步工具链（selector 注入下每个真实动作 2 轮）超过旧上限 7 轮仍应完成：
+        // 7 轮工具调用 + 1 轮最终回答 = 8 次 HTTP
+        for (int i = 0; i < 7; i++) {
+            server.enqueue(sse(toolCall("weather", "{\"city\":\"杭州\"}")));
+        }
+        server.enqueue(sse(delta("content", "杭州晴天")));
+
+        OnlineSpeechResult result = provider((name, args) -> "晴天")
+                .process(new byte[]{1, 2}, context(), "u-tool-chain")
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("text", result.reply().kind());
+        assertEquals("杭州晴天", result.reply().speakText());
+        assertEquals(8, server.getRequestCount());
+    }
+
+    @Test
+    void toolLoopExhaustionReturnsLastAccumulatedText() throws Exception {
+        // 循环耗尽（12 轮工具调用未收敛）→ 优雅降级：回最近一轮累积的助手文本，不再抛异常
+        for (int i = 0; i < 12; i++) {
+            String event = i == 10
+                    ? "{\"choices\":[{\"delta\":{\"content\":\"正在为您规划\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"杭州\\\"}\"}}]}}]}"
+                    : toolCall("weather", "{\"city\":\"杭州\"}");
+            server.enqueue(sse(event));
+        }
+        AtomicBoolean errored = new AtomicBoolean();
+        OnlineSpeechResult result = provider((name, args) -> "晴天")
+                .process(new byte[]{1, 2}, context(), "u-loop-text",
+                        new OnlineAudioSink() {
+                            @Override public void onError(Throwable error) { errored.set(true); }
+                        })
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("text", result.reply().kind());
+        assertEquals("正在为您规划", result.reply().speakText());
+        assertFalse(errored.get(), "循环耗尽是优雅降级，不得向流报错");
+        assertEquals(12, server.getRequestCount());
+    }
+
+    @Test
+    void toolLoopExhaustionWithoutTextReturnsFallbackText() throws Exception {
+        // 循环耗尽且无任何助手文本 → 兜底话术（正常回复收敛，不 abort 流）
+        for (int i = 0; i < 12; i++) {
+            server.enqueue(sse(toolCall("weather", "{\"city\":\"杭州\"}")));
+        }
+        AtomicBoolean errored = new AtomicBoolean();
+        OnlineSpeechResult result = provider((name, args) -> "晴天")
+                .process(new byte[]{1, 2}, context(), "u-loop-fallback",
+                        new OnlineAudioSink() {
+                            @Override public void onError(Throwable error) { errored.set(true); }
+                        })
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("text", result.reply().kind());
+        assertEquals(QwenOmniSpeechProvider.TOOL_LOOP_FALLBACK_TEXT, result.reply().speakText());
+        assertFalse(errored.get(), "循环耗尽是优雅降级，不得向流报错");
+        assertEquals(12, server.getRequestCount());
+    }
+
+    @Test
+    void toolLoopExhaustionWithValidatedCommandReturnsAction() throws Exception {
+        // 循环耗尽但车控命令已通过工具校验 → 回 action（意图 + 模板话术），命令照常执行
+        for (int i = 0; i < 12; i++) {
+            String event = i == 3
+                    ? toolCall("car_control", "{\"domain\":\"climate\",\"action\":\"power_on\"}")
+                    : toolCall("weather", "{\"city\":\"杭州\"}");
+            server.enqueue(sse(event));
+        }
+        OnlineSpeechResult result = provider((name, args) -> "unused")
+                .process(new byte[]{1, 2}, context(), "u-loop-action")
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("action", result.reply().kind());
+        assertEquals("climate", result.reply().intent().domain());
+        assertEquals("power_on", result.reply().intent().intent());
+        assertEquals("好的，空调已打开", result.reply().speakText());
+        assertEquals(12, server.getRequestCount());
+    }
+
     private static SessionContext context() {
         return new SessionContext("s1", "zh-CN", Map.of());
     }
@@ -275,6 +358,11 @@ class QwenOmniSpeechProviderTest {
 
     private static String delta(String field, String value) {
         return "{\"choices\":[{\"delta\":{\"" + field + "\":\"" + value + "\"}}]}";
+    }
+
+    private static String toolCall(String name, String arguments) {
+        return "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\""
+                + name + "\",\"arguments\":\"" + arguments.replace("\"", "\\\"") + "\"}}]}}]}";
     }
 
     private static String audio(byte[] pcm) {

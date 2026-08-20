@@ -62,7 +62,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     public static final String DEFAULT_VOICE = "Tina";
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int MAX_ROUNDS = 7;
+    /** 工具循环上限：selector 注入下每个真实工具动作需 get+execute 两轮，
+     *  多步导航链（搜 POI → 再搜 → 导航 → 确认）需要更多轮次；耗尽时优雅降级（见下）。 */
+    private static final int MAX_ROUNDS = 12;
+
+    /** 工具循环耗尽时的兜底话术（优雅降级：不再以 ONLINE_STREAM_ABORTED 硬失败）。 */
+    static final String TOOL_LOOP_FALLBACK_TEXT = "抱歉，这个操作有点复杂，请再试一次";
     private static final int MAX_OUTPUT_AUDIO_BYTES = 4 * 1024 * 1024;
     private static final AtomicInteger WORKER = new AtomicInteger();
     private static final String LANGUAGE_POLICY = """
@@ -219,12 +224,16 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         Intent terminalIntent = null;
         boolean allowTools = true;
         Map<String, String> toolResultCache = new LinkedHashMap<>();
+        String lastAssistantText = "";
         for (int round = 0; round < MAX_ROUNDS; round++) {
             long roundStart = System.currentTimeMillis();
             StreamResult result = call(messages, allowTools, activeCall, audioSink);
             LOG.info("qwen omni round {} completed in {}ms: {} tool call(s), toolsAllowed={}",
                     round + 1, Math.max(1, System.currentTimeMillis() - roundStart),
                     result.toolCalls.size(), allowTools);
+            if (!result.text.isBlank()) {
+                lastAssistantText = result.text;
+            }
             if (result.toolCalls.isEmpty()) {
                 if (result.audio.length > 0) {
                     audioSink.onComplete(result.text, terminalIntent);
@@ -274,7 +283,21 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 tool.put("content", toolResult);
             }
         }
-        throw new IOException("qwen omni tool loop exceeded " + MAX_ROUNDS + " rounds");
+        // 工具循环耗尽（优雅降级）：多步工具链未在 MAX_ROUNDS 内收敛——不抛 IOException
+        // （否则网关下发 ONLINE_STREAM_ABORTED、端侧整轮失败）。按已有信息收敛为可播报回复：
+        // 已确认车控/导航命令 → action（命令照常执行）；有累积助手文本 → text；否则兜底话术。
+        if (terminalIntent != null) {
+            String speak = lastAssistantText.isBlank()
+                    ? SpeakTexts.speak(terminalIntent)
+                    : lastAssistantText;
+            audioSink.onReplyText(speak, true);
+            return new OnlineSpeechResult(Reply.ofAction(terminalIntent, speak), "");
+        }
+        if (!lastAssistantText.isBlank()) {
+            return new OnlineSpeechResult(Reply.ofText(lastAssistantText), "");
+        }
+        audioSink.onReplyText(TOOL_LOOP_FALLBACK_TEXT, true);
+        return new OnlineSpeechResult(Reply.ofText(TOOL_LOOP_FALLBACK_TEXT), "");
     }
 
     private static String locationPolicy(SessionContext context) {
