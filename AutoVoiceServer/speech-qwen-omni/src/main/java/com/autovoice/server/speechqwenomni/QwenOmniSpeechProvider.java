@@ -21,6 +21,8 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -51,6 +53,8 @@ import java.util.function.Supplier;
  * 24k WAV，一边通过 OnlineAudioSink 增量发送 24k/mono/s16le PCM。
  */
 public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
+
+    private static final Logger LOG = LoggerFactory.getLogger(QwenOmniSpeechProvider.class);
 
     public static final String DEFAULT_ENDPOINT =
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -219,9 +223,14 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
 
         Intent terminalIntent = null;
         boolean allowTools = true;
+        Map<String, String> toolResultCache = new LinkedHashMap<>();
         String lastAssistantText = "";
         for (int round = 0; round < MAX_ROUNDS; round++) {
+            long roundStart = System.currentTimeMillis();
             StreamResult result = call(messages, allowTools, activeCall, audioSink);
+            LOG.info("qwen omni round {} completed in {}ms: {} tool call(s), toolsAllowed={}",
+                    round + 1, Math.max(1, System.currentTimeMillis() - roundStart),
+                    result.toolCalls.size(), allowTools);
             if (!result.text.isBlank()) {
                 lastAssistantText = result.text;
             }
@@ -253,7 +262,20 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                             + "Reply with a brief confirmation in the same language as the user's audio.";
                     allowTools = false;
                 } else {
-                    toolResult = executeTool(tc);
+                    // 模型偶尔会在相邻轮重复同名同参调用。复用第一次结果，避免再次访问
+                    // 高德并放大延迟；仍把 tool message 补齐，让模型能继续完成规划。
+                    String signature = tc.name + "\n" + tc.arguments;
+                    String cached = toolResultCache.get(signature);
+                    if (cached != null) {
+                        toolResult = cached;
+                        LOG.info("qwen omni reused duplicate tool result: {}", tc.name);
+                    } else {
+                        long toolStart = System.currentTimeMillis();
+                        toolResult = executeTool(tc);
+                        toolResultCache.put(signature, toolResult);
+                        LOG.info("qwen omni tool {} completed in {}ms", tc.name,
+                                Math.max(1, System.currentTimeMillis() - toolStart));
+                    }
                 }
                 ObjectNode tool = messages.addObject();
                 tool.put("role", "tool");
@@ -288,7 +310,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 + "around/nearby POI search tool centered on these coordinates. If only keyword search "
                 + "is available, choose the result nearest to these coordinates. Never choose a distant "
                 + "same-name POI when a nearby candidate exists. For multiple stops, preserve spoken order: "
-                + "intermediate stops go in navigate.waypoints and the last stop is navigate.poiname.";
+                + "resolve every stop, request independent POI lookups together in one parallel tool turn, "
+                + "do not plan a driving route or open a map schema, then call navigate exactly once. "
+                + "Intermediate stops go in navigate.waypoints and the last stop is navigate.poiname.";
     }
 
     private StreamResult call(ArrayNode messages, boolean allowTools, AtomicReference<Call> activeCall,
@@ -311,7 +335,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 fn.set("parameters", MAPPER.readTree(spec.parametersJson()));
             }
             body.put("tool_choice", "auto");
-            body.put("parallel_tool_calls", false);
+            // 多途经点的 POI 查询互不依赖。让模型在同一轮返回多个查询可省掉一轮或多轮
+            // Qwen 推理；执行结果仍按各自 tool_call_id 回填，依赖结果的 navigate 留到下一轮。
+            body.put("parallel_tool_calls", true);
         }
 
         Request request = new Request.Builder().url(endpoint)
