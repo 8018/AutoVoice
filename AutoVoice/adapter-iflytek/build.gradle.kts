@@ -51,3 +51,21 @@ dependencies {
     }
     testImplementation(libs.junit)
 }
+
+// 真机包必须同时包含离线命令词与离线唤醒两个 AEE native 插件。CI 强制 stub，跳过此校验。
+val verifyIflytekVendorAar by tasks.registering {
+    doLast {
+        val vendorAar = file("libs/AIKit.aar")
+        val forceStub = providers.gradleProperty("useIflytekStub").orNull == "true"
+        if (!vendorAar.isFile || forceStub) return@doLast
+        val abilityPlugins = zipTree(vendorAar).matching {
+            include("jni/arm64-v8a/lib*_aee.so")
+        }.files
+        check(abilityPlugins.size >= 2) {
+            "libs/AIKit.aar 只包含 ${abilityPlugins.size} 个能力插件；请运行 " +
+                "tools/prepare-iflytek-aikit.sh 合并离线命令词与离线唤醒 SDK"
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(verifyIflytekVendorAar) }

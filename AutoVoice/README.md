@@ -16,8 +16,8 @@ AutoVoice/                      Android 端（Kotlin）
 │                               Stage SPI、VoiceSession 状态机、OnDeviceRaceArbiter
 ├── gateway-client/             WS 网关客户端（连接/重连、事件桥、segmentId 对账）
 ├── adapter-local/              Silero VAD（ONNX）+ RNNoise 降噪（JNI，4 ABI）
-├── adapter-iflytek/            讯飞离线命令词 AIKit（AEE）+ FakeCommandAsr +
-│                               RuleNlu（规则意图映射表）
+├── adapter-iflytek/            讯飞离线唤醒 IVW + 离线命令词 AIKit（共享运行时）+
+│                               FakeCommandAsr + RuleNlu（规则意图映射表）
 └── app/                        Compose UI（决策日志/模拟车控/录音）、AudioRecorder、
                                 TtsPlayer（WAV）/SystemTtsFallback（TextToSpeech）、
                                 VoiceEngine 装配接线、demo-full/demo-offline 配置资产
@@ -55,6 +55,26 @@ export XFYUN_APPID=... XFYUN_API_KEY=... DEEPSEEK_API_KEY=... \
 cd AutoVoice
 ./gradlew :app:installDebug
 ```
+
+### 离线唤醒
+
+前台运行且取得录音权限后，App 默认监听“你好飞飞”。唤醒与语音链共享唯一
+`AudioRecord`：待机 IVW 直接消费原始 PCM，唤醒后才启用 Silero VAD/RNNoise 分支，
+VAD `SpeechEnd` 自动提交本轮。退到后台会停止麦克风，若要
+后台常驻唤醒需另行改成 Android 前台服务。
+
+真机 SDK 需把两个交付包合为一个 AAR（Java API 相同，保留两个 native ability 插件）：
+
+```bash
+cd AutoVoice
+tools/prepare-iflytek-aikit.sh \
+  <离线命令词SDK>/demo/app/libs/AIKit.aar \
+  <离线唤醒SDK>/demo/app/libs/AIKit.aar
+adb push <离线唤醒SDK>/resource/ivw /sdcard/iflytek/
+```
+
+凭据继续由根目录 `local.properties` 的 `xfyun.appid`、`xfyun.apiKey`、
+`xfyun.apiSecret` 注入；缺凭据、资源或合并 AAR 时，界面会显示唤醒不可用。
 
 ## 验收结果表
 

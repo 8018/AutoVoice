@@ -118,6 +118,14 @@ class AudioRecorder(
     /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；按住期间收集在 MainViewModel。 */
     val pcmBlocks: SharedFlow<ByteArray> = _pcmBlocks.asSharedFlow()
 
+    private val _rawPcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
+
+    /**
+     * 麦克风原始 PCM 块流（1024B/块，16k 单声道 PCM16）。这是唯一 AudioRecord 的共享
+     * 输出；待机时唤醒观察者消费它，进入一轮后 VAD/RNNoise 也消费同一批后续块。
+     */
+    val rawPcmBlocks: SharedFlow<ByteArray> = _rawPcmBlocks.asSharedFlow()
+
     private val _vadEvents = MutableSharedFlow<VadEvent>(extraBufferCapacity = BUFFER_CAPACITY)
 
     /** VAD 事件流（SpeechStart / SpeechEnd；模型加载失败时永不发射）。 */
@@ -131,34 +139,53 @@ class AudioRecorder(
 
     private var readJob: Job? = null
 
-    val isRecording: Boolean get() = readJob?.isActive == true
+    @Volatile
+    private var turnActive = false
+
+    @Volatile
+    private var monitoringRequested = false
+
+    /** 是否正在收集一轮语音；底层麦克风可能因唤醒监听而继续运行。 */
+    val isRecording: Boolean get() = turnActive
+
+    /**
+     * 启动待机监听的共享麦克风。不会启用 VAD/RNNoise，也不会积累一轮语音。
+     * 测试音频源不支持常驻唤醒，避免 fixture 在后台无限循环触发。
+     */
+    @Synchronized
+    fun startMonitoring(): Boolean {
+        if (testAudioSource != null) return false
+        monitoringRequested = true
+        if (ensureMicrophoneCapture()) return true
+        monitoringRequested = false
+        return false
+    }
+
+    /** 停止待机监听；若当前仍在收集一轮语音，麦克风保持运行到 [stop]。 */
+    @Synchronized
+    fun stopMonitoring() {
+        monitoringRequested = false
+        if (!turnActive) stopCapture()
+    }
 
     /** 启动录音；已在录或创建 AudioRecord 失败（如缺 RECORD_AUDIO 权限）时返回 false。 */
     @Synchronized
     fun start(): Boolean {
-        if (readJob?.isActive == true) return false
+        if (turnActive) return false
         val source = testAudioSource
         if (source != null) {
             // 测试模式（Task 58）：屏蔽麦克风，预置语音按真实节奏喂双网格，无需录音权限
             Log.i(TAG, "测试音频源模式：${source.describe()}")
             source.reset() // 每轮从头播（游标跨轮不重置 → 段起点随机，Task 58 联调发现）
             vadSegmenter?.resetForTurn()
+            turnActive = true
             readJob = scope.launch { testReadLoop(source) }
             return true
         }
-        val audioRecord = createAudioRecord() ?: return false
-        record = audioRecord
-        try {
-            audioRecord.startRecording()
-        } catch (t: Throwable) {
-            Log.w(TAG, "AudioRecord.startRecording failed, degraded silently", t)
-            audioRecord.release()
-            record = null
-            return false
-        }
+        if (!ensureMicrophoneCapture()) return false
         // 本轮录音从干净状态起步（清上一轮段缓冲 + 重置 VAD 诊断峰值）
         vadSegmenter?.resetForTurn()
-        readJob = scope.launch { readLoop(audioRecord) }
+        turnActive = true
         return true
     }
 
@@ -180,9 +207,17 @@ class AudioRecorder(
         return segments
     }
 
-    /** 停止录音并释放 AudioRecord（幂等）；scope 不取消，可再次 [start]。 */
+    /**
+     * 结束本轮收集（幂等）。若唤醒监听仍启用，只关闭 VAD/RNNoise 分支，底层
+     * AudioRecord 与原始 PCM 流保持不变；否则释放麦克风。
+     */
     @Synchronized
     fun stop() {
+        turnActive = false
+        if (testAudioSource != null || !monitoringRequested) stopCapture()
+    }
+
+    private fun stopCapture() {
         readJob?.cancel()
         readJob = null
         val audioRecord = record
@@ -197,7 +232,9 @@ class AudioRecorder(
 
     /** 释放 VAD 切分器 / RNNoise / 协程 scope（释放后不可再 [start]）。 */
     override fun close() {
-        stop()
+        monitoringRequested = false
+        turnActive = false
+        stopCapture()
         try {
             vadSegmenter?.close()
         } catch (_: Throwable) {
@@ -217,7 +254,7 @@ class AudioRecorder(
         while (currentCoroutineContext().isActive) {
             source.nextBlock(block)
             try {
-                processBlock(block)
+                handleCapturedBlock(block)
             } catch (t: Throwable) {
                 // 单块处理失败（RNNoise 异常）不中断录音，静默降级
                 Log.w(TAG, "block processing failed, degraded silently", t)
@@ -233,7 +270,7 @@ class AudioRecorder(
                 break // 停止 / 读错误
             }
             try {
-                processBlock(block)
+                handleCapturedBlock(block)
             } catch (t: Throwable) {
                 // 单块处理失败（RNNoise 异常）不中断录音，静默降级
                 Log.w(TAG, "block processing failed, degraded silently", t)
@@ -257,8 +294,10 @@ class AudioRecorder(
         return true
     }
 
-    /** 单块处理：VAD 网格（切段器实时切云端段）+ RNNoise 网格（降噪 → 960B 块）。 */
-    private fun processBlock(block: ByteArray) {
+    /** 单一采集流扇出：原始 PCM 始终给观察者；只有本轮激活时才进入语音处理分支。 */
+    private fun handleCapturedBlock(block: ByteArray) {
+        _rawPcmBlocks.tryEmit(block.copyOf())
+        if (!turnActive) return
         vadSegmenter?.feed(block)?.let { _vadEvents.tryEmit(it) }
         val denoised = denoiser.process(first480Frame(pcm16BytesToShorts(block)))
         _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
@@ -288,6 +327,23 @@ class AudioRecorder(
             Log.w(TAG, "AudioRecord creation failed, degraded silently", t)
             null
         }
+    }
+
+    /** 创建一次 AudioRecord 并持续读；唤醒/语音只切换观察分支，不重建麦克风。 */
+    private fun ensureMicrophoneCapture(): Boolean {
+        if (readJob?.isActive == true && record != null) return true
+        val audioRecord = createAudioRecord() ?: return false
+        record = audioRecord
+        try {
+            audioRecord.startRecording()
+        } catch (t: Throwable) {
+            Log.w(TAG, "AudioRecord.startRecording failed, degraded silently", t)
+            audioRecord.release()
+            record = null
+            return false
+        }
+        readJob = scope.launch { readLoop(audioRecord) }
+        return true
     }
 
     private companion object {
