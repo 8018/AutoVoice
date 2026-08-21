@@ -38,6 +38,11 @@ class MainActivity : ComponentActivity() {
         mainViewModel.onForeground()
     }
 
+    override fun onStop() {
+        mainViewModel.onBackground()
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -67,6 +72,8 @@ class MainActivity : ComponentActivity() {
                 }
                 if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) {
                     permissionLauncher.launch(permissions.toTypedArray())
+                } else {
+                    viewModel.onAudioPermissionGranted()
                 }
                 // 所有文件访问（讯飞 AIKit 读写 workDir=/sdcard/iflytek/ 必需，非 runtime 权限只能跳系统设置）
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
@@ -78,8 +85,6 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     VoiceScreen(
                         state = state,
-                        onStartRecording = viewModel::startRecording,
-                        onStopRecording = viewModel::stopRecording,
                         onModeChange = viewModel::setMode,
                         onWeakNetworkChange = viewModel::setWeakNetwork,
                     )

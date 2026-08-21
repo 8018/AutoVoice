@@ -7,7 +7,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-// 讯飞离线命令词 AIKit 授权凭据：从 local.properties（gitignored，不入库）注入 BuildConfig。
+// 讯飞离线唤醒/命令词共享的 AIKit 授权凭据：从 local.properties（gitignored）注入。
 // 未配置时为空字符串 → 引擎侧 SDK 未配置降级 fake-cmd（runbook §1.2/§5.1），功能不中断。
 val xfyunProps = Properties().apply {
     val f = rootProject.file("local.properties")

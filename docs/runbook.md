@@ -54,6 +54,30 @@ demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线�
 未接线时切 `iflytek.offline` 会看到「讯飞离线命令词 SDK 未配置」降级提示（预期内，
 见 §5.1），链路自动回退 fake-cmd，功能不中断。
 
+#### 1.2.1 离线唤醒（IVW）
+
+离线唤醒与离线命令词交付包包含不同的 native ability 插件，不能直接同时依赖两个
+带重复 `classes.jar` / `libAIKIT.so` 的 AAR。先在 `AutoVoice/` 下生成合并包：
+
+```bash
+tools/prepare-iflytek-aikit.sh \
+  <离线命令词SDK>/demo/app/libs/AIKit.aar \
+  <离线唤醒SDK>/demo/app/libs/AIKit.aar
+adb push <离线唤醒SDK>/resource/ivw /sdcard/iflytek/
+adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow
+```
+
+合并脚本会校验两个交付包的 Java API 完全一致，并保留命令词、唤醒两个
+`lib*_aee.so`。App 前台取得 `RECORD_AUDIO` 后显示“正在等待唤醒：你好飞飞”。音频顺序为：
+
+```text
+唯一 AudioRecord 原始 PCM → IVW（不经过 Silero VAD）
+                         └─命中后→ Silero VAD → RNNoise / ASR / NLU
+```
+
+唤醒轮由 Silero `SpeechEnd` 自动提交，10 秒始终没有形成结束事件则安全收口。App 退到
+后台会停止监听；当前没有用前台服务实现后台常驻唤醒。
+
 ### 1.3 AIUI 平台配置
 
 云端传统 NLU（剧本 2/3 的 `nlu-traditional` 链路）走讯飞语义 API，需在 AIUI 控制台

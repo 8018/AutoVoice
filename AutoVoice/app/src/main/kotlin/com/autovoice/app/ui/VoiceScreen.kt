@@ -1,13 +1,6 @@
 package com.autovoice.app.ui
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilterChip
@@ -24,14 +16,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.autovoice.app.DemoMode
@@ -39,14 +25,12 @@ import com.autovoice.app.UiState
 import com.autovoice.voicecore.session.SessionState
 
 /**
- * 主屏（Task 19）：会话状态头 + 车辆面板 + 决策日志 + 设置区 + 录音按钮。
+ * 主屏（Task 19）：会话状态头 + 车辆面板 + 决策日志 + 设置区。
  * 所有状态来自 [UiState] StateFlow，交互经回调进 ViewModel。
  */
 @Composable
 fun VoiceScreen(
     state: UiState,
-    onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
 ) {
@@ -58,6 +42,21 @@ fun VoiceScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Header(state.sessionState, state.cloudPending)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = when {
+                state.recording -> "正在聆听命令…"
+                state.wakeListening -> "正在等待唤醒：你好飞飞"
+                state.wakeError != null -> "唤醒未启用：${state.wakeError}"
+                else -> "唤醒初始化中…"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state.wakeError == null) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
@@ -98,13 +97,6 @@ fun VoiceScreen(
                 color = MaterialTheme.colorScheme.error,
             )
         }
-        Spacer(Modifier.height(12.dp))
-        // Task 50 按钮回归：按住录音（VAD 保留，抬手后双路：云端段 + 本地整段）
-        RecordButton(
-            recording = state.recording,
-            onStartRecording = onStartRecording,
-            onStopRecording = onStopRecording,
-        )
     }
 }
 
@@ -155,60 +147,6 @@ private fun AsrResultCard(
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
-    }
-}
-
-/** 底部录音按钮：按住说话、松开停止（Task 50 按钮双路：抬手后音频分两路送识别）。 */
-@Composable
-private fun RecordButton(
-    recording: Boolean,
-    onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
-) {
-    val container = if (recording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
-    val content = if (recording) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
-    val ring = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-
-    // 按压缩放动效：按下 0.88、抬手弹回 1.0（spring 回弹）
-    var pressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.88f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow,
-        ),
-        label = "recordButtonScale",
-    )
-
-    Box(
-        modifier = Modifier
-            .size(88.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        pressed = true
-                        onStartRecording()
-                        try {
-                            // 阻塞到抬手（含手势取消）；无论成败都停止录音
-                            tryAwaitRelease()
-                            onStopRecording()
-                        } finally {
-                            pressed = false
-                        }
-                    },
-                )
-            }
-            .background(container, CircleShape)
-            .border(2.dp, ring, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = if (recording) "松开" else "按住说话",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = content,
-        )
     }
 }
 

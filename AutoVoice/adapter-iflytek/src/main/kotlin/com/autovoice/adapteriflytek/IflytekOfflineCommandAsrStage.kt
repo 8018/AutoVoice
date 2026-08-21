@@ -8,10 +8,6 @@ import com.iflytek.aikit.core.AiListener
 import com.iflytek.aikit.core.AiRequest
 import com.iflytek.aikit.core.AiResponse
 import com.iflytek.aikit.core.AiStatus
-import com.iflytek.aikit.core.BaseLibrary
-import com.iflytek.aikit.core.CoreListener
-import com.iflytek.aikit.core.ErrType
-import com.iflytek.aikit.core.LogLvl
 import java.io.File
 import java.nio.charset.Charset
 import java.util.concurrent.Callable
@@ -76,10 +72,7 @@ class IflytekOfflineCommandAsrStage(
     private var fsaLoaded = false
 
     @Volatile
-    private var authCode = -1
-
-    private val authLatch = CountDownLatch(1)
-    private val resultLatch = CountDownLatch(1)
+    private var resultLatch = CountDownLatch(1)
     private val pendingResult = AtomicReference<String?>(null)
     private val lastError = AtomicReference<String?>(null)
 
@@ -94,32 +87,9 @@ class IflytekOfflineCommandAsrStage(
     fun init(context: Context) {
         checkCredentials()
         if (initialized) return
-        // 能力结果回调与授权回调都注册在 initEntry 之前，避免丢失事件（与 demo 一致）
+        // 能力结果回调先注册；SDK 鉴权由进程级 runtime 与唤醒能力共享。
         AiHelper.getInst().registerListener(ABILITY_ID, abilityListener)
-        AiHelper.getInst().registerListener(coreListener)
-        AiHelper.getInst().setLogInfo(LogLvl.ERROR, 1, "$workDir/aikit/aeeLog.txt")
-        val params = BaseLibrary.Params.builder()
-            .appId(appId)
-            .apiKey(apiKey)
-            .apiSecret(apiSecret)
-            .workDir(workDir)
-            .build()
-        // 初始化（含首次联网鉴权）放后台线程，与 demo 一致
-        Thread {
-            try {
-                AiHelper.getInst().initEntry(context, params)
-            } catch (t: Throwable) {
-                lastError.set(t.message ?: t.javaClass.simpleName)
-                authLatch.countDown()
-            }
-        }.start()
-        val authed = authLatch.await(AUTH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        if (!authed) {
-            throw IllegalStateException("$NOT_CONFIGURED_MSG（SDK 授权超时：检查 appid/apiKey/apiSecret 与网络，并确认离线命令词能力已开通）")
-        }
-        if (authCode != 0) {
-            throw IllegalStateException("$NOT_CONFIGURED_MSG（SDK 授权失败 code=$authCode，授权凭据在用户侧，请确认体验版授权已绑定该 appid）")
-        }
+        IflytekAiKitRuntime.ensureInitialized(context, appId, apiKey, apiSecret, workDir)
         val initRet = runOnEngine { initEngine() }
         if (initRet != 0) {
             throw IllegalStateException("$NOT_CONFIGURED_MSG（引擎初始化失败 code=$initRet，请确认离线资源已推送到 $workDir（SDK 归档 resource/CNENESR））")
@@ -165,7 +135,7 @@ class IflytekOfflineCommandAsrStage(
 
     /** 单次识别会话：装载 FSA → start → write(BEGIN/CONTINUE/END) → read → 等结果 → end。 */
     private fun runSession(pcm: ByteArray): String? {
-        resultLatch.reset()
+        resultLatch = CountDownLatch(1)
         pendingResult.set(null)
         lastError.set(null)
 
@@ -299,15 +269,6 @@ class IflytekOfflineCommandAsrStage(
 
     // ------------------------------------------------------------------ 回调
 
-    private val coreListener = object : CoreListener {
-        override fun onAuthStateChange(type: ErrType, code: Int) {
-            if (type == ErrType.AUTH) {
-                authCode = code
-                authLatch.countDown()
-            }
-        }
-    }
-
     private val abilityListener = object : AiListener {
         override fun onResult(handleID: Int, outputData: List<AiResponse>?, usrContext: Any?) {
             if (outputData == null || outputData.isEmpty()) return
@@ -425,7 +386,6 @@ class IflytekOfflineCommandAsrStage(
             "e75f07b62_MLP_VAD_EN.bin_1.0.0.0",
         )
 
-        private const val AUTH_TIMEOUT_MS = 20_000L
         private const val RECOGNIZE_TIMEOUT_MS = 15_000L
         private const val ENGINE_CALL_TIMEOUT_MS = 30_000L
 
@@ -460,9 +420,4 @@ class IflytekOfflineCommandAsrStage(
             append(";\r\n")
         }
     }
-}
-
-/** [CountDownLatch] 复用前复位。 */
-private fun CountDownLatch.reset() {
-    while (count > 0) countDown()
 }
