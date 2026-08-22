@@ -9,6 +9,7 @@ java {
 dependencies {
     // LlmProvider/Reply/SessionContext 是公开 API 的一部分（implements LlmProvider、返回 CompletableFuture<Reply>）
     api(project(":contracts"))
+    implementation(project(":agent-loop"))
     implementation(libs.okhttp)
     implementation(libs.jackson.databind)
     testImplementation(libs.junit)

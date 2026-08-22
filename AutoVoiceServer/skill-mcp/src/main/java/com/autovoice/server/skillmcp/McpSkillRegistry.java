@@ -1,5 +1,6 @@
 package com.autovoice.server.skillmcp;
 
+import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,9 +45,11 @@ public final class McpSkillRegistry implements AutoCloseable {
     private volatile Map<String, McpToolSession> sessions = Map.of();
     /** 不可被外部 skill 覆盖的内置终局工具。 */
     private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate",
-            SelectorToolInjector.GET, SelectorToolInjector.EXECUTE);
+            NavigationToolFacade.NAME, SelectorToolInjector.GET, SelectorToolInjector.EXECUTE);
     /** 刷新时原子替换的唯一工具路由，避免调用期按 session 顺序选择同名工具。 */
     private volatile Map<String, McpToolSession> toolOwners = Map.of();
+    /** 高德低层搜索 + 地理编码聚合成的一次导航解析调用。 */
+    private volatile NavigationToolFacade navigationFacade;
     private volatile long lastRefreshMs;
 
     public McpSkillRegistry(SkillPlatformClient client, ToolInjector injector,
@@ -120,6 +123,10 @@ public final class McpSkillRegistry implements AutoCloseable {
         Map<String, McpToolSession> old = sessions;
         sessions = next;
         toolOwners = Map.copyOf(nextOwners);
+        navigationFacade = next.values().stream()
+                .filter(s -> "amap-maps".equals(s.skillId()))
+                .filter(NavigationToolFacade::supports)
+                .findFirst().map(NavigationToolFacade::new).orElse(null);
         lastRefreshMs = System.currentTimeMillis();
         String oldPrompt = promptStore.get();
         String prompt = client.fetchSystemPrompt();
@@ -138,15 +145,15 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     /** 注入 LLM 的工具列表（经注入策略，含分级）。 */
     public List<FunctionTool> enabledToolSpecs() {
-        List<FunctionTool> all = new ArrayList<>();
-        for (McpToolSession s : sessions.values()) {
-            all.addAll(s.tools().values());
-        }
-        return injector.inject(all);
+        return ToolSchemaCompactor.compact(injector.inject(rawToolSpecs()));
     }
 
     /** 按工具名路由到所属 session 执行；未知工具抛 McpToolException。 */
     public String callTool(String toolName, String argumentsJson) {
+        NavigationToolFacade facade = navigationFacade;
+        if (NavigationToolFacade.NAME.equals(toolName) && facade != null) {
+            return facade.resolve(argumentsJson);
+        }
         if (SelectorToolInjector.GET.equals(toolName)) return searchTools(argumentsJson);
         if (SelectorToolInjector.EXECUTE.equals(toolName)) return executeSelectedTool(argumentsJson);
         McpToolSession owner = toolOwners.get(toolName);
@@ -165,8 +172,12 @@ public final class McpSkillRegistry implements AutoCloseable {
                             || query.contains(tool.name().toLowerCase())
                             || containsQueryTerm(query, tool.description().toLowerCase()))
                     .limit(SELECTOR_RESULT_LIMIT)
+                    .map(ToolSchemaCompactor::compact)
                     .toList();
-            if (matched.isEmpty()) matched = all.stream().limit(SELECTOR_RESULT_LIMIT).toList();
+            if (matched.isEmpty()) {
+                matched = all.stream().limit(SELECTOR_RESULT_LIMIT)
+                        .map(ToolSchemaCompactor::compact).toList();
+            }
             List<Map<String, Object>> result = matched.stream().map(tool -> Map.<String, Object>of(
                     "name", tool.name(),
                     "description", tool.description(),
@@ -185,6 +196,10 @@ public final class McpSkillRegistry implements AutoCloseable {
             if (name.isBlank() || !actual.isObject()) {
                 throw new IllegalArgumentException("name and object arguments are required");
             }
+            NavigationToolFacade facade = navigationFacade;
+            if (NavigationToolFacade.NAME.equals(name) && facade != null) {
+                return facade.resolve(JSON.writeValueAsString(actual));
+            }
             // 只允许真实 MCP 工具，禁止 meta 工具递归调用自身。
             McpToolSession owner = toolOwners.get(name);
             if (owner == null) throw new McpToolException("no skill owns tool: " + name);
@@ -198,7 +213,15 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     private List<FunctionTool> rawToolSpecs() {
         List<FunctionTool> all = new ArrayList<>();
-        for (McpToolSession session : sessions.values()) all.addAll(session.tools().values());
+        NavigationToolFacade facade = navigationFacade;
+        for (McpToolSession session : sessions.values()) {
+            for (FunctionTool tool : session.tools().values()) {
+                if (facade != null && "amap-maps".equals(session.skillId())
+                        && NavigationToolFacade.isSourceTool(tool.name())) continue;
+                all.add(tool);
+            }
+        }
+        if (facade != null) all.add(NavigationToolFacade.TOOL);
         return all;
     }
 

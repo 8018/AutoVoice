@@ -1,5 +1,10 @@
 package com.autovoice.server.llm;
 
+import com.autovoice.server.agentloop.AgentLoop;
+import com.autovoice.server.agentloop.AgentToolCall;
+import com.autovoice.server.agentloop.AgentToolResult;
+import com.autovoice.server.agentloop.RequestToolExecutor;
+import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
@@ -9,6 +14,7 @@ import com.autovoice.server.contracts.SlotValue;
 import com.autovoice.server.contracts.SpeakTexts;
 import com.autovoice.server.contracts.ToolExecutor;
 import com.autovoice.server.contracts.ToolProvider;
+import com.autovoice.server.contracts.VehicleAgentTools;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.contracts.telemetry.TelemetryStages;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -74,13 +80,11 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     public static final String DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 
     /** 工具循环预算（毫秒）：起算于首次 LLM 调用，超时后后续调用不再带 tools。
-     *  20000：多目的地导航（先去A再去B）最多 6 次工具轮（search×2 → geo×2 → navigate，
-     *  含 search 重试余量），预算需覆盖完整工具循环（safety-timeout-ms 兜底才是最终上限）。 */
+     * resolve_navigation 已把多地点搜索/补坐标合并为一轮；预算仍为慢 MCP 和降级链路留余量。 */
     public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 20_000;
 
     /** 单次 chat 的最大 LLM 调用轮数（最后 1 轮不带 tools 强制直答）。
-     *  7：高德 text_search 不返回坐标，多目的地需 search(可重试) → geo 取坐标 ×2 →
-     *  navigate 最多 6 次工具轮；单目的地仍秒级收敛（search → geo → navigate）。 */
+     * 正常导航为 resolve_navigation → navigate 两轮；7 轮兼容 selector 和失败恢复。 */
     static final int MAX_LLM_ROUNDS = 7;
 
     /** OpenAI 兼容 model 名。 */
@@ -88,14 +92,14 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
 
     /** 系统提示词：车控指令 → car_control 工具，其余口语回答。 */
     static final String DEFAULT_SYSTEM_PROMPT =
-            "你是车载语音助手。用户发出车控指令（开关空调、调节温度等）时，调用 car_control 工具输出结构化语义；"
-                    + "其他情况用简短口语化回答，不超过两句话。";
+            "你是车载语音助手。车控必须调用 car_control；导航必须先取得坐标再调用 navigate。"
+                    + "其他回答简短自然，不超过两句。";
 
     /** 车控 skill：结构化语义由模型以工具调用产出（skill 定义见 {@link #defaultTools()}）。 */
-    static final String TOOL_NAME = "car_control";
+    static final String TOOL_NAME = VehicleAgentTools.CAR_CONTROL;
 
     /** 导航 skill：目的地由模型以工具调用产出（spec §4.2）。 */
-    static final String NAVIGATE_TOOL_NAME = "navigate";
+    static final String NAVIGATE_TOOL_NAME = VehicleAgentTools.NAVIGATE;
 
     /** intent.source 值：LLM 工具调用产出的意图。 */
     static final String INTENT_SOURCE = "llm.car_control";
@@ -123,30 +127,6 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     private static final int DEFAULT_WORKERS = 4;
     private static final int DEFAULT_QUEUE_CAPACITY = 32;
 
-    /** OpenAI 兼容 tools 定义：car_control（domain/action/temperature）的 parameters 对象文本。 */
-    private static final String CAR_CONTROL_PARAMETERS_JSON = """
-            {"type":"object","properties":{
-            "domain":{"type":"string","enum":["climate","window"],"description":"控制领域"},
-            "action":{"type":"string","enum":["power_on","power_off","set_temperature"],"description":"执行的操作"},
-            "temperature":{"type":"number","description":"目标温度，仅 action=set_temperature 时必填"}},
-            "required":["domain","action"]}
-            """;
-
-    /** OpenAI 兼容 tools 定义：navigate（poiname/lat/lon + 可选 waypoints 途经点）的 parameters 对象文本。 */
-    private static final String NAVIGATE_PARAMETERS_JSON = """
-            {"type":"object","properties":{
-            "poiname":{"type":"string","description":"导航最终目的地名称"},
-            "lat":{"type":"number","description":"最终目的地纬度"},
-            "lon":{"type":"number","description":"最终目的地经度"},
-            "waypoints":{"type":"array","description":"途经点列表（用户说「先去A再去B」时A是途经点、B是最终目的地poiname，按用户说的顺序排列）",
-              "items":{"type":"object","properties":{
-              "poiname":{"type":"string","description":"途经点名称"},
-              "lat":{"type":"number","description":"途经点纬度"},
-              "lon":{"type":"number","description":"途经点经度"}},
-              "required":["poiname","lat","lon"]}}},
-            "required":["poiname","lat","lon"]}
-            """;
-
     private final OkHttpClient client;
     private final String apiKey;
     private final String endpoint;
@@ -169,12 +149,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
      * @return 两个终局 {@link FunctionTool}
      */
     public static List<FunctionTool> defaultTools() {
-        return List.of(
-                new FunctionTool(TOOL_NAME, "执行车载控制指令（开关空调、调节温度等）",
-                        CAR_CONTROL_PARAMETERS_JSON),
-                new FunctionTool(NAVIGATE_TOOL_NAME,
-                        "发起去往目的地的导航（支持先去A再去B：途经点放 waypoints，最终目的地放 poiname）",
-                        NAVIGATE_PARAMETERS_JSON));
+        return VehicleAgentTools.definitions();
     }
 
     /**
@@ -291,39 +266,75 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
      * （超预算 → 不带 tools），最后一轮强制直答。car_control 工具调用立即终局。
      */
     private Reply callAndParse(String text, SessionContext ctx, AtomicReference<Call> activeCall) throws IOException {
+        List<FunctionTool> requestToolSnapshot = ToolSchemaCompactor.compact(this.tools.enabledTools());
         List<ObjectNode> messages = new ArrayList<>();
-        messages.add(systemMessage(ctx));
+        messages.add(systemMessage(ctx, requestToolSnapshot));
         messages.add(userMessage(text));
-        long start = System.currentTimeMillis();
-        for (int round = 1; round <= MAX_LLM_ROUNDS; round++) {
-            if (Thread.currentThread().isInterrupted()) {
-                throw new IOException("deepseek llm request cancelled");
-            }
-            boolean budgetOk = toolLoopBudgetMs >= 1 && System.currentTimeMillis() - start <= toolLoopBudgetMs;
-            boolean lastRound = round == MAX_LLM_ROUNDS;
-            List<FunctionTool> tools = (budgetOk && !lastRound) ? this.tools.enabledTools() : List.of();
-            JsonNode message = callChat(messages, tools, activeCall);
-            JsonNode toolCalls = message.path("tool_calls");
-            if (!toolCalls.isArray() || toolCalls.isEmpty()) {
-                return textReply(message);
-            }
-            if (isTerminalTool(toolCalls)) {
-                return terminalReply(toolCalls);   // 终局：action 回复
-            }
-            if (tools.isEmpty()) {
-                throw new LlmException("deepseek llm called tool without tools enabled");
-            }
-            for (JsonNode tc : toolCalls) {
-                String id = tc.path("id").asText("");
-                String name = tc.path("function").path("name").asText("");
-                String args = tc.path("function").path("arguments").asText("");
-                messages.add(assistantToolCallMessage(tc));
-                messages.add(toolResultMessage(id, runTool(name, args)));
-            }
+        RequestToolExecutor requestTools = new RequestToolExecutor(
+                call -> runTool(call.name(), call.argumentsJson()),
+                (call, error) -> "工具执行失败：" + error.getMessage());
+        AgentLoop<JsonNode, Reply> loop = new AgentLoop<>(
+                new AgentLoop.Policy(MAX_LLM_ROUNDS, toolLoopBudgetMs, true), requestTools,
+                new AgentLoop.Adapter<>() {
+                    @Override
+                    public JsonNode callModel(int round, boolean toolsAllowed) throws Exception {
+                        List<FunctionTool> enabled = toolsAllowed ? requestToolSnapshot : List.of();
+                        return callChat(messages, enabled, activeCall);
+                    }
+
+                    @Override
+                    public List<AgentToolCall> toolCalls(JsonNode message) {
+                        return agentToolCalls(message.path("tool_calls"));
+                    }
+
+                    @Override
+                    public java.util.Optional<Reply> terminal(JsonNode message, List<AgentToolCall> calls)
+                            throws Exception {
+                        JsonNode raw = message.path("tool_calls");
+                        return isTerminalTool(raw)
+                                ? java.util.Optional.of(terminalReply(raw))
+                                : java.util.Optional.empty();
+                    }
+
+                    @Override
+                    public void appendToolResults(JsonNode message, List<AgentToolResult> results) {
+                        messages.add(assistantToolCallsMessage(message));
+                        for (AgentToolResult result : results) {
+                            messages.add(toolResultMessage(result.call().id(), result.content()));
+                        }
+                    }
+
+                    @Override
+                    public Reply finish(JsonNode message) {
+                        return textReply(message);
+                    }
+
+                    @Override
+                    public Reply exhausted(JsonNode lastMessage) {
+                        throw new LlmException("deepseek llm tool loop ended without terminal result");
+                    }
+                });
+        try {
+            return loop.run();
+        } catch (LlmException | IOException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("deepseek llm request cancelled", e);
+        } catch (Exception e) {
+            throw new IOException("deepseek agent loop failed", e);
         }
-        // 不可达（最后一轮必走上方 return/LlmException 分支：最后一轮 tools 为空，
-        // tool_calls 非空即抛 LlmException）——仅为编译器可达性，轮数契约见 MAX_LLM_ROUNDS
-        throw new LlmException("deepseek llm tool loop ended without terminal result");
+    }
+
+    private static List<AgentToolCall> agentToolCalls(JsonNode toolCalls) {
+        if (!toolCalls.isArray()) return List.of();
+        List<AgentToolCall> out = new ArrayList<>();
+        for (JsonNode tc : toolCalls) {
+            out.add(new AgentToolCall(tc.path("id").asText(""),
+                    tc.path("function").path("name").asText(""),
+                    tc.path("function").path("arguments").asText("{}")));
+        }
+        return out;
     }
 
     /** 一次 LLM 调用：组装 messages + tools（空则不设 tools 字段），返回 choices[0].message。 */
@@ -343,6 +354,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                 fn.put("description", tool.description());
                 fn.set("parameters", MAPPER.readTree(tool.parametersJson()));
             }
+            root.put("parallel_tool_calls", true);
         }
         root.put("stream", false);
         Request request = new Request.Builder()
@@ -479,7 +491,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     }
 
     /** system 消息（OpenAI 兼容）；prompt 未配置（null/空白）回退内置默认。 */
-    private ObjectNode systemMessage(SessionContext ctx) {
+    private ObjectNode systemMessage(SessionContext ctx, List<FunctionTool> enabledTools) {
         String prompt = systemPrompt == null ? null : systemPrompt.get();
         if (prompt == null || prompt.isBlank()) {
             prompt = DEFAULT_SYSTEM_PROMPT;
@@ -487,11 +499,13 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         Object lat = ctx == null ? null : ctx.attrs().get("latitude");
         Object lon = ctx == null ? null : ctx.attrs().get("longitude");
         if (lat instanceof Number && lon instanceof Number) {
-            prompt += "\n当前车辆位置：纬度=" + ((Number) lat).doubleValue()
-                    + "，经度=" + ((Number) lon).doubleValue()
-                    + "。模糊地点、最近地点或连锁门店优先使用周边搜索并以该坐标为中心；"
-                    + "若只能关键词搜索，选择离该坐标最近的结果。多站导航保持口述顺序："
-                    + "中间站放 waypoints，最后一站放 navigate 的 poiname/lat/lon。";
+            prompt += "\n车辆坐标(lon,lat)=" + ((Number) lon).doubleValue() + ","
+                    + ((Number) lat).doubleValue() + "。";
+            if (enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))) {
+                prompt += "调用 resolve_navigation 时传 location；候选取附近优先。多站保持口述顺序。";
+            } else {
+                prompt += "地点候选取附近优先；多站保持口述顺序。";
+            }
         }
         ObjectNode m = MAPPER.createObjectNode();
         m.put("role", "system");
@@ -507,11 +521,12 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         return m;
     }
 
-    /** assistant 工具调用消息：原样回传模型的 tool_calls。 */
-    private static ObjectNode assistantToolCallMessage(JsonNode tc) {
+    /** assistant 工具调用消息：同一轮调用整体回传，保持 OpenAI tool batch 语义。 */
+    private static ObjectNode assistantToolCallsMessage(JsonNode message) {
         ObjectNode m = MAPPER.createObjectNode();
         m.put("role", "assistant");
-        m.set("tool_calls", MAPPER.createArrayNode().add(tc));
+        if (message.path("content").isTextual()) m.put("content", message.path("content").asText());
+        m.set("tool_calls", message.path("tool_calls").deepCopy());
         return m;
     }
 

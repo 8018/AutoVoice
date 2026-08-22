@@ -85,12 +85,13 @@ SSE 解析器分别累计 text、audio 和按 index 分片的 tool call argument
 
 - Omni 当前硬上限是 **12 次模型调用**，这是兼容 selector 复杂链路的异常兜底，不是正常
   导航的目标轮数；耗尽后会保留已得到的终局 Intent/文本并优雅降级。
-- 单地点正常目标：地点查询 → `navigate` → 确认语音，共约 3 次模型调用。
-- 多地点的 POI 查询互不依赖，启用 `parallel_tool_calls` 后应在同一模型轮返回多个查询；
-  查询结果齐全后只调用一次 `navigate`。同名同参的重复工具请求复用首次结果，不再访问高德。
+- 单/多地点正常目标：一次 `resolve_navigation` → `navigate` → 确认语音，共约 3 次模型调用。
+- `resolve_navigation` 内部按口述顺序聚合各地点候选；模型同轮产生的其他独立只读调用可并行，
+  写操作形成顺序屏障。同名同参请求在当前语音轮内复用首次结果，不再访问高德。
 - Skill 平台的非空 `toolsJson` 是明确勾选清单，未列出的 MCP 工具必须禁用；否则高德全部
   15 个工具会错误触发 selector，凭空增加 `mcp_tools_get` / `mcp_tools_execute` 轮次。
-- 推荐只启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_geo`；导航
+- 推荐启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_geo`；网关会把
+  三者聚合并对模型只暴露 `resolve_navigation`，一次调用可解析多个地点并返回导航坐标；导航
   不让模型调用路径规划、schema 拉起、距离或天气工具。生产提示词模板见
   [`prompts/qwen-omni-navigation.txt`](prompts/qwen-omni-navigation.txt)。
 

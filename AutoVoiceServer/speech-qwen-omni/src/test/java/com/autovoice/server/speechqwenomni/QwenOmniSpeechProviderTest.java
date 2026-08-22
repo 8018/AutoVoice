@@ -248,13 +248,15 @@ class QwenOmniSpeechProviderTest {
         JsonNode body = new ObjectMapper().readTree(
                 server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8());
         String prompt = body.path("messages").path(0).path("content").asText();
-        assertTrue(prompt.contains("latitude=30.2741"));
-        assertTrue(prompt.contains("around/nearby POI search"));
+        assertTrue(prompt.contains("车辆坐标(lon,lat)=120.1551,30.2741"));
+        assertTrue(prompt.contains("Prefer nearby candidates"));
         JsonNode navigate = body.path("tools").findValues("function").stream()
                 .filter(fn -> "navigate".equals(fn.path("name").asText())).findFirst().orElseThrow();
         assertTrue(navigate.path("description").asText().contains("最终目的地"));
-        assertTrue(navigate.path("parameters").path("properties").path("waypoints")
-                .path("description").asText().contains("不得包含最终目的地"));
+        assertEquals(java.util.List.of("poiname", "lat", "lon"),
+                new ObjectMapper().convertValue(
+                        navigate.path("parameters").path("properties").path("waypoints")
+                                .path("items").path("required"), java.util.List.class));
     }
 
     private QwenOmniSpeechProvider provider(com.autovoice.server.contracts.ToolExecutor executor) {
