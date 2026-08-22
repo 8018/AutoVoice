@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -42,7 +43,9 @@ class RaceArbiterTest {
     record Event(String utteranceId, CloudArbiterEvent event) {
     }
 
-    final List<Event> arbEvents = new ArrayList<>();
+    // eventSink 会由调用线程、LLM future 和 safety scheduler 并发回调；普通 ArrayList
+    // 在并发 add 时会丢事件，造成 pending 偶发不可见的 CI 抖动。
+    final List<Event> arbEvents = new CopyOnWriteArrayList<>();
     final RaceArbiter eventArbiter = new RaceArbiter(SAFETY, GRACE, sched, sink,
             (uid, e) -> arbEvents.add(new Event(uid, e)));
 

@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -55,7 +56,8 @@ class SegmentPipelineTest {
     final List<DecisionEntry> log = new ArrayList<>();
     final DecisionSink sink = log::add;
     final ScheduledExecutorService sched = Executors.newScheduledThreadPool(4);
-    final List<TelemetryEvent> events = new ArrayList<>();
+    // 仲裁 telemetry 可能来自调用线程和 scheduler，测试收集器必须支持并发写。
+    final List<TelemetryEvent> events = new CopyOnWriteArrayList<>();
     final TelemetryRecorder recorder = (utt, e) -> events.add(e);
 
     @AfterEach
