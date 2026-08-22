@@ -7,8 +7,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import com.autovoice.server.contracts.FunctionTool;
 
 class McpSkillRegistryTest {
 
@@ -140,6 +144,25 @@ class McpSkillRegistryTest {
             String result = reg.callTool("mcp_tools_execute",
                     "{\"name\":\"poi_search\",\"arguments\":{}}");
             assertEquals("找到 1 个结果：西湖", result);
+        }
+    }
+
+    @Test
+    void amapLowLevelSchemasAreReplacedByNavigationFacade() throws Exception {
+        SkillConfig amap = new SkillConfig("amap-maps", "高德", "导航", mcpUrl,
+                "", "", "", true, 1L);
+        Map<String, FunctionTool> amapTools = new LinkedHashMap<>();
+        String schema = "{\"type\":\"object\",\"properties\":{}}";
+        amapTools.put("maps_text_search", new FunctionTool("maps_text_search", "搜索", schema));
+        amapTools.put("maps_around_search", new FunctionTool("maps_around_search", "周边", schema));
+        amapTools.put("maps_geo", new FunctionTool("maps_geo", "地理编码", schema));
+        McpToolSession session = new McpToolSession(amap, null, amapTools);
+        FakePlatformClient client = new FakePlatformClient(List.of(amap));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session)) {
+            reg.refresh();
+            assertEquals(List.of("resolve_navigation"),
+                    reg.enabledToolSpecs().stream().map(FunctionTool::name).toList());
         }
     }
 
