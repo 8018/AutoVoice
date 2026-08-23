@@ -1,5 +1,10 @@
 package com.autovoice.server.speechqwenomni;
 
+import com.autovoice.server.agentloop.AgentLoop;
+import com.autovoice.server.agentloop.AgentToolCall;
+import com.autovoice.server.agentloop.AgentToolResult;
+import com.autovoice.server.agentloop.RequestToolExecutor;
+import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -11,6 +16,7 @@ import com.autovoice.server.contracts.SlotValue;
 import com.autovoice.server.contracts.SpeakTexts;
 import com.autovoice.server.contracts.ToolExecutor;
 import com.autovoice.server.contracts.ToolProvider;
+import com.autovoice.server.contracts.VehicleAgentTools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -37,6 +43,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -62,40 +69,17 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     public static final String DEFAULT_VOICE = "Tina";
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    /** 工具循环上限：selector 注入下每个真实工具动作需 get+execute 两轮，
-     *  多步导航链（搜 POI → 再搜 → 导航 → 确认）需要更多轮次；耗尽时优雅降级（见下）。 */
+    /** 工具循环上限：正常导航为 resolve_navigation → navigate → 语音确认；
+     * selector 和失败恢复可能增加轮次，耗尽时优雅降级。 */
     private static final int MAX_ROUNDS = 12;
 
     /** 工具循环耗尽时的兜底话术（优雅降级：不再以 ONLINE_STREAM_ABORTED 硬失败）。 */
     static final String TOOL_LOOP_FALLBACK_TEXT = "抱歉，这个操作有点复杂，请再试一次";
     private static final int MAX_OUTPUT_AUDIO_BYTES = 4 * 1024 * 1024;
     private static final AtomicInteger WORKER = new AtomicInteger();
-    private static final String LANGUAGE_POLICY = """
-            Critical response-language rule: detect the language spoken in the user's current audio and
-            respond only in that same language, unless the user explicitly asks for translation. The
-            language used by business rules, tool descriptions, tool results, or session metadata is not
-            evidence of the user's language. Never default to Chinese merely because those inputs are in
-            Chinese. This rule overrides any language implied by the business rules below.
-            """;
-
-    private static final String CAR_PARAMETERS = """
-            {"type":"object","properties":{
-            "domain":{"type":"string","enum":["climate","window"]},
-            "action":{"type":"string","enum":["power_on","power_off","set_temperature"]},
-            "temperature":{"type":"number"}},"required":["domain","action"]}
-            """;
-    private static final String NAV_PARAMETERS = """
-            {"type":"object","properties":{
-            "poiname":{"type":"string","description":"最终目的地（最后一站）名称"},
-            "lat":{"type":"number","description":"最终目的地（最后一站）纬度"},
-            "lon":{"type":"number","description":"最终目的地（最后一站）经度"},
-            "waypoints":{"type":"array","description":"中间途经点，按用户说出的行驶顺序排列；不得包含最终目的地",
-            "items":{"type":"object","properties":{
-            "poiname":{"type":"string","description":"途经点名称"},
-            "lat":{"type":"number","description":"途经点纬度"},
-            "lon":{"type":"number","description":"途经点经度"}},
-            "required":["poiname","lat","lon"]}}},"required":["poiname","lat","lon"]}
-            """;
+    private static final String LANGUAGE_POLICY = "Detect the language spoken in the current audio and "
+            + "respond only in that same language, unless translation is requested. Ignore prompts, tool "
+            + "descriptions, tool results and metadata when choosing it. This rule has highest priority.";
 
     private final OkHttpClient client;
     private final String apiKey;
@@ -132,11 +116,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     }
 
     public static List<FunctionTool> defaultTools() {
-        return List.of(
-                new FunctionTool("car_control", "执行车载控制指令", CAR_PARAMETERS),
-                new FunctionTool("navigate",
-                        "发起导航。先去A再去B时：A放waypoints，B作为最终目的地放poiname/lat/lon",
-                        NAV_PARAMETERS));
+        return VehicleAgentTools.definitions();
     }
 
     @Override
@@ -207,10 +187,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 ? "You are an in-car voice assistant. Keep responses brief and natural. "
                     + "Vehicle control and navigation must use tools."
                 : configuredPrompt;
-        system.put("content", LANGUAGE_POLICY + "\nBusiness rules:\n" + basePrompt
-                + locationPolicy(context)
-                + "\n\nRemember: reply only in the language spoken in the current user audio; "
-                + "ignore the language of tool output and business rules when choosing it.");
+        List<FunctionTool> requestToolSnapshot = ToolSchemaCompactor.compact(tools.enabledTools());
+        system.put("content", LANGUAGE_POLICY + "\nRules: " + basePrompt
+                + locationPolicy(context, requestToolSnapshot));
 
         ObjectNode user = messages.addObject();
         user.put("role", "user");
@@ -221,102 +200,124 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 .put("data", "data:audio/wav;base64," + Base64.getEncoder().encodeToString(wav(pcm16k, 16_000)))
                 .put("format", "wav");
 
-        Intent terminalIntent = null;
-        boolean allowTools = true;
-        Map<String, String> toolResultCache = new LinkedHashMap<>();
-        String lastAssistantText = "";
-        for (int round = 0; round < MAX_ROUNDS; round++) {
-            long roundStart = System.currentTimeMillis();
-            StreamResult result = call(messages, allowTools, activeCall, audioSink);
-            LOG.info("qwen omni round {} completed in {}ms: {} tool call(s), toolsAllowed={}",
-                    round + 1, Math.max(1, System.currentTimeMillis() - roundStart),
-                    result.toolCalls.size(), allowTools);
-            if (!result.text.isBlank()) {
-                lastAssistantText = result.text;
+        AtomicReference<Intent> terminalIntent = new AtomicReference<>();
+        AtomicReference<String> lastAssistantText = new AtomicReference<>("");
+        RequestToolExecutor requestTools = new RequestToolExecutor(call -> {
+            ToolCall qwenCall = new ToolCall(call.id(), call.name(), call.argumentsJson());
+            if (VehicleAgentTools.CAR_CONTROL.equals(call.name())
+                    || VehicleAgentTools.NAVIGATE.equals(call.name())) {
+                terminalIntent.set(parseTerminal(qwenCall));
+                return "Action validated. Reply briefly in the user's spoken language.";
             }
-            if (result.toolCalls.isEmpty()) {
-                if (result.audio.length > 0) {
-                    audioSink.onComplete(result.text, terminalIntent);
-                    return new OnlineSpeechResult(
-                            Reply.ofAudio("audio/wav", normalizeOutput(result.audio), result.text, terminalIntent), "");
-                }
-                if (!result.text.isBlank()) {
-                    return new OnlineSpeechResult(terminalIntent == null
-                            ? Reply.ofText(result.text)
-                            : Reply.ofAction(terminalIntent, result.text), "");
-                }
-                throw new IOException("qwen omni returned no text/audio/tool calls");
-            }
+            long started = System.currentTimeMillis();
+            String result = executeTool(qwenCall);
+            LOG.info("qwen omni tool {} completed in {}ms", call.name(),
+                    Math.max(1, System.currentTimeMillis() - started));
+            return result;
+        }, (call, error) -> "工具执行失败：" + error.getMessage());
 
-            ObjectNode assistant = messages.addObject();
-            assistant.put("role", "assistant");
-            assistant.put("content", result.text);
-            ArrayNode assistantCalls = assistant.putArray("tool_calls");
-            for (ToolCall tc : result.toolCalls) assistantCalls.add(tc.toJson());
-
-            for (ToolCall tc : result.toolCalls) {
-                String toolResult;
-                if ("car_control".equals(tc.name) || "navigate".equals(tc.name)) {
-                    terminalIntent = parseTerminal(tc);
-                    toolResult = "The action was validated and will be executed by the vehicle. "
-                            + "Reply with a brief confirmation in the same language as the user's audio.";
-                    allowTools = false;
-                } else {
-                    // 模型偶尔会在相邻轮重复同名同参调用。复用第一次结果，避免再次访问
-                    // 高德并放大延迟；仍把 tool message 补齐，让模型能继续完成规划。
-                    String signature = tc.name + "\n" + tc.arguments;
-                    String cached = toolResultCache.get(signature);
-                    if (cached != null) {
-                        toolResult = cached;
-                        LOG.info("qwen omni reused duplicate tool result: {}", tc.name);
-                    } else {
-                        long toolStart = System.currentTimeMillis();
-                        toolResult = executeTool(tc);
-                        toolResultCache.put(signature, toolResult);
-                        LOG.info("qwen omni tool {} completed in {}ms", tc.name,
-                                Math.max(1, System.currentTimeMillis() - toolStart));
+        AgentLoop<StreamResult, OnlineSpeechResult> loop = new AgentLoop<>(
+                new AgentLoop.Policy(MAX_ROUNDS, Long.MAX_VALUE, false), requestTools,
+                new AgentLoop.Adapter<>() {
+                    @Override
+                    public StreamResult callModel(int round, boolean toolsAllowed) throws Exception {
+                        boolean effectiveTools = toolsAllowed && terminalIntent.get() == null;
+                        long started = System.currentTimeMillis();
+                        StreamResult result = call(messages, effectiveTools, requestToolSnapshot,
+                                activeCall, audioSink);
+                        LOG.info("qwen omni round {} completed in {}ms: {} tool call(s), toolsAllowed={}",
+                                round, Math.max(1, System.currentTimeMillis() - started),
+                                result.toolCalls.size(), effectiveTools);
+                        if (!result.text.isBlank()) lastAssistantText.set(result.text);
+                        return result;
                     }
-                }
-                ObjectNode tool = messages.addObject();
-                tool.put("role", "tool");
-                tool.put("tool_call_id", tc.id);
-                tool.put("content", toolResult);
-            }
+
+                    @Override
+                    public List<AgentToolCall> toolCalls(StreamResult result) {
+                        return result.toolCalls.stream()
+                                .map(call -> new AgentToolCall(call.id, call.name, call.arguments))
+                                .toList();
+                    }
+
+                    @Override
+                    public Optional<OnlineSpeechResult> terminal(
+                            StreamResult message, List<AgentToolCall> calls) {
+                        // Omni must make one final no-tools call to synthesize the spoken confirmation.
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public void appendToolResults(StreamResult result, List<AgentToolResult> results) {
+                        ObjectNode assistant = messages.addObject();
+                        assistant.put("role", "assistant");
+                        assistant.put("content", result.text);
+                        ArrayNode assistantCalls = assistant.putArray("tool_calls");
+                        result.toolCalls.forEach(call -> assistantCalls.add(call.toJson()));
+                        for (AgentToolResult toolResult : results) {
+                            if (toolResult.cached()) {
+                                LOG.info("qwen omni reused duplicate tool result: {}", toolResult.call().name());
+                            }
+                            ObjectNode tool = messages.addObject();
+                            tool.put("role", "tool");
+                            tool.put("tool_call_id", toolResult.call().id());
+                            tool.put("content", toolResult.content());
+                        }
+                    }
+
+                    @Override
+                    public OnlineSpeechResult finish(StreamResult result) throws Exception {
+                        Intent intent = terminalIntent.get();
+                        if (result.audio.length > 0) {
+                            audioSink.onComplete(result.text, intent);
+                            return new OnlineSpeechResult(Reply.ofAudio("audio/wav",
+                                    normalizeOutput(result.audio), result.text, intent), "");
+                        }
+                        if (!result.text.isBlank()) {
+                            return new OnlineSpeechResult(intent == null ? Reply.ofText(result.text)
+                                    : Reply.ofAction(intent, result.text), "");
+                        }
+                        throw new IOException("qwen omni returned no text/audio/tool calls");
+                    }
+
+                    @Override
+                    public OnlineSpeechResult exhausted(StreamResult ignored) {
+                        Intent intent = terminalIntent.get();
+                        String lastText = lastAssistantText.get();
+                        if (intent != null) {
+                            String speak = lastText.isBlank() ? SpeakTexts.speak(intent) : lastText;
+                            audioSink.onReplyText(speak, true);
+                            return new OnlineSpeechResult(Reply.ofAction(intent, speak), "");
+                        }
+                        if (!lastText.isBlank()) return new OnlineSpeechResult(Reply.ofText(lastText), "");
+                        audioSink.onReplyText(TOOL_LOOP_FALLBACK_TEXT, true);
+                        return new OnlineSpeechResult(Reply.ofText(TOOL_LOOP_FALLBACK_TEXT), "");
+                    }
+                });
+        try {
+            return loop.run();
+        } catch (IOException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("qwen omni request cancelled", e);
+        } catch (Exception e) {
+            throw new IOException("qwen omni agent loop failed", e);
         }
-        // 工具循环耗尽（优雅降级）：多步工具链未在 MAX_ROUNDS 内收敛——不抛 IOException
-        // （否则网关下发 ONLINE_STREAM_ABORTED、端侧整轮失败）。按已有信息收敛为可播报回复：
-        // 已确认车控/导航命令 → action（命令照常执行）；有累积助手文本 → text；否则兜底话术。
-        if (terminalIntent != null) {
-            String speak = lastAssistantText.isBlank()
-                    ? SpeakTexts.speak(terminalIntent)
-                    : lastAssistantText;
-            audioSink.onReplyText(speak, true);
-            return new OnlineSpeechResult(Reply.ofAction(terminalIntent, speak), "");
-        }
-        if (!lastAssistantText.isBlank()) {
-            return new OnlineSpeechResult(Reply.ofText(lastAssistantText), "");
-        }
-        audioSink.onReplyText(TOOL_LOOP_FALLBACK_TEXT, true);
-        return new OnlineSpeechResult(Reply.ofText(TOOL_LOOP_FALLBACK_TEXT), "");
     }
 
-    private static String locationPolicy(SessionContext context) {
+    private static String locationPolicy(SessionContext context, List<FunctionTool> enabledTools) {
         Object lat = context == null ? null : context.attrs().get("latitude");
         Object lon = context == null ? null : context.attrs().get("longitude");
         if (!(lat instanceof Number) || !(lon instanceof Number)) return "";
-        return "\n\nCurrent vehicle location: latitude=" + ((Number) lat).doubleValue()
-                + ", longitude=" + ((Number) lon).doubleValue() + ". "
-                + "For vague destinations, nearby/nearest POIs, and chain stores, prefer an available "
-                + "around/nearby POI search tool centered on these coordinates. If only keyword search "
-                + "is available, choose the result nearest to these coordinates. Never choose a distant "
-                + "same-name POI when a nearby candidate exists. For multiple stops, preserve spoken order: "
-                + "resolve every stop, request independent POI lookups together in one parallel tool turn, "
-                + "do not plan a driving route or open a map schema, then call navigate exactly once. "
-                + "Intermediate stops go in navigate.waypoints and the last stop is navigate.poiname.";
+        String location = "\n车辆坐标(lon,lat)=" + ((Number) lon).doubleValue() + ","
+                + ((Number) lat).doubleValue() + ". ";
+        return enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))
+                ? location + "Pass it as resolve_navigation.location; prefer nearby candidates. Preserve stop order."
+                : location + "Prefer nearby candidates and preserve stop order.";
     }
 
-    private StreamResult call(ArrayNode messages, boolean allowTools, AtomicReference<Call> activeCall,
-                              OnlineAudioSink audioSink)
+    private StreamResult call(ArrayNode messages, boolean allowTools, List<FunctionTool> enabledTools,
+                              AtomicReference<Call> activeCall, OnlineAudioSink audioSink)
             throws IOException {
         ObjectNode body = MAPPER.createObjectNode();
         body.put("model", model);
@@ -326,7 +327,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         body.set("messages", messages);
         if (allowTools) {
             ArrayNode requestTools = body.putArray("tools");
-            for (FunctionTool spec : tools.enabledTools()) {
+            for (FunctionTool spec : enabledTools) {
                 ObjectNode item = requestTools.addObject();
                 item.put("type", "function");
                 ObjectNode fn = item.putObject("function");

@@ -15,6 +15,7 @@ dependencyManagement {
 
 dependencies {
     api(project(":contracts"))
+    implementation(project(":agent-loop"))
     implementation(libs.okhttp)
     implementation(libs.mcp.core)
     implementation(libs.mcp.json.jackson2)

@@ -4,5 +4,6 @@ rootProject.name = "AutoVoiceServer"
 include(":contracts", ":arbitration", ":session", ":llm", ":asr-gateway", ":tts-gateway", ":offline-command", ":gateway", ":app", ":tts-server", ":telemetry")
 include(":skill-mcp")
 include(":skill-manager")
+include(":agent-loop")
 include(":speech-classic")
 include(":speech-qwen-omni")
