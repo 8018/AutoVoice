@@ -36,6 +36,7 @@ import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudRequestFailedException
 import com.autovoice.voicecore.session.CloudUnavailableException
+import com.autovoice.voicecore.session.CloudTurnSupersededException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
 import com.autovoice.voicecore.session.SessionState
@@ -44,6 +45,7 @@ import com.google.gson.JsonObject
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
@@ -64,6 +66,9 @@ import okhttp3.OkHttpClient
 fun interface AudioPlayer {
     fun play(reply: AudioReply)
 
+    /** 停止当前播放；只中断输出，不取消端侧/云端候选计算。 */
+    fun stop() = Unit
+
     /** 默认实现累积后复用完整音频播放器；生产 TtsPlayer 覆盖为 AudioTrack 边收边播。 */
     suspend fun playStream(reply: StreamingAudioReply) {
         val pcm = ByteArrayOutputStream()
@@ -80,6 +85,9 @@ fun interface AudioPlayer {
  */
 fun interface TtsRequester {
     suspend fun request(text: String): AudioReply?
+
+    /** 使用发起播报的轮次快照，避免并发新轮覆盖 telemetry 归属。 */
+    suspend fun request(text: String, utteranceId: String): AudioReply? = request(text)
 }
 
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
@@ -146,11 +154,15 @@ class VoiceEngine(
     private val onVehicleApplied: () -> Unit = {},
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
     private val onLocalRecognized: (String?) -> Unit = {},
+    /** 模型回答文本（流式 partial 的最终兜底）。 */
+    private val onReplyText: (String) -> Unit = {},
     private val debugBuild: Boolean = BuildConfig.DEBUG,
     /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
+    /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
+    private val onTurnStarted: (String) -> Unit = {},
     /**
      * B5：云端 pending 占位回调（LLM 处理中，协议 §4.8）：收到 pending 帧 → true，
      * 最终语义到达 / 新一轮开始 → false。UI 据此显示"处理中…"徽标，无执行无播报。
@@ -195,6 +207,10 @@ class VoiceEngine(
     /** 本轮云端 VAD 段总时长 ms（T7 vad 聚合统计；16k 单声道 16bit，bytes/32 = ms）。 */
     private var turnSegmentsTotalMs = 0L
 
+    /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
+    @Volatile
+    private var awaitingVadStart = true
+
     /** 装配好的会话：状态机 + 双路由竞速编排。 */
     val session: VoiceSession
 
@@ -223,13 +239,17 @@ class VoiceEngine(
             arbiter = arbiter,
             sink = sink,
             local = local,
-            cloud = CloudRunner { segment ->
-                // 弱网调试（仅 debug 构建）：云端链启动前人为延迟，让云端错过 cloudWaitMs
-                if (weakNetwork && debugBuild) delay(WEAK_NETWORK_DELAY_MS)
-                cloud.run(segment)
+            cloud = object : CloudRunner {
+                override suspend fun run(segment: ByteArray): Reply = run(segment, currentUtteranceId)
+
+                override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
+                    // 弱网调试（仅 debug 构建）：云端链启动前人为延迟，让云端错过 cloudWaitMs
+                    if (weakNetwork && debugBuild) delay(WEAK_NETWORK_DELAY_MS)
+                    return cloud.run(segment, utteranceId)
+                }
             },
             scope = scope,
-            resultListener = ResultListener { onTurnResult(it) },
+            resultListener = ResultListener { utteranceId, winner -> onTurnResult(utteranceId, winner) },
         )
     }
 
@@ -241,6 +261,7 @@ class VoiceEngine(
      */
     fun close() {
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
+        session.close()
         scope.cancel()
     }
 
@@ -255,14 +276,21 @@ class VoiceEngine(
      * 再进入 LISTENING。
      */
     fun onListeningStart() {
-        // 新一轮开始：utteranceId 清空，首个 SpeechStart（onVadStart）重新产生
-        currentUtteranceId = ""
-        session.currentUtteranceId = ""
+        // 开始录音就确立最新轮，不等 VAD SpeechStart。这样打断后旧轮的
+        // TTS/流式音频/语义回调会立即被 utteranceId 闸门拦截。
+        currentUtteranceId = UUID.randomUUID().toString()
+        session.currentUtteranceId = currentUtteranceId
+        onTurnStarted(currentUtteranceId)
+        telemetry.begin(currentUtteranceId)
+        telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
+        // 播放中发起新轮时只停旧声音，候选计算仍自然完成。
+        player.stop()
         // B5：新一轮开始清除上一轮的"处理中"占位状态
         setCloudPending(false)
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
+        awaitingVadStart = true
         // activeNetwork 只能作诊断提示，不能作为硬门禁：网络切换期间它可能短暂为 null，
         // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
         if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
@@ -289,13 +317,7 @@ class VoiceEngine(
      */
     fun onVadStart() {
         if (session.state.value != SessionState.LISTENING) return
-        if (currentUtteranceId.isBlank()) {
-            currentUtteranceId = UUID.randomUUID().toString()
-            // T7：会话也持有本轮 utteranceId——on-device 决策日志（仲裁器 provider / localOnly）带真实值
-            session.currentUtteranceId = currentUtteranceId
-            telemetry.begin(currentUtteranceId)
-            telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
-        }
+        awaitingVadStart = false
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
     }
 
@@ -304,7 +326,7 @@ class VoiceEngine(
      * [onVadStart] 配对；无话语时静默跳过——防杂散事件）。
      */
     fun onVadEnd() {
-        if (currentUtteranceId.isBlank()) return
+        if (currentUtteranceId.isBlank() || awaitingVadStart) return
         telemetry.record(TelemetryStages.VAD_END, "info", emptyMap())
     }
 
@@ -361,14 +383,19 @@ class VoiceEngine(
 
     // ------------------------------------------------------------------ 结果路由
 
-    private fun onTurnResult(winner: RaceWinner) {
+    private fun onTurnResult(utteranceId: String, winner: RaceWinner) {
+        // 旧轮候选自然完成，但不允许它改 UI、执行 intent 或发起播报。
+        if (utteranceId.isNotBlank() && utteranceId != currentUtteranceId) {
+            telemetry.end(utteranceId)
+            return
+        }
         // T7 评审 C1：本轮所有播报（player.play / speakViaTts）由此发起，
         // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
-        playUtteranceId = currentUtteranceId
+        playUtteranceId = utteranceId
         when (winner) {
             is RaceWinner.Cloud -> {
                 onCloudWon()
-                routeCloudReply(winner.reply)
+                routeCloudReply(utteranceId, winner.reply)
             }
             is RaceWinner.Local -> {
                 // ASR 已在语义仲裁前独立展示；2C/NLU 胜方若自带文本，再以胜方文本覆盖。
@@ -386,14 +413,14 @@ class VoiceEngine(
                 )
                 applied?.let { text ->
                     onVehicleApplied()
-                    speakViaTts(text)
+                    speakViaTts(utteranceId, text)
                 }
             }
             // 全败：播报兜底话术（按钮录音模式下需要明确反馈；2026-08-15 起同样走网络 TTS，
             // 不再用系统 TTS；决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
             is RaceWinner.Failed -> {
                 telemetry.record(TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
-                speakViaTts(FALLBACK_PHRASE)
+                speakViaTts(utteranceId, FALLBACK_PHRASE)
             }
             // B2：非最新轮语义被拦截——不播报不执行（轮照常收包，事件已含 lost 原因）
             is RaceWinner.Intercepted -> Unit
@@ -401,7 +428,7 @@ class VoiceEngine(
         // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
         setCloudPending(false)
         // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
-        telemetry.end(currentUtteranceId)
+        telemetry.end(utteranceId)
     }
 
     /**
@@ -412,23 +439,27 @@ class VoiceEngine(
      *  - Text → 按文本请求 TTS，失败/超时静默（记失败事件）；
      *  - Action → 执行 intent + 按 speakText 请求 TTS（失败同上）。
      */
-    private fun routeCloudReply(reply: Reply) {
+    private fun routeCloudReply(utteranceId: String, reply: Reply) {
+        if (!isLatestTurn(utteranceId)) return
         if (reply.asrText.isNotBlank()) onLocalRecognized(reply.asrText)
         when (reply) {
             is AudioReply -> {
-                player.play(reply)
-                reply.intent?.let(::applyAndNotify)
+                if (isLatestTurn(utteranceId)) player.play(reply)
+                reply.intent?.takeIf { isLatestTurn(utteranceId) }?.let(::applyAndNotify)
             }
             is StreamingAudioReply -> scope.launch {
+                if (!isLatestTurn(utteranceId)) return@launch
                 player.playStream(reply)
                 val end = reply.completion.await()
+                if (!isLatestTurn(utteranceId)) return@launch
+                if (end.speakText.isNotBlank()) onReplyText(end.speakText)
                 if (end.asrText.isNotBlank()) onLocalRecognized(end.asrText)
                 end.intent?.let(::applyAndNotify)
             }
-            is TextReply -> speakViaTts(reply.text)
+            is TextReply -> speakViaTts(utteranceId, reply.text)
             is ActionReply -> {
-                applyAndNotify(reply.intent)
-                speakViaTts(reply.speakText)
+                if (isLatestTurn(utteranceId)) applyAndNotify(reply.intent)
+                speakViaTts(utteranceId, reply.speakText)
             }
         }
     }
@@ -439,24 +470,30 @@ class VoiceEngine(
      * T7 插桩：tts_request（合成请求）+ tts_play（network 播放/失败；播放事件由 TtsPlayer
      * 经 [onTtsPlayEvent] 上报）。
      */
-    private fun speakViaTts(text: String) {
-        if (text.isBlank()) return
+    private fun speakViaTts(utteranceId: String, text: String) {
+        if (text.isBlank() || !isLatestTurn(utteranceId)) return
         // B4 需求 1：tts 播报请求（端侧发出播报请求）→ tts_play_request
         telemetry.record(TelemetryStages.TTS_PLAY_REQUEST, "info", mapOf("text" to text))
         scope.launch {
+            if (!isLatestTurn(utteranceId)) return@launch
             // 架构变更（缓存移回端侧）：先查端侧缓存（tts_cache_check + 命中/未命中），
             // 命中直接播（不请求服务器）；未命中走网络合成，回传写缓存再播
             val cached = ttsCache.get(text)
             if (cached != null) {
-                player.play(AudioReply(mime = "audio/wav", data = cached, speakText = text))
+                if (isLatestTurn(utteranceId)) {
+                    player.play(AudioReply(mime = "audio/wav", data = cached, speakText = text))
+                }
             } else {
-                tts.request(text)?.let {
+                tts.request(text, utteranceId)?.let {
                     ttsCache.put(text, it.data) // 网络合成音频写缓存（下次同文本直接命中）
-                    player.play(it)
-                } ?: recordTtsPlayFailed()
+                    if (isLatestTurn(utteranceId)) player.play(it)
+                } ?: recordTtsPlayFailed(utteranceId)
             }
         }
     }
+
+    private fun isLatestTurn(utteranceId: String): Boolean =
+        utteranceId.isBlank() || utteranceId == currentUtteranceId
 
     /**
      * 意图执行（spec §4.2 起按域分发）：navigation 域 → [NavigationExecutor] 拉起高德 App
@@ -485,9 +522,9 @@ class VoiceEngine(
      * 的失败回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 →
      * 单事件直传 /events。
      */
-    private fun recordTtsPlayFailed() {
+    private fun recordTtsPlayFailed(utteranceId: String) {
         telemetry.recordFor(
-            playUtteranceId,
+            utteranceId,
             TelemetryStages.TTS_PLAY_END,
             "error",
             mapOf("source" to "network", "result" to "failed"),
@@ -552,7 +589,8 @@ class VoiceEngine(
             // T6 决策插桩：sink 收到端云两端的决策事件——on-device → device_arbiter，cloud → cloud_arbiter。
             // 在装配点包裹，仲裁器 / 会话 / 网关桥三条来源的决策都经此记录
             val telemetrySink = DecisionSink { entry ->
-                telemetry.record(
+                telemetry.recordFor(
+                    entry.utteranceId,
                     if (entry.arbiter == "on-device") {
                         TelemetryStages.DEVICE_ARBITER
                     } else {
@@ -650,11 +688,13 @@ class VoiceEngine(
                 scope = scope,
                 onVehicleApplied = onVehicleApplied,
                 onLocalRecognized = onLocalRecognized,
+                onReplyText = onReplyText,
                 onClose = {
                     cloudRunner.close() // Task 21：模式切换时断开网关
                     offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
                 },
                 onForeground = cloudRunner::warmUp,
+                onTurnStarted = cloudRunner::markLatestTurn,
                 onCloudPending = onCloudPending,
                 onCloudWon = cloudRunner::releaseReplyText,
             )
@@ -858,6 +898,7 @@ private class GatewayCloudRunner(
         connectTimeoutMs = 3_000,
         maxRetries = 0, // 当前话语层保留同一 utteranceId 做一次安全重试
     )
+    private val latestUtteranceId = AtomicReference("")
     private val bridge = GatewayBridge(
         client,
         sink,
@@ -867,6 +908,11 @@ private class GatewayCloudRunner(
         { text, final -> onAsrResult(text, final) },
         { text, final -> handleReplyText(text, final) },
     )
+
+    fun markLatestTurn(utteranceId: String) {
+        latestUtteranceId.set(utteranceId)
+        bridge.markLatestTurn(utteranceId)
+    }
 
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
 
@@ -965,24 +1011,32 @@ private class GatewayCloudRunner(
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
     }
 
-    override suspend fun run(segment: ByteArray): Reply {
+    override suspend fun run(segment: ByteArray): Reply =
+        run(segment, utteranceIdProvider())
+
+    override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
+        if (latestUtteranceId.compareAndSet("", utteranceId)) {
+            bridge.markLatestTurn(utteranceId)
+        }
         replyTextReleased = false
         pendingReplyText.set(null)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
         var lastFailure: GatewayException? = null
         for (attempt in 0..1) {
-            val replySlot = bridge.newReplySlot(segmentId)
+            val replySlot = bridge.newReplySlot(segmentId, utteranceId)
             try {
+                ensureLatestTurn(utteranceId)
                 ensureReady()
                 if (attempt > 0) {
                     onConnectionEvent(TelemetryStages.WS_RECONNECT_OK, "info", emptyMap())
                 }
                 val location = locationProvider()
+                ensureLatestTurn(utteranceId)
                 client.sendAudioStart(
                     sessionId,
                     segmentId,
-                    utteranceIdProvider().takeIf { it.isNotBlank() },
+                    utteranceId.takeIf { it.isNotBlank() },
                     location?.first,
                     location?.second,
                     attempt,
@@ -1052,20 +1106,30 @@ private class GatewayCloudRunner(
         throw CloudUnavailableException("云端链路故障：${lastFailure?.message}", lastFailure)
     }
 
+    private fun ensureLatestTurn(utteranceId: String) {
+        val latest = latestUtteranceId.get()
+        if (latest.isNotBlank() && utteranceId.isNotBlank() && latest != utteranceId) {
+            throw CloudTurnSupersededException("cloud turn superseded: $utteranceId -> $latest")
+        }
+    }
+
     /**
      * 独立 TTS 播报（A3，TTS 解耦）：发 tts_request 等 tts_response，5s 超时返回 null
      * （调用方静默处理并记失败事件，2026-08-15 起不再有系统 TTS 兜底），**不重试**。
      * ready 未建立时先在同一个 5s 总预算内尝试连接，失败返回 null。
      * 与 [run] 的 reply 槽互不干扰（bridge 独立 tts 槽，各自按 segmentId 对账）。
      */
-    override suspend fun request(text: String): AudioReply? {
+    override suspend fun request(text: String): AudioReply? =
+        request(text, utteranceIdProvider())
+
+    override suspend fun request(text: String, utteranceId: String): AudioReply? {
         val ttsId = UUID.randomUUID().toString()
-        val ttsSlot = bridge.newTtsSlot(ttsId)
+        val ttsSlot = bridge.newTtsSlot(ttsId, utteranceId)
         return try {
             withTimeoutOrNull(TTS_TIMEOUT_MS) {
                 ensureReady()
                 // T6：关联当前话语 utteranceId（空串不发送，保持旧协议形态）
-                client.sendTtsRequest(text, ttsId, utteranceIdProvider().takeIf { it.isNotBlank() })
+                client.sendTtsRequest(text, ttsId, utteranceId.takeIf { it.isNotBlank() })
                 ttsSlot.await()
             }
         } catch (e: GatewayException) {
@@ -1089,7 +1153,7 @@ private const val TTS_TIMEOUT_MS = 5_000L
  * 合成的传输错误 / 旧版服务端）→ 无法对账，按当前槽处理（保留快速失败语义）。同一时刻至多一个
  * 等待槽，跨轮消息天然按 segmentId 隔离。
  *
- * TTS 槽（A3）：tts_response 走独立的 [pendingTts] 槽，与 [pendingReply] 互不干扰
+ * TTS 槽（A3）：tts_response 走独立的 [pendingTts] 槽，与话语 reply 槽互不干扰
  * （tts 播报与话语回复是两条独立时间线），各自按 segmentId 对账。
  */
 internal class GatewayBridge(
@@ -1106,16 +1170,22 @@ internal class GatewayBridge(
     private val onReplyText: (String, Boolean) -> Unit = { _, _ -> },
 ) {
 
-    private class PendingSlot<T>(val segmentId: String, val deferred: CompletableDeferred<T>)
+    private class PendingSlot<T>(
+        val segmentId: String,
+        val utteranceId: String,
+        val deferred: CompletableDeferred<T>,
+    )
     private class ActiveStream(
         val segmentId: String,
+        val utteranceId: String,
         val chunks: Channel<ByteArray>,
         val completion: CompletableDeferred<AudioStreamEnd>,
     )
 
-    private val pendingReply = AtomicReference<PendingSlot<Reply>?>(null)
-    private val pendingTts = AtomicReference<PendingSlot<AudioReply>?>(null)
+    private val pendingReplies = ConcurrentHashMap<String, PendingSlot<Reply>>()
+    private val pendingTts = ConcurrentHashMap<String, PendingSlot<AudioReply>>()
     private val activeStream = AtomicReference<ActiveStream?>(null)
+    private val latestUtteranceId = AtomicReference("")
 
     init {
         scope.launch {
@@ -1124,14 +1194,27 @@ internal class GatewayBridge(
     }
 
     /** 注册当前话语的回复等待槽（先于发送注册，避免 reply 先到被丢）。 */
-    fun newReplySlot(segmentId: String): CompletableDeferred<Reply> {
+    fun markLatestTurn(utteranceId: String) {
+        latestUtteranceId.set(utteranceId)
+        activeStream.get()?.takeIf { it.utteranceId != utteranceId }?.let { stream ->
+            if (activeStream.compareAndSet(stream, null)) {
+                val superseded = CancellationException("audio output superseded: ${stream.segmentId}")
+                stream.chunks.close(superseded)
+                stream.completion.completeExceptionally(superseded)
+            }
+        }
+    }
+
+    fun newReplySlot(segmentId: String, utteranceId: String = ""): CompletableDeferred<Reply> {
         val deferred = CompletableDeferred<Reply>()
-        pendingReply.set(PendingSlot<Reply>(segmentId, deferred))
+        pendingReplies[segmentId] = PendingSlot(segmentId, utteranceId, deferred)
         return deferred
     }
 
     fun clearReplySlot(deferred: CompletableDeferred<Reply>) {
-        pendingReply.get()?.takeIf { it.deferred === deferred }?.let { pendingReply.compareAndSet(it, null) }
+        pendingReplies.entries.firstOrNull { it.value.deferred === deferred }?.let {
+            pendingReplies.remove(it.key, it.value)
+        }
     }
 
     fun cancelStream(segmentId: String) {
@@ -1143,45 +1226,56 @@ internal class GatewayBridge(
     }
 
     /** 注册独立 TTS 播报槽（tts_response 对账用，与 reply 槽隔离）。 */
-    fun newTtsSlot(segmentId: String): CompletableDeferred<AudioReply> {
+    fun newTtsSlot(segmentId: String, utteranceId: String = ""): CompletableDeferred<AudioReply> {
         val deferred = CompletableDeferred<AudioReply>()
-        pendingTts.set(PendingSlot<AudioReply>(segmentId, deferred))
+        pendingTts[segmentId] = PendingSlot(segmentId, utteranceId, deferred)
         return deferred
     }
 
     fun clearTtsSlot(deferred: CompletableDeferred<AudioReply>) {
-        pendingTts.get()?.takeIf { it.deferred === deferred }?.let { pendingTts.compareAndSet(it, null) }
+        pendingTts.entries.firstOrNull { it.value.deferred === deferred }?.let {
+            pendingTts.remove(it.key, it.value)
+        }
     }
 
     private fun handle(msg: GatewayMessage) {
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
             "asr_partial" -> {
-                val slot = pendingReply.get() ?: return
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
+                if (!isLatest(slot)) return
                 val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
                 val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
                 onAsrResult(text, final)
             }
             "reply_partial" -> {
-                val slot = pendingReply.get() ?: return
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
+                if (!isLatest(slot)) return
                 val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
                 val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
                 onReplyText(text, final)
             }
             "reply" -> {
-                val slot = pendingReply.get() ?: return
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 client.parseReply(msg.payload)?.let { slot.deferred.complete(it) }
             }
             "audio_reply_start" -> {
-                val slot = pendingReply.get() ?: return
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 val chunks = Channel<ByteArray>(Channel.UNLIMITED)
                 val completion = CompletableDeferred<AudioStreamEnd>()
                 val reply = client.parseAudioStreamStart(msg.payload, chunks, completion) ?: return
-                val stream = ActiveStream(slot.segmentId, chunks, completion)
+                if (!isLatest(slot)) {
+                    val superseded = CancellationException("stale audio output: ${slot.segmentId}")
+                    chunks.close(superseded)
+                    completion.completeExceptionally(superseded)
+                    slot.deferred.complete(reply)
+                    return
+                }
+                val stream = ActiveStream(slot.segmentId, slot.utteranceId, chunks, completion)
                 activeStream.getAndSet(stream)?.let { previous ->
                     previous.chunks.close(CancellationException("replaced by a newer stream"))
                     previous.completion.completeExceptionally(
@@ -1205,7 +1299,7 @@ internal class GatewayBridge(
                 }
             }
             "tts_response" -> {
-                val slot = pendingTts.get() ?: return
+                val slot = findSlot(msg.payload, pendingTts) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 client.parseTtsResponse(msg.payload)?.let { slot.deferred.complete(it) }
             }
@@ -1213,12 +1307,19 @@ internal class GatewayBridge(
                 val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
                 val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: "网关错误"
-                val slot = pendingReply.get()
-                if (slot != null && isForCurrentUtterance(msg.payload, slot)) {
-                    slot.deferred.completeExceptionally(GatewayRemoteException(code, "$message [$code]"))
+                val error = GatewayRemoteException(code, "$message [$code]")
+                val messageSegment = msg.payload.get("segmentId")
+                    ?.takeIf { value -> value.isJsonPrimitive }?.asString
+                val affected = if (messageSegment == null) {
+                    pendingReplies.values.toList()
+                } else {
+                    listOfNotNull(pendingReplies[messageSegment])
                 }
-                activeStream.getAndSet(null)?.let { stream ->
-                    val error = GatewayRemoteException(code, "$message [$code]")
+                affected.forEach { it.deferred.completeExceptionally(error) }
+                activeStream.get()?.takeIf {
+                    messageSegment == null || messageSegment == it.segmentId
+                }?.let { stream ->
+                    if (!activeStream.compareAndSet(stream, null)) return@let
                     stream.chunks.close(error)
                     stream.completion.completeExceptionally(error)
                 }
@@ -1228,8 +1329,9 @@ internal class GatewayBridge(
                 // 消息：不能走 reply（会 complete replySlot 吞掉 final），只发信号改 UI
                 // 状态 + 延长仲裁等待窗口。对账同 reply：segmentId 不一致 → 他轮迟到丢弃；
                 // 无槽（无话语在途）→ 丢弃。trySend 幂等缓冲（BUFFERED 通道不挂起）。
-                val slot = pendingReply.get() ?: return
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
+                if (!isLatest(slot)) return
                 pendingSignals.trySend(Unit)
                 onPendingReceived()
             }
@@ -1249,6 +1351,20 @@ internal class GatewayBridge(
             return false
         }
         return true
+    }
+
+    private fun isLatest(slot: PendingSlot<*>): Boolean {
+        val latest = latestUtteranceId.get()
+        return latest.isBlank() || slot.utteranceId.isBlank() || slot.utteranceId == latest
+    }
+
+    private fun <T> findSlot(
+        payload: JsonObject,
+        slots: ConcurrentHashMap<String, PendingSlot<T>>,
+    ): PendingSlot<T>? {
+        val segmentId = payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString
+        if (segmentId != null) return slots[segmentId]
+        return slots.values.singleOrNull()
     }
 
     /** 网关 decision 事件 → DecisionEntry（字段缺失则忽略该条，防御）。 */

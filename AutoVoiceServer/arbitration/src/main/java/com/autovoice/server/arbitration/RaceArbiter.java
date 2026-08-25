@@ -36,7 +36,8 @@ import java.util.function.BiConsumer;
  *   <li><b>void（最新会话拦截）</b>：装配方调用 {@link #voidTurn}（cancel_turn /
  *       superseded）→ 立即按对应 reason 收敛——不取消候选、不写决策日志、不发仲裁事件；
  *       候选自然完成后经 settled CAS / settledByVoid 守卫静默丢弃（拦截而非取消）；</li>
- *   <li>任一路径胜出后主动取消仍在执行的另一候选，避免无效请求继续占用资源。</li>
+ *   <li>任一路径胜出后不取消另一候选；迟到候选由 settled CAS 闸门拦截，
+ *       只可记录 lost 事件，不得执行或播报。</li>
  * </ul>
  *
  * <p>并发实现：单赢家 CAS——首个成功者 complete 结果并写日志；safety 与宽限期计时用
@@ -95,7 +96,7 @@ public final class RaceArbiter {
         this.eventSink = eventSink;
     }
 
-    /** 端侧显式取消本轮的收敛原因（cancel_turn，端侧本地仲裁胜出）。 */
+    /** 兼容协议中显式 void 本轮输出的收敛原因；正常仲裁胜出不发送此事件。 */
     public static final String REASON_CANCEL_TURN = "cancel_turn";
     /** 被更新话语取代的收敛原因（新 audio_start 携带不同 utteranceId，端侧 isStale 同构）。 */
     public static final String REASON_SUPERSEDED = "superseded";
@@ -184,7 +185,7 @@ public final class RaceArbiter {
         // set_temperature）——非空调命中（window/misc/防御）按未命中处理：不发事件、
         // 不参与 CAS，走 LLM 优先路径；此时若 LLM 尚未完成 → 发 pending 占位事件
         // （B5：装配方据此下发"处理中"消息，protocol.md §4.8）。
-        // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
+        // 仍保留 CAS 守卫，处理恰好同时完成的竞态。
         offline.whenComplete((hit, err) -> {
             if (err != null) return;
             if (settledByVoid(out)) return; // 已被 void：迟到离线候选静默丢弃（拦截而非取消）
@@ -197,7 +198,6 @@ public final class RaceArbiter {
             }
             onEvent(utteranceId, CloudArbiterEvent.received(ROUTE_NLU_TRADITIONAL));
             if (settled.compareAndSet(false, true)) {
-                llm.cancel(true);
                 Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
                 sink.log(entry(utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
                 onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_NLU_TRADITIONAL,
@@ -211,7 +211,7 @@ public final class RaceArbiter {
         });
 
         // 候选 2：LLM 结果 → 离线已完成则立即胜出，否则起宽限期等离线。
-        // 仍保留 CAS 守卫，处理恰好同时完成、取消来不及生效的竞态。
+        // 仍保留 CAS 守卫，处理恰好同时完成的竞态。
         llm.whenComplete((reply, err) -> {
             if (err != null || reply == null) return; // 失败留给 safety 兜底
             if (settledByVoid(out)) return; // 已被 void：迟到 LLM 候选静默丢弃（拦截而非取消）
@@ -229,8 +229,6 @@ public final class RaceArbiter {
         // safety 兜底：safetyTimeoutMs 内无一收敛
         scheduler.schedule(() -> {
             if (settled.compareAndSet(false, true)) {
-                offline.cancel(true);
-                llm.cancel(true);
                 sink.log(entry(utteranceId, ROUTE_LLM, "safety_timeout"));
                 onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                         CloudArbiterEvent.Reason.LLM_TIMEOUT, "safety_timeout"));
@@ -254,8 +252,8 @@ public final class RaceArbiter {
     }
 
     /**
-     * LLM 胜出收敛（即时与宽限期到点共用）：CAS 成功 → 胜出事件；若取消与完成竞态
-     * 导致 CAS 失败，则仅在命令词已胜出时发 lost 事件；safety 收敛不触发 lost。
+     * LLM 胜出收敛（即时与宽限期到点共用）：CAS 成功 → 胜出事件；若另一候选
+     * 已收敛导致 CAS 失败，则仅在命令词已胜出时发 lost 事件。
      */
     private void settleLlm(AtomicBoolean settled, CompletableFuture<ArbiterDecision> out,
                            Reply reply, String utteranceId,
@@ -267,7 +265,6 @@ public final class RaceArbiter {
             }
             return;
         }
-        offline.cancel(true);
         sink.log(entry(utteranceId, ROUTE_LLM, "llm_reply"));
         onEvent(utteranceId, CloudArbiterEvent.won(ROUTE_LLM,
                 CloudArbiterEvent.Reason.PRIORITY, "llm_reply"));

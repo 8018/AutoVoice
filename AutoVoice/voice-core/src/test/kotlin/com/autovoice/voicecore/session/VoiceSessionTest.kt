@@ -19,6 +19,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -68,8 +69,8 @@ class VoiceSessionTest {
 
     /**
      * 跑一轮完整话语：onListeningStart → onCloudSegment(×cloudSegments) → onTurnSegment
-     * → 竞速收敛 → 结果回调 → IDLE。scope 注入为 runBlocking 自身，runBlocking 等本轮
-     * 子协程全部完成后才返回，故返回时结果已回调、状态已回 IDLE，断言可顺序读全。
+     * → 竞速收敛 → 结果回调 → IDLE。编排 scope 注入 runBlocking；候选与之解耦，
+     * 因此输家自然完成不会拖住本轮结果。
      */
     private fun turn(
         local: LocalChainRunner,
@@ -90,7 +91,7 @@ class VoiceSessionTest {
             local = local,
             cloud = cloud,
             scope = this,
-            resultListener = ResultListener { results.add(it) },
+            resultListener = ResultListener { _, winner -> results.add(winner) },
         )
         session.onState { states.add(it) }
         beforeFeed(session)
@@ -137,6 +138,64 @@ class VoiceSessionTest {
         assertEquals(localIntent(), (t.results.single() as RaceWinner.Local).intent)
         assertEquals(listOf("cloud_timeout_use_local"), t.entries.map { it.reason })
         assertEquals(SessionState.IDLE, t.session.state.value)
+    }
+
+    @Test
+    fun `local winner does not cancel cloud candidate`() = runBlocking {
+        val cloudStarted = CompletableDeferred<Unit>()
+        val cloudCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val result = CompletableDeferred<RaceWinner>()
+        val session = VoiceSession(
+            cfg = cfg(cloudWaitMs = 20),
+            arbiter = arbiter(20, 100, DecisionSink {}),
+            sink = DecisionSink {},
+            local = LocalChainRunner { localIntent() },
+            cloud = CloudRunner {
+                cloudStarted.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    cloudCancelled.set(true)
+                }
+            },
+            scope = this,
+            resultListener = ResultListener { _, winner -> result.complete(winner) },
+        )
+        session.currentUtteranceId = "utt-1"
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+        cloudStarted.await()
+        assertTrue(result.await() is RaceWinner.Local)
+        assertFalse(cloudCancelled.get(), "仲裁收敛不得取消输家")
+        session.close()
+    }
+
+    @Test
+    fun `superseded old turn cannot reset newer listening state`() = runBlocking {
+        val oldCloud = CompletableDeferred<TextReply>()
+        val result = CompletableDeferred<RaceWinner>()
+        val session = VoiceSession(
+            cfg = cfg(cloudWaitMs = 2_000),
+            arbiter = arbiter(2_000, 2_000, DecisionSink {}),
+            sink = DecisionSink {},
+            local = LocalChainRunner { awaitCancellation() },
+            cloud = CloudRunner { oldCloud.await() },
+            scope = this,
+            resultListener = ResultListener { _, winner -> result.complete(winner) },
+        )
+        session.currentUtteranceId = "utt-old"
+        session.onListeningStart()
+        session.onCloudSegment(segment)
+        session.onTurnSegment(segment)
+
+        session.currentUtteranceId = "utt-new"
+        session.onListeningStart()
+        oldCloud.complete(TextReply("迟到回复"))
+
+        assertTrue(result.await() is RaceWinner.Intercepted)
+        assertEquals(SessionState.LISTENING, session.state.value)
+        session.close()
     }
 
     @Test
@@ -275,7 +334,7 @@ class VoiceSessionTest {
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { cloudCalls.incrementAndGet(); TextReply("hi") },
             scope = this,
-            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+            resultListener = ResultListener { _, winner -> results.add(winner); signal.complete(Unit) },
         )
         session.onState { states.add(it) }
         session.onListeningStart()
@@ -338,7 +397,7 @@ class VoiceSessionTest {
                 throw CloudUnavailableException("gateway down")
             },
             scope = this,
-            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+            resultListener = ResultListener { _, winner -> results.add(winner); signal.complete(Unit) },
         )
 
         // 第一轮：上传即炸 → 本地兜底
@@ -378,7 +437,7 @@ class VoiceSessionTest {
                 TextReply("recovered")
             },
             scope = this,
-            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+            resultListener = ResultListener { _, winner -> results.add(winner); signal.complete(Unit) },
         )
 
         session.onListeningStart()
@@ -439,7 +498,7 @@ class VoiceSessionTest {
                     local = LocalChainRunner { error("local chain boom") },
                     cloud = CloudRunner { delay(500); TextReply("hi") },
                     scope = this,
-                    resultListener = ResultListener { results.add(it) },
+                    resultListener = ResultListener { _, winner -> results.add(winner) },
                 )
                 sessionRef.set(session)
                 session.onState { states.add(it) }
@@ -481,7 +540,7 @@ class VoiceSessionTest {
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { delay(10); TextReply("hi") },
             scope = this,
-            resultListener = ResultListener { results.add(it); signal.complete(Unit) },
+            resultListener = ResultListener { _, winner -> results.add(winner); signal.complete(Unit) },
         )
 
         // 第一轮：云端不可达 → 只跑本地

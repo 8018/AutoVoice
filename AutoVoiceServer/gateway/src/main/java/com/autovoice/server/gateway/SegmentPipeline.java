@@ -126,7 +126,7 @@ public final class SegmentPipeline {
                                        String segmentId, OnlineAudioSink downstreamAudio,
                                        OnlineAsrSink downstreamAsr) {
         // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
-        // RaceArbiter 只拦截输出，空调离线命中时取消在线，否则放行在线结果。
+        // RaceArbiter 只拦截输出，空调离线命中时也不取消在线候选。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
         CloudAudioGate audioGate = new CloudAudioGate(offlineF, downstreamAudio);
         long onlineStart = System.currentTimeMillis();
@@ -154,11 +154,9 @@ public final class SegmentPipeline {
             }
             if ("offline_won".equals(reason)) {
                 audioGate.reject();
-                cancelOnline(onlineF, utteranceId);
                 return toResult(decision, "", ctx, utteranceId);
             }
             if ("safety_timeout".equals(decision.reason())) {
-                cancelOnline(onlineF, utteranceId);
                 audioGate.abort(new java.util.concurrent.TimeoutException(
                         "online speech timed out: " + utteranceId));
                 SegmentResult result = toResult(decision, "", ctx, utteranceId);

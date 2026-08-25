@@ -193,7 +193,7 @@ class SegmentPipelineTest {
     }
 
     @Test
-    void cloudOfflineHitCancelsS2sCandidate() {
+    void cloudOfflineHitInterceptsWithoutCancellingS2sCandidate() {
         AtomicBoolean cancelled = new AtomicBoolean();
         CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
             @Override
@@ -208,11 +208,11 @@ class SegmentPipelineTest {
         SegmentPipeline.SegmentResult result = p.handleSegment(PCM, CTX, "u-s2s-cancel");
 
         assertEquals("power_on", result.intent().intent());
-        assertTrue(cancelled.get(), "云端空调离线命中后必须向 S2S 会话传播取消");
+        assertFalse(cancelled.get(), "云端空调离线命中后只拦截 S2S 输出，不取消候选");
     }
 
     @Test
-    void safetyTimeoutCancelsProviderAndAbortsStartedAudioStream() {
+    void safetyTimeoutInterceptsProviderAndAbortsStartedAudioStream() {
         AtomicBoolean futureCancelled = new AtomicBoolean();
         AtomicBoolean providerCancelled = new AtomicBoolean();
         CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>() {
@@ -246,8 +246,8 @@ class SegmentPipelineTest {
 
         assertEquals("safety_timeout", log.get(0).reason());
         assertTrue(result.streamed(), "已开始的流由 error 收口，不应再发送第二个普通 reply");
-        assertTrue(providerCancelled.get(), "超时必须中止 provider 的 HTTP/工具调用");
-        assertTrue(futureCancelled.get(), "超时必须释放 provider 工作线程 future");
+        assertFalse(providerCancelled.get(), "超时只关闭结果闸门，不取消 provider");
+        assertFalse(futureCancelled.get(), "超时不取消 provider future");
         assertTrue(streamError.get(), "已下发 audio_reply_start 后必须显式结束客户端流");
     }
 

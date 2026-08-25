@@ -40,7 +40,9 @@ class TelemetryClient(
      */
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    private var current: CurrentRound? = null
+    /** barge-in 允许旧轮候选与新轮重叠，因此 telemetry 也按 utteranceId 并发持有。 */
+    private val rounds = LinkedHashMap<String, CurrentRound>()
+    private var activeUtteranceId: String = ""
     private var sessionId: String = ""
 
     @Synchronized
@@ -53,14 +55,15 @@ class TelemetryClient(
     @Synchronized
     fun begin(utteranceId: String) {
         if (!enabled) return
-        current = CurrentRound(utteranceId, clock(), mutableListOf())
+        rounds[utteranceId] = CurrentRound(utteranceId, clock(), mutableListOf())
+        activeUtteranceId = utteranceId
     }
 
     /** 追加一条事件到当前轮（未 [begin] 时丢弃，防御）。 */
     @Synchronized
     fun record(stage: String, level: String, payload: Map<String, Any?>) {
         if (!enabled) return
-        val round = current ?: return
+        val round = rounds[activeUtteranceId] ?: return
         round.events.add(eventJson(stage, level, payload))
     }
 
@@ -73,8 +76,8 @@ class TelemetryClient(
     @Synchronized
     fun recordFor(utteranceId: String, stage: String, level: String, payload: Map<String, Any?>) {
         if (!enabled) return
-        val round = current
-        if (round != null && round.utteranceId == utteranceId) {
+        val round = rounds[utteranceId]
+        if (round != null) {
             round.events.add(eventJson(stage, level, payload))
             return
         }
@@ -91,9 +94,10 @@ class TelemetryClient(
     @Synchronized
     fun end(utteranceId: String) {
         if (!enabled) return
-        val round = current ?: return
-        if (round.utteranceId != utteranceId) return
-        current = null
+        val round = rounds.remove(utteranceId) ?: return
+        if (activeUtteranceId == utteranceId) {
+            activeUtteranceId = rounds.keys.lastOrNull().orEmpty()
+        }
         postJson(
             "/api/telemetry/round",
             JSONObject()

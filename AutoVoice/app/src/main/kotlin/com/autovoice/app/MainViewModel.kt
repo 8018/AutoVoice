@@ -221,6 +221,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startRecording(fromWake: Boolean) {
         if (recording) return
         pauseWakeObservation()
+        // barge-in：只停止旧轮播放，不取消端侧/云端候选。后续旧结果由
+        // VoiceEngine/VoiceSession 的 utteranceId 最新轮闸门拦截。
+        val interruptedPlayback = ttsPlayer.isSpeaking()
+        if (interruptedPlayback) {
+            Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
+            ttsPlayer.stop()
+        }
         if (!recorder.start()) {
             // 缺权限/创建失败时 recorder 静默降级（Log.w），这里提示用户授权
             _uiState.update { it.copy(permissionHint = true) }
@@ -279,9 +286,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * → 本地整段（concat 全部降噪块）送 [VoiceEngine.onTurnSegment] 启动双路竞速。
      * 整段 < 300ms（瞬时噪声/误触）不送识别，直接回 IDLE。
      *
-     * 回声抑制（Task 62）：云端/本地播报中（或刚播完 [ECHO_GUARD_MS] 内）按住录音，
-     * 麦克风必然混入扬声器回声——整轮丢弃不送识别（回声会被云端 ASR 当成新指令，
-     * 触发新一轮播报，形成"一直播报"循环）。
+     * 新轮开始时已先停止旧播放；因此不再把播报期间的主动录音整轮丢弃。
+     * 第一阶段打断由按键/离线唤醒确认，避免仅靠 VAD 将扬声器回声误判为用户。
      */
     fun stopRecording() {
         if (!recording) return
@@ -291,14 +297,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wakeTurnTimeoutJob = null
         recorder.stop()
         _uiState.update { it.copy(recording = false) }
-        if (ttsPlayer.isSpeaking(ECHO_GUARD_MS)) {
-            val dropped = denoisedBlocks.sumOf { it.size }
-            denoisedBlocks.clear()
-            Log.i(TAG, "播报中/刚播完，丢弃本轮录音（回声抑制，${dropped}B）")
-            engine.onListeningStop()
-            rearmWakeWhenIdle()
-            return
-        }
         val denoised = concatBlocks(denoisedBlocks)
         denoisedBlocks.clear()
         val cloudSegments = recorder.finishSegments()
@@ -365,16 +363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun onWakeDetected(keyword: String) {
         if (!foreground || recording) return
-        if (ttsPlayer.isSpeaking(ECHO_GUARD_MS)) {
-            Log.i(TAG, "播报回声期间忽略唤醒：$keyword")
-            pauseWakeObservation()
-            viewModelScope.launch {
-                delay(ECHO_GUARD_MS)
-                rearmWakeWhenIdle()
-            }
-            return
-        }
-        Log.i(TAG, "离线唤醒命中：$keyword")
+        Log.i(TAG, "离线唤醒命中：$keyword${if (ttsPlayer.isSpeaking()) "（barge-in）" else ""}")
         startRecording(fromWake = true)
     }
 
@@ -495,12 +484,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     ttsPlayer.play(reply)
                 }
+                override fun stop() {
+                    ttsPlayer.stop()
+                }
                 override suspend fun playStream(reply: StreamingAudioReply) {
                     ttsPlayer.playStream(reply)
-                    val end = reply.completion.await()
-                    if (end.speakText.isNotBlank()) {
-                        _uiState.update { s -> s.copy(lastReplyText = end.speakText) }
-                    }
                 }
             },
             vehicle = vehicleState,
@@ -613,9 +601,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 竞速胜出方 UI 标志文本（Task 61）。 */
         const val WINNER_LOCAL = "端侧"
         const val WINNER_CLOUD = "云端"
-
-        /** 回声抑制窗口（Task 62）：播报刚结束后此毫秒数内按录音也丢弃（残留回声）。 */
-        const val ECHO_GUARD_MS = 500L
 
         /** 唤醒后始终没有形成 VAD SpeechEnd 时的安全收口，避免永久占用一轮。 */
         const val WAKE_TURN_TIMEOUT_MS = 10_000L
