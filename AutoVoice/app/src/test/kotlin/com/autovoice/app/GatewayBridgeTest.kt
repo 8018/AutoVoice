@@ -144,6 +144,30 @@ class GatewayBridgeTest {
     }
 
     @Test
+    fun `overlapping old and new turns keep independent reply slots`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope)
+        try {
+            client.connect()
+            val old = bridge.newReplySlot("seg-old", "utt-old")
+            val newest = bridge.newReplySlot("seg-new", "utt-new")
+            bridge.markLatestTurn("utt-new")
+            gateway.sendText(replyFrame("seg-old", "旧轮自然完成"))
+            gateway.sendText(replyFrame("seg-new", "新轮回复"))
+
+            assertEquals("旧轮自然完成", (old.await() as TextReply).text)
+            assertEquals("新轮回复", (newest.await() as TextReply).text)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `stale reply from previous utterance does not complete current slot`() = runBlocking {
         val gateway = FakeGatewayServer()
         gateway.start()

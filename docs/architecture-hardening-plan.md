@@ -85,11 +85,12 @@
 
 - 为每轮创建统一 deadline，并传入 ASR/LLM/MCP。
 - LLM 使用专用有界线程池，不使用 common pool。
-- 仲裁收敛后取消输家 future；OkHttp Call 与 MCP 调用响应取消/中断。
+- 仲裁收敛后不取消输家；用 utteranceId + settled 闸门拦截迟到结果。
+- OkHttp Call 与 MCP 使用自身 deadline/有界线程池自然收口，只在引擎销毁或链路异常时停止。
 - 对具有副作用的工具，在执行前再次检查 deadline 和轮次是否仍有效。
 - 统一 `safetyTimeoutMs`、LLM tool budget 和 Android pending wait 的配置关系并做启动校验。
 
-验证：safety 后底层 Call 被取消、不会继续下一轮工具调用、线程池容量和拒绝路径可控。
+验证：safety 后迟到 Call/工具结果不会执行或下行，同时候选在自身 deadline 内收口，线程池容量和拒绝路径可控。
 
 ### 3.5 ASR PCM 诊断文件不受保留策略管理
 

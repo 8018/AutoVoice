@@ -8,7 +8,8 @@ package com.autovoice.voicecore.session
  *                               └──── 超时/全败 → IDLE（兜底话术归应用层）
  * ```
  *
- * 预留不实现：barge-in（SPEAKING 中打断重听）、多轮上下文。
+ * barge-in 时允许 UNDERSTANDING/SPEAKING 直接转 LISTENING；旧轮结果由
+ * utteranceId 最新轮闸门拦截。多轮上下文仍未实现。
  */
 enum class SessionState {
     IDLE,

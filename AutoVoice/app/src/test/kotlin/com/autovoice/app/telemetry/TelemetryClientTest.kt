@@ -147,6 +147,34 @@ class TelemetryClientTest {
         assertTrue(e.getLong("tsMs") > 0)
     }
 
+    @Test
+    fun `barge-in keeps old and new telemetry rounds isolated`() {
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(MockResponse().setResponseCode(200))
+        val client = client()
+        client.begin("utt-old")
+        client.recordFor("utt-old", "old-event", "info", emptyMap())
+        client.begin("utt-new")
+        client.record("new-event", "info", emptyMap())
+        client.recordFor("utt-old", "old-late", "warn", emptyMap())
+        client.end("utt-old")
+        client.end("utt-new")
+
+        val bodies = List(2) {
+            JSONObject(server.takeRequest(5, TimeUnit.SECONDS)!!.body.readUtf8())
+        }.associateBy { it.getString("utteranceId") }
+        assertEquals(
+            listOf("old-event", "old-late"),
+            (0 until bodies.getValue("utt-old").getJSONArray("events").length()).map {
+                bodies.getValue("utt-old").getJSONArray("events").getJSONObject(it).getString("stage")
+            },
+        )
+        assertEquals(
+            "new-event",
+            bodies.getValue("utt-new").getJSONArray("events").getJSONObject(0).getString("stage"),
+        )
+    }
+
     /**
      * T7 评审 C1：轮已关闭（current=null）后的迟到事件 → 直接 POST 单事件到
      * /api/telemetry/events（服务端按 utterance_id 汇合到已有 round，不新建轮）。

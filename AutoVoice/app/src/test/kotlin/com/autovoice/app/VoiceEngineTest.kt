@@ -54,12 +54,34 @@ import org.junit.jupiter.api.Test
  * Task 20 引擎测试：真实 VoiceSession + 真实 OnDeviceRaceArbiter（小 cloudWaitMs），
  * 注入 fake 本地链 / 云端链 / 播放 / 播报 / 车辆 / 网络检查。纯 JVM，无 Android 类型。
  *
- * 时序：engine 的会话 scope 注入 runBlocking，runBlocking 等本轮子协程全部完成才返回，
- * 故返回时竞速已收敛、结果已路由，断言可顺序读全。
+ * 时序：仲裁编排 scope 注入 runBlocking；候选在独立 scope 运行，胜者收敛后
+ * 输家可自然完成，不阻塞测试轮次返回。
  */
 class VoiceEngineTest {
 
     private val segment = ByteArray(960) { 7 }
+
+    @Test
+    fun `starting a new turn stops current playback`() = runBlocking {
+        var stops = 0
+        val player = object : AudioPlayer {
+            override fun play(reply: AudioReply) = Unit
+            override fun stop() {
+                stops += 1
+            }
+        }
+        val engine = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("好的") },
+            player = player,
+        ).first
+
+        engine.onListeningStart()
+
+        assertEquals(1, stops)
+        assertEquals(SessionState.LISTENING, engine.session.state.value)
+    }
 
     private fun cfg(cloudWaitMs: Long = 100): DemoConfig =
         DemoConfig(
