@@ -46,7 +46,11 @@ fun VoiceScreen(
         Text(
             text = when {
                 state.recording -> "正在聆听命令…"
+                state.wakeListening && state.openMicBargeInAvailable ->
+                    "等待唤醒；播报时可直接说话打断"
                 state.wakeListening -> "正在等待唤醒：你好飞飞"
+                state.wakeError != null && state.openMicBargeInAvailable ->
+                    "唤醒词不可用；播报时仍可直接说话打断"
                 state.wakeError != null -> "唤醒未启用：${state.wakeError}"
                 else -> "唤醒初始化中…"
             },

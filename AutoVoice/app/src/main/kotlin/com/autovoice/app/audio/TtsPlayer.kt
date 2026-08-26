@@ -153,6 +153,7 @@ class TtsPlayer(
         player = mp
         Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
         try {
+            mp.setAudioAttributes(VOICE_AUDIO_ATTRIBUTES)
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
                 Log.i(TAG, "play completed: data=${reply.data.size}B")
@@ -200,7 +201,7 @@ class TtsPlayer(
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -345,6 +346,11 @@ class TtsPlayer(
 
     private companion object {
         const val TAG = "TtsPlayer"
+
+        val VOICE_AUDIO_ATTRIBUTES: AudioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
 
         /** 音频字节率（16k 单声道 16bit）：估算时长用，MediaPlayer 实际以文件头为准。 */
         const val SAMPLE_RATE_BYTES_PER_SEC = 32_000

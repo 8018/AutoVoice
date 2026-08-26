@@ -464,6 +464,9 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
 
 `audio_reply_end.asrText` 是旁路 ASR 产生的用户原话最终快照，用于校正/收口；首次及中间
 识别展示走不受仲裁阻塞的 `asr_partial`。
+Omni 回答音频与旁路 ASR 仍并发生成，但首个 `audio_reply_start`/音频块需经过有限字幕门：
+从首音频事件起最多等待旁路 ASR 800ms；ASR 先完成时必须先发送 `asr_partial` 再放行音频，
+超时则优先放行音频。该门只缓存输出，不取消 Qwen、ASR 或任一仲裁候选。
 `audio_reply_end.intent` 可选，结构与 `reply/action.intent` 相同。音频不绕过 TTS 架构：端侧把 PCM
 块交给 TTS 模块新增的流式音频入口，由其统一负责 AudioTrack 播放、停止和 telemetry；它不再做文本合成。
 
@@ -528,7 +531,7 @@ S2S 编译变体的结果阶段替换为：
    `tts_request` → `tts_response`；合成失败 → `error`（`TTS_FAILED`，不关连接）。
 5. 异常路径：任意阶段失败，服务端发 `error`（随后 `bye`）或直接 `bye`（`TTS_FAILED` 除外，见 §4.5）。
 6. **两级仲裁彼此独立**：云端只比较“空调离线 vs 在线模型”；端侧只比较“本地车窗 vs 云端最终候选”。两边候选均从录音开始并发计算，仲裁只拦截输出；任一候选胜出都不取消输家，迟到结果只记 lost/intercepted。
-7. **barge-in**：播报中的按键或离线唤醒会立即停止旧音频并创建新 `utteranceId`。旧轮计算自然完成，但其文本、音频、intent 与工具结果必须经最新轮闸门拦截。
+7. **barge-in**：播报中的按键、离线唤醒或经 AEC 后的连续有效人声会立即停止旧音频并创建新 `utteranceId`；开放式打断保留触发前约 384ms PCM，避免 VAD 确认窗口吞掉话首。旧轮计算自然完成，但其文本、音频、intent 与工具结果必须经最新轮闸门拦截。设备不能启用系统 AEC 时必须降级为按键/唤醒词打断，禁止直接用扬声器回灌 PCM 触发普通 VAD。
 
 ### 5.1 链路追踪（telemetry）
 

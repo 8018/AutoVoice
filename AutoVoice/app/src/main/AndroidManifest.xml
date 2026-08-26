@@ -3,6 +3,7 @@
 
     <!-- 录音（Task 19 运行时申请）；INTERNET 给 Task 20 的网关 WebSocket 用，现在无害 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 网络可用性检查（Task 20 engine 的 ConnectivityManager 判定） -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

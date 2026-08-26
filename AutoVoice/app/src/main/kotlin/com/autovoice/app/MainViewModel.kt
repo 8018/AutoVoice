@@ -97,6 +97,8 @@ data class UiState(
     val cloudPending: Boolean = false,
     /** 待机唤醒观察者已启用；底层与语音链共享同一个 AudioRecord。 */
     val wakeListening: Boolean = false,
+    /** 设备采集会话已启用 AEC，播报期可用普通话术直接打断。 */
+    val openMicBargeInAvailable: Boolean = false,
     /** 唤醒初始化/资源错误；null 表示无错误。 */
     val wakeError: String? = null,
 )
@@ -138,6 +140,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 2026-08-15：全部播报统一走网络 TTS（TtsPlayer 播放服务端合成音频），不再用系统 TTS。
      */
     private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
+        // 只在真实播放期打开普通话术 VAD；结束/失败/被打断立即关闭。
+        recorder.setOpenMicBargeInListening(stage == "start")
         engine.onTtsPlayEvent(stage, level, payload)
     }
 
@@ -189,8 +193,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 单一 AudioRecord 的原始流观察者：待机 IVW 直接吃原始 PCM，不经过 Silero VAD。
         viewModelScope.launch(Dispatchers.IO) {
             recorder.rawPcmBlocks.collect { block ->
-                if (_uiState.value.wakeListening && !recording) {
-                    runCatching { wakeObserver.accept(block) }.onFailure { onWakeFailure(it) }
+                if (!recording) {
+                    if (_uiState.value.wakeListening) {
+                        runCatching { wakeObserver.accept(block) }.onFailure { onWakeFailure(it) }
+                    }
+                    if (recorder.detectOpenMicBargeIn(block)) {
+                        viewModelScope.launch { onOpenMicBargeInDetected() }
+                    }
                 }
             }
         }
@@ -218,7 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun startRecording() = startRecording(fromWake = false)
 
-    private fun startRecording(fromWake: Boolean) {
+    private fun startRecording(fromWake: Boolean, includeBargeInPreRoll: Boolean = false) {
         if (recording) return
         pauseWakeObservation()
         // barge-in：只停止旧轮播放，不取消端侧/云端候选。后续旧结果由
@@ -228,16 +237,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
             ttsPlayer.stop()
         }
-        if (!recorder.start()) {
+        // 先建立新轮并置位，使 recorder.start 同步补入的打断 pre-roll
+        // 的 PCM/VAD 事件都归属新 utteranceId，也能被收集器接住。
+        recording = true
+        wakeTurn = fromWake
+        denoisedBlocks.clear()
+        engine.onListeningStart()
+        if (!recorder.start(includeBargeInPreRoll)) {
+            recording = false
+            wakeTurn = false
+            engine.onListeningStop()
             // 缺权限/创建失败时 recorder 静默降级（Log.w），这里提示用户授权
             _uiState.update { it.copy(permissionHint = true) }
             rearmWakeWhenIdle()
             return
         }
-        recording = true
-        wakeTurn = fromWake
-        denoisedBlocks.clear()
-        engine.onListeningStart()
         _uiState.update {
             it.copy(
                 permissionHint = false,
@@ -261,6 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Activity 回到前台时提前恢复 WebSocket，避免第一句话承担握手时延。 */
     fun onForeground() {
         foreground = true
+        Log.i(TAG, "App 回到前台：重建共享麦克风与 IVW 会话")
         engine.onForeground()
         startWakeMonitoring()
     }
@@ -274,10 +289,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 前台可见范围内监听；退到后台停止共享麦克风，避免无前台服务的隐式常驻录音。 */
     fun onBackground() {
         foreground = false
+        // 导航 Activity 覆盖本应用时 AudioRecord 必须释放。同时取消尚未完成的初始化，
+        // 防止它在 onStop 之后反向重新 arm。IVW 原生 handle 必须保留：此 SDK 在同一
+        // AIKit 进程中 end 后重新 start 会持续返回 10005；前台恢复时 observer 会把
+        // 新 AudioRecord 的首块重新标为 BEGIN。
+        wakeSetupJob?.cancel()
+        wakeSetupJob = null
         if (recording) cancelRecording() else pauseWakeObservation()
-        // 导航等外部 Activity 会短暂覆盖本应用。这里只停止喂帧并释放麦克风，保留
-        // IVW 原生 handle；返回时直接恢复，避免 end 后立即 start 触发 AIKit 10005。
         recorder.stopMonitoring()
+        _uiState.update {
+            it.copy(wakeListening = false, openMicBargeInAvailable = false)
+        }
+        Log.i(TAG, "App 进入后台：共享麦克风已停止，IVW 会话已暂停")
     }
 
     /**
@@ -287,7 +310,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 整段 < 300ms（瞬时噪声/误触）不送识别，直接回 IDLE。
      *
      * 新轮开始时已先停止旧播放；因此不再把播报期间的主动录音整轮丢弃。
-     * 第一阶段打断由按键/离线唤醒确认，避免仅靠 VAD 将扬声器回声误判为用户。
+     * 打断可由按键/离线唤醒确认，或在设备 AEC 已启用时由播报期连续人声确认。
      */
     fun stopRecording() {
         if (!recording) return
@@ -341,13 +364,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!foreground || recording || wakeSetupJob?.isActive == true) return
         wakeSetupJob = viewModelScope.launch(Dispatchers.IO) {
             if (!recorder.startMonitoring()) return@launch
+            // startMonitoring/SDK 初始化可能阻塞；其间 Activity 可能已经被导航覆盖。
+            if (!foreground || recording) {
+                recorder.stopMonitoring()
+                return@launch
+            }
             try {
                 if (!wakeInitialized) {
                     wakeObserver.init(getApplication())
                     wakeInitialized = true
                 }
+                if (!foreground || recording) {
+                    wakeObserver.pause()
+                    recorder.stopMonitoring()
+                    return@launch
+                }
                 wakeObserver.arm()
-                _uiState.update { it.copy(wakeListening = true, wakeError = null) }
+                if (!foreground || recording) {
+                    wakeObserver.pause()
+                    recorder.stopMonitoring()
+                    return@launch
+                }
+                _uiState.update {
+                    it.copy(
+                        wakeListening = true,
+                        wakeError = null,
+                        openMicBargeInAvailable = recorder.openMicBargeInAvailable,
+                    )
+                }
                 Log.i(TAG, "离线唤醒已启用：${wakeObserver.keyword}")
             } catch (t: Throwable) {
                 onWakeFailure(t)
@@ -367,13 +411,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         startRecording(fromWake = true)
     }
 
+    private fun onOpenMicBargeInDetected() {
+        if (!foreground || recording || !ttsPlayer.isSpeaking()) return
+        Log.i(TAG, "播报期检测到用户语音，开始开放式 barge-in")
+        // 与唤醒轮共用 VAD SpeechEnd/超时自动收口；只停播放，不取消旧轮候选。
+        startRecording(fromWake = true, includeBargeInPreRoll = true)
+    }
+
     private fun onWakeFailure(error: Throwable) {
         Log.w(TAG, "离线唤醒不可用", error)
         runCatching { wakeObserver.disarm() }
-        recorder.stopMonitoring()
+        // IVW 与开放式打断共享麦克风，但故障域独立：唤醒 SDK 失败不得
+        // 停止 AEC/VAD 监听，否则普通话术打断也会被连带关闭。退后台由 onBackground 统一释放。
         _uiState.update {
             it.copy(
                 wakeListening = false,
+                openMicBargeInAvailable = recorder.openMicBargeInAvailable,
                 wakeError = error.message ?: error.javaClass.simpleName,
             )
         }

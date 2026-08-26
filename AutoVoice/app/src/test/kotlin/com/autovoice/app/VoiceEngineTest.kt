@@ -1220,6 +1220,41 @@ class VoiceEngineTest {
         assertTrue(vehicle.isAcOn, "流结束携带的 intent 应只在云端胜出后执行")
     }
 
+    @Test
+    fun `stream error after audio start does not crash engine scope`() {
+        val chunks = Channel<ByteArray>(Channel.UNLIMITED).also { it.close() }
+        val completion = CompletableDeferred<AudioStreamEnd>().also {
+            it.completeExceptionally(IllegalStateException("ONLINE_STREAM_ABORTED"))
+        }
+        val stream = StreamingAudioReply(
+            mime = "audio/pcm",
+            sampleRate = 24_000,
+            channels = 1,
+            encoding = "pcm_s16le",
+            chunks = chunks,
+            completion = completion,
+        )
+        lateinit var engine: VoiceEngine
+        lateinit var vehicle: MockVehicleState
+
+        runBlocking {
+            val pair = engine(
+                scope = this,
+                local = LocalChainRunner { delay(300); Intent.unknown("local") },
+                cloud = CloudRunner { stream },
+                player = object : AudioPlayer {
+                    override fun play(reply: AudioReply) = Unit
+                    override suspend fun playStream(reply: StreamingAudioReply) = Unit
+                },
+            )
+            engine = pair.first
+            vehicle = pair.second
+            utter(engine)
+        }
+
+        assertFalse(vehicle.isAcOn, "流式错误不得执行未收口的 intent")
+    }
+
     /** 等一轮话语收敛完毕（状态回到 IDLE）——多轮用例在 runBlocking 内串行推进。 */
     private suspend fun awaitIdle(engine: VoiceEngine) {
         while (engine.session.state.value != SessionState.IDLE) {
