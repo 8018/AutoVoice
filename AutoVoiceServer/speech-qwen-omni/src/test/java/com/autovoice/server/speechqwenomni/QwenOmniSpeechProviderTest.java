@@ -123,6 +123,7 @@ class QwenOmniSpeechProviderTest {
     void sidecarAsrAddsUserTranscriptToStreamEndAndResult() throws Exception {
         AtomicReference<String> endTranscript = new AtomicReference<>();
         AtomicReference<String> earlyTranscript = new AtomicReference<>();
+        java.util.List<String> eventOrder = new java.util.concurrent.CopyOnWriteArrayList<>();
         OnlineSpeechProvider speech = new OnlineSpeechProvider() {
             @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
                     byte[] pcm, SessionContext ctx, String uid) {
@@ -140,19 +141,35 @@ class QwenOmniSpeechProviderTest {
             @Override public String id() { return "fake-omni"; }
         };
         TranscriptEnrichedSpeechProvider provider = new TranscriptEnrichedSpeechProvider(
-                speech, (pcm, ctx) -> "Could you open the window?");
+                speech, (pcm, ctx) -> {
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return "Could you open the window?";
+                });
         OnlineSpeechResult result = provider.process(new byte[]{3, 4}, context(), "u-sidecar",
                 new OnlineAudioSink() {
+                    @Override public void onStart(int rate, int channels, String encoding) {
+                        eventOrder.add("audio_start");
+                    }
+                    @Override public void onChunk(byte[] pcm) { eventOrder.add("audio_chunk"); }
                     @Override public void onComplete(String text, Intent intent, String asrText) {
                         endTranscript.set(asrText);
                     }
-                }, (text, isFinal) -> earlyTranscript.set(text + ":" + isFinal))
+                }, (text, isFinal) -> {
+                    eventOrder.add("asr");
+                    earlyTranscript.set(text + ":" + isFinal);
+                })
                 .get(2, TimeUnit.SECONDS);
 
         assertEquals("Could you open the window?", result.asrText());
         assertEquals("Could you open the window?", endTranscript.get());
         assertEquals("Could you open the window?:true", earlyTranscript.get(),
                 "sidecar ASR 应通过独立通道上屏，不等待最终语义结果");
+        assertTrue(eventOrder.indexOf("asr") < eventOrder.indexOf("audio_start"),
+                "旁路 ASR 应在首音频放行前下发：" + eventOrder);
     }
 
     @Test

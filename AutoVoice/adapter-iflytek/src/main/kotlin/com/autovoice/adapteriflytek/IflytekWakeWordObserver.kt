@@ -48,8 +48,11 @@ class IflytekWakeWordObserver(
     fun arm() {
         check(initialized) { "$NOT_CONFIGURED_MSG（尚未初始化）" }
         // IVW 是持续会话：命中一次后官方 demo 仍复用同一个 handle。业务轮次期间只暂停
-        // 喂帧，重新布防时恢复该会话，避免频繁 end/start 触发 SDK 10005 状态冲突。
+        // 喂帧，重新布防时恢复该会话，避免 end/start 触发 SDK 10005 状态冲突。
+        // AudioRecord 可能因 Activity 退后台而被释放；恢复后的首块必须重新标 BEGIN，
+        // 不能把跨录音会话的断流数据当作 CONTINUE 继续写入。
         if (handle != null) {
+            firstFrame = true
             wakeDelivered.set(false)
             armed.set(true)
             return
@@ -102,13 +105,28 @@ class IflytekWakeWordObserver(
         armed.set(false)
     }
 
-    /** 完整结束 IVW 会话；仅用于退后台、错误恢复或组件销毁。 */
+    /**
+     * 完整结束 IVW 会话；仅用于退后台、错误恢复或组件销毁。
+     *
+     * AIKit 的录音范例要求先写一帧 [AiStatus.END] 再调用 `end(handle)`。如果直接
+     * `end`，调用虽然可能返回成功，能力内部却仍停留在执行态，后续 `start` 会持续
+     * 返回 10005，直到进程重启。
+     */
     @Synchronized
     fun disarm() {
         armed.set(false)
         val current = handle
         handle = null
-        if (current != null) runCatching { AiHelper.getInst().end(current) }
+        if (current != null) {
+            runCatching {
+                val tail = AiAudio.get("wav")
+                    .data(ByteArray(END_FRAME_BYTES))
+                    .status(AiStatus.END)
+                    .valid()
+                AiHelper.getInst().write(AiRequest.builder().payload(tail).build(), current)
+                AiHelper.getInst().end(current)
+            }
+        }
         if (dataLoaded) {
             runCatching { AiHelper.getInst().unLoadData(ABILITY_ID, DATA_TYPE, 0) }
             dataLoaded = false
@@ -178,6 +196,8 @@ class IflytekWakeWordObserver(
         const val NOT_CONFIGURED_MSG = "讯飞离线唤醒 SDK 未配置"
 
         private const val DATA_TYPE = "key_word"
+        /** 官方录音 demo 的尾帧大小；16 kHz/16-bit/mono 下为 40 ms 静音。 */
+        private const val END_FRAME_BYTES = 1_280
         private const val RESOURCE_DIR = "ivw"
         private const val KEYWORD_FILE = "keyword.txt"
         private const val KEYWORD_CACHE_FILE = "keyword.bin"

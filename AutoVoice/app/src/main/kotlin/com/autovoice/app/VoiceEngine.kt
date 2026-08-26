@@ -449,12 +449,24 @@ class VoiceEngine(
             }
             is StreamingAudioReply -> scope.launch {
                 if (!isLatestTurn(utteranceId)) return@launch
-                player.playStream(reply)
-                val end = reply.completion.await()
+                // 播放与终帧独立等待：Gateway 收到 audio_reply_end 时立即更新
+                // ASR/回复文本，不再等 AudioTrack 把已缓冲的 PCM 全部播完。
+                val playback = launch { player.playStream(reply) }
+                val end = try {
+                    reply.completion.await()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    // 服务端可在 audio_reply_start 后返回 ONLINE_STREAM_ABORTED。该异常
+                    // 只结束本轮流式输出，不得逃逸到 Dispatchers.Default 导致进程崩溃。
+                    Log.w(TAG, "stream completion failed; turn degraded safely", error)
+                    return@launch
+                }
                 if (!isLatestTurn(utteranceId)) return@launch
                 if (end.speakText.isNotBlank()) onReplyText(end.speakText)
                 if (end.asrText.isNotBlank()) onLocalRecognized(end.asrText)
                 end.intent?.let(::applyAndNotify)
+                playback.join()
             }
             is TextReply -> speakViaTts(utteranceId, reply.text)
             is ActionReply -> {

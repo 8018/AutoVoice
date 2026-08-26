@@ -68,14 +68,18 @@ adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow
 ```
 
 合并脚本会校验两个交付包的 Java API 完全一致，并保留命令词、唤醒两个
-`lib*_aee.so`。App 前台取得 `RECORD_AUDIO` 后显示“正在等待唤醒：你好飞飞”。音频顺序为：
+`lib*_aee.so`。App 前台取得 `RECORD_AUDIO` 后启动唯一麦克风流。录音源使用
+`VOICE_COMMUNICATION`，若设备可用则在该 AudioRecord session 启用系统 AEC/降噪；
+AEC 成功时界面显示“播报时可直接说话打断”，否则安全降级为按键/唤醒词打断。音频顺序为：
 
 ```text
-唯一 AudioRecord 原始 PCM → IVW（不经过 Silero VAD）
-                         └─命中后→ Silero VAD → RNNoise / ASR / NLU
+唯一 AudioRecord（AEC）原始 PCM → IVW（持续唤醒词）
+                              ├─播报期 Silero VAD → 普通话术打断
+                              └─新轮 Silero VAD → RNNoise / ASR / NLU
 ```
 
-唤醒轮由 Silero `SpeechEnd` 自动提交，10 秒始终没有形成结束事件则安全收口。App 退到
+唤醒轮与开放式打断轮都由 Silero `SpeechEnd` 自动提交，10 秒始终没有形成结束事件则安全收口。
+普通话术打断要求连续约 160ms 有效人声，且携带约 384ms 预录 PCM，避免丢首字。App 退到
 后台会停止监听；当前没有用前台服务实现后台常驻唤醒。
 
 ### 1.3 AIUI 平台配置

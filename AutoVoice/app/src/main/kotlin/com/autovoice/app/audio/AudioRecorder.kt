@@ -5,11 +5,14 @@ import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import com.autovoice.adapterlocal.ecnr.RnnoiseProcessor
 import com.autovoice.adapterlocal.vad.SileroVad
 import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.adapterlocal.vad.VadSegmenter
+import com.autovoice.adapterlocal.vad.VoiceActivityGate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
@@ -77,7 +80,7 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
 }
 
 /**
- * 录音通道（SOURCE_MIC 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → 双网格。
+ * 录音通道（VOICE_COMMUNICATION 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → 双网格。
  *
  * - VAD 网格（512 samples/块 = 32ms）：原始 1024B 块喂 [VadSegmenter]（Silero VAD +
  *   门控切段，Task 49）——按住期间实时切出云端语音段；抬手后 [finishSegments]
@@ -113,6 +116,18 @@ class AudioRecorder(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : AutoCloseable {
 
+    /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
+    private val bargeInVad: SileroVad? = try {
+        SileroVad(context, SILERO_VAD_ASSET)
+    } catch (t: Throwable) {
+        Log.w(TAG, "打断 VAD 加载失败，降级为仅唤醒词打断", t)
+        null
+    }
+    private val bargeInGate = OpenMicBargeInGate()
+    private val bargeInPreRoll = ArrayDeque<ByteArray>()
+    private var pendingBargeInPreRoll: List<ByteArray> = emptyList()
+    private val turnProcessingLock = Any()
+
     private val _pcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
 
     /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；按住期间收集在 MainViewModel。 */
@@ -136,6 +151,14 @@ class AudioRecorder(
 
     @Volatile
     private var record: AudioRecord? = null
+
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+
+    /** 只有系统 AEC 真正启用时才允许普通话术打断，避免扬声器回声自激。 */
+    @Volatile
+    var openMicBargeInAvailable: Boolean = false
+        private set
 
     private var readJob: Job? = null
 
@@ -168,24 +191,66 @@ class AudioRecorder(
         if (!turnActive) stopCapture()
     }
 
+    /** 播报开始/结束时切换打断 VAD；不创建第二路 AudioRecord。 */
+    fun setOpenMicBargeInListening(enabled: Boolean) {
+        if (enabled && openMicBargeInAvailable && bargeInVad != null) {
+            bargeInVad.resetDiagnostics()
+            synchronized(bargeInPreRoll) {
+                bargeInPreRoll.clear()
+                pendingBargeInPreRoll = emptyList()
+            }
+            bargeInGate.start()
+        } else {
+            bargeInGate.stop()
+        }
+    }
+
+    /** 待机原始 PCM 同时喂给打断 VAD；每次播报最多触发一次。 */
+    fun detectOpenMicBargeIn(block: ByteArray): Boolean {
+        val vad = bargeInVad ?: return false
+        if (!openMicBargeInAvailable || turnActive || !bargeInGate.listening) return false
+        synchronized(bargeInPreRoll) {
+            bargeInPreRoll.addLast(block.copyOf())
+            while (bargeInPreRoll.size > BARGE_IN_PRE_ROLL_BLOCKS) bargeInPreRoll.removeFirst()
+        }
+        val triggered = bargeInGate.feed(vad.feed(block))
+        if (triggered) {
+            synchronized(bargeInPreRoll) {
+                pendingBargeInPreRoll = bargeInPreRoll.toList()
+            }
+        }
+        return triggered
+    }
+
     /** 启动录音；已在录或创建 AudioRecord 失败（如缺 RECORD_AUDIO 权限）时返回 false。 */
     @Synchronized
-    fun start(): Boolean {
+    fun start(includeBargeInPreRoll: Boolean = false): Boolean {
         if (turnActive) return false
         val source = testAudioSource
         if (source != null) {
             // 测试模式（Task 58）：屏蔽麦克风，预置语音按真实节奏喂双网格，无需录音权限
             Log.i(TAG, "测试音频源模式：${source.describe()}")
             source.reset() // 每轮从头播（游标跨轮不重置 → 段起点随机，Task 58 联调发现）
-            vadSegmenter?.resetForTurn()
-            turnActive = true
+            synchronized(turnProcessingLock) {
+                vadSegmenter?.resetForTurn()
+                turnActive = true
+            }
             readJob = scope.launch { testReadLoop(source) }
             return true
         }
         if (!ensureMicrophoneCapture()) return false
-        // 本轮录音从干净状态起步（清上一轮段缓冲 + 重置 VAD 诊断峰值）
-        vadSegmenter?.resetForTurn()
-        turnActive = true
+        val preRoll = synchronized(bargeInPreRoll) {
+            val audio = if (includeBargeInPreRoll) pendingBargeInPreRoll else emptyList()
+            pendingBargeInPreRoll = emptyList()
+            bargeInPreRoll.clear()
+            audio
+        }
+        // 本轮录音从干净状态起步；开放式打断会先补入触发前的环形缓冲，避免丢首字。
+        synchronized(turnProcessingLock) {
+            vadSegmenter?.resetForTurn()
+            turnActive = true
+            preRoll.forEach(::processTurnBlock)
+        }
         return true
     }
 
@@ -213,7 +278,7 @@ class AudioRecorder(
      */
     @Synchronized
     fun stop() {
-        turnActive = false
+        synchronized(turnProcessingLock) { turnActive = false }
         if (testAudioSource != null || !monitoringRequested) stopCapture()
     }
 
@@ -228,6 +293,7 @@ class AudioRecorder(
             // 未启动/已释放时 stop 抛异常，可忽略
         }
         audioRecord?.release()
+        releaseCaptureEffects()
     }
 
     /** 释放 VAD 切分器 / RNNoise / 协程 scope（释放后不可再 [start]）。 */
@@ -237,6 +303,10 @@ class AudioRecorder(
         stopCapture()
         try {
             vadSegmenter?.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            bargeInVad?.close()
         } catch (_: Throwable) {
         }
         try {
@@ -297,7 +367,12 @@ class AudioRecorder(
     /** 单一采集流扇出：原始 PCM 始终给观察者；只有本轮激活时才进入语音处理分支。 */
     private fun handleCapturedBlock(block: ByteArray) {
         _rawPcmBlocks.tryEmit(block.copyOf())
-        if (!turnActive) return
+        synchronized(turnProcessingLock) {
+            if (turnActive) processTurnBlock(block)
+        }
+    }
+
+    private fun processTurnBlock(block: ByteArray) {
         vadSegmenter?.feed(block)?.let { _vadEvents.tryEmit(it) }
         val denoised = denoiser.process(first480Frame(pcm16BytesToShorts(block)))
         _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
@@ -315,13 +390,18 @@ class AudioRecorder(
         )
         val bufferBytes = maxOf(minBuffer, AudioFormat.BLOCK_BYTES * 2)
         return try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                AudioFormat.SAMPLE_RATE,
-                AndroidAudioFormat.CHANNEL_IN_MONO,
-                AndroidAudioFormat.ENCODING_PCM_16BIT,
-                bufferBytes,
-            )
+            AudioRecord.Builder()
+                // VOICE_COMMUNICATION 请求设备的语音前处理路径，为 AEC 提供回参。
+                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioFormat(
+                    AndroidAudioFormat.Builder()
+                        .setSampleRate(AudioFormat.SAMPLE_RATE)
+                        .setChannelMask(AndroidAudioFormat.CHANNEL_IN_MONO)
+                        .setEncoding(AndroidAudioFormat.ENCODING_PCM_16BIT)
+                        .build(),
+                )
+                .setBufferSizeInBytes(bufferBytes)
+                .build()
         } catch (t: Throwable) {
             // 缺 RECORD_AUDIO 权限（SecurityException）/ 设备不支持（UnsupportedOperationException 等）
             Log.w(TAG, "AudioRecord creation failed, degraded silently", t)
@@ -334,16 +414,51 @@ class AudioRecorder(
         if (readJob?.isActive == true && record != null) return true
         val audioRecord = createAudioRecord() ?: return false
         record = audioRecord
+        attachCaptureEffects(audioRecord.audioSessionId)
         try {
             audioRecord.startRecording()
         } catch (t: Throwable) {
             Log.w(TAG, "AudioRecord.startRecording failed, degraded silently", t)
             audioRecord.release()
+            releaseCaptureEffects()
             record = null
             return false
         }
         readJob = scope.launch { readLoop(audioRecord) }
         return true
+    }
+
+    private fun attachCaptureEffects(audioSessionId: Int) {
+        releaseCaptureEffects()
+        echoCanceler = if (AcousticEchoCanceler.isAvailable()) {
+            runCatching { AcousticEchoCanceler.create(audioSessionId)?.also { it.enabled = true } }
+                .onFailure { Log.w(TAG, "AEC 启用失败，开放式打断将禁用", it) }
+                .getOrNull()
+        } else {
+            null
+        }
+        openMicBargeInAvailable = echoCanceler?.enabled == true && bargeInVad != null
+        noiseSuppressor = if (NoiseSuppressor.isAvailable()) {
+            runCatching { NoiseSuppressor.create(audioSessionId)?.also { it.enabled = true } }
+                .onFailure { Log.w(TAG, "系统降噪启用失败，继续使用 RNNoise", it) }
+                .getOrNull()
+        } else {
+            null
+        }
+        Log.i(
+            TAG,
+            "capture effects: aec=${echoCanceler?.enabled == true} " +
+                "ns=${noiseSuppressor?.enabled == true} openMicBargeIn=$openMicBargeInAvailable",
+        )
+    }
+
+    private fun releaseCaptureEffects() {
+        bargeInGate.stop()
+        openMicBargeInAvailable = false
+        runCatching { echoCanceler?.release() }
+        runCatching { noiseSuppressor?.release() }
+        echoCanceler = null
+        noiseSuppressor = null
     }
 
     private companion object {
@@ -354,5 +469,44 @@ class AudioRecorder(
 
         /** SharedFlow 缓冲（块：不阻塞读取循环）。 */
         const val BUFFER_CAPACITY = 16
+
+        /** 保留触发前约 384ms PCM，包含 VAD 确认窗口和少量话首。 */
+        const val BARGE_IN_PRE_ROLL_BLOCKS = 12
+    }
+}
+
+/**
+ * 播报期打断门：连续有效人声 160ms 才触发，触发后立即自动关闭，
+ * 由上层建立新话语。AEC 是否可用由 [AudioRecorder] 额外门控。
+ */
+internal class OpenMicBargeInGate(
+    private val gate: VoiceActivityGate = VoiceActivityGate(
+        threshold = 0.65f,
+        minSpeechMs = 160,
+        minSilenceMs = 320,
+    ),
+) {
+    @Volatile
+    var listening: Boolean = false
+        private set
+
+    @Synchronized
+    fun start() {
+        gate.reset()
+        listening = true
+    }
+
+    @Synchronized
+    fun stop() {
+        listening = false
+        gate.reset()
+    }
+
+    @Synchronized
+    fun feed(probability: Float): Boolean {
+        if (!listening) return false
+        if (gate.feed(probability) != VadEvent.SpeechStart) return false
+        listening = false
+        return true
     }
 }
