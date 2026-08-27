@@ -3,6 +3,7 @@ package com.autovoice.server.speechclassic;
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
+import com.autovoice.server.contracts.NavigationDialogState;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineAudioSink;
@@ -18,10 +19,17 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
 
     private final AsrProvider asr;
     private final LlmProvider llm;
+    private final NavigationDialogState navigationDialog;
 
     public ClassicOnlineSpeechProvider(AsrProvider asr, LlmProvider llm) {
+        this(asr, llm, new NavigationDialogState());
+    }
+
+    public ClassicOnlineSpeechProvider(AsrProvider asr, LlmProvider llm,
+                                       NavigationDialogState navigationDialog) {
         this.asr = Objects.requireNonNull(asr, "asr");
         this.llm = Objects.requireNonNull(llm, "llm");
+        this.navigationDialog = Objects.requireNonNull(navigationDialog, "navigationDialog");
     }
 
     @Override
@@ -46,8 +54,10 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);
         }
-        CompletableFuture<com.autovoice.server.contracts.Reply> source =
-                llm.chat(text, context, utteranceId);
+        CompletableFuture<com.autovoice.server.contracts.Reply> source = navigationDialog
+                .resolve(context, text)
+                .map(CompletableFuture::completedFuture)
+                .orElseGet(() -> llm.chat(text, context, utteranceId));
         CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
             @Override
             public boolean cancel(boolean mayInterruptIfRunning) {
@@ -57,7 +67,10 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
         };
         source.whenComplete((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
-            else out.complete(new OnlineSpeechResult(reply, text));
+            else {
+                navigationDialog.remember(context, reply);
+                out.complete(new OnlineSpeechResult(reply, text));
+            }
         });
         return out;
     }

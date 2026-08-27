@@ -5,6 +5,7 @@ import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
+import com.autovoice.server.contracts.NavigationDialogState;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.ToolProvider;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
@@ -22,6 +23,11 @@ import java.util.List;
 /** Omni 构建变体专用装配；产物不包含 DeepSeek，ASR 仅用于用户原话识别框。 */
 @Configuration
 public class OmniBackendConfig {
+
+    @Bean
+    public NavigationDialogState navigationDialogState() {
+        return new NavigationDialogState();
+    }
 
     @Bean
     public AliyunTokenClient omniAliyunTokenClient(OkHttpClient client,
@@ -53,7 +59,8 @@ public class OmniBackendConfig {
     public OnlineSpeechProvider onlineSpeechProvider(OkHttpClient client, AsrProvider transcriptProvider,
                                                      AppConfig.AutovoiceProperties props,
                                                      McpSkillRegistry registry,
-                                                     SystemPromptStore promptStore) {
+                                                     SystemPromptStore promptStore,
+                                                     NavigationDialogState navigationDialog) {
         ToolProvider merged = () -> {
             List<FunctionTool> out = new ArrayList<>(QwenOmniSpeechProvider.defaultTools());
             out.addAll(registry.enabledToolSpecs());
@@ -63,6 +70,6 @@ public class OmniBackendConfig {
                 QwenOmniSpeechProvider.DEFAULT_ENDPOINT, QwenOmniSpeechProvider.DEFAULT_MODEL,
                 QwenOmniSpeechProvider.DEFAULT_VOICE, merged,
                 new McpToolExecutor(registry::callTool), promptStore::get);
-        return new TranscriptEnrichedSpeechProvider(qwen, transcriptProvider);
+        return new TranscriptEnrichedSpeechProvider(qwen, transcriptProvider, navigationDialog);
     }
 }

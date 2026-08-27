@@ -869,6 +869,32 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `navigation candidates stay in app and do not open amap`() {
+        val opened = mutableListOf<String>()
+        val shown = mutableListOf<List<NavigationExecutor.NavigationCandidate>>()
+        val executor = NavigationExecutor(
+            onCandidates = { shown.add(it) },
+        ) { uri -> opened.add(uri); true }
+        val candidates = """
+            [{"poiname":"万达广场东店","lat":30.1,"lon":120.1,"address":"中山路1号"},
+             {"poiname":"万达广场西店","lat":30.2,"lon":120.2,"address":"人民路8号"}]
+        """.trimIndent()
+        val intent = Intent(
+            schemaVersion = "1.0",
+            domain = NavigationExecutor.DOMAIN_NAVIGATION,
+            intent = NavigationExecutor.INTENT_CHOOSE_DESTINATION,
+            slots = mapOf(NavigationExecutor.SLOT_CANDIDATES to SlotValue.StringValue(candidates)),
+            confidence = 1.0,
+            source = "navigation.resolve",
+        )
+
+        assertTrue(executor.execute(intent))
+        assertTrue(opened.isEmpty(), "展示候选时不得拉起高德")
+        assertEquals(2, shown.single().size)
+        assertEquals("人民路8号", shown.single()[1].address)
+    }
+
+    @Test
     fun `cloud navigate with waypoints opens amap route plan uri`() {
         val opened = mutableListOf<String>()
         val requested = mutableListOf<String>()

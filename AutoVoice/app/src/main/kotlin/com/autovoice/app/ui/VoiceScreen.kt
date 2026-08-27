@@ -7,10 +7,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -102,6 +106,55 @@ fun VoiceScreen(
             )
         }
     }
+    if (state.navigationCandidates.isNotEmpty()) {
+        NavigationCandidateDialog(state.navigationCandidates)
+    }
+}
+
+@Composable
+private fun NavigationCandidateDialog(
+    candidates: List<com.autovoice.app.NavigationExecutor.NavigationCandidate>,
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("请选择导航目的地") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                candidates.forEachIndexed { index, candidate ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text(
+                                text = "${index + 1}. ${candidate.poiname}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (candidate.address.isNotBlank()) {
+                                Text(
+                                    text = candidate.address,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Text(
+                text = "请说“第几个”或具体地址名称",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        },
+    )
 }
 
 /**

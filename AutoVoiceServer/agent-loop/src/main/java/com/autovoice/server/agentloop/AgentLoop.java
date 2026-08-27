@@ -19,6 +19,11 @@ public final class AgentLoop<M, R> {
 
         Optional<R> terminal(M message, List<AgentToolCall> calls) throws Exception;
 
+        /** Allows a read-only tool result to become a terminal application reply. */
+        default Optional<R> terminalAfterTools(M message, List<AgentToolResult> results) throws Exception {
+            return Optional.empty();
+        }
+
         void appendToolResults(M message, List<AgentToolResult> results) throws Exception;
 
         R finish(M message) throws Exception;
@@ -56,7 +61,10 @@ public final class AgentLoop<M, R> {
             if (!toolsAllowed) {
                 throw new IllegalStateException("model called a tool while tools are disabled");
             }
-            adapter.appendToolResults(last, tools.execute(calls));
+            List<AgentToolResult> results = tools.execute(calls);
+            Optional<R> terminalAfterTools = adapter.terminalAfterTools(last, results);
+            if (terminalAfterTools.isPresent()) return terminalAfterTools.get();
+            adapter.appendToolResults(last, results);
         }
         return adapter.exhausted(last);
     }
