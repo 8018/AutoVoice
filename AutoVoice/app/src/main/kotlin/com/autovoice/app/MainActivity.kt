@@ -3,6 +3,7 @@ package com.autovoice.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -45,6 +46,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // TTS 使用导航语音属性并映射到媒体流；显式指定后，物理音量键始终调整
+        // 当前播报音量。AEC 由录音侧 VOICE_COMMUNICATION + AcousticEchoCanceler 提供。
+        volumeControlStream = AudioManager.STREAM_MUSIC
         setContent {
             val viewModel = mainViewModel
             val state by viewModel.uiState.collectAsState()
