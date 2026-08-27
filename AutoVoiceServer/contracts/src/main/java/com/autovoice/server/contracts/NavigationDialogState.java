@@ -27,6 +27,8 @@ public final class NavigationDialogState {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Pattern ARABIC_ORDINAL = Pattern.compile("(\\d+)");
+    private static final Pattern NEW_NAVIGATION_REQUEST = Pattern.compile(
+            ".*(导航去|导航到|带我去|我要去|想去|前往|开车去|出发去).*");
     private static final Map<Character, Integer> CHINESE_NUMBERS = Map.of(
             '一', 1, '二', 2, '两', 2, '三', 3, '四', 4, '五', 5,
             '六', 6, '七', 7, '八', 8, '九', 9);
@@ -93,6 +95,13 @@ public final class NavigationDialogState {
             if (matches.size() == 1) {
                 return Optional.of(select(context.sessionId(), matches.getFirst()));
             }
+            // “导航去机场”是新的查询，不是对当前候选的模糊选择。清掉旧候选并交回
+            // 正常 LLM/Skill 链路重新搜索；否则旧实现会只播“有多个相似地点”，既不刷新
+            // 弹窗，也会让旧候选继续污染后续轮次。
+            if (NEW_NAVIGATION_REQUEST.matcher(compact).matches()) {
+                pending.remove(context.sessionId());
+                return Optional.empty();
+            }
             if (matches.size() > 1) {
                 return Optional.of(Reply.ofText("有多个相似地点，请说第几个或更完整的地址"));
             }
@@ -140,7 +149,7 @@ public final class NavigationDialogState {
 
     private static Integer ordinal(String text) {
         Matcher arabic = ARABIC_ORDINAL.matcher(text);
-        if (arabic.find() && (text.matches("\\d+") || text.contains("第") || text.contains("选"))) {
+        if (arabic.find() && (text.matches("\\d+[个家]?") || text.contains("第") || text.startsWith("选"))) {
             return Integer.parseInt(arabic.group(1));
         }
         for (int i = 0; i < text.length(); i++) {
@@ -153,7 +162,7 @@ public final class NavigationDialogState {
 
     private static String compact(String text) {
         String normalized = text.toLowerCase(Locale.ROOT)
-                .replaceAll("[\\s，。！？、,.!?;；:：]", "");
+                .replaceAll("[\\s，。！？、,.!?;；:：()（）]", "");
         StringBuilder out = new StringBuilder(normalized.length());
         for (int i = 0; i < normalized.length(); i++) {
             Integer digit = CHINESE_NUMBERS.get(normalized.charAt(i));

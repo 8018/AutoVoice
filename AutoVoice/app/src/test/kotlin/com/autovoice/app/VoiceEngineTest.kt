@@ -895,6 +895,23 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `confirmed navigation clears candidates before opening amap`() {
+        val events = mutableListOf<String>()
+        val executor = NavigationExecutor(
+            onCandidates = { candidates ->
+                if (candidates.isEmpty()) events.add("cleared")
+            },
+        ) { uri ->
+            events.add("opened:$uri")
+            true
+        }
+
+        assertTrue(executor.execute(navigateIntent("成都双流国际机场", 30.5785, 103.9471)))
+        assertEquals("cleared", events.first())
+        assertTrue(events[1].startsWith("opened:androidamap://navi?"))
+    }
+
+    @Test
     fun `cloud navigate with waypoints opens amap route plan uri`() {
         val opened = mutableListOf<String>()
         val requested = mutableListOf<String>()

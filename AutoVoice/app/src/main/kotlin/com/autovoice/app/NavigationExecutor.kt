@@ -51,14 +51,23 @@ class NavigationExecutor(
         val waypointsJson = slots[SLOT_WAYPOINTS]?.value as? String
         val opened = if (waypointsJson == null || waypointsJson.isBlank()) {
             // 无 waypoints 槽 → 单目的地 navi（直接开始导航）
+            clearCandidatesBeforeOpen()
             opener(buildNaviUri(poiname, lat, lon))
         } else {
             // 多目的地 → route/plan；JSON 非法/空数组 → 不拉起（数据契约破坏，
             // 静默回退单目的地会误导用户以为"先去A"仍生效，记 skipped 由调用方兜底）
-            parseWaypoints(waypointsJson)?.let { wp -> opener(buildRoutePlanUri(poiname, lat, lon, wp)) } ?: false
+            parseWaypoints(waypointsJson)?.let { wp ->
+                clearCandidatesBeforeOpen()
+                opener(buildRoutePlanUri(poiname, lat, lon, wp))
+            } ?: false
         }
-        if (opened) onCandidates(emptyList())
         return opened
+    }
+
+    private fun clearCandidatesBeforeOpen() {
+        // 在切到高德前同步关闭应用内候选框。若等 startActivity 返回后再清理，Activity
+        // 生命周期切换或并发 UI 更新可能让旧弹窗在返回 AutoVoice 时重新露出。
+        onCandidates(emptyList())
     }
 
     private fun parseCandidates(json: String): List<NavigationCandidate>? =
