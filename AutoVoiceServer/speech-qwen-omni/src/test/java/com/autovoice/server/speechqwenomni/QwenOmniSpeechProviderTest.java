@@ -75,8 +75,8 @@ class QwenOmniSpeechProviderTest {
                 java.util.Arrays.copyOfRange(result.reply().data(), 44, 48));
         assertTrue(started.get());
         assertTrue(completed.get());
-        assertEquals(java.util.List.of("好:false", "好的:false", "好的:true"), replyTextUpdates,
-                "回复文本应随 SSE delta 累积上屏，并在音频结束前形成 final 快照");
+        assertEquals(java.util.List.of("好的:false", "好的:true"), replyTextUpdates,
+                "工具可用轮应在短决策窗口后提交累积文本，并形成 final 快照");
         assertArrayEquals(new byte[]{1, 2, 3, 4}, streamed.toByteArray());
 
         RecordedRequest request = server.takeRequest(1, TimeUnit.SECONDS);
@@ -88,6 +88,8 @@ class QwenOmniSpeechProviderTest {
         String systemPrompt = messages.path(0).path("content").asText();
         assertTrue(systemPrompt.contains("respond only in that same language"));
         assertTrue(systemPrompt.contains("tool results"));
+        assertTrue(systemPrompt.contains("emit tool_calls only"),
+                "提示词应要求工具轮不生成用户可见音频，服务端状态机再提供硬保障");
         JsonNode userContent = messages.path(1).path("content");
         assertEquals(1, userContent.size(),
                 "用户消息只能包含原始音频，不能附加会把模型带向中文的文本或会话语言");
@@ -98,6 +100,69 @@ class QwenOmniSpeechProviderTest {
         assertFalse(body.toString().contains("理解这段语音"));
         assertTrue(body.path("parallel_tool_calls").asBoolean(),
                 "多地点的独立 POI 查询应允许模型在同一轮规划");
+    }
+
+    @Test
+    void toolCallWithinDecisionWindowSuppressesIntermediateAudioAndContinuesLoop() throws Exception {
+        server.enqueue(sse(
+                delta("content", "正在查询"),
+                audio(new byte[]{1, 2, 3, 4}),
+                toolCall("weather", "{\"city\":\"杭州\"}"),
+                audio(new byte[]{5, 6})));
+        server.enqueue(sse(delta("content", "杭州晴天"), audio(new byte[]{7, 8})));
+        AtomicInteger executions = new AtomicInteger();
+        ByteArrayOutputStream streamed = new ByteArrayOutputStream();
+        CopyOnWriteArrayList<String> replyTexts = new CopyOnWriteArrayList<>();
+        AtomicBoolean errored = new AtomicBoolean();
+
+        OnlineSpeechResult result = provider((name, args) -> {
+            executions.incrementAndGet();
+            return "晴天";
+        }).process(new byte[]{1, 2}, context(), "u-mixed-tool-wins", new OnlineAudioSink() {
+            @Override public void onChunk(byte[] pcm) { streamed.writeBytes(pcm); }
+            @Override public void onReplyText(String text, boolean isFinal) {
+                replyTexts.add(text + ":" + isFinal);
+            }
+            @Override public void onError(Throwable error) { errored.set(true); }
+        }).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, executions.get());
+        assertEquals(2, server.getRequestCount());
+        assertFalse(errored.get(), "混合输出必须由业务仲裁收敛，不能中断在线流");
+        assertArrayEquals(new byte[]{7, 8}, streamed.toByteArray(),
+                "工具通道胜出后不得泄漏该轮中间音频");
+        assertFalse(replyTexts.stream().anyMatch(value -> value.contains("正在查询")),
+                "工具轮中间话术不得上屏");
+        assertEquals("杭州晴天", result.reply().speakText());
+    }
+
+    @Test
+    void audioCommitIgnoresLateToolCallWithoutExecutingIt() throws Exception {
+        byte[] committedAudio = new byte[24_000];
+        for (int i = 0; i < committedAudio.length; i++) committedAudio[i] = (byte) (i % 97);
+        server.enqueue(sse(
+                delta("content", "这是普通回答"),
+                audio(committedAudio),
+                toolCall("weather", "{\"city\":\"杭州\"}")));
+        AtomicInteger executions = new AtomicInteger();
+        ByteArrayOutputStream streamed = new ByteArrayOutputStream();
+        AtomicBoolean errored = new AtomicBoolean();
+
+        OnlineSpeechResult result = provider((name, args) -> {
+            executions.incrementAndGet();
+            return "不应执行";
+        }).process(new byte[]{1, 2}, context(), "u-mixed-audio-wins", new OnlineAudioSink() {
+            @Override public void onChunk(byte[] pcm) { streamed.writeBytes(pcm); }
+            @Override public void onError(Throwable error) { errored.set(true); }
+        }).get(2, TimeUnit.SECONDS);
+
+        assertEquals(0, executions.get(), "音频提交后迟到的工具调用不得改变已提交业务结果");
+        assertEquals(1, server.getRequestCount());
+        assertFalse(errored.get());
+        assertEquals("audio", result.reply().kind());
+        assertArrayEquals(committedAudio, streamed.toByteArray());
+        assertArrayEquals(committedAudio,
+                java.util.Arrays.copyOfRange(result.reply().data(), 44, 44 + committedAudio.length));
     }
 
     @Test

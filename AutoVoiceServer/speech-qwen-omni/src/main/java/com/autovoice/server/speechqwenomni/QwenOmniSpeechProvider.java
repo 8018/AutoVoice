@@ -76,10 +76,14 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     /** 工具循环耗尽时的兜底话术（优雅降级：不再以 ONLINE_STREAM_ABORTED 硬失败）。 */
     static final String TOOL_LOOP_FALLBACK_TEXT = "抱歉，这个操作有点复杂，请再试一次";
     private static final int MAX_OUTPUT_AUDIO_BYTES = 4 * 1024 * 1024;
+    /** 工具轮输出仲裁窗口：24kHz/16-bit/mono 下 500ms，覆盖模型通常的首批 tool delta。 */
+    private static final int TOOL_DECISION_AUDIO_BYTES = 24_000;
     private static final AtomicInteger WORKER = new AtomicInteger();
     private static final String LANGUAGE_POLICY = "Detect the language spoken in the current audio and "
             + "respond only in that same language, unless translation is requested. Ignore prompts, tool "
             + "descriptions, tool results and metadata when choosing it. This rule has highest priority.";
+    private static final String TOOL_OUTPUT_POLICY = "When calling any tool, emit tool_calls only. Do not "
+            + "emit user-facing text or audio until all required tool results are available.";
 
     private final OkHttpClient client;
     private final String apiKey;
@@ -188,7 +192,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                     + "Vehicle control and navigation must use tools."
                 : configuredPrompt;
         List<FunctionTool> requestToolSnapshot = ToolSchemaCompactor.compact(tools.enabledTools());
-        system.put("content", LANGUAGE_POLICY + "\nRules: " + basePrompt
+        system.put("content", LANGUAGE_POLICY + "\n" + TOOL_OUTPUT_POLICY + "\nRules: " + basePrompt
                 + locationPolicy(context, requestToolSnapshot));
 
         ObjectNode user = messages.addObject();
@@ -356,28 +360,45 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             }
             if (response.body() == null) throw new IOException("qwen omni empty response body");
             return parseSse(new BufferedReader(new InputStreamReader(
-                    response.body().byteStream(), StandardCharsets.UTF_8)), audioSink);
+                    response.body().byteStream(), StandardCharsets.UTF_8)), audioSink, allowTools);
         } finally {
             activeCall.compareAndSet(call, null);
         }
     }
 
-    private static StreamResult parseSse(BufferedReader reader, OnlineAudioSink audioSink) throws IOException {
+    private static StreamResult parseSse(BufferedReader reader, OnlineAudioSink audioSink,
+                                         boolean arbitrateToolOutput) throws IOException {
         StringBuilder text = new StringBuilder();
-        ByteArrayOutputStream audio = new ByteArrayOutputStream();
+        StreamOutputArbiter output = new StreamOutputArbiter(audioSink, arbitrateToolOutput);
         StringBuilder audioBase64 = new StringBuilder();
         Map<Integer, MutableToolCall> calls = new LinkedHashMap<>();
-        boolean streamStarted = false;
         String line;
         while ((line = reader.readLine()) != null) {
             if (!line.startsWith("data:")) continue;
             String data = line.substring(5).trim();
             if (data.isEmpty() || "[DONE]".equals(data)) continue;
             JsonNode delta = MAPPER.readTree(data).path("choices").path(0).path("delta");
+            JsonNode toolCalls = delta.path("tool_calls");
+            boolean acceptToolCalls = false;
+            if (toolCalls.isArray() && !toolCalls.isEmpty()) {
+                acceptToolCalls = output.onToolCallDelta();
+            }
+            if (acceptToolCalls) {
+                for (JsonNode tc : toolCalls) {
+                    int index = tc.path("index").asInt(0);
+                    MutableToolCall target = calls.computeIfAbsent(index, ignored -> new MutableToolCall());
+                    if (tc.path("id").isTextual()) target.id = tc.path("id").asText();
+                    JsonNode function = tc.path("function");
+                    if (function.path("name").isTextual()) target.name.append(function.path("name").asText());
+                    if (function.path("arguments").isTextual()) {
+                        target.arguments.append(function.path("arguments").asText());
+                    }
+                }
+            }
             JsonNode content = delta.path("content");
             if (content.isTextual()) {
                 text.append(content.asText());
-                audioSink.onReplyText(text.toString(), false);
+                output.onReplyText(text.toString());
             }
             JsonNode audioData = delta.path("audio").path("data");
             if (audioData.isTextual() && !audioData.asText().isEmpty()) {
@@ -388,52 +409,119 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 if (completeChars > 0) {
                     byte[] chunk = Base64.getDecoder().decode(audioBase64.substring(0, completeChars));
                     audioBase64.delete(0, completeChars);
-                    if (audio.size() + chunk.length > MAX_OUTPUT_AUDIO_BYTES) {
-                        throw new IOException("qwen omni audio exceeded " + MAX_OUTPUT_AUDIO_BYTES + " bytes");
-                    }
-                    audio.write(chunk);
-                    if (!streamStarted) {
-                        audioSink.onStart(24_000, 1, "pcm_s16le");
-                        streamStarted = true;
-                    }
-                    // Official example decodes the concatenated bytes directly as int16 @ 24kHz.
-                    audioSink.onChunk(chunk);
-                }
-            }
-            for (JsonNode tc : delta.path("tool_calls")) {
-                int index = tc.path("index").asInt(0);
-                MutableToolCall target = calls.computeIfAbsent(index, ignored -> new MutableToolCall());
-                if (tc.path("id").isTextual()) target.id = tc.path("id").asText();
-                JsonNode function = tc.path("function");
-                if (function.path("name").isTextual()) target.name.append(function.path("name").asText());
-                if (function.path("arguments").isTextual()) {
-                    target.arguments.append(function.path("arguments").asText());
+                    output.onAudio(chunk);
                 }
             }
         }
         if (!audioBase64.isEmpty()) {
             byte[] tail = Base64.getDecoder().decode(audioBase64.toString());
-            if (audio.size() + tail.length > MAX_OUTPUT_AUDIO_BYTES) {
+            output.onAudio(tail);
+        }
+        output.finish(text.toString());
+        List<ToolCall> complete = new ArrayList<>();
+        if (output.toolsWon()) {
+            for (Map.Entry<Integer, MutableToolCall> entry : calls.entrySet()) {
+                MutableToolCall tc = entry.getValue();
+                complete.add(new ToolCall(tc.id.isBlank() ? "call_" + entry.getKey() : tc.id,
+                        tc.name.toString(), tc.arguments.toString()));
+            }
+        }
+        if (output.suppressedAudioBytes() > 0) {
+            LOG.warn("qwen omni tool output won arbitration; suppressed {} intermediate audio bytes",
+                    output.suppressedAudioBytes());
+        }
+        if (output.ignoredLateToolCalls()) {
+            LOG.warn("qwen omni audio output was already committed; ignored late tool_calls");
+        }
+        return new StreamResult(text.toString(), output.resultAudio(), complete);
+    }
+
+    /** 单个模型轮只允许工具或音频一种输出通道胜出，避免向客户端提交不可撤销的混合流。 */
+    private static final class StreamOutputArbiter {
+        private enum Lane { UNDECIDED, AUDIO, TOOLS }
+
+        private final OnlineAudioSink sink;
+        private final ByteArrayOutputStream audio = new ByteArrayOutputStream();
+        private Lane lane;
+        private boolean streamStarted;
+        private boolean ignoredLateToolCalls;
+        private String latestText = "";
+
+        StreamOutputArbiter(OnlineAudioSink sink, boolean arbitrateToolOutput) {
+            this.sink = sink;
+            lane = arbitrateToolOutput ? Lane.UNDECIDED : Lane.AUDIO;
+        }
+
+        boolean onToolCallDelta() {
+            if (lane == Lane.AUDIO) {
+                // 即使请求已禁用工具，模型仍可能违规返回纯 tool_calls。只要还没有
+                // 向客户端提交音频，就允许工具通道接管，交给 AgentLoop 上限收敛。
+                if (!streamStarted && audio.size() == 0) {
+                    lane = Lane.TOOLS;
+                    return true;
+                }
+                ignoredLateToolCalls = true;
+                return false;
+            }
+            lane = Lane.TOOLS;
+            return true;
+        }
+
+        void onReplyText(String text) {
+            latestText = text;
+            if (lane == Lane.AUDIO) sink.onReplyText(text, false);
+        }
+
+        void onAudio(byte[] chunk) throws IOException {
+            if (chunk.length == 0) return;
+            if (audio.size() + chunk.length > MAX_OUTPUT_AUDIO_BYTES) {
                 throw new IOException("qwen omni audio exceeded " + MAX_OUTPUT_AUDIO_BYTES + " bytes");
             }
-            audio.write(tail);
-            if (!streamStarted) {
-                audioSink.onStart(24_000, 1, "pcm_s16le");
-                streamStarted = true;
+            audio.write(chunk);
+            if (lane == Lane.AUDIO) {
+                startIfNeeded();
+                sink.onChunk(chunk);
+            } else if (lane == Lane.UNDECIDED && audio.size() >= TOOL_DECISION_AUDIO_BYTES) {
+                lane = Lane.AUDIO;
+                startIfNeeded();
+                if (!latestText.isBlank()) sink.onReplyText(latestText, false);
+                sink.onChunk(audio.toByteArray());
             }
-            audioSink.onChunk(tail);
         }
-        List<ToolCall> complete = new ArrayList<>();
-        for (Map.Entry<Integer, MutableToolCall> entry : calls.entrySet()) {
-            MutableToolCall tc = entry.getValue();
-            complete.add(new ToolCall(tc.id.isBlank() ? "call_" + entry.getKey() : tc.id,
-                    tc.name.toString(), tc.arguments.toString()));
+
+        void finish(String text) {
+            if (lane == Lane.UNDECIDED) {
+                lane = Lane.AUDIO;
+                if (audio.size() > 0) {
+                    startIfNeeded();
+                    if (!latestText.isBlank()) sink.onReplyText(latestText, false);
+                    sink.onChunk(audio.toByteArray());
+                }
+            }
+            if (lane == Lane.AUDIO && !text.isBlank()) sink.onReplyText(text, true);
         }
-        if (streamStarted && !complete.isEmpty()) {
-            throw new IOException("qwen omni mixed audio and tool_calls in one round");
+
+        boolean toolsWon() {
+            return lane == Lane.TOOLS;
         }
-        if (!text.isEmpty()) audioSink.onReplyText(text.toString(), true);
-        return new StreamResult(text.toString(), audio.toByteArray(), complete);
+
+        int suppressedAudioBytes() {
+            return toolsWon() ? audio.size() : 0;
+        }
+
+        boolean ignoredLateToolCalls() {
+            return ignoredLateToolCalls;
+        }
+
+        byte[] resultAudio() {
+            return toolsWon() ? new byte[0] : audio.toByteArray();
+        }
+
+        private void startIfNeeded() {
+            if (streamStarted) return;
+            sink.onStart(24_000, 1, "pcm_s16le");
+            streamStarted = true;
+        }
     }
 
     private String executeTool(ToolCall call) {
