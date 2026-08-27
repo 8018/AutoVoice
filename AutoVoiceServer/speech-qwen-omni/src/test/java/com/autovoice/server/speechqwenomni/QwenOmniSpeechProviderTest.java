@@ -7,6 +7,9 @@ import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.Reply;
+import com.autovoice.server.contracts.SlotValue;
 import okhttp3.OkHttpClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -235,6 +238,55 @@ class QwenOmniSpeechProviderTest {
                 "sidecar ASR 应通过独立通道上屏，不等待最终语义结果");
         assertTrue(eventOrder.indexOf("asr") < eventOrder.indexOf("audio_start"),
                 "旁路 ASR 应在首音频放行前下发：" + eventOrder);
+    }
+
+    @Test
+    void pendingNavigationSelectionSuppressesOmniOutputWithoutCancellingIt() throws Exception {
+        NavigationDialogState dialog = new NavigationDialogState();
+        Intent choose = Intent.of("1.0", "navigation", "choose_destination", Map.of(
+                "candidates", SlotValue.stringValue("""
+                        [{"poiname":"东店","lat":30.1,"lon":120.1,"address":"中山路1号"},
+                         {"poiname":"西店","lat":30.2,"lon":120.2,"address":"人民路8号"}]
+                        """)
+        ), 1.0, "test", null);
+        dialog.remember(context(), Reply.ofAction(choose, "请选择"));
+        AtomicBoolean modelCompleted = new AtomicBoolean();
+        CopyOnWriteArrayList<String> audioEvents = new CopyOnWriteArrayList<>();
+        OnlineSpeechProvider speech = new OnlineSpeechProvider() {
+            @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return process(pcm, ctx, uid, OnlineAudioSink.NOOP);
+            }
+            @Override public java.util.concurrent.CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink sink) {
+                sink.onStart(24_000, 1, "pcm_s16le");
+                sink.onChunk(new byte[]{9, 9});
+                return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { Thread.sleep(100); } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    modelCompleted.set(true);
+                    return new OnlineSpeechResult(Reply.ofText("模型旧输出"), "");
+                });
+            }
+            @Override public String id() { return "fake-omni"; }
+        };
+        TranscriptEnrichedSpeechProvider provider = new TranscriptEnrichedSpeechProvider(
+                speech, (pcm, ctx) -> "第二个", dialog);
+
+        OnlineSpeechResult result = provider.process(new byte[]{1}, context(), "u-select",
+                new OnlineAudioSink() {
+                    @Override public void onStart(int rate, int channels, String encoding) {
+                        audioEvents.add("start");
+                    }
+                    @Override public void onChunk(byte[] pcm) { audioEvents.add("chunk"); }
+                }).get(1, TimeUnit.SECONDS);
+
+        assertEquals("navigate", result.reply().intent().intent());
+        assertEquals("西店", result.reply().intent().slots().get("poiname").value());
+        assertTrue(audioEvents.isEmpty(), "选择命中时模型音频应被门控拦截");
+        Thread.sleep(150);
+        assertTrue(modelCompleted.get(), "模型候选应自然完成而不是被取消");
     }
 
     @Test

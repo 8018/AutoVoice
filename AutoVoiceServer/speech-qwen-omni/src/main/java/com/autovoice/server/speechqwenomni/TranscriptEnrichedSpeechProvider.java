@@ -2,6 +2,7 @@ package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.NavigationDialogState;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -44,10 +45,17 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
 
     private final OnlineSpeechProvider speech;
     private final AsrProvider asr;
+    private final NavigationDialogState navigationDialog;
 
     public TranscriptEnrichedSpeechProvider(OnlineSpeechProvider speech, AsrProvider asr) {
+        this(speech, asr, new NavigationDialogState());
+    }
+
+    public TranscriptEnrichedSpeechProvider(OnlineSpeechProvider speech, AsrProvider asr,
+                                            NavigationDialogState navigationDialog) {
         this.speech = speech;
         this.asr = asr;
+        this.navigationDialog = navigationDialog;
     }
 
     @Override
@@ -66,7 +74,8 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId,
             OnlineAudioSink downstream, OnlineAsrSink asrSink) {
-        TranscriptFirstAudioGate transcriptGate = new TranscriptFirstAudioGate(downstream);
+        TranscriptFirstAudioGate transcriptGate = new TranscriptFirstAudioGate(
+                downstream, navigationDialog.hasPending(context));
         CompletableFuture<String> transcript = CompletableFuture.supplyAsync(() -> {
             try {
                 String text = asr.transcribe(pcm16k, context);
@@ -75,11 +84,15 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
                 // 识别框是旁路能力；失败不能打断 S2S 回答。
                 return "";
             }
-        }, ASR_WORKERS).thenApply(text -> {
+        }, ASR_WORKERS);
+        CompletableFuture<TranscriptDecision> transcriptDecision = transcript.thenApply(text -> {
             if (!text.isBlank()) asrSink.onResult(text, true);
-            // asr_partial 调用先于音频门释放，保证同一 WS 上的识别文本先上屏。
-            transcriptGate.release();
-            return text;
+            java.util.Optional<com.autovoice.server.contracts.Reply> selection =
+                    navigationDialog.resolve(context, text);
+            // asr_partial 调用先于音频门释放或丢弃，保证同一 WS 上识别文本先上屏。
+            if (selection.isPresent()) transcriptGate.discard();
+            else transcriptGate.release();
+            return new TranscriptDecision(text, selection);
         });
         AtomicReference<StreamEnd> streamEnd = new AtomicReference<>();
         OnlineAudioSink bufferingSink = new OnlineAudioSink() {
@@ -105,13 +118,21 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
                 return super.cancel(mayInterruptIfRunning);
             }
         };
-        speechResult.thenCombine(transcript, (result, asrText) -> {
+        // 明确的序号/名称在 ASR 完成后即可成为在线候选。Qwen 仍在后台自然完成，
+        // 但其输出被门拦截，不主动取消模型或任何仲裁候选。
+        transcriptDecision.thenAccept(decision -> decision.selection.ifPresent(reply ->
+                combined.complete(new OnlineSpeechResult(reply, decision.text))));
+        speechResult.thenCombine(transcriptDecision, (result, decision) -> {
+            if (decision.selection.isPresent()) {
+                return new OnlineSpeechResult(decision.selection.get(), decision.text);
+            }
+            navigationDialog.remember(context, result.reply());
             StreamEnd end = streamEnd.get();
-            if (end != null) downstream.onComplete(end.speakText, end.intent, asrText);
-            return new OnlineSpeechResult(result.reply(), asrText);
+            if (end != null) downstream.onComplete(end.speakText, end.intent, decision.text);
+            return new OnlineSpeechResult(result.reply(), decision.text);
         }).whenComplete((result, error) -> {
             if (error == null) combined.complete(result);
-            else combined.completeExceptionally(unwrap(error));
+            else if (!combined.isDone()) combined.completeExceptionally(unwrap(error));
         });
         return combined;
     }
@@ -127,6 +148,8 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
     }
 
     private record StreamEnd(String speakText, Intent intent) {}
+    private record TranscriptDecision(
+            String text, java.util.Optional<com.autovoice.server.contracts.Reply> selection) {}
 
     /**
      * 旁路 ASR 首字幕门：Qwen 仍与 ASR 完全并发，只暂存下行音频/回复字幕。
@@ -135,31 +158,47 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
      */
     private static final class TranscriptFirstAudioGate implements OnlineAudioSink {
         private final OnlineAudioSink downstream;
+        private final boolean holdUntilTranscript;
         private final List<Consumer<OnlineAudioSink>> buffered = new ArrayList<>();
         private boolean released;
+        private boolean discarded;
         private boolean timerStarted;
 
         TranscriptFirstAudioGate(OnlineAudioSink downstream) {
+            this(downstream, false);
+        }
+
+        TranscriptFirstAudioGate(OnlineAudioSink downstream, boolean holdUntilTranscript) {
             this.downstream = downstream == null ? OnlineAudioSink.NOOP : downstream;
+            this.holdUntilTranscript = holdUntilTranscript;
         }
 
         void release() {
             synchronized (this) {
-                if (released) return;
+                if (released || discarded) return;
                 released = true;
                 buffered.forEach(event -> event.accept(downstream));
                 buffered.clear();
             }
         }
 
+        void discard() {
+            synchronized (this) {
+                if (released || discarded) return;
+                discarded = true;
+                buffered.clear();
+            }
+        }
+
         private void submit(Consumer<OnlineAudioSink> event, boolean startsAudioTimer) {
             synchronized (this) {
+                if (discarded) return;
                 if (released) {
                     event.accept(downstream);
                     return;
                 }
                 buffered.add(event);
-                if (startsAudioTimer && !timerStarted) {
+                if (startsAudioTimer && !holdUntilTranscript && !timerStarted) {
                     timerStarted = true;
                     AUDIO_GATE_TIMER.schedule(this::release,
                             MAX_TRANSCRIPT_FIRST_AUDIO_HOLD_MS, TimeUnit.MILLISECONDS);
@@ -182,6 +221,7 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
 
         @Override public void onError(Throwable error) {
             synchronized (this) {
+                if (discarded) return;
                 if (!released) {
                     released = true;
                     buffered.clear();

@@ -24,6 +24,7 @@ import com.google.gson.JsonSyntaxException
  * 事件、播报兜底。</p>
  */
 class NavigationExecutor(
+    private val onCandidates: (List<NavigationCandidate>) -> Unit = {},
     private val opener: (String) -> Boolean,
 ) {
 
@@ -31,13 +32,24 @@ class NavigationExecutor(
 
     /** 执行导航意图；非 navigation/navigate、槽位缺失或拉起失败返回 false。 */
     fun execute(intent: Intent): Boolean {
-        if (intent.domain != DOMAIN_NAVIGATION || intent.intent != INTENT_NAVIGATE) return false
+        if (intent.domain != DOMAIN_NAVIGATION) return false
+        if (intent.intent == INTENT_CANCEL_NAVIGATION) {
+            onCandidates(emptyList())
+            return true
+        }
+        if (intent.intent == INTENT_CHOOSE_DESTINATION) {
+            val json = intent.slots?.get(SLOT_CANDIDATES)?.value as? String ?: return false
+            val candidates = parseCandidates(json) ?: return false
+            onCandidates(candidates)
+            return true
+        }
+        if (intent.intent != INTENT_NAVIGATE) return false
         val slots = intent.slots ?: return false
         val poiname = (slots[SLOT_POINAME]?.value as? String)?.takeIf { it.isNotBlank() } ?: return false
         val lat = (slots[SLOT_LAT]?.value as? Number)?.toDouble() ?: return false
         val lon = (slots[SLOT_LON]?.value as? Number)?.toDouble() ?: return false
         val waypointsJson = slots[SLOT_WAYPOINTS]?.value as? String
-        return if (waypointsJson == null || waypointsJson.isBlank()) {
+        val opened = if (waypointsJson == null || waypointsJson.isBlank()) {
             // 无 waypoints 槽 → 单目的地 navi（直接开始导航）
             opener(buildNaviUri(poiname, lat, lon))
         } else {
@@ -45,7 +57,18 @@ class NavigationExecutor(
             // 静默回退单目的地会误导用户以为"先去A"仍生效，记 skipped 由调用方兜底）
             parseWaypoints(waypointsJson)?.let { wp -> opener(buildRoutePlanUri(poiname, lat, lon, wp)) } ?: false
         }
+        if (opened) onCandidates(emptyList())
+        return opened
     }
+
+    private fun parseCandidates(json: String): List<NavigationCandidate>? =
+        try {
+            gson.fromJson(json, Array<NavigationCandidate>::class.java).toList()
+                .filter { it.poiname.isNotBlank() }
+                .takeIf { it.isNotEmpty() }
+        } catch (e: JsonSyntaxException) {
+            null
+        }
 
     /** 解析 waypoints string 槽（JSON 文本）；JSON 非法/空数组 → null（不拉起）。 */
     private fun parseWaypoints(json: String): List<Waypoint>? =
@@ -82,13 +105,24 @@ class NavigationExecutor(
     /** 途经点（多目的地中间站）：名称 + GCJ-02 坐标。 */
     data class Waypoint(val poiname: String, val lat: Double, val lon: Double)
 
+    /** 应用内展示的 POI 候选；坐标只用于用户确认后的最终 navigate 动作。 */
+    data class NavigationCandidate(
+        val poiname: String,
+        val lat: Double,
+        val lon: Double,
+        val address: String = "",
+    )
+
     companion object {
         const val DOMAIN_NAVIGATION = "navigation"
         const val INTENT_NAVIGATE = "navigate"
+        const val INTENT_CHOOSE_DESTINATION = "choose_destination"
+        const val INTENT_CANCEL_NAVIGATION = "cancel_navigation"
         const val SLOT_POINAME = "poiname"
         const val SLOT_LAT = "lat"
         const val SLOT_LON = "lon"
         const val SLOT_WAYPOINTS = "waypoints"
+        const val SLOT_CANDIDATES = "candidates"
         const val SOURCE_APPLICATION = "autovoice"
     }
 }

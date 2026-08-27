@@ -3,6 +3,7 @@ package com.autovoice.server.llm;
 import com.autovoice.server.agentloop.AgentLoop;
 import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
+import com.autovoice.server.agentloop.NavigationCandidateReplies;
 import com.autovoice.server.agentloop.RequestToolExecutor;
 import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
@@ -297,6 +298,12 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                     }
 
                     @Override
+                    public java.util.Optional<Reply> terminalAfterTools(
+                            JsonNode message, List<AgentToolResult> results) {
+                        return NavigationCandidateReplies.from(results);
+                    }
+
+                    @Override
                     public void appendToolResults(JsonNode message, List<AgentToolResult> results) {
                         messages.add(assistantToolCallsMessage(message));
                         for (AgentToolResult result : results) {
@@ -496,12 +503,18 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         if (prompt == null || prompt.isBlank()) {
             prompt = DEFAULT_SYSTEM_PROMPT;
         }
+        boolean hasResolver = enabledTools.stream()
+                .anyMatch(t -> "resolve_navigation".equals(t.name()));
+        if (hasResolver) {
+            prompt += "\n单目的地导航必须先调用 resolve_navigation 展示候选；本轮不要自行选择候选，"
+                    + "也不要直接调用 navigate。用户下一轮明确说序号或名称后才开始导航。";
+        }
         Object lat = ctx == null ? null : ctx.attrs().get("latitude");
         Object lon = ctx == null ? null : ctx.attrs().get("longitude");
         if (lat instanceof Number && lon instanceof Number) {
             prompt += "\n车辆坐标(lon,lat)=" + ((Number) lon).doubleValue() + ","
                     + ((Number) lat).doubleValue() + "。";
-            if (enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))) {
+            if (hasResolver) {
                 prompt += "调用 resolve_navigation 时传 location；候选取附近优先。多站保持口述顺序。";
             } else {
                 prompt += "地点候选取附近优先；多站保持口述顺序。";

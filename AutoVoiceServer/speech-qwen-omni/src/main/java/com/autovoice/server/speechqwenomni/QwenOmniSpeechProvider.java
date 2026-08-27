@@ -3,6 +3,7 @@ package com.autovoice.server.speechqwenomni;
 import com.autovoice.server.agentloop.AgentLoop;
 import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
+import com.autovoice.server.agentloop.NavigationCandidateReplies;
 import com.autovoice.server.agentloop.RequestToolExecutor;
 import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
@@ -193,6 +194,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 : configuredPrompt;
         List<FunctionTool> requestToolSnapshot = ToolSchemaCompactor.compact(tools.enabledTools());
         system.put("content", LANGUAGE_POLICY + "\n" + TOOL_OUTPUT_POLICY + "\nRules: " + basePrompt
+                + navigationDialogPolicy(requestToolSnapshot)
                 + locationPolicy(context, requestToolSnapshot));
 
         ObjectNode user = messages.addObject();
@@ -248,6 +250,13 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                             StreamResult message, List<AgentToolCall> calls) {
                         // Omni must make one final no-tools call to synthesize the spoken confirmation.
                         return Optional.empty();
+                    }
+
+                    @Override
+                    public Optional<OnlineSpeechResult> terminalAfterTools(
+                            StreamResult message, List<AgentToolResult> results) {
+                        return NavigationCandidateReplies.from(results)
+                                .map(reply -> new OnlineSpeechResult(reply, ""));
                     }
 
                     @Override
@@ -318,6 +327,14 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         return enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))
                 ? location + "Pass it as resolve_navigation.location; prefer nearby candidates. Preserve stop order."
                 : location + "Prefer nearby candidates and preserve stop order.";
+    }
+
+    private static String navigationDialogPolicy(List<FunctionTool> enabledTools) {
+        return enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))
+                ? "\nFor a single destination, call resolve_navigation first to show candidates. "
+                    + "Do not choose one or call navigate in that turn; navigation starts only after "
+                    + "the user's next-turn ordinal or place-name selection."
+                : "";
     }
 
     private StreamResult call(ArrayNode messages, boolean allowTools, List<FunctionTool> enabledTools,

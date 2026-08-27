@@ -101,6 +101,8 @@ data class UiState(
     val openMicBargeInAvailable: Boolean = false,
     /** 唤醒初始化/资源错误；null 表示无错误。 */
     val wakeError: String? = null,
+    /** 导航 POI 候选；非空时在本应用内显示语音选择弹窗，尚未拉起地图。 */
+    val navigationCandidates: List<NavigationExecutor.NavigationCandidate> = emptyList(),
 )
 
 /**
@@ -176,6 +178,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var wakeInitialized = false
     private var wakeSetupJob: Job? = null
     private var wakeTurnTimeoutJob: Job? = null
+    private var navigationDialogTimeoutJob: Job? = null
 
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
@@ -453,7 +456,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine = buildEngine(loadConfig(mode))
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
-        _uiState.update { it.copy(mode = mode) }
+        navigationDialogTimeoutJob?.cancel()
+        _uiState.update { it.copy(mode = mode, navigationCandidates = emptyList()) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
@@ -547,7 +551,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             vehicle = vehicleState,
             // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；
             // 未安装/无处理 Activity 时 runCatching 吞掉异常返回 false（记 skipped）
-            navigation = NavigationExecutor { uri ->
+            navigation = NavigationExecutor(
+                onCandidates = { candidates ->
+                    _uiState.update { it.copy(navigationCandidates = candidates) }
+                    navigationDialogTimeoutJob?.cancel()
+                    if (candidates.isNotEmpty()) {
+                        navigationDialogTimeoutJob = viewModelScope.launch {
+                            delay(NAVIGATION_DIALOG_TTL_MS)
+                            _uiState.update { it.copy(navigationCandidates = emptyList()) }
+                        }
+                    }
+                },
+            ) { uri ->
                 runCatching {
                     getApplication<Application>().startActivity(
                         AndroidIntent(AndroidIntent.ACTION_VIEW, Uri.parse(uri))
@@ -630,6 +645,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         wakeTurnTimeoutJob?.cancel()
         wakeSetupJob?.cancel()
+        navigationDialogTimeoutJob?.cancel()
         wakeObserver.close()
         engine.close() // 断开网关 + 取消引擎作用域（Task 21）
         recorder.close()
@@ -657,5 +673,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         /** 唤醒后始终没有形成 VAD SpeechEnd 时的安全收口，避免永久占用一轮。 */
         const val WAKE_TURN_TIMEOUT_MS = 10_000L
+
+        /** 与服务端候选状态一致：两分钟无选择自动收起应用内弹窗。 */
+        const val NAVIGATION_DIALOG_TTL_MS = 120_000L
     }
 }
