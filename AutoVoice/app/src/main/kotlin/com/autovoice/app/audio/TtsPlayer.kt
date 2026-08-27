@@ -153,7 +153,7 @@ class TtsPlayer(
         player = mp
         Log.i(TAG, "play start: data=${reply.data.size}B mime=${reply.mime} durationMs=${reply.data.size * 1000 / (SAMPLE_RATE_BYTES_PER_SEC)}")
         try {
-            mp.setAudioAttributes(VOICE_AUDIO_ATTRIBUTES)
+            mp.setAudioAttributes(TTS_AUDIO_ATTRIBUTES)
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
                 Log.i(TAG, "play completed: data=${reply.data.size}B")
@@ -199,12 +199,7 @@ class TtsPlayer(
         )
         val minBuffer = queriedBuffer.takeIf { it > 0 } ?: (reply.sampleRate / 2)
         val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
+            .setAudioAttributes(TTS_AUDIO_ATTRIBUTES)
             .setAudioFormat(
                 android.media.AudioFormat.Builder()
                     .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
@@ -347,8 +342,9 @@ class TtsPlayer(
     private companion object {
         const val TAG = "TtsPlayer"
 
-        val VOICE_AUDIO_ATTRIBUTES: AudioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        /** 助手播报走媒体音量；录音侧语音通信源/AEC 不依赖输出使用通话音量流。 */
+        val TTS_AUDIO_ATTRIBUTES: AudioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
 
