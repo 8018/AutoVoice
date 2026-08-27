@@ -277,6 +277,12 @@ App 已连接，`hello` 会收到 `ready`（带 `sessionId` / `protocolVersion=1
 `language=zh-CN`）。离线命令链默认关（`offline.enabled=false`），日志出现
 `Offline no result` 前的启动日志不涉及离线 SDK。
 
+Omni 若在同一模型轮返回音频与 `tool_calls`，网关不再中断在线流：500ms 决策窗口内工具
+优先并抑制中间音频；音频已提交后则忽略迟到工具。日志
+`tool output won arbitration; suppressed ... intermediate audio bytes` 表示工具通道正常胜出，
+`audio output was already committed; ignored late tool_calls` 表示音频通道已锁定；二者都是
+业务收敛记录，不应伴随 `ONLINE_STREAM_ABORTED`。
+
 > 注意：`bootRun` 走真实 provider（讯飞语义 / DeepSeek / 阿里云 ASR/TTS），
 > 密钥未配齐时对应调用会报错——先核对 §1.1。
 
