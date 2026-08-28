@@ -132,6 +132,10 @@ public final class McpToolSession implements AutoCloseable {
         return config.id();
     }
 
+    public String scope() {
+        return config.normalizedScope();
+    }
+
     public Map<String, FunctionTool> tools() {
         return tools;
     }

@@ -6,8 +6,8 @@ import java.util.concurrent.CompletableFuture;
  * 编译时选择的在线语音后端。
  *
  * <p>一份完整 PCM 同时交给云端离线命令识别和本接口；云端仲裁器负责拦截输出：空调
- * 离线命中时取消在线候选，否则放行在线结果。Classic 实现是 ASR → LLM，Omni 实现是
- * speech-to-speech。一个部署产物中只能装配一个实现。</p>
+ * 离线命中时取消在线候选，否则放行在线结果。Classic 实现是 ASR → LLM；Omni 构建产物
+ * 装配一个混合实现，在 ASR → LLM 业务域与 speech-to-speech 闲聊域之间路由。</p>
  */
 public interface OnlineSpeechProvider {
 
@@ -31,7 +31,7 @@ public interface OnlineSpeechProvider {
         return process(pcm16k, context, utteranceId, audioSink);
     }
 
-    /** 用于 ready、日志和遥测的稳定后端标识（classic / qwen-omni）。 */
+    /** 用于 ready、日志和遥测的稳定后端标识。 */
     String id();
 
     /** 后端要求的最小整轮超时；公共仲裁配置低于该值时装配层自动抬高。 */

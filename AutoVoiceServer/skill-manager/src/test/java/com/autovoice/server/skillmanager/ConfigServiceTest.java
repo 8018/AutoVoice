@@ -41,6 +41,18 @@ class ConfigServiceTest {
     }
 
     @Test
+    void chatPromptUsesIndependentKeyAndNotification() {
+        FakeStore store = new FakeStore();
+        FakeNotifier notifier = new FakeNotifier();
+        ConfigService svc = new ConfigService(store, notifier);
+        svc.setSystemPrompt("业务");
+        svc.setChatSystemPrompt("闲聊");
+        assertEquals("业务", svc.getSystemPrompt());
+        assertEquals("闲聊", svc.getChatSystemPrompt());
+        assertEquals(List.of("system-prompt", "chat-system-prompt"), notifier.calls);
+    }
+
+    @Test
     void setEmptyStoresEmptyAndStillNotifies() {
         FakeStore store = new FakeStore();
         FakeNotifier notifier = new FakeNotifier();

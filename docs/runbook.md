@@ -223,11 +223,12 @@ ssh -L 8083:127.0.0.1:8083 root@47.94.4.204
 ```
 
 - 登录口令 = `SKILL_MANAGER_ADMIN_TOKEN`（服务器 `/etc/autovoice/.env`，查值：`ssh root@47.94.4.204 'grep SKILL_MANAGER_ADMIN_TOKEN /etc/autovoice/.env'`）
-- 面板可管理 skill 启停 / MCP 配置 / 系统提示词（`/api/config/system-prompt`，保存即热更新网关）
+- 面板可管理 skill 启停 / MCP 配置 / 两套系统提示词（业务 `/api/config/system-prompt`、
+  闲聊 `/api/config/chat-system-prompt`，保存即热更新网关）
 - 命令行调管理 API：`curl -H 'X-Skill-Service-Token: <SKILL_SERVICE_TOKEN>' http://47.94.4.204:8083/api/skills`
 
-- LLM system prompt 亦由平台配置（`/api/config/system-prompt`，管理界面「系统提示词」面板），
-  网关热更新；未配置回退内置默认。
+- Skill 的模型域选择 `llm`（业务 DeepSeek）或 `chat`（Qwen 闲聊），旧 Skill 默认 `llm`；
+  两域工具调用和提示词严格隔离。两套提示词未配置时各自回退内置默认。
 
 ### 1.9 token 生成与轮换
 

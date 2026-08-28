@@ -6,13 +6,17 @@ import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.ToolProvider;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
 import com.autovoice.server.skillmcp.McpToolExecutor;
 import com.autovoice.server.skillmcp.SystemPromptStore;
+import com.autovoice.server.skillmcp.ChatSystemPromptStore;
+import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
+import com.autovoice.server.speechqwenomni.HybridBusinessChatSpeechProvider;
 import com.autovoice.server.speechqwenomni.QwenOmniSpeechProvider;
-import com.autovoice.server.speechqwenomni.TranscriptEnrichedSpeechProvider;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,7 +24,7 @@ import org.springframework.context.annotation.Configuration;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Omni 构建变体专用装配；产物不包含 DeepSeek，ASR 仅用于用户原话识别框。 */
+/** Omni 混合变体：默认 ASR → DeepSeek 业务域；显式进入闲聊后才使用 Qwen S2S。 */
 @Configuration
 public class OmniBackendConfig {
 
@@ -56,20 +60,44 @@ public class OmniBackendConfig {
     }
 
     @Bean
-    public OnlineSpeechProvider onlineSpeechProvider(OkHttpClient client, AsrProvider transcriptProvider,
-                                                     AppConfig.AutovoiceProperties props,
-                                                     McpSkillRegistry registry,
-                                                     SystemPromptStore promptStore,
-                                                     NavigationDialogState navigationDialog) {
-        ToolProvider merged = () -> {
-            List<FunctionTool> out = new ArrayList<>(QwenOmniSpeechProvider.defaultTools());
+    public LlmProvider omniBusinessLlmProvider(OkHttpClient client,
+                                               AppConfig.AutovoiceProperties props,
+                                               TelemetryRecorder recorder,
+                                               McpSkillRegistry registry,
+                                               SystemPromptStore promptStore) {
+        if (!"deepseek".equals(props.providers().llm())) {
+            throw new IllegalArgumentException(
+                    "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
+        }
+        ToolProvider businessTools = () -> {
+            List<FunctionTool> out = new ArrayList<>(DeepSeekLlmProvider.defaultTools());
             out.addAll(registry.enabledToolSpecs());
             return out;
         };
+        return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
+                DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder, businessTools,
+                DeepSeekLlmProvider.DEFAULT_TOOL_LOOP_BUDGET_MS,
+                new McpToolExecutor(registry::callTool), promptStore::get);
+    }
+
+    @Bean
+    public OnlineSpeechProvider onlineSpeechProvider(OkHttpClient client, AsrProvider transcriptProvider,
+                                                     LlmProvider businessLlm,
+                                                     AppConfig.AutovoiceProperties props,
+                                                     McpSkillRegistry registry,
+                                                     ChatSystemPromptStore chatPromptStore,
+                                                     NavigationDialogState navigationDialog) {
+        ToolProvider chatTools = registry::enabledChatToolSpecs;
         OnlineSpeechProvider qwen = new QwenOmniSpeechProvider(client, props.secrets().dashscopeApiKey(),
                 QwenOmniSpeechProvider.DEFAULT_ENDPOINT, QwenOmniSpeechProvider.DEFAULT_MODEL,
-                QwenOmniSpeechProvider.DEFAULT_VOICE, merged,
-                new McpToolExecutor(registry::callTool), promptStore::get);
-        return new TranscriptEnrichedSpeechProvider(qwen, transcriptProvider, navigationDialog);
+                QwenOmniSpeechProvider.DEFAULT_VOICE, chatTools,
+                new McpToolExecutor((name, args) -> registry.callTool("chat", name, args)),
+                () -> {
+                    String configured = chatPromptStore.get();
+                    return configured == null || configured.isBlank()
+                            ? QwenOmniSpeechProvider.DEFAULT_CHAT_SYSTEM_PROMPT : configured;
+                });
+        return new HybridBusinessChatSpeechProvider(
+                transcriptProvider, businessLlm, qwen, navigationDialog);
     }
 }

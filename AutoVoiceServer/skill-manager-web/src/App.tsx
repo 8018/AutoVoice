@@ -8,7 +8,7 @@ interface FormState extends SkillDraft {
 }
 
 const emptyForm = (): FormState => ({
-  id: '', name: '', description: '', mcpUrl: '', authHeader: '', authValue: '', toolsJson: '[]',
+  id: '', name: '', description: '', scope: 'llm', mcpUrl: '', authHeader: '', authValue: '', toolsJson: '[]',
   enabled: true, tools: [], checked: {},
 });
 
@@ -21,6 +21,7 @@ export default function App() {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [chatPrompt, setChatPrompt] = useState('');
 
   async function load() {
     try {
@@ -38,6 +39,7 @@ export default function App() {
   async function loadPrompt() {
     try {
       setPrompt(await api.getSystemPrompt());
+      setChatPrompt(await api.getChatSystemPrompt());
     } catch (e: any) {
       if (e.message === 'unauthorized') {
         setAuthed(false);
@@ -83,6 +85,7 @@ export default function App() {
       .map(([name, v]) => ({ name, enabled: !!v }));
     return {
       id: form.id, name: form.name, description: form.description,
+      scope: form.scope,
       mcpUrl: form.mcpUrl, authHeader: form.authHeader, authValue: form.authValue,
       toolsJson: JSON.stringify(enabledTools), enabled: form.enabled,
     };
@@ -168,6 +171,31 @@ export default function App() {
     }
   }
 
+  async function doSaveChatPrompt() {
+    setMsg(''); setErr('');
+    try {
+      await api.setChatSystemPrompt(chatPrompt);
+      setMsg('闲聊提示词已保存（网关将热更新）');
+      await loadPrompt();
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false); localStorage.removeItem('skill-authed');
+      } else setErr(String(e.message || e));
+    }
+  }
+
+  async function doResetChatPrompt() {
+    setChatPrompt(''); setMsg(''); setErr('');
+    try {
+      await api.setChatSystemPrompt('');
+      setMsg('已恢复默认闲聊提示词');
+    } catch (e: any) {
+      if (e.message === 'unauthorized') {
+        setAuthed(false); localStorage.removeItem('skill-authed');
+      } else setErr(String(e.message || e));
+    }
+  }
+
   function edit(s: Skill) {
     const checked: Record<string, boolean> = {};
     try {
@@ -178,6 +206,7 @@ export default function App() {
     setEditingId(s.id);
     setForm({
       id: s.id, name: s.name, description: s.description, mcpUrl: s.mcpUrl,
+      scope: s.scope || 'llm',
       authHeader: s.authHeader, authValue: '', toolsJson: s.toolsJson,
       enabled: s.enabled, tools: [], checked,
     });
@@ -202,7 +231,7 @@ export default function App() {
         <button onClick={() => { setAuthed(false); localStorage.removeItem('skill-authed'); }}>退出</button>
       </div>
       <details className="prompt-pane">
-        <summary>系统提示词（LLM system prompt，保存后网关热更新）</summary>
+        <summary>业务 LLM 系统提示词（导航、车控与工具调用）</summary>
         <textarea value={prompt} rows={3}
                   onChange={(e) => setPrompt(e.target.value)}
                   placeholder="留空 = 使用内置默认提示词" />
@@ -211,12 +240,23 @@ export default function App() {
           <button onClick={doResetPrompt}>恢复默认</button>
         </div>
       </details>
+      <details className="prompt-pane">
+        <summary>S2S 闲聊系统提示词（仅“陪我聊会天”后生效）</summary>
+        <textarea value={chatPrompt} rows={3}
+                  onChange={(e) => setChatPrompt(e.target.value)}
+                  placeholder="留空 = 使用内置闲聊提示词" />
+        <div className="prompt-actions">
+          <button onClick={doSaveChatPrompt}>保存</button>
+          <button onClick={doResetChatPrompt}>恢复默认</button>
+        </div>
+      </details>
       <div className="main">
         <div className="list-pane">
           {skills.map((s) => (
             <div key={s.id} className={`row ${editingId === s.id ? 'sel' : ''}`} onClick={() => edit(s)}>
               <span className="name">{s.name}</span>
               <span className="desc">{s.description || s.id}</span>
+              <span className="badge on">{s.scope === 'chat' ? '闲聊' : 'LLM'}</span>
               <span className={`badge ${s.enabled ? 'on' : 'off'}`}>{s.enabled ? '启用' : '禁用'}</span>
               <button onClick={(e) => { e.stopPropagation(); doToggle(s); }}>{s.enabled ? '禁用' : '启用'}</button>
               <button onClick={(e) => { e.stopPropagation(); doDelete(s); }}>删除</button>
@@ -231,6 +271,11 @@ export default function App() {
           <label>名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
           <label>描述（面向 LLM）<textarea value={form.description}
                  onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          <label>模型域<select value={form.scope}
+                 onChange={(e) => setForm({ ...form, scope: e.target.value as 'llm' | 'chat' })}>
+            <option value="llm">业务 LLM（导航/车控）</option>
+            <option value="chat">S2S 闲聊</option>
+          </select></label>
           <label>MCP 地址<input value={form.mcpUrl} placeholder="https://mcp.example.com/mcp"
                  onChange={(e) => setForm({ ...form, mcpUrl: e.target.value })} /></label>
           <label>认证头名<input value={form.authHeader} placeholder="x-api-key（可留空）"

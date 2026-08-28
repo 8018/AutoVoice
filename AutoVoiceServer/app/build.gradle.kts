@@ -40,6 +40,7 @@ dependencies {
         implementation(project(":asr-gateway"))
         implementation(project(":speech-classic"))
     } else {
+        implementation(project(":llm"))
         implementation(project(":asr-gateway"))
         implementation(project(":speech-qwen-omni"))
     }

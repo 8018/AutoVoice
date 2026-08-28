@@ -76,15 +76,17 @@ cd /Users/michaelliu/code/AutoVoice/.worktrees/skill-mcp-platform/AutoVoiceServe
 - 浏览器访问管理面板需安全组放行入方向 TCP 8083，或走 SSH 隧道：
   `ssh -L 8083:127.0.0.1:8083 root@47.94.4.204` 后访问本机 8083。
 
-## 系统提示词配置（/api/config/system-prompt）
+## 系统提示词与模型域配置
 
-LLM system prompt 由平台配置，网关热更新（改后立即生效，无需重启）。
+业务 LLM 与 S2S 闲聊使用独立 prompt，网关热更新（改后立即生效，无需重启）。
 
-- 管理界面「系统提示词」面板编辑保存（或 `PUT /api/config/system-prompt`，body `{"value":"..."}`，
-  仅管理 cookie）；留空 = 恢复内置默认提示词。
-- 网关每次刷新（webhook/轮询）拉取：`GET /api/config/system-prompt`（X-Skill-Service-Token）。
+- 业务提示词：`GET/PUT /api/config/system-prompt`；闲聊提示词：
+  `GET/PUT /api/config/chat-system-prompt`。PUT body 均为 `{"value":"..."}`，仅管理 cookie。
+- Skill 新增 `scope`：`llm` 只提供给业务 DeepSeek，`chat` 只提供给 Qwen 闲聊；旧数据迁移后
+  默认为 `llm`。管理界面可直接选择模型域。
+- 网关每次刷新（webhook/轮询）同时拉取两份 prompt 和按域 Skill 快照。
 - 平台未部署或端点不可用 → 网关回退内置默认，链路不崩。
-- 验证：改 prompt → 网关日志 `system prompt updated (N chars)`；对同一句话，回答风格随 prompt 变化。
+- 验证：日志分别出现 `system prompt updated` / `chat system prompt updated`；修改一域不能改变另一域。
 
 ## 3. 网关侧
 

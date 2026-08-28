@@ -106,6 +106,25 @@ class QwenOmniSpeechProviderTest {
     }
 
     @Test
+    void omitsToolFieldsWhenChatDomainHasNoSkills() throws Exception {
+        server.enqueue(sse(delta("content", "Hello")));
+        QwenOmniSpeechProvider provider = new QwenOmniSpeechProvider(
+                new OkHttpClient(), "test-key", server.url("/chat").toString(),
+                null, null, java.util.List::of,
+                (name, args) -> "unused", () -> "You are a casual chat companion.");
+
+        OnlineSpeechResult result = provider.process(new byte[]{1, 2}, context(), "u-no-tools")
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals("Hello", result.reply().speakText());
+        JsonNode body = new ObjectMapper().readTree(
+                server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8());
+        assertFalse(body.has("tools"));
+        assertFalse(body.has("tool_choice"));
+        assertFalse(body.has("parallel_tool_calls"));
+    }
+
+    @Test
     void toolCallWithinDecisionWindowSuppressesIntermediateAudioAndContinuesLoop() throws Exception {
         server.enqueue(sse(
                 delta("content", "正在查询"),

@@ -11,6 +11,7 @@ import com.autovoice.server.offlinecommand.OfflineCommandService;
 import com.autovoice.server.offlinecommand.OfflineEnginePool;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
+import com.autovoice.server.skillmcp.ChatSystemPromptStore;
 import com.autovoice.server.skillmcp.McpToolSession;
 import com.autovoice.server.skillmcp.SkillPlatformClient;
 import com.autovoice.server.skillmcp.SystemPromptStore;
@@ -36,8 +37,9 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * 本类装配两种后端共用的 offline、TTS、Skill/MCP、Gateway 与遥测组件并注入
  * {@link VoiceGatewayHandler}（每连接 pipeline + RaceArbiter 由 handler 内部构建）。
  *
- * <p>Classic 变体仍读取 {@code autovoice.providers.llm/asr}；Omni 变体固定使用
- * qwen3.5-omni-plus。TTS 保持独立服务，Skill/MCP 平台由两种变体共用。
+ * <p>Classic 变体读取 {@code autovoice.providers.llm/asr}；Omni 变体是混合后端：默认
+ * ASR → DeepSeek 处理业务，显式进入闲聊域后使用 qwen3.5-omni-plus。TTS 保持独立服务，
+ * Skill/MCP 平台共用基础设施，但 prompt 与工具按 llm/chat 域隔离。
  * secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
  */
 @Configuration
@@ -187,13 +189,21 @@ public class AppConfig {
         return new SystemPromptStore();
     }
 
+    /** Qwen S2S 闲聊域独立提示词快照。 */
+    @Bean
+    public ChatSystemPromptStore chatSystemPromptStore() {
+        return new ChatSystemPromptStore();
+    }
+
     /** 启用的 skill 会话快照：异步首拉 + 定时兜底轮询 + webhook 触发重拉（SkillRefreshController）。 */
     @Bean
     public McpSkillRegistry mcpSkillRegistry(SkillPlatformClient platformClient,
-                                             SystemPromptStore promptStore, AutovoiceProperties props) {
+                                             SystemPromptStore promptStore,
+                                             ChatSystemPromptStore chatPromptStore,
+                                             AutovoiceProperties props) {
         // 注入策略按"当前启用工具总数"动态选择（≤8 direct / >8 direct+warn，selector 预留）
         ToolInjector dynamic = all -> ToolInjectors.forCount(all.size()).inject(all);
-        McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic, promptStore,
+        McpSkillRegistry registry = new McpSkillRegistry(platformClient, dynamic, promptStore, chatPromptStore,
                 props.skillManager().pollMs(), 5_000,
                 (cfg, timeout) -> {
                     try {

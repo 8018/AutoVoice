@@ -31,6 +31,7 @@ class SqliteSkillStoreTest {
         assertEquals(1, enabled.size());
         assertEquals("amap-maps", enabled.get(0).id());
         assertEquals("secret-1", store.findById("amap-maps").authValue()); // 库内存明文
+        assertEquals("llm", store.findById("amap-maps").scope());
 
         // upsert 覆盖：a 改为 disabled 后 enabled 列表应为空；findAll(false) 仍 2 条
         store.upsert(new SkillRecord("amap-maps", "高德地图2", "导航2", "https://mcp.example.com/mcp",
@@ -38,6 +39,15 @@ class SqliteSkillStoreTest {
         assertTrue(store.findAll(true).isEmpty());
         assertEquals(2, store.findAll(false).size());
         assertEquals("secret-2", store.findById("amap-maps").authValue()); // 覆盖生效
+    }
+
+    @Test
+    void storesChatScopeWithoutAffectingLegacyDefault() throws Exception {
+        SqliteSkillStore store = new SqliteSkillStore(tmpDb());
+        store.init();
+        store.upsert(new SkillRecord("companion", "陪伴", "闲聊", "chat",
+                "https://mcp.example.com/mcp", "", "", "[]", true, 1L));
+        assertEquals("chat", store.findById("companion").scope());
     }
 
     @Test

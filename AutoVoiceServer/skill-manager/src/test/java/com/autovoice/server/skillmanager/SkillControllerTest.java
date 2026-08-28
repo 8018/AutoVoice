@@ -40,6 +40,24 @@ class SkillControllerTest {
                 .andReturn().getResponse().getCookie("skill_admin").getValue();
     }
 
+    @Test
+    void acceptsChatScopeAndRejectsUnknownScope() throws Exception {
+        String cookie = login();
+        mvc.perform(post("/api/skills")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"chat-skill\",\"name\":\"陪伴\",\"description\":\"闲聊\","
+                                + "\"scope\":\"chat\",\"mcpUrl\":\"https://mcp.example/mcp\",\"enabled\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("chat"));
+        store.delete("chat-skill");
+        mvc.perform(post("/api/skills")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"bad-scope\",\"scope\":\"both\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
     private org.springframework.test.web.servlet.MvcResult createSkill() throws Exception {
         return mvc.perform(post("/api/skills")
                         .cookie(new jakarta.servlet.http.Cookie("skill_admin", login()))
@@ -65,6 +83,7 @@ class SkillControllerTest {
         mvc.perform(get("/api/skills").param("enabled", "true")
                         .header("X-Skill-Service-Token", "svc-secret"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].scope").value("llm"))
                 .andExpect(jsonPath("$[0].authValue").value("secret-1"))      // 网关拿明文
                 .andExpect(jsonPath("$[0].enabled").value(true));
     }

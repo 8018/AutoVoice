@@ -45,6 +45,24 @@ public class ConfigController {
         return ResponseEntity.ok(Map.of("value", service.getSystemPrompt()));
     }
 
+    @GetMapping("/chat-system-prompt")
+    public Map<String, String> getChatSystemPrompt() {
+        return Map.of("value", service.getChatSystemPrompt());
+    }
+
+    @PutMapping("/chat-system-prompt")
+    public ResponseEntity<Map<String, String>> putChatSystemPrompt(HttpServletRequest request,
+                                                                   @RequestBody PromptRequest body) {
+        if (!hasAdminCookie(request)) {
+            return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
+        }
+        if (body.value() == null) {
+            return ResponseEntity.status(400).body(Map.of("error", "missing value field"));
+        }
+        service.setChatSystemPrompt(body.value());
+        return ResponseEntity.ok(Map.of("value", service.getChatSystemPrompt()));
+    }
+
     public record PromptRequest(String value) {}
 
     private boolean hasAdminCookie(HttpServletRequest request) {

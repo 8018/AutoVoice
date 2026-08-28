@@ -68,6 +68,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
     public static final String DEFAULT_MODEL = "qwen3.5-omni-plus";
     public static final String DEFAULT_VOICE = "Tina";
+    public static final String DEFAULT_CHAT_SYSTEM_PROMPT =
+            "你是车内陪伴型语音助手，现在处于闲聊模式。自然、简短、有温度地回应；"
+            + "不要执行导航或车控，也不要假装已经完成任何现实操作。用户要结束闲聊时简短告别。";
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     /** 工具循环上限：正常导航为 resolve_navigation → navigate → 语音确认；
@@ -227,7 +230,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 new AgentLoop.Adapter<>() {
                     @Override
                     public StreamResult callModel(int round, boolean toolsAllowed) throws Exception {
-                        boolean effectiveTools = toolsAllowed && terminalIntent.get() == null;
+                        boolean effectiveTools = toolsAllowed && terminalIntent.get() == null
+                                && !requestToolSnapshot.isEmpty();
                         long started = System.currentTimeMillis();
                         StreamResult result = call(messages, effectiveTools, requestToolSnapshot,
                                 activeCall, audioSink);
