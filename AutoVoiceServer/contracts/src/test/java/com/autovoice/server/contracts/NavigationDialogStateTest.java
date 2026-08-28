@@ -30,6 +30,18 @@ class NavigationDialogStateTest {
     }
 
     @Test
+    void resolvesClassifierStyleOrdinalWithoutDiPrefix() {
+        NavigationDialogState state = state();
+        state.remember(CTX, chooseReply());
+
+        Reply reply = state.resolve(CTX, "一个。").orElseThrow();
+
+        assertEquals("navigate", reply.intent().intent());
+        assertEquals("万达广场（东店）", reply.intent().slots().get("poiname").value());
+        assertFalse(state.hasPending(CTX));
+    }
+
+    @Test
     void resolvesUniqueAddressNameAndKeepsUnrelatedSpeechAvailable() {
         NavigationDialogState state = state();
         state.remember(CTX, chooseReply());
@@ -51,6 +63,26 @@ class NavigationDialogStateTest {
         assertEquals("cancel_navigation", cancel.intent().intent());
         assertEquals("已取消导航", cancel.speakText());
         assertFalse(state.hasPending(CTX));
+    }
+
+    @Test
+    void newNavigationRequestClearsOldDialogAndFallsThroughForFreshSearch() {
+        NavigationDialogState state = state();
+        state.remember(CTX, chooseReply());
+
+        assertTrue(state.resolve(CTX, "导航去万达广场").isEmpty());
+        assertFalse(state.hasPending(CTX));
+    }
+
+    @Test
+    void explicitUniqueCandidateNameStillSelectsCurrentDialog() {
+        NavigationDialogState state = state();
+        state.remember(CTX, chooseReply());
+
+        Reply reply = state.resolve(CTX, "导航去万达广场西店").orElseThrow();
+
+        assertEquals("navigate", reply.intent().intent());
+        assertEquals("万达广场（西店）", reply.intent().slots().get("poiname").value());
     }
 
     private static NavigationDialogState state() {
