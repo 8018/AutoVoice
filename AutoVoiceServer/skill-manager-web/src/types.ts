@@ -2,6 +2,7 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
+  scope: 'llm' | 'chat';
   mcpUrl: string;
   authHeader: string;
   authValue: string; // 管理端视图为 "****"
@@ -19,6 +20,7 @@ export interface SkillDraft {
   id: string;
   name: string;
   description: string;
+  scope: 'llm' | 'chat';
   mcpUrl: string;
   authHeader: string;
   authValue: string;

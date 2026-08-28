@@ -21,7 +21,7 @@ describe("skill manager api", () => {
 
     const draft = {
       id: "maps", name: "Maps", description: "", mcpUrl: "https://mcp.example",
-      authHeader: "Authorization", authValue: "", toolsJson: "[]", enabled: true,
+      scope: "llm", authHeader: "Authorization", authValue: "", toolsJson: "[]", enabled: true,
     } satisfies SkillDraft;
     await discoverTools("maps", draft);
     const init = fetchMock.mock.calls[1][1] as RequestInit;

@@ -37,8 +37,8 @@ public final class SkillService {
     }
 
     public SkillResponse create(SkillRequest req) {
-        SkillRecord r = new SkillRecord(req.id(), req.name(), req.description(), req.mcpUrl(),
-                req.authHeader(), req.authValue() == null ? "" : req.authValue(),
+        SkillRecord r = new SkillRecord(req.id(), str(req.name()), str(req.description()), scope(req.scope()),
+                str(req.mcpUrl()), str(req.authHeader()), str(req.authValue()),
                 req.toolsJson() == null ? "[]" : req.toolsJson(),
                 req.enabled() != null && req.enabled(), clock.getAsLong());
         store.upsert(r);
@@ -48,8 +48,10 @@ public final class SkillService {
 
     public SkillResponse update(String id, SkillRequest req) {
         SkillRecord old = store.findById(id);
-        SkillRecord r = new SkillRecord(id, req.name(), req.description(), req.mcpUrl(),
-                req.authHeader(),
+        String targetScope = req.scope() == null || req.scope().isBlank()
+                ? (old == null ? "llm" : old.scope()) : scope(req.scope());
+        SkillRecord r = new SkillRecord(id, str(req.name()), str(req.description()), targetScope,
+                str(req.mcpUrl()), str(req.authHeader()),
                 // 留空（null/空串）= 保留旧值
                 (req.authValue() == null || req.authValue().isBlank())
                         ? (old == null ? "" : old.authValue())
@@ -73,7 +75,7 @@ public final class SkillService {
             // controller 已守卫 exists()，此为防御：NotFound 语义，避免静默 NPE
             throw new IllegalStateException("skill not found: " + id);
         }
-        SkillRecord r = new SkillRecord(id, old.name(), old.description(), old.mcpUrl(),
+        SkillRecord r = new SkillRecord(id, old.name(), old.description(), old.scope(), old.mcpUrl(),
                 old.authHeader(), old.authValue(), old.toolsJson(), enabled, clock.getAsLong());
         store.upsert(r);
         notifier.notifySkillChanged(id);
@@ -84,7 +86,15 @@ public final class SkillService {
     public SkillResponse toResponse(SkillRecord r, boolean gatewayView) {
         String authValue = gatewayView ? r.authValue()
                 : (r.authValue() == null || r.authValue().isBlank() ? "" : MASKED);
-        return new SkillResponse(r.id(), r.name(), r.description(), r.mcpUrl(),
+        return new SkillResponse(r.id(), r.name(), r.description(), r.scope(), r.mcpUrl(),
                 r.authHeader(), authValue, r.toolsJson(), r.enabled(), r.updatedAt());
+    }
+
+    private static String scope(String value) {
+        return "chat".equals(value) ? "chat" : "llm";
+    }
+
+    private static String str(String value) {
+        return value == null ? "" : value;
     }
 }

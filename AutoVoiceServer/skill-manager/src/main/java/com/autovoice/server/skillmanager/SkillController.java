@@ -50,6 +50,7 @@ public class SkillController {
         if (service.exists(req.id())) {
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
+        if (!validScope(req.scope())) return ResponseEntity.badRequest().build();
         return ResponseEntity.ok(service.create(req));
     }
 
@@ -58,6 +59,7 @@ public class SkillController {
         if (!service.exists(id)) {
             return ResponseEntity.notFound().build();
         }
+        if (!validScope(req.scope())) return ResponseEntity.badRequest().build();
         return ResponseEntity.ok(service.update(id, req));
     }
 
@@ -101,4 +103,8 @@ public class SkillController {
     public record EnableRequest(boolean enabled) {}
 
     public record DiscoverOverride(String mcpUrl, String authHeader, String authValue) {}
+
+    private static boolean validScope(String scope) {
+        return scope == null || scope.isBlank() || "llm".equals(scope) || "chat".equals(scope);
+    }
 }

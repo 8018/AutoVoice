@@ -1,11 +1,12 @@
 package com.autovoice.server.skillmanager;
 
-/** 平台级配置：当前只有 system prompt；写操作后通知网关刷新（同 skill 变更语义）。 */
+/** 平台级配置：业务 LLM 与 S2S 闲聊各自独立的 system prompt。 */
 public final class ConfigService {
 
     // 两个命名空间故意不同：存储 key 用下划线（settings 表），webhook skillId 契约是连字符
     // "system-prompt"（测试锁定，网关按此识别），勿"统一命名"改坏契约。
     static final String SYSTEM_PROMPT_KEY = "system_prompt";
+    static final String CHAT_SYSTEM_PROMPT_KEY = "chat_system_prompt";
 
     private final SqliteSkillStore store;
     private final SkillWebhookNotifier notifier;
@@ -24,5 +25,14 @@ public final class ConfigService {
     public void setSystemPrompt(String value) {
         store.setSetting(SYSTEM_PROMPT_KEY, value);
         notifier.notifySkillChanged("system-prompt");
+    }
+
+    public String getChatSystemPrompt() {
+        return store.getSetting(CHAT_SYSTEM_PROMPT_KEY).orElse("");
+    }
+
+    public void setChatSystemPrompt(String value) {
+        store.setSetting(CHAT_SYSTEM_PROMPT_KEY, value);
+        notifier.notifySkillChanged("chat-system-prompt");
     }
 }

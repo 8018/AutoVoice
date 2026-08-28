@@ -1,15 +1,17 @@
 # Qwen Omni S2S 架构与实施计划
 
-更新时间：2026-08-16
+更新时间：2026-08-28
 
 ## 1. 目标和约束
 
-- 在线语音后端在构建时二选一：`classic`（ASR → DeepSeek）或 `omni`
-  （qwen3.5-omni-plus）。同一个 Boot JAR 不携带两套实现。
+- 在线语音后端在构建时二选一：`classic`（ASR → DeepSeek）或 `omni` 混合模式。
+  混合模式默认仍是 ASR → DeepSeek 业务链路；只有用户明确说“陪我聊会天”后，
+  后续语音才进入 qwen3.5-omni-plus S2S 闲聊域。
 - 同一份音频始终并发进入候选链路；仲裁只拦截输出，不控制音频是否进入模型。
 - 保留两级独立仲裁，不引入三路总仲裁器。
 - TTS/播放架构不拆除：文本继续请求 TTS 合成，S2S 音频交给同一个 TTS 播放模块。
-- Skill Manager、MCP Registry、工具执行器和 system prompt 在两种后端间复用。
+- Skill Manager、MCP Registry 和工具执行器复用同一套基础设施；Skill 与 system prompt
+  按 `llm`（业务）/`chat`（闲聊）隔离。
 
 ## 2. 两级仲裁
 
@@ -40,18 +42,20 @@
 
 - 公共代码只依赖 `OnlineSpeechProvider`。
 - `src/classic/java` 装配 ASR、DeepSeek 和 `speech-classic`。
-- `src/omni/java` 装配 `speech-qwen-omni`，并复用 `asr-gateway` 作为识别框旁路；
+- `src/omni/java` 同时装配业务 `llm`、`asr-gateway` 与 `speech-qwen-omni`，ASR 负责
+  识别框和域路由：默认 DeepSeek，显式进入闲聊后 Qwen S2S；
   ASR 不参与回答、工具调用或语义仲裁。
-- CI 检查 Omni JAR 包含 `speech-qwen-omni.jar` 和旁路 `asr-gateway.jar`，但不包含
-  `speech-classic.jar`、`llm.jar`。
+- CI 检查 Omni JAR 包含 `speech-qwen-omni.jar`、`asr-gateway.jar` 和 `llm.jar`，但不包含
+  `speech-classic.jar`。
 - 部署工作流通过 `voice_backend` 输入或仓库变量 `VOICE_BACKEND` 选择构建变体。
 
 密钥不进入构建产物，Omni 当前读取 `DASHSCOPE_API_KEY`。
 
-同一份 PCM 会并发进入 Qwen 和旁路 ASR。Qwen 的 text modality 是“回答字幕”，不是用户原话；
-旁路 ASR 通过独立 `asr_partial(text, isFinal)` 通道即时更新识别框，最终结果仍随
-`audio_reply_end.asrText` 收口。ASR/PGS 不进入 NLU 仲裁门；旁路失败也不阻断 S2S 回答。
-Qwen 提示词要求跟随用户当前语音语言回答，除非用户明确要求翻译。
+每轮音频先经过 ASR，其结果通过独立 `asr_partial(text, isFinal)` 通道即时更新识别框，并作为
+域路由依据。默认调用 DeepSeek 业务链路；用户说“陪我聊会天”（兼容“进入闲聊/开始闲聊”）后，
+该会话进入闲聊域，后续原始音频交给 Qwen；说“退出闲聊/结束闲聊/不聊了”等退出。Qwen 的
+text modality 是“回答字幕”，不是用户原话。ASR/PGS 不进入 NLU 仲裁门；闲聊提示词要求跟随
+用户当前语音语言回答，除非用户明确要求翻译。
 
 端侧本地链显式拆为 `AsrStage` 与 `NluStage`：通用 ASR 的 partial/final 先上屏，再把最终
 ASR 结果交给 NLU；当前讯飞 2C 命令词是“文本+语义同源”，其文本归入 `NluResult`，不能冒充
@@ -76,14 +80,15 @@ SSE 解析器分别累计 text、audio 和按 index 分片的 tool call argument
 作为一条跨 delta 的连续 Base64 串增量解码；输出裸 PCM 按 24kHz/mono/s16le 播放，兼容完整回复
 时再封装 WAV。
 
-工具来源与 Classic 相同：内置 `car_control`/`navigate` 加上
-`McpSkillRegistry.enabledToolSpecs()`。MCP 调用复用 `McpToolExecutor`；平台 system prompt
-复用 `SystemPromptStore`。车控/导航只生成 Intent，由 Android 执行一次；模型通过下一轮
-生成最终确认语音。
+工具按域隔离：DeepSeek 业务域包含内置 `car_control`/`navigate` 与 scope=`llm` 的 MCP Skill；
+Qwen 闲聊域只注入 scope=`chat` 的 MCP Skill，不暴露车控和导航。两域复用
+`McpToolExecutor`，但执行时再次校验 scope，模型即使伪造工具名也不能跨域调用。不同域可以安全
+复用同一工具名；同一域内仍拒绝重复名称。业务提示词来自 `/api/config/system-prompt`，闲聊提示词
+来自 `/api/config/chat-system-prompt`，两者分别热更新、互不覆盖；闲聊提示词留空时回退内置默认。
 
 ### 工具循环与导航延迟
 
-- Omni 当前硬上限是 **12 次模型调用**，这是兼容 selector 复杂链路的异常兜底，不是正常
+- Qwen 工具循环当前硬上限是 **12 次模型调用**，这是兼容 selector 复杂链路的异常兜底，不是正常
   导航的目标轮数；耗尽后会保留已得到的终局 Intent/文本并优雅降级。
 - 单/多地点正常目标：一次 `resolve_navigation` → `navigate` → 确认语音，共约 3 次模型调用。
 - `resolve_navigation` 内部按口述顺序聚合各地点候选；模型同轮产生的其他独立只读调用可并行，
@@ -93,7 +98,8 @@ SSE 解析器分别累计 text、audio 和按 index 分片的 tool call argument
 - 推荐启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_geo`；网关会把
   三者聚合并对模型只暴露 `resolve_navigation`，一次调用可解析多个地点并返回导航坐标；导航
   不让模型调用路径规划、schema 拉起、距离或天气工具。生产提示词模板见
-  [`prompts/qwen-omni-navigation.txt`](prompts/qwen-omni-navigation.txt)。
+  [`prompts/qwen-omni-navigation.txt`](prompts/qwen-omni-navigation.txt)。这些规则属于 DeepSeek
+  业务域，不进入 S2S 闲聊提示词。
 
 当前 `Reply` 只能携带一个终局 `Intent`。因此“导航去山姆，同时打开车窗”这类跨域复合指令
 不能靠提示词可靠完成两个动作：若模型同轮输出两个终局工具，现实现只保留最后一个。完整支持
@@ -136,6 +142,7 @@ S2S 音频 → 音频输入入口 ─┘
 | P5 | Android 端侧仲裁 chunk 门控与 TTS AudioTrack 输入 | 已完成（待真机验收） |
 | P6 | 同语言回答、旁路 ASR 识别框与协议下发 | 已完成（待真机验收） |
 | P6.1 | ASR/NLU 拆分、PGS 独立显示、回复字幕随音频流式上屏 | 已完成（待真机验收） |
+| P6.2 | Omni 混合域路由、业务/闲聊 prompt 与 Skill 隔离 | 已完成（待真实环境验收） |
 | P7 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
 
 ## 7. 验证重点
@@ -146,5 +153,5 @@ S2S 音频 → 音频输入入口 ─┘
 - ASR partial 在两级仲裁尚未收敛时仍能更新识别框；2C 文本仅在其 NLU 胜出后覆盖。
 - 回复字幕在端侧云端候选胜出后、音频播放结束前持续更新；本地车窗胜出时不泄漏云端字幕。
 - SSE 可处理任意 chunk 边界、多个 audio delta 和 tool arguments delta。
-- Classic 与 Omni Boot JAR 依赖互斥。
+- Classic JAR 不含 Qwen；Omni JAR 同时包含 ASR、LLM 和 Qwen 混合链路，但不含 speech-classic。
 - 真实 DashScope 与 Android 真机验收完成前，产品状态标注为“代码链路已流式、外部环境待验收”。

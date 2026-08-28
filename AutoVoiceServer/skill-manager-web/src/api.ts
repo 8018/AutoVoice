@@ -62,3 +62,12 @@ export async function getSystemPrompt(): Promise<string> {
 export async function setSystemPrompt(value: string): Promise<void> {
   await req('/api/config/system-prompt', { method: 'PUT', body: JSON.stringify({ value }) });
 }
+
+export async function getChatSystemPrompt(): Promise<string> {
+  const r = await req('/api/config/chat-system-prompt');
+  return r ? (r.value ?? '') : '';
+}
+
+export async function setChatSystemPrompt(value: string): Promise<void> {
+  await req('/api/config/chat-system-prompt', { method: 'PUT', body: JSON.stringify({ value }) });
+}

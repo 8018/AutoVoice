@@ -56,12 +56,21 @@ public class SkillPlatformClient {
      * 不可用（未接入 / 非 2xx / 解析失败）返回 null —— 调用方保留现值，不抛。
      */
     public String fetchSystemPrompt() {
+        return fetchPrompt("/api/config/system-prompt");
+    }
+
+    /** 拉取 S2S 闲聊域独立 system prompt；失败返回 null 并保留旧快照。 */
+    public String fetchChatSystemPrompt() {
+        return fetchPrompt("/api/config/chat-system-prompt");
+    }
+
+    private String fetchPrompt(String path) {
         if (!isEnabled()) {
             return null;
         }
         try {
             Request req = new Request.Builder()
-                    .url(baseUrl + "/api/config/system-prompt")
+                    .url(baseUrl + path)
                     .header(SERVICE_TOKEN_HEADER, serviceToken)
                     .build();
             try (Response resp = client.newCall(req).execute()) {

@@ -65,6 +65,52 @@ class McpSkillRegistryTest {
     }
 
     @Test
+    void isolatesBusinessAndChatSkillSchemasAndExecution() throws Exception {
+        SkillConfig business = new SkillConfig("business", "business", "d", "llm", mcpUrl,
+                "", "", "[{\"name\":\"poi_search\",\"enabled\":true},{\"name\":\"route_plan\",\"enabled\":false}]",
+                true, 1L);
+        SkillConfig chat = new SkillConfig("chat", "chat", "d", "chat", mcpUrl,
+                "", "", "[{\"name\":\"poi_search\",\"enabled\":false},{\"name\":\"route_plan\",\"enabled\":true}]",
+                true, 1L);
+        FakePlatformClient client = new FakePlatformClient(List.of(business, chat));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), new ChatSystemPromptStore(), 60_000, 5_000,
+                (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals(List.of("poi_search"),
+                    reg.enabledToolSpecs().stream().map(FunctionTool::name).toList());
+            assertEquals(List.of("route_plan"),
+                    reg.enabledChatToolSpecs().stream().map(FunctionTool::name).toList());
+            assertThrows(McpToolException.class,
+                    () -> reg.callTool("chat", "poi_search", "{}"));
+            assertEquals("找到 1 个结果：西湖", reg.callTool("chat", "route_plan", "{}"));
+        }
+    }
+
+    @Test
+    void sameToolNameCanExistInBothScopes() throws Exception {
+        String onlyPoi = "[{\"name\":\"poi_search\",\"enabled\":true},"
+                + "{\"name\":\"route_plan\",\"enabled\":false}]";
+        SkillConfig business = new SkillConfig("business", "business", "d", "llm", mcpUrl,
+                "", "", onlyPoi, true, 1L);
+        SkillConfig chat = new SkillConfig("chat", "chat", "d", "chat", mcpUrl,
+                "", "", onlyPoi, true, 1L);
+        FakePlatformClient client = new FakePlatformClient(List.of(business, chat));
+
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), new ChatSystemPromptStore(), 60_000, 5_000,
+                (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals(List.of("poi_search"),
+                    reg.enabledToolSpecs().stream().map(FunctionTool::name).toList());
+            assertEquals(List.of("poi_search"),
+                    reg.enabledChatToolSpecs().stream().map(FunctionTool::name).toList());
+            assertEquals("找到 1 个结果：西湖", reg.callTool("llm", "poi_search", "{}"));
+            assertEquals("找到 1 个结果：西湖", reg.callTool("chat", "poi_search", "{}"));
+        }
+    }
+
+    @Test
     void duplicateToolRefreshKeepsPreviousSnapshot() throws Exception {
         AtomicInteger pulls = new AtomicInteger();
         FakePlatformClient client = new FakePlatformClient(null) {
@@ -167,6 +213,28 @@ class McpSkillRegistryTest {
     }
 
     @Test
+    void chatScopedAmapDoesNotCreateBusinessNavigationFacade() throws Exception {
+        SkillConfig amap = new SkillConfig("amap-maps", "高德", "导航", "chat", mcpUrl,
+                "", "", "", true, 1L);
+        Map<String, FunctionTool> amapTools = new LinkedHashMap<>();
+        String schema = "{\"type\":\"object\",\"properties\":{}}";
+        amapTools.put("maps_text_search", new FunctionTool("maps_text_search", "搜索", schema));
+        amapTools.put("maps_around_search", new FunctionTool("maps_around_search", "周边", schema));
+        amapTools.put("maps_geo", new FunctionTool("maps_geo", "地理编码", schema));
+        McpToolSession session = new McpToolSession(amap, null, amapTools);
+        FakePlatformClient client = new FakePlatformClient(List.of(amap));
+
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), new ChatSystemPromptStore(), 60_000, 5_000,
+                (c, timeout) -> session)) {
+            reg.refresh();
+            assertTrue(reg.enabledToolSpecs().isEmpty());
+            assertEquals(List.of("maps_text_search", "maps_around_search", "maps_geo"),
+                    reg.enabledChatToolSpecs().stream().map(FunctionTool::name).toList());
+        }
+    }
+
+    @Test
     void unexpectedRuntimeExceptionDoesNotPropagate() throws Exception {
         // 未预期 RuntimeException 穿透 refresh 会让 scheduleWithFixedDelay 静默取消轮询：
         // 顶层守卫必须吞掉（仅 warn）
@@ -193,6 +261,22 @@ class McpSkillRegistryTest {
                 store, 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
             assertEquals("你是助手", store.get());
+        }
+    }
+
+    @Test
+    void refreshPullsChatPromptIntoIndependentStore() throws Exception {
+        SystemPromptStore business = new SystemPromptStore();
+        ChatSystemPromptStore chat = new ChatSystemPromptStore();
+        FakePlatformClient client = new FakePlatformClient(List.of()) {
+            @Override public String fetchSystemPrompt() { return "业务提示词"; }
+            @Override public String fetchChatSystemPrompt() { return "闲聊提示词"; }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                business, chat, 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            assertEquals("业务提示词", business.get());
+            assertEquals("闲聊提示词", chat.get());
         }
     }
 

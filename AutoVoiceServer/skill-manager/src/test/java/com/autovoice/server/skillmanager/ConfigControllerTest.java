@@ -28,6 +28,7 @@ class ConfigControllerTest {
     @BeforeEach
     void cleanDb() {
         store.setSetting("system_prompt", "");
+        store.setSetting("chat_system_prompt", "");
     }
 
     private String login() throws Exception {
@@ -77,6 +78,23 @@ class ConfigControllerTest {
                         .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.value").value("你是车载语音助手，说话简短。"));
+    }
+
+    @Test
+    void chatPromptHasSeparateReadWriteEndpoint() throws Exception {
+        String cookie = login();
+        mvc.perform(put("/api/config/chat-system-prompt")
+                        .cookie(new jakarta.servlet.http.Cookie("skill_admin", cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":\"你是陪伴型闲聊助手\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/config/chat-system-prompt")
+                        .header("X-Skill-Service-Token", "svc-secret"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.value").value("你是陪伴型闲聊助手"));
+        mvc.perform(get("/api/config/system-prompt")
+                        .header("X-Skill-Service-Token", "svc-secret"))
+                .andExpect(jsonPath("$.value").value(""));
     }
 
     @Test
