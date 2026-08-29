@@ -8,6 +8,10 @@ import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
+import com.autovoice.server.contracts.RealtimeChatProvider;
+import com.autovoice.server.contracts.RealtimeChatSession;
+import com.autovoice.server.contracts.RealtimeChatSink;
+import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
@@ -98,6 +102,48 @@ class VoiceGatewayHandlerTest {
     }
 
     // ---------- 接线：完整段 → decision 先行 + reply(action，无音频) ----------
+
+    @Test
+    void realtimeChatBinaryBypassesSegmentPipelineAndStreamsUnsolicitedReply() throws Exception {
+        AtomicInteger ordinaryCalls = new AtomicInteger();
+        AtomicReference<byte[]> received = new AtomicReference<>();
+        class RealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                ordinaryCalls.incrementAndGet();
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("wrong"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) {
+                        received.set(pcm);
+                        sink.onStart(24_000, 1, "pcm_s16le");
+                        sink.onChunk(new byte[]{7, 8});
+                        sink.onReplyText("你好", true);
+                        sink.onComplete("你好", null, "");
+                    }
+                    @Override public void close() { }
+                };
+            }
+            @Override public String id() { return "realtime-test"; }
+        }
+        VoiceGatewayHandler h = new VoiceGatewayHandler(new RealtimeOnline(), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+        awaitType(s, "chat_ready");
+        h.handleMessage(s, new BinaryMessage(new byte[]{1, 2, 3}));
+        awaitType(s, "audio_reply_end");
+
+        assertArrayEquals(new byte[]{1, 2, 3}, received.get());
+        assertEquals(0, ordinaryCalls.get(), "连续闲聊不得进入普通 ASR/离线/仲裁 SegmentPipeline");
+        JsonNode start = findTextFrame(s, "audio_reply_start");
+        assertTrue(start.get("payload").get("chat").asBoolean());
+        assertTrue(s.sent.stream().anyMatch(message -> message instanceof BinaryMessage));
+        h.close();
+    }
 
     @Test
     void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeActionReply() throws InterruptedException {
@@ -999,6 +1045,28 @@ class VoiceGatewayHandlerTest {
             Thread.sleep(20);
         }
         assertEquals(n, s.sent.size(), "5s 内应收到 " + n + " 条下行消息（异步处理）");
+    }
+
+    private static JsonNode awaitType(StubSession s, String type) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000;
+        JsonNode frame;
+        while (System.currentTimeMillis() < deadline) {
+            frame = findTextFrame(s, type);
+            if (frame != null) return frame;
+            Thread.sleep(20);
+        }
+        throw new AssertionError("5s 内未收到 " + type);
+    }
+
+    private static JsonNode findTextFrame(StubSession s, String type) {
+        synchronized (s.sent) {
+            for (WebSocketMessage<?> message : s.sent) {
+                if (!(message instanceof TextMessage)) continue;
+                JsonNode frame = parse(message);
+                if (type.equals(frame.path("type").asText())) return frame;
+            }
+        }
+        return null;
     }
 
     /** 等待携带指定 segmentId 的 reply 帧（void 用例：不依赖消息总数，容忍前置 pending 占位）。 */

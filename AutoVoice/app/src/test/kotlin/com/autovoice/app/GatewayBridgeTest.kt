@@ -3,11 +3,13 @@ package com.autovoice.app
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.voicecore.TextReply
+import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +23,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okio.ByteString.Companion.toByteString
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -93,6 +96,10 @@ class GatewayBridgeTest {
             assertTrue(ws?.send(text) == true, "下行帧应发送成功")
         }
 
+        fun sendBinary(bytes: ByteArray) {
+            assertTrue(ws?.send(bytes.toByteString()) == true, "下行二进制帧应发送成功")
+        }
+
         fun closeAll(client: GatewayClient, okHttp: OkHttpClient) {
             client.disconnect()
             assertTrue(
@@ -120,6 +127,45 @@ class GatewayBridgeTest {
         """{"type":"$type","payload":{"segmentId":"$segmentId","text":"$text","isFinal":$isFinal}}"""
 
     // ------------------------------------------------------------------ 用例
+
+    @Test
+    fun `realtime chat accepts unsolicited audio and speech start interrupts it`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val replyRef = AtomicReference<StreamingAudioReply?>()
+        val speechStarted = CountDownLatch(1)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onChatReply = { replyRef.set(it) },
+            onChatSpeechStarted = { speechStarted.countDown() },
+        )
+        try {
+            client.connect()
+            gateway.sendText("""{"type":"chat_ready","payload":{"sessionId":"srv-sess-1"}}""")
+            bridge.awaitChatReady()
+            gateway.sendText(
+                """{"type":"audio_reply_start","payload":{"segmentId":"chat-1","mime":"audio/pcm","sampleRate":24000,"channels":1,"encoding":"pcm_s16le","chat":true}}""",
+            )
+            repeat(20) {
+                if (replyRef.get() != null) return@repeat
+                delay(10)
+            }
+            val reply = replyRef.get() ?: fail("chat stream should not need a normal reply slot")
+            gateway.sendBinary(byteArrayOf(1, 2, 3))
+            assertTrue(reply.chunks.receive().contentEquals(byteArrayOf(1, 2, 3)))
+            gateway.sendText("""{"type":"chat_speech_started","payload":{"sessionId":"srv-sess-1"}}""")
+            assertTrue(speechStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(reply.completion.isCancelled || reply.completion.isCompleted)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
 
     @Test
     fun `matching reply completes the slot`() = runBlocking {

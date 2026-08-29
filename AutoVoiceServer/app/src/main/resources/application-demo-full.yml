@@ -42,3 +42,4 @@ autovoice:
     aliyun-sk: ${ALIYUN_SK:}
     aliyun-nls-appkey: ${ALIYUN_NLS_APPKEY:}
     dashscope-api-key: ${DASHSCOPE_API_KEY:}
+    dashscope-workspace-id: ${DASHSCOPE_WORKSPACE_ID:}

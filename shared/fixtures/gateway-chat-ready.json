@@ -1,0 +1,4 @@
+{
+  "type": "chat_ready",
+  "payload": { "sessionId": "demo-1" }
+}

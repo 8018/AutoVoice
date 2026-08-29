@@ -17,6 +17,7 @@ import com.autovoice.server.llm.DeepSeekLlmProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.speechqwenomni.HybridBusinessChatSpeechProvider;
 import com.autovoice.server.speechqwenomni.QwenOmniSpeechProvider;
+import com.autovoice.server.speechqwenomni.QwenOmniRealtimeChatProvider;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -87,7 +88,12 @@ public class OmniBackendConfig {
                                                      McpSkillRegistry registry,
                                                      ChatSystemPromptStore chatPromptStore,
                                                      NavigationDialogState navigationDialog) {
-        ToolProvider chatTools = registry::enabledChatToolSpecs;
+        ToolProvider chatTools = () -> {
+            List<FunctionTool> out = new ArrayList<>();
+            out.add(QwenOmniSpeechProvider.exitChatTool());
+            out.addAll(registry.enabledChatToolSpecs());
+            return out;
+        };
         OnlineSpeechProvider qwen = new QwenOmniSpeechProvider(client, props.secrets().dashscopeApiKey(),
                 QwenOmniSpeechProvider.DEFAULT_ENDPOINT, QwenOmniSpeechProvider.DEFAULT_MODEL,
                 QwenOmniSpeechProvider.DEFAULT_VOICE, chatTools,
@@ -97,7 +103,16 @@ public class OmniBackendConfig {
                     return configured == null || configured.isBlank()
                             ? QwenOmniSpeechProvider.DEFAULT_CHAT_SYSTEM_PROMPT : configured;
                 });
+        QwenOmniRealtimeChatProvider realtime = new QwenOmniRealtimeChatProvider(
+                client, props.secrets().dashscopeApiKey(), props.secrets().dashscopeWorkspaceId(),
+                QwenOmniRealtimeChatProvider.DEFAULT_MODEL,
+                QwenOmniRealtimeChatProvider.DEFAULT_VOICE,
+                () -> {
+                    String configured = chatPromptStore.get();
+                    return configured == null || configured.isBlank()
+                            ? QwenOmniRealtimeChatProvider.DEFAULT_SYSTEM_PROMPT : configured;
+                });
         return new HybridBusinessChatSpeechProvider(
-                transcriptProvider, businessLlm, qwen, navigationDialog);
+                transcriptProvider, businessLlm, qwen, navigationDialog, realtime);
     }
 }

@@ -125,6 +125,28 @@ class QwenOmniSpeechProviderTest {
     }
 
     @Test
+    void exitChatControlToolProducesConversationIntentWithoutExternalExecution() throws Exception {
+        server.enqueue(sse(toolCall(QwenOmniSpeechProvider.EXIT_CHAT_TOOL, "{}")));
+        server.enqueue(sse(delta("content", "再见"), audio(new byte[]{1, 2})));
+        AtomicInteger externalCalls = new AtomicInteger();
+        QwenOmniSpeechProvider provider = new QwenOmniSpeechProvider(
+                new OkHttpClient(), "test-key", server.url("/chat").toString(),
+                null, null, () -> java.util.List.of(QwenOmniSpeechProvider.exitChatTool()),
+                (name, args) -> {
+                    externalCalls.incrementAndGet();
+                    return "unused";
+                }, () -> QwenOmniSpeechProvider.DEFAULT_CHAT_SYSTEM_PROMPT);
+
+        OnlineSpeechResult result = provider.process(new byte[]{1, 2}, context(), "u-exit")
+                .get(2, TimeUnit.SECONDS);
+
+        assertEquals(0, externalCalls.get());
+        assertEquals("conversation", result.reply().intent().domain());
+        assertEquals("exit_chat", result.reply().intent().intent());
+        assertEquals("再见", result.reply().speakText());
+    }
+
+    @Test
     void toolCallWithinDecisionWindowSuppressesIntermediateAudioAndContinuesLoop() throws Exception {
         server.enqueue(sse(
                 delta("content", "正在查询"),

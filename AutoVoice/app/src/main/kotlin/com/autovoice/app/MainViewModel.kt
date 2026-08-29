@@ -103,6 +103,8 @@ data class UiState(
     val wakeError: String? = null,
     /** 导航 POI 候选；非空时在本应用内显示语音选择弹窗，尚未拉起地图。 */
     val navigationCandidates: List<NavigationExecutor.NavigationCandidate> = emptyList(),
+    /** 已进入 S2S 闲聊锁域；麦克风常开且绕过端侧 ASR/NLU。 */
+    val chatMode: Boolean = false,
 )
 
 /**
@@ -143,7 +145,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
         // 只在真实播放期打开普通话术 VAD；结束/失败/被打断立即关闭。
-        recorder.setOpenMicBargeInListening(stage == "start")
+        recorder.setOpenMicBargeInListening(stage == "start" && !chatLocked)
         engine.onTtsPlayEvent(stage, level, payload)
     }
 
@@ -170,6 +172,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var recording = false
 
     @Volatile
+    private var chatLocked = false
+
+    @Volatile
     private var wakeTurn = false
 
     @Volatile
@@ -190,13 +195,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine = buildEngine(loadConfig(mode))
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
-                if (recording) denoisedBlocks.add(block)
+                if (recording && !chatLocked) denoisedBlocks.add(block)
             }
         }
         // 单一 AudioRecord 的原始流观察者：待机 IVW 直接吃原始 PCM，不经过 Silero VAD。
         viewModelScope.launch(Dispatchers.IO) {
             recorder.rawPcmBlocks.collect { block ->
-                if (!recording) {
+                if (chatLocked) {
+                    // Realtime 闲聊为真正全双工：不看本地 VAD、播放状态或会话状态，原始
+                    // 16k PCM 每块都持续上送；Qwen semantic_vad 在服务端自行切轮。
+                    engine.appendRealtimeChatAudio(block)
+                } else if (!recording) {
                     if (_uiState.value.wakeListening) {
                         runCatching { wakeObserver.accept(block) }.onFailure { onWakeFailure(it) }
                     }
@@ -211,11 +220,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             recorder.vadEvents.collect { event ->
                 when (event) {
-                    VadEvent.SpeechStart -> engine.onVadStart()
+                    VadEvent.SpeechStart -> {
+                        if (!chatLocked) engine.onVadStart()
+                    }
                     VadEvent.SpeechEnd -> {
-                        engine.onVadEnd()
-                        // 唤醒进入的轮次没有“松手”事件，VAD 后端点就是自动提交边界。
-                        if (wakeTurn && recording) stopRecording()
+                        if (!chatLocked) engine.onVadEnd()
+                        if (!chatLocked && wakeTurn && recording) {
+                            // 唤醒进入的普通轮没有“松手”事件，VAD 后端点就是自动提交边界。
+                            stopRecording()
+                        }
                     }
                 }
             }
@@ -280,13 +293,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         foreground = true
         Log.i(TAG, "App 回到前台：重建共享麦克风与 IVW 会话")
         engine.onForeground()
-        startWakeMonitoring()
+        if (chatLocked) startChatCapture() else startWakeMonitoring()
     }
 
     /** Activity 已取得 RECORD_AUDIO 权限，启动共享录音流与待机唤醒。 */
     fun onAudioPermissionGranted() {
         _uiState.update { it.copy(permissionHint = false) }
-        startWakeMonitoring()
+        if (chatLocked) startChatCapture() else startWakeMonitoring()
     }
 
     /** 前台可见范围内监听；退到后台停止共享麦克风，避免无前台服务的隐式常驻录音。 */
@@ -298,7 +311,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 新 AudioRecord 的首块重新标为 BEGIN。
         wakeSetupJob?.cancel()
         wakeSetupJob = null
-        if (recording) cancelRecording() else pauseWakeObservation()
+        if (chatLocked) {
+            // Android 无前台录音服务时后台必须释放麦克风；同时显式结束上游 Realtime，
+            // 前台回来重新 chat_start，避免旧会话占位导致收不到 chat_ready。
+            recording = false
+            recorder.stop()
+            engine.finishRealtimeChat()
+            denoisedBlocks.clear()
+            _uiState.update { it.copy(recording = false) }
+        } else if (recording) {
+            cancelRecording()
+        } else {
+            pauseWakeObservation()
+        }
         recorder.stopMonitoring()
         _uiState.update {
             it.copy(wakeListening = false, openMicBargeInAvailable = false)
@@ -364,7 +389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ------------------------------------------------------------------ 共享音频流上的离线唤醒
 
     private fun startWakeMonitoring() {
-        if (!foreground || recording || wakeSetupJob?.isActive == true) return
+        if (chatLocked || !foreground || recording || wakeSetupJob?.isActive == true) return
         wakeSetupJob = viewModelScope.launch(Dispatchers.IO) {
             if (!recorder.startMonitoring()) return@launch
             // startMonitoring/SDK 初始化可能阻塞；其间 Activity 可能已经被导航覆盖。
@@ -436,8 +461,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun rearmWakeWhenIdle() {
-        if (foreground && !recording && _uiState.value.sessionState == SessionState.IDLE) {
+        if (!chatLocked && foreground && !recording && _uiState.value.sessionState == SessionState.IDLE) {
             startWakeMonitoring()
+        }
+    }
+
+    /** 进入闲聊后开启持续采集和 Qwen Realtime；不使用本地 VAD 切段。 */
+    private fun startChatCapture() {
+        if (!chatLocked || !foreground || recording) return
+        pauseWakeObservation()
+        denoisedBlocks.clear()
+        // 只打开共享原始 PCM，不把 turnActive 置起，因此 Silero/RNNoise/本地 ASR 路径
+        // 完全不运行；切轮由 Qwen semantic_vad 负责。
+        if (!recorder.startMonitoring()) {
+            _uiState.update { it.copy(permissionHint = true) }
+            return
+        }
+        recording = true
+        engine.startRealtimeChat()
+        _uiState.update {
+            it.copy(
+                chatMode = true,
+                recording = true,
+                wakeListening = false,
+                permissionHint = false,
+                vadUnavailable = !recorder.vadAvailable,
+            )
+        }
+    }
+
+    private fun setChatMode(enabled: Boolean) {
+        if (chatLocked == enabled) return
+        chatLocked = enabled
+        _uiState.update {
+            it.copy(
+                chatMode = enabled,
+                sessionState = if (enabled) SessionState.LISTENING else engine.session.state.value,
+            )
+        }
+        if (enabled) {
+            startChatCapture()
+        } else {
+            engine.finishRealtimeChat()
+            if (recording) {
+                recording = false
+                recorder.stop()
+                denoisedBlocks.clear()
+                _uiState.update { it.copy(recording = false) }
+            }
+            rearmWakeWhenIdle()
         }
     }
 
@@ -451,7 +523,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
-        cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
+        if (chatLocked) setChatMode(false)
+        else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
         engine = buildEngine(loadConfig(mode))
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
@@ -577,9 +650,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onReplyText = { text -> _uiState.update { it.copy(lastReplyText = text) } },
             // B5：云端 LLM 处理中占位 → Header"处理中…"徽标（清除由引擎收口）
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
+            onConversationMode = ::setChatMode,
         )
         engine.session.onState { state ->
-            _uiState.update { it.copy(sessionState = state) }
+            _uiState.update {
+                it.copy(sessionState = if (chatLocked && state == SessionState.IDLE) {
+                    SessionState.LISTENING
+                } else state)
+            }
             if (state == SessionState.IDLE) rearmWakeWhenIdle()
         }
         return engine

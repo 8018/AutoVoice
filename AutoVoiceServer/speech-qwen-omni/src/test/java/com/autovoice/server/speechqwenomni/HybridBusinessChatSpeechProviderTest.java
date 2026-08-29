@@ -52,12 +52,13 @@ class HybridBusinessChatSpeechProviderTest {
         AtomicInteger llmCalls = new AtomicInteger();
         AtomicInteger chatCalls = new AtomicInteger();
         HybridBusinessChatSpeechProvider provider = provider(List.of(
-                "陪我聊会天", "最近有点累", "先不聊了", "导航去机场"), llmCalls, chatCalls);
+                "陪我聊会天", "导航去机场"), llmCalls, chatCalls);
 
-        assertEquals("chat", turn(provider, "u1").reply().text());
+        OnlineSpeechResult entered = turn(provider, "u1");
+        assertEquals("enter_chat", entered.reply().intent().intent());
         assertTrue(provider.isChatting(CTX));
         assertEquals("chat", turn(provider, "u2").reply().text());
-        assertEquals(HybridBusinessChatSpeechProvider.EXIT_CHAT_REPLY, turn(provider, "u3").reply().text());
+        assertEquals("exit_chat", turn(provider, "u3").reply().intent().intent());
         assertFalse(provider.isChatting(CTX));
         assertEquals("business:导航去机场", turn(provider, "u4").reply().text());
         assertEquals(2, chatCalls.get());
@@ -81,6 +82,12 @@ class HybridBusinessChatSpeechProviderTest {
             @Override public CompletableFuture<OnlineSpeechResult> process(
                     byte[] pcm16k, SessionContext context, String utteranceId) {
                 chatCalls.incrementAndGet();
+                if (chatCalls.get() == 2) {
+                    return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                            Reply.ofAction(com.autovoice.server.contracts.Intent.of(
+                                    "1.0", "conversation", "exit_chat", Map.of(), 1.0,
+                                    "test", null), "再见"), ""));
+                }
                 return CompletableFuture.completedFuture(
                         new OnlineSpeechResult(Reply.ofText("chat"), ""));
             }

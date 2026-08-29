@@ -9,6 +9,9 @@ import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.Reply;
+import com.autovoice.server.contracts.RealtimeChatProvider;
+import com.autovoice.server.contracts.RealtimeChatSession;
+import com.autovoice.server.contracts.RealtimeChatSink;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
@@ -219,6 +222,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             return;
         }
         if (message instanceof BinaryMessage bm) {
+            RealtimeChatSession realtime = st.realtimeChat;
+            if (realtime != null) {
+                ByteBuffer buf = bm.getPayload();
+                byte[] bytes = new byte[buf.remaining()];
+                buf.get(bytes);
+                try {
+                    realtime.appendAudio(bytes);
+                } catch (RuntimeException error) {
+                    sendError(session, st, "CHAT_STREAM_FAILED", error.getMessage());
+                }
+                return;
+            }
             if (st.audioActive) {
                 ByteBuffer buf = bm.getPayload();
                 if ((long) st.pcm.size() + buf.remaining() > maxAudioBytes) {
@@ -250,6 +265,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "audio_end" -> onAudioEnd(session, st);
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
+            case "chat_start" -> onChatStart(session, st);
+            case "chat_finish" -> {
+                st.chatRequested = false;
+                closeRealtimeChat(st);
+            }
             default -> {
                 // ready/decision/reply/error/bye/tts_response 为服务端消息，客户端不应发送，忽略
             }
@@ -270,9 +290,122 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private void removeConnection(WebSocketSession session) {
         ConnectionState st = connections.remove(session);
         if (st != null) {
+            closeRealtimeChat(st);
             st.connExecutor.shutdownNow();
             activeConnections.decrementAndGet();
         }
+    }
+
+    /** 建立本连接独占的 Qwen Realtime 会话；成功回 chat_ready 后客户端才开始连续推 PCM。 */
+    private void onChatStart(WebSocketSession session, ConnectionState st) {
+        if (st.ctx == null) return;
+        st.chatRequested = true;
+        if (st.realtimeChat != null || st.chatOpening) return;
+        if (!(online instanceof RealtimeChatProvider provider)) {
+            sendError(session, st, "CHAT_UNSUPPORTED", "realtime chat provider is unavailable");
+            return;
+        }
+        st.chatOpening = true;
+        st.connExecutor.submit(() -> {
+            try {
+                RealtimeChatSession realtime = provider.openRealtimeChat(st.ctx, realtimeSink(session, st));
+                if (!st.chatRequested) {
+                    realtime.close();
+                    return;
+                }
+                st.realtimeChat = realtime;
+                send(session, "chat_ready", Map.of("sessionId", st.ctx.sessionId()));
+            } catch (RuntimeException error) {
+                sendError(session, st, "CHAT_CONNECT_FAILED", error.getMessage());
+            } finally {
+                st.chatOpening = false;
+            }
+        });
+    }
+
+    private void closeRealtimeChat(ConnectionState st) {
+        RealtimeChatSession realtime = st.realtimeChat;
+        st.realtimeChat = null;
+        if (realtime != null) {
+            try { realtime.close(); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private RealtimeChatSink realtimeSink(WebSocketSession session, ConnectionState st) {
+        return new RealtimeChatSink() {
+            private String responseSegment;
+            private boolean responseStarted;
+
+            private String responseSegment() {
+                if (responseSegment == null) responseSegment = "chat-" + ++st.chatResponseSeq;
+                return responseSegment;
+            }
+
+            @Override public void onUserSpeechStarted() {
+                responseSegment = null;
+                responseStarted = false;
+                send(session, "chat_speech_started", Map.of("sessionId", st.ctx.sessionId()));
+            }
+
+            @Override public void onStart(int sampleRate, int channels, String encoding) {
+                responseStarted = true;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", responseSegment());
+                payload.put("mime", "audio/pcm");
+                payload.put("sampleRate", sampleRate);
+                payload.put("channels", channels);
+                payload.put("encoding", encoding);
+                payload.put("chat", true);
+                send(session, "audio_reply_start", payload);
+            }
+
+            @Override public void onChunk(byte[] pcm) {
+                if (pcm != null && pcm.length > 0) sendBinary(session, pcm);
+            }
+
+            @Override public void onReplyText(String text, boolean isFinal) {
+                if (text == null || text.isBlank()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", responseSegment());
+                payload.put("text", text);
+                payload.put("isFinal", isFinal);
+                payload.put("chat", true);
+                send(session, "reply_partial", payload);
+            }
+
+            @Override public void onComplete(String text, Intent intent, String asrText) {
+                // Function-only 的 exit_chat 没有 audio.delta；仍发一个空流，让端侧统一从
+                // audio_reply_end 消费控制 intent，而不引入另一套意图消息。
+                if (!responseStarted) onStart(24_000, 1, "pcm_s16le");
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", responseSegment());
+                payload.put("chat", true);
+                if (text != null && !text.isBlank()) payload.put("speakText", text);
+                if (intent != null) payload.put("intent", intent);
+                send(session, "audio_reply_end", payload);
+                responseSegment = null;
+                responseStarted = false;
+                if (intent != null && "conversation".equals(intent.domain())
+                        && "exit_chat".equals(intent.intent())) {
+                    closeRealtimeChat(st);
+                }
+            }
+
+            @Override public void onError(Throwable error) {
+                sendError(session, st, "CHAT_STREAM_FAILED",
+                        error == null ? "realtime chat failed" : String.valueOf(error.getMessage()));
+            }
+
+            @Override public void onSessionClosed(Throwable error) {
+                // 主动 chat_finish 会先清空 st.realtimeChat，不能误报；只有上游自行断开才
+                // 通知客户端触发同一锁域内的自动重连。
+                if (st.realtimeChat != null) {
+                    st.realtimeChat = null;
+                    if (error != null) onError(error);
+                    else sendError(session, st, "CHAT_STREAM_CLOSED", "realtime chat closed");
+                }
+            }
+        };
     }
 
     @Override
@@ -752,6 +885,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         volatile String processingUtteranceId; // 工作线程当前处理轮快照（cancel_turn 不读下一轮字段）
         volatile String processingSegmentId;
         final Set<String> cancelledSegments = ConcurrentHashMap.newKeySet();
+        volatile RealtimeChatSession realtimeChat;
+        volatile boolean chatOpening;
+        volatile boolean chatRequested;
+        long chatResponseSeq;
         boolean audioActive;
         volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
         long segmentSeq;
@@ -761,6 +898,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     @Override
     public void close() {
         for (ConnectionState st : connections.values()) {
+            closeRealtimeChat(st);
             st.connExecutor.shutdownNow();
         }
         connections.clear();

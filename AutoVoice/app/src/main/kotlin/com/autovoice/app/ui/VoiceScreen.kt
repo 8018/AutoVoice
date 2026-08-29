@@ -49,6 +49,7 @@ fun VoiceScreen(
         Spacer(Modifier.height(6.dp))
         Text(
             text = when {
+                state.chatMode -> "闲聊中：持续聆听，可随时打断；说“退出闲聊”结束"
                 state.recording -> "正在聆听命令…"
                 state.wakeListening && state.openMicBargeInAvailable ->
                     "等待唤醒；播报时可直接说话打断"

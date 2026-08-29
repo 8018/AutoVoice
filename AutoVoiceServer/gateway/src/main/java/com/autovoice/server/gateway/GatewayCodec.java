@@ -31,7 +31,8 @@ public final class GatewayCodec {
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
             "hello", "audio_start", "audio_end", "ready", "decision", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
-            "tts_request", "tts_response", "cancel_turn", "audio_reply_start", "audio_reply_end");
+            "tts_request", "tts_response", "cancel_turn", "audio_reply_start", "audio_reply_end",
+            "chat_start", "chat_ready", "chat_finish", "chat_speech_started");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
@@ -45,7 +46,7 @@ public final class GatewayCodec {
             Map.entry("ready", Set.of("sessionId", "language", "protocolVersion", "serverTime")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),
-            Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal")),
+            Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat")),
             Map.entry("pending", Set.of("segmentId", "text")),
             Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
@@ -53,8 +54,12 @@ public final class GatewayCodec {
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),
             Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")),
             Map.entry("cancel_turn", Set.of("segmentId", "reason")),
-            Map.entry("audio_reply_start", Set.of("segmentId", "mime", "sampleRate", "channels", "encoding")),
-            Map.entry("audio_reply_end", Set.of("segmentId", "speakText", "intent", "asrText")));
+            Map.entry("audio_reply_start", Set.of("segmentId", "mime", "sampleRate", "channels", "encoding", "chat")),
+            Map.entry("audio_reply_end", Set.of("segmentId", "speakText", "intent", "asrText", "chat")),
+            Map.entry("chat_start", Set.of("sessionId")),
+            Map.entry("chat_ready", Set.of("sessionId")),
+            Map.entry("chat_finish", Set.of("sessionId")),
+            Map.entry("chat_speech_started", Set.of("sessionId")));
 
     /** 按 protocol.md §3 校验的消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。
      *  tts_response 虽是 S→C 消息，与 reply 一样按下行 schema 校验必需字段。 */
@@ -62,6 +67,8 @@ public final class GatewayCodec {
             "hello", List.of("client", "protocolVersion"),
             "audio_start", List.of("sessionId", "sampleRate", "channels", "encoding"),
             "audio_end", List.of("sessionId", "durationMs"),
+            "chat_start", List.of("sessionId"),
+            "chat_finish", List.of("sessionId"),
             "cancel_turn", List.of("segmentId"),
             "audio_reply_start", List.of("segmentId", "mime", "sampleRate", "channels", "encoding"),
             "audio_reply_end", List.of("segmentId"),
