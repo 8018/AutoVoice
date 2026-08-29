@@ -87,9 +87,10 @@ ASR 结果交给 NLU；当前讯飞 2C 命令词是“文本+语义同源”，�
   写操作形成顺序屏障。同名同参请求在当前语音轮内复用首次结果，不再访问高德。
 - Skill 平台的非空 `toolsJson` 是明确勾选清单，未列出的 MCP 工具必须禁用；否则高德全部
   15 个工具会错误触发 selector，凭空增加 `mcp_tools_get` / `mcp_tools_execute` 轮次。
-- 推荐启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_geo`；网关会把
-  三者聚合并对模型只暴露 `resolve_navigation`，一次调用可解析多个地点并返回导航坐标；导航
-  不让模型调用路径规划、schema 拉起、距离或天气工具。生产提示词模板见
+- 推荐启用目的地解析所需的 `maps_text_search`、`maps_around_search`、`maps_regeocode`、
+  `maps_geo`；网关会把四者聚合并对模型只暴露 `resolve_navigation`。逆地理编码用于把车辆坐标
+  转为城市，使“机场”等城市级类别检索不会受 50 公里周边半径限制；一次调用可解析多个地点并
+  返回导航坐标；导航不让模型调用路径规划、schema 拉起、距离或天气工具。生产提示词模板见
   [`prompts/qwen-omni-navigation.txt`](prompts/qwen-omni-navigation.txt)。这些规则属于 DeepSeek
   业务域，不进入 S2S 闲聊提示词。
 

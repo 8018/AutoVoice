@@ -21,7 +21,9 @@ final class NavigationToolFacade {
     static final String NAME = "resolve_navigation";
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> SOURCE_TOOLS = Set.of(
-            "maps_text_search", "maps_around_search", "maps_geo");
+            "maps_text_search", "maps_around_search", "maps_regeocode", "maps_geo");
+    private static final Pattern BROAD_AIRPORT_QUERY = Pattern.compile(
+            "^(?:附近的?|周边的?|最近的?)?(?:国际)?(?:机场|飞机场)$");
     private static final Pattern LOCATION = Pattern.compile(
             "(?<![0-9.])((?:7[3-9]|[89]\\d|1[0-3]\\d|140)(?:\\.\\d+)?)\\s*,\\s*"
                     + "((?:[0-5]?\\d)(?:\\.\\d+)?)(?![0-9.])");
@@ -88,6 +90,8 @@ final class NavigationToolFacade {
     }
 
     private ArrayNode resolveOne(String query, String location, String city, int limit) {
+        boolean broadAirportQuery = BROAD_AIRPORT_QUERY.matcher(compact(query)).matches();
+        int effectiveLimit = broadAirportQuery ? Math.max(limit, 5) : limit;
         String searchName = !location.isBlank() && tools.containsKey("maps_around_search")
                 ? "maps_around_search" : "maps_text_search";
         FunctionTool search = tools.get(searchName);
@@ -102,8 +106,27 @@ final class NavigationToolFacade {
         values.put("center", location);
         values.put("city", city);
         values.put("radius", 50_000);
+        values.put("limit", effectiveLimit);
+        values.put("page_size", effectiveLimit);
+        values.put("pageSize", effectiveLimit);
         String raw = caller.apply(search.name(), arguments(search, values));
-        List<Candidate> direct = candidates(raw, limit);
+        List<Candidate> direct = candidates(raw, effectiveLimit);
+
+        if (broadAirportQuery && !location.isBlank() && tools.containsKey("maps_text_search")) {
+            String resolvedCity = city.isBlank() ? reverseGeocodeCity(location) : city;
+            if (!resolvedCity.isBlank()) {
+                FunctionTool textSearch = tools.get("maps_text_search");
+                Map<String, Object> textValues = new LinkedHashMap<>(values);
+                textValues.put("city", resolvedCity);
+                try {
+                    String textRaw = caller.apply(textSearch.name(), arguments(textSearch, textValues));
+                    direct = mergeAirportCandidates(direct, candidates(textRaw, effectiveLimit));
+                } catch (McpToolException ignored) {
+                    // Citywide enrichment is best-effort; keep nearby candidates on MCP failure.
+                }
+                if (!direct.isEmpty()) return toJson(direct, effectiveLimit);
+            }
+        }
         if (!direct.isEmpty()) {
             return toJson(direct.stream()
                     .map(candidate -> candidate.name().isBlank()
@@ -112,7 +135,7 @@ final class NavigationToolFacade {
                     .toList(), limit);
         }
 
-        List<Place> places = places(raw, limit);
+        List<Place> places = places(raw, effectiveLimit);
         if (places.isEmpty()) places = List.of(new Place(query, query));
         List<Candidate> geocoded = new ArrayList<>();
         FunctionTool geo = tools.get("maps_geo");
@@ -127,9 +150,53 @@ final class NavigationToolFacade {
                 Candidate point = points.getFirst();
                 geocoded.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
             }
-            if (geocoded.size() >= limit) break;
+            if (geocoded.size() >= effectiveLimit) break;
         }
-        return toJson(geocoded, limit);
+        return toJson(geocoded, effectiveLimit);
+    }
+
+    private String reverseGeocodeCity(String location) {
+        FunctionTool regeocode = tools.get("maps_regeocode");
+        if (regeocode == null) return "";
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("location", location);
+        try {
+            JsonNode parsed = parseEmbeddedJson(
+                    caller.apply(regeocode.name(), arguments(regeocode, values)));
+            return firstTextDeep(parsed, "city");
+        } catch (McpToolException ignored) {
+            return "";
+        }
+    }
+
+    private static List<Candidate> mergeAirportCandidates(List<Candidate> nearby,
+                                                            List<Candidate> citywide) {
+        LinkedHashMap<String, Candidate> merged = new LinkedHashMap<>();
+        for (Candidate candidate : nearby) putPreferredAirport(merged, candidate);
+        for (Candidate candidate : citywide) putPreferredAirport(merged, candidate);
+        return List.copyOf(merged.values());
+    }
+
+    private static void putPreferredAirport(Map<String, Candidate> merged, Candidate candidate) {
+        String key = airportKey(candidate.name());
+        Candidate existing = merged.get(key);
+        if (existing == null || isRootAirport(candidate.name()) && !isRootAirport(existing.name())) {
+            merged.put(key, candidate);
+        }
+    }
+
+    private static String airportKey(String name) {
+        String value = compact(name);
+        int airport = value.indexOf("机场");
+        return airport < 0 ? value : value.substring(0, airport + 2);
+    }
+
+    private static boolean isRootAirport(String name) {
+        return compact(name).endsWith("机场");
+    }
+
+    private static String compact(String value) {
+        return value == null ? "" : value.toLowerCase().replaceAll("[\\s，。！？、,.!?;；:：()（）_-]", "");
     }
 
     private static String arguments(FunctionTool tool, Map<String, Object> values) {
@@ -240,6 +307,24 @@ final class NavigationToolFacade {
         for (String name : names) {
             if (node.path(name).isValueNode() && !node.path(name).asText().isBlank()) {
                 return node.path(name).asText();
+            }
+        }
+        return "";
+    }
+
+    private static String firstTextDeep(JsonNode node, String... names) {
+        if (node == null) return "";
+        if (node.isObject()) {
+            String direct = firstText(node, names);
+            if (!direct.isBlank()) return direct;
+            for (JsonNode child : node) {
+                String nested = firstTextDeep(child, names);
+                if (!nested.isBlank()) return nested;
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                String nested = firstTextDeep(child, names);
+                if (!nested.isBlank()) return nested;
             }
         }
         return "";

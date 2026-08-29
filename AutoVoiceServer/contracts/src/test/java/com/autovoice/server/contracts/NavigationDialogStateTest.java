@@ -85,15 +85,35 @@ class NavigationDialogStateTest {
         assertEquals("万达广场（西店）", reply.intent().slots().get("poiname").value());
     }
 
+    @Test
+    void exactAirportNameWinsOverTerminalNamesContainingIt() {
+        NavigationDialogState state = state();
+        String airports = """
+                [{"poiname":"成都双流国际机场-T1航站楼","lat":30.57,"lon":103.95},
+                 {"poiname":"成都双流国际机场-T2航站楼","lat":30.58,"lon":103.96},
+                 {"poiname":"成都双流国际机场","lat":30.57,"lon":103.95}]
+                """;
+        state.remember(CTX, chooseReply("机场", airports));
+
+        Reply reply = state.resolve(CTX, "成都双流国际机场。").orElseThrow();
+
+        assertEquals("navigate", reply.intent().intent());
+        assertEquals("成都双流国际机场", reply.intent().slots().get("poiname").value());
+    }
+
     private static NavigationDialogState state() {
         return new NavigationDialogState(
                 Clock.fixed(Instant.parse("2026-08-27T00:00:00Z"), ZoneOffset.UTC), 120_000);
     }
 
     private static Reply chooseReply() {
+        return chooseReply("万达广场", CANDIDATES);
+    }
+
+    private static Reply chooseReply(String query, String candidates) {
         Intent intent = Intent.of("1.0", "navigation", "choose_destination", Map.of(
-                "query", SlotValue.stringValue("万达广场"),
-                "candidates", SlotValue.stringValue(CANDIDATES)
+                "query", SlotValue.stringValue(query),
+                "candidates", SlotValue.stringValue(candidates)
         ), 1.0, "test", null);
         return Reply.ofAction(intent, "请选择");
     }
