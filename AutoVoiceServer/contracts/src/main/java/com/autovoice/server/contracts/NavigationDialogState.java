@@ -90,6 +90,17 @@ public final class NavigationDialogState {
                 .replace("导航到", "").replace("导航去", "").replace("去", "")
                 .replace("这个", "").replace("那个", "");
         if (choice.length() >= 2) {
+            List<Candidate> exactNameMatches = snapshot.get().candidates.stream()
+                    .filter(candidate -> compact(candidate.poiname).equals(choice)).toList();
+            if (exactNameMatches.size() == 1) {
+                return Optional.of(select(context.sessionId(), exactNameMatches.getFirst()));
+            }
+            List<Candidate> exactAddressMatches = snapshot.get().candidates.stream()
+                    .filter(candidate -> !candidate.address.isBlank()
+                            && compact(candidate.address).equals(choice)).toList();
+            if (exactAddressMatches.size() == 1) {
+                return Optional.of(select(context.sessionId(), exactAddressMatches.getFirst()));
+            }
             List<Candidate> matches = snapshot.get().candidates.stream()
                     .filter(candidate -> matches(candidate, choice)).toList();
             if (matches.size() == 1) {
@@ -143,7 +154,7 @@ public final class NavigationDialogState {
     private static boolean matches(Candidate candidate, String choice) {
         String name = compact(candidate.poiname);
         String address = compact(candidate.address);
-        return name.equals(choice) || name.contains(choice) || choice.contains(name)
+        return name.contains(choice) || choice.contains(name)
                 || (!address.isBlank() && (address.contains(choice) || choice.contains(address)));
     }
 

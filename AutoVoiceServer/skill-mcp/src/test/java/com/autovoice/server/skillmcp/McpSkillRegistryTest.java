@@ -201,6 +201,7 @@ class McpSkillRegistryTest {
         String schema = "{\"type\":\"object\",\"properties\":{}}";
         amapTools.put("maps_text_search", new FunctionTool("maps_text_search", "搜索", schema));
         amapTools.put("maps_around_search", new FunctionTool("maps_around_search", "周边", schema));
+        amapTools.put("maps_regeocode", new FunctionTool("maps_regeocode", "逆地理编码", schema));
         amapTools.put("maps_geo", new FunctionTool("maps_geo", "地理编码", schema));
         McpToolSession session = new McpToolSession(amap, null, amapTools);
         FakePlatformClient client = new FakePlatformClient(List.of(amap));
@@ -220,6 +221,7 @@ class McpSkillRegistryTest {
         String schema = "{\"type\":\"object\",\"properties\":{}}";
         amapTools.put("maps_text_search", new FunctionTool("maps_text_search", "搜索", schema));
         amapTools.put("maps_around_search", new FunctionTool("maps_around_search", "周边", schema));
+        amapTools.put("maps_regeocode", new FunctionTool("maps_regeocode", "逆地理编码", schema));
         amapTools.put("maps_geo", new FunctionTool("maps_geo", "地理编码", schema));
         McpToolSession session = new McpToolSession(amap, null, amapTools);
         FakePlatformClient client = new FakePlatformClient(List.of(amap));
@@ -229,7 +231,7 @@ class McpSkillRegistryTest {
                 (c, timeout) -> session)) {
             reg.refresh();
             assertTrue(reg.enabledToolSpecs().isEmpty());
-            assertEquals(List.of("maps_text_search", "maps_around_search", "maps_geo"),
+            assertEquals(List.of("maps_text_search", "maps_around_search", "maps_regeocode", "maps_geo"),
                     reg.enabledChatToolSpecs().stream().map(FunctionTool::name).toList());
         }
     }

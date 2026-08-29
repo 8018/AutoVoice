@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,11 +54,46 @@ class NavigationToolFacadeTest {
         assertEquals(38.8654, candidate.path("lat").asDouble(), 0.0001);
     }
 
+    @Test
+    void broadAirportSearchMergesNearbyAndCitywideResultsAndDeduplicatesTerminals() throws Exception {
+        Map<String, FunctionTool> tools = tools();
+        List<String> calls = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools, (name, args) -> {
+            calls.add(name + ":" + args);
+            return switch (name) {
+                case "maps_around_search" -> """
+                        {"pois":[
+                         {"name":"成都双流国际机场-T1航站楼","location":"103.9500,30.5700"},
+                         {"name":"成都双流国际机场-T2航站楼","location":"103.9600,30.5800"}]}
+                        """;
+                case "maps_regeocode" -> "{\"regeocode\":{\"addressComponent\":{\"city\":\"成都市\"}}}";
+                case "maps_text_search" -> """
+                        {"pois":[
+                         {"name":"成都双流国际机场","location":"103.9500,30.5700"},
+                         {"name":"成都天府国际机场","location":"104.4410,30.3190"}]}
+                        """;
+                default -> throw new AssertionError("unexpected call: " + name);
+            };
+        });
+
+        JsonNode candidates = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"机场\"],\"location\":\"104.0665,30.5728\",\"limit\":3}"))
+                .path("destinations").get(0).path("candidates");
+
+        assertEquals(2, candidates.size());
+        assertEquals("成都双流国际机场", candidates.get(0).path("poiname").asText());
+        assertEquals("成都天府国际机场", candidates.get(1).path("poiname").asText());
+        assertTrue(calls.stream().anyMatch(call -> call.startsWith("maps_regeocode:")));
+        assertTrue(calls.stream().anyMatch(call -> call.startsWith("maps_text_search:")
+                && call.contains("成都市")));
+    }
+
     private static Map<String, FunctionTool> tools() {
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         tools.put("maps_text_search", new FunctionTool("maps_text_search", "", schema("keywords", "city")));
         tools.put("maps_around_search", new FunctionTool("maps_around_search", "",
                 schema("keywords", "location", "radius")));
+        tools.put("maps_regeocode", new FunctionTool("maps_regeocode", "", schema("location")));
         tools.put("maps_geo", new FunctionTool("maps_geo", "", schema("address", "city")));
         return tools;
     }
