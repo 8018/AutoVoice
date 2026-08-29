@@ -15,7 +15,7 @@
   | 二进制帧 | 客户端 → 服务端 | 用户输入的 PCM 裸音频数据 | **S16LE（16-bit 有符号小端）、16000 Hz、单声道** |
   | 二进制帧 | 服务端 → 客户端 | S2S 模型输出的 PCM 音频块 | 参数由紧邻其前的 `audio_reply_start` 声明（当前为 S16LE、24000 Hz、单声道） |
 
-- 音频二进制帧只允许出现在一次 `audio_start` 之后、`audio_end` 之前。建议每帧承载 20ms 音频（16000 Hz × 2 字节 × 0.02s = **640 字节**），便于流式 ASR 即时出中间结果。
+- 业务域音频二进制帧只允许出现在 `audio_start` 与 `audio_end` 之间；闲聊域则允许在 `chat_ready` 之后持续发送，直到 `chat_finish`。建议每帧承载 20ms 音频（16000 Hz × 2 字节 × 0.02s = **640 字节**）。
 - 文本帧一帧一条消息：不允许多条消息拼进同一帧，也不允许一条消息拆成多帧。
 
 ## 2. 消息总览
@@ -28,6 +28,10 @@
 | `audio_start` | 客户端 → 服务端 | 声明一段录音流开始（采样率/声道/编码） |
 | `audio_end` | 客户端 → 服务端 | 声明录音流结束（附时长） |
 | `cancel_turn` | 客户端 → 服务端 | 显式作废该轮输出（兼容消息；只关闭闸门，不取消候选） |
+| `chat_start` | 客户端 → 服务端 | 进入锁域后建立 Qwen Realtime 长会话 |
+| `chat_ready` | 服务端 → 客户端 | Realtime 上游已建立，可开始连续发送 PCM |
+| `chat_finish` | 客户端 → 服务端 | 结束 Realtime 会话并恢复业务域 |
+| `chat_speech_started` | 服务端 → 客户端 | Qwen semantic VAD 检出用户开口；停止旧播报但不断上行 |
 | `ready` | 服务端 → 客户端 | 握手成功，服务端就绪 |
 | `decision` | 服务端 → 客户端 | 决策日志事件：本次请求由谁仲裁、走哪条路线及原因 |
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
@@ -178,6 +182,16 @@
   "payload": { "segmentId": "seg-1", "reason": "local_won" }
 }
 ```
+
+### 3.6 Realtime 闲聊上行
+
+业务链识别到“陪我聊会天”并下发 `conversation/enter_chat` 后，客户端发送
+`chat_start {sessionId}`。服务端连接 `qwen3.5-omni-plus-realtime` 并回 `chat_ready`；从此客户端
+把 16kHz/mono/PCM s16le 麦克风块持续作为二进制帧上送，不经过端侧 ASR/NLU、本地命令识别、
+云端 ASR 或云端离线命令仲裁，也不按本地 VAD 切段。播放模型回答期间仍继续上送。
+
+退出时发送 `chat_finish {sessionId}`；服务端同时支持 Realtime 模型的 `exit_chat` Function Call，
+其 `conversation/exit_chat` 意图会使客户端自动发送 `chat_finish`。
 
 ## 4. 服务端 → 客户端消息
 
@@ -435,7 +449,8 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
 
 ### 4.9 audio_reply_start / 二进制音频块 / audio_reply_end
 
-该三段只由编译时选择的 S2S 后端产生。`audio_reply_start` 是可参与端侧仲裁的首个有效云端结果；
+该三段由 S2S 后端产生。业务域首轮的 `audio_reply_start` 参与端侧仲裁；Realtime 闲聊回答携带
+`chat=true`，不依赖普通话语 reply slot，也不再进入端侧或云端仲裁。
 随后零到多个 WebSocket 二进制帧是同一 `segmentId` 的 PCM，最后以 `audio_reply_end` 收敛。
 文本帧与二进制帧共用连接，因此同一连接同一时刻只允许一个活动的下行音频流。
 
@@ -475,6 +490,10 @@ Qwen 工具可用轮还必须经过服务端的**输出类型仲裁**：首段�
 音频通道胜出并开始流式下行，此后同轮迟到的 `tool_calls` 必须丢弃，不能撤回已提交音频或
 触发 `ONLINE_STREAM_ABORTED`。因此一轮模型输出对客户端始终表现为“工具”或“回答音频”之一，
 不会出现两者混合。
+
+Realtime 闲聊使用 Qwen `semantic_vad`。收到上游 `input_audio_buffer.speech_started` 后，网关下发
+`chat_speech_started`，端侧立即截断当前 AudioTrack；麦克风采集和 PCM 上送均不停止。服务端不发送
+`response.cancel`，旧回答剩余音频在输出门丢弃，后续新回答仍复用同一 Realtime 会话。
 
 `audio_reply_end.intent` 可选，结构与 `reply/action.intent` 相同。音频不绕过 TTS 架构：端侧把 PCM
 块交给 TTS 模块新增的流式音频入口，由其统一负责 AudioTrack 播放、停止和 telemetry；它不再做文本合成。

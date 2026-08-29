@@ -1,0 +1,4 @@
+{
+  "type": "chat_speech_started",
+  "payload": { "sessionId": "demo-1" }
+}

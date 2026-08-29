@@ -38,7 +38,7 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * {@link VoiceGatewayHandler}（每连接 pipeline + RaceArbiter 由 handler 内部构建）。
  *
  * <p>Classic 变体读取 {@code autovoice.providers.llm/asr}；Omni 变体是混合后端：默认
- * ASR → DeepSeek 处理业务，显式进入闲聊域后使用 qwen3.5-omni-plus。TTS 保持独立服务，
+ * ASR → DeepSeek 处理业务，显式进入闲聊域后使用 qwen3.5-omni-plus-realtime。TTS 保持独立服务，
  * Skill/MCP 平台共用基础设施，但 prompt 与工具按 llm/chat 域隔离。
  * secrets 全部来自环境变量占位符，无 env 也能启动（provider 调用时才失败）。</p>
  */
@@ -67,7 +67,8 @@ public class AppConfig {
         /** secrets 全部 ${VAR:} 空默认：不写入任何 secret 字面值。 */
         public record Secrets(String xfyunAppid, String xfyunApiKey, String xfyunApiSecret,
                               String deepseekApiKey, String aliyunAk, String aliyunSk,
-                              String aliyunNlsAppkey, String dashscopeApiKey) {
+                              String aliyunNlsAppkey, String dashscopeApiKey,
+                              String dashscopeWorkspaceId) {
         }
 
         /**

@@ -46,6 +46,7 @@ import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
@@ -88,6 +89,13 @@ fun interface TtsRequester {
 
     /** 使用发起播报的轮次快照，避免并发新轮覆盖 telemetry 归属。 */
     suspend fun request(text: String, utteranceId: String): AudioReply? = request(text)
+}
+
+/** 闲聊域长连接：start 后 PCM 可在模型播报期间持续 append。 */
+private interface RealtimeChatRunner {
+    suspend fun startRealtimeChat()
+    fun appendRealtimeAudio(pcm: ByteArray)
+    fun finishRealtimeChat()
 }
 
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
@@ -170,7 +178,10 @@ class VoiceEngine(
     private val onCloudPending: (Boolean) -> Unit = {},
     /** 云端语义通过端侧仲裁后释放其回复字幕；ASR 文本不受此门控。 */
     private val onCloudWon: () -> Unit = {},
+    /** 服务端混合后端下发的闲聊锁域控制。 */
+    private val onConversationMode: (Boolean) -> Unit = {},
 ) {
+    private val realtimeChat = cloud as? RealtimeChatRunner
 
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
     @Volatile
@@ -373,6 +384,45 @@ class VoiceEngine(
         session.onTurnSegment(segment)
     }
 
+    /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */
+    fun startRealtimeChat() {
+        scope.launch {
+            runCatching { realtimeChat?.startRealtimeChat() }
+                .onFailure { Log.w("VoiceEngine", "start realtime chat failed", it) }
+        }
+    }
+
+    fun appendRealtimeChatAudio(pcm: ByteArray) {
+        runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
+            .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
+    }
+
+    fun finishRealtimeChat() {
+        realtimeChat?.finishRealtimeChat()
+    }
+
+    private fun playRealtimeChatReply(reply: StreamingAudioReply) {
+        scope.launch {
+            val playback = launch {
+                runCatching { player.playStream(reply) }
+                    .onFailure { error ->
+                        if (error !is CancellationException) Log.w(TAG, "realtime playback failed", error)
+                    }
+            }
+            val end = try {
+                reply.completion.await()
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (error: Throwable) {
+                Log.w(TAG, "realtime response failed", error)
+                return@launch
+            }
+            if (end.speakText.isNotBlank()) onReplyText(end.speakText)
+            end.intent?.let(::applyAndNotify)
+            playback.join()
+        }
+    }
+
     /** 16k 单声道 16bit PCM 字节数 → 毫秒（与 AudioRecorder/TtsPlayer 同口径：32000B/s）。 */
     private fun durationMs(bytes: Int): Long = bytes * 1000L / 32_000
 
@@ -513,6 +563,19 @@ class VoiceEngine(
      * 意图，通知应用层刷新车辆面板快照）。两路均记 T7 execute 事件。
      */
     private fun applyAndNotify(intent: Intent) {
+        if (intent.domain == "conversation") {
+            val applied = when (intent.intent) {
+                "enter_chat" -> true.also { onConversationMode(true) }
+                "exit_chat" -> true.also { onConversationMode(false) }
+                else -> false
+            }
+            telemetry.record(
+                TelemetryStages.EXECUTE,
+                "info",
+                mapOf("intent" to intentSummary(intent), "result" to if (applied) "applied" else "skipped"),
+            )
+            return
+        }
         val applied = if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
             navigation?.execute(intent) ?: false
         } else {
@@ -584,6 +647,8 @@ class VoiceEngine(
             navigation: NavigationExecutor? = null,
             /** B5：云端 LLM 处理中占位回调（收到 pending 帧 → true；最终语义/新一轮 → false）。 */
             onCloudPending: (Boolean) -> Unit = {},
+            /** S2S 闲聊锁域进入/退出。 */
+            onConversationMode: (Boolean) -> Unit = {},
         ): VoiceEngine {
             // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
             // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
@@ -708,9 +773,12 @@ class VoiceEngine(
                 onForeground = cloudRunner::warmUp,
                 onTurnStarted = cloudRunner::markLatestTurn,
                 onCloudPending = onCloudPending,
+                onConversationMode = onConversationMode,
                 onCloudWon = cloudRunner::releaseReplyText,
             )
             engineRef = engine
+            cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
+            cloudRunner.onRealtimeSpeechStarted = player::stop
             ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
             // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
             // （telemetry 为构造参数，构造即绑定），此处无需再装配
@@ -897,7 +965,7 @@ private class GatewayCloudRunner(
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
-) : CloudRunner, TtsRequester {
+) : CloudRunner, TtsRequester, RealtimeChatRunner {
 
     private val client = GatewayClient(
         url = cfg.gatewayUrl,
@@ -919,6 +987,9 @@ private class GatewayCloudRunner(
         { onPendingReceived() },
         { text, final -> onAsrResult(text, final) },
         { text, final -> handleReplyText(text, final) },
+        { reply -> onRealtimeReply(reply) },
+        { onRealtimeSpeechStarted() },
+        { onRealtimeStreamFailed() },
     )
 
     fun markLatestTurn(utteranceId: String) {
@@ -940,6 +1011,14 @@ private class GatewayCloudRunner(
     @Volatile
     private var sessionId = ""
 
+    @Volatile
+    private var realtimeChatReady = false
+
+    @Volatile
+    private var realtimeChatDesired = false
+
+    private val realtimeReconnectRunning = AtomicBoolean(false)
+
     /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
 
@@ -958,6 +1037,32 @@ private class GatewayCloudRunner(
     /** 模型回答文本累计快照，用于音频播放期间上屏。 */
     @Volatile
     var onReplyText: (String, Boolean) -> Unit = { _, _ -> }
+
+    @Volatile
+    var onRealtimeReply: (StreamingAudioReply) -> Unit = {}
+
+    @Volatile
+    var onRealtimeSpeechStarted: () -> Unit = {}
+
+    private fun onRealtimeStreamFailed() {
+        realtimeChatReady = false
+        if (!realtimeChatDesired || !realtimeReconnectRunning.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                var delayMs = 500L
+                repeat(3) {
+                    delay(delayMs)
+                    if (!realtimeChatDesired) return@launch
+                    val recovered = runCatching { connectRealtimeChat() }.isSuccess
+                    if (recovered) return@launch
+                    delayMs *= 2
+                }
+                Log.w("GatewayCloudRunner", "realtime chat reconnect exhausted")
+            } finally {
+                realtimeReconnectRunning.set(false)
+            }
+        }
+    }
 
     /**
      * 回复字幕属于云端语义输出，必须等端侧仲裁确认云端胜出；确认后立即发布已缓存的
@@ -997,6 +1102,7 @@ private class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        finishRealtimeChat()
         client.disconnect()
     }
 
@@ -1021,6 +1127,32 @@ private class GatewayCloudRunner(
         readyReceived = true
         onReadySessionId(sessionId)
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
+    }
+
+    override suspend fun startRealtimeChat() {
+        realtimeChatDesired = true
+        connectRealtimeChat()
+    }
+
+    private suspend fun connectRealtimeChat() {
+        realtimeChatReady = false
+        ensureReady()
+        client.sendChatStart(sessionId)
+        bridge.awaitChatReady()
+        realtimeChatReady = true
+    }
+
+    override fun appendRealtimeAudio(pcm: ByteArray) {
+        if (realtimeChatReady && pcm.isNotEmpty()) client.sendChatAudioChunk(pcm)
+    }
+
+    override fun finishRealtimeChat() {
+        realtimeChatDesired = false
+        realtimeChatReady = false
+        if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
+            runCatching { client.sendChatFinish(sessionId) }
+        }
+        bridge.finishChat()
     }
 
     override suspend fun run(segment: ByteArray): Reply =
@@ -1180,6 +1312,12 @@ internal class GatewayBridge(
     private val onAsrResult: (String, Boolean) -> Unit = { _, _ -> },
     /** 回答文本 partial/final，按 segmentId 对账后立即交 UI。 */
     private val onReplyText: (String, Boolean) -> Unit = { _, _ -> },
+    /** Realtime 闲聊是长会话，模型回答不依赖普通话语 reply slot。 */
+    private val onChatReply: (StreamingAudioReply) -> Unit = {},
+    /** 模型语义 VAD 检测到用户开口：只截断播放，连续上行不停止。 */
+    private val onChatSpeechStarted: () -> Unit = {},
+    /** Realtime 上游断开；调用方在锁域仍有效时重建 chat_start。 */
+    private val onChatFailure: () -> Unit = {},
 ) {
 
     private class PendingSlot<T>(
@@ -1198,6 +1336,7 @@ internal class GatewayBridge(
     private val pendingTts = ConcurrentHashMap<String, PendingSlot<AudioReply>>()
     private val activeStream = AtomicReference<ActiveStream?>(null)
     private val latestUtteranceId = AtomicReference("")
+    private val chatReady = Channel<Unit>(Channel.CONFLATED)
 
     init {
         scope.launch {
@@ -1250,6 +1389,19 @@ internal class GatewayBridge(
         }
     }
 
+    suspend fun awaitChatReady() {
+        withTimeoutOrNull(8_000) { chatReady.receive() }
+            ?: throw GatewayException("chat_ready timeout")
+    }
+
+    fun finishChat() {
+        activeStream.getAndSet(null)?.let { stream ->
+            val stopped = CancellationException("realtime chat finished")
+            stream.chunks.close(stopped)
+            stream.completion.completeExceptionally(stopped)
+        }
+    }
+
     private fun handle(msg: GatewayMessage) {
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
@@ -1262,6 +1414,12 @@ internal class GatewayBridge(
                 onAsrResult(text, final)
             }
             "reply_partial" -> {
+                if (msg.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
+                    val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+                    val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+                    onReplyText(text, final)
+                    return
+                }
                 val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 if (!isLatest(slot)) return
@@ -1275,6 +1433,20 @@ internal class GatewayBridge(
                 client.parseReply(msg.payload)?.let { slot.deferred.complete(it) }
             }
             "audio_reply_start" -> {
+                if (msg.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
+                    val segmentId = msg.payload.get("segmentId")?.asString ?: return
+                    val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+                    val completion = CompletableDeferred<AudioStreamEnd>()
+                    val reply = client.parseAudioStreamStart(msg.payload, chunks, completion) ?: return
+                    val stream = ActiveStream(segmentId, "", chunks, completion)
+                    activeStream.getAndSet(stream)?.let { previous ->
+                        val replaced = CancellationException("replaced by realtime response")
+                        previous.chunks.close(replaced)
+                        previous.completion.completeExceptionally(replaced)
+                    }
+                    onChatReply(reply)
+                    return
+                }
                 val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 val chunks = Channel<ByteArray>(Channel.UNLIMITED)
@@ -1310,6 +1482,15 @@ internal class GatewayBridge(
                     stream.chunks.close()
                 }
             }
+            "chat_ready" -> chatReady.trySend(Unit)
+            "chat_speech_started" -> {
+                activeStream.getAndSet(null)?.let { stream ->
+                    val interrupted = CancellationException("user speech started")
+                    stream.chunks.close(interrupted)
+                    stream.completion.completeExceptionally(interrupted)
+                }
+                onChatSpeechStarted()
+            }
             "tts_response" -> {
                 val slot = findSlot(msg.payload, pendingTts) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
@@ -1320,6 +1501,11 @@ internal class GatewayBridge(
                 val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString
                     ?: "网关错误"
                 val error = GatewayRemoteException(code, "$message [$code]")
+                if (code == "CHAT_STREAM_FAILED" || code == "CHAT_STREAM_CLOSED") {
+                    finishChat()
+                    onChatFailure()
+                    return
+                }
                 val messageSegment = msg.payload.get("segmentId")
                     ?.takeIf { value -> value.isJsonPrimitive }?.asString
                 val affected = if (messageSegment == null) {

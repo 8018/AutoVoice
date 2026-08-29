@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "ready", "decision", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -76,6 +76,34 @@
       }
     },
     {
+      "title": "chat_start (client -> server)",
+      "properties": {
+        "type": { "const": "chat_start" },
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+      }
+    },
+    {
+      "title": "chat_ready (server -> client)",
+      "properties": {
+        "type": { "const": "chat_ready" },
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+      }
+    },
+    {
+      "title": "chat_finish (client -> server)",
+      "properties": {
+        "type": { "const": "chat_finish" },
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+      }
+    },
+    {
+      "title": "chat_speech_started (server -> client)",
+      "properties": {
+        "type": { "const": "chat_speech_started" },
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+      }
+    },
+    {
       "title": "ready (server -> client)",
       "properties": {
         "type": { "const": "ready" },
@@ -131,7 +159,8 @@
           "properties": {
             "segmentId": { "type": "string" },
             "text": { "type": "string", "description": "截至当前的累计回答文本" },
-            "isFinal": { "type": "boolean" }
+            "isFinal": { "type": "boolean" },
+            "chat": { "type": "boolean" }
           }
         }
       }
@@ -249,7 +278,8 @@
             "mime": { "type": "string", "const": "audio/pcm" },
             "sampleRate": { "type": "integer", "minimum": 1 },
             "channels": { "type": "integer", "minimum": 1 },
-            "encoding": { "type": "string", "const": "pcm_s16le" }
+            "encoding": { "type": "string", "const": "pcm_s16le" },
+            "chat": { "type": "boolean", "description": "true 表示长连接 Realtime 闲聊回答" }
           }
         }
       }
@@ -265,7 +295,8 @@
             "segmentId": { "type": "string" },
             "speakText": { "type": "string" },
             "asrText": { "type": "string", "description": "用户输入语音的最终识别文本" },
-            "intent": { "$ref": "intent.schema.json" }
+            "intent": { "$ref": "intent.schema.json" },
+            "chat": { "type": "boolean" }
           }
         }
       }

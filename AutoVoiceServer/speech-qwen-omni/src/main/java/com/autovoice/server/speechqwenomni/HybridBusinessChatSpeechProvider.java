@@ -8,7 +8,11 @@ import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
+import com.autovoice.server.contracts.RealtimeChatProvider;
+import com.autovoice.server.contracts.RealtimeChatSession;
+import com.autovoice.server.contracts.RealtimeChatSink;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.Intent;
 
 import java.util.Locale;
 import java.util.Optional;
@@ -24,9 +28,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * 混合在线链路：ASR 先决定会话域；默认业务域走文本 LLM，只有明确口令进入后才把
  * 原始音频交给 Qwen S2S 闲聊。两个模型不共享 prompt、Skill 或工具执行权限。
  */
-public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvider {
+public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvider, RealtimeChatProvider {
 
     public static final String ENTER_CHAT_PHRASE = "陪我聊会天";
+    public static final String ENTER_CHAT_REPLY = "好呀，想聊什么？";
     public static final String EXIT_CHAT_REPLY = "好的，已退出闲聊";
     private static final int MAX_CHAT_SESSIONS = 1_000;
     private static final AtomicInteger WORKER = new AtomicInteger();
@@ -41,6 +46,7 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     private final AsrProvider asr;
     private final LlmProvider businessLlm;
     private final OnlineSpeechProvider chatSpeech;
+    private final QwenOmniRealtimeChatProvider realtimeChat;
     private final NavigationDialogState navigationDialog;
     private final Set<String> chatSessions = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, CompletableFuture<OnlineSpeechResult>> active =
@@ -49,10 +55,18 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
                                             OnlineSpeechProvider chatSpeech,
                                             NavigationDialogState navigationDialog) {
+        this(asr, businessLlm, chatSpeech, navigationDialog, null);
+    }
+
+    public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
+                                            OnlineSpeechProvider chatSpeech,
+                                            NavigationDialogState navigationDialog,
+                                            QwenOmniRealtimeChatProvider realtimeChat) {
         this.asr = asr;
         this.businessLlm = businessLlm;
         this.chatSpeech = chatSpeech;
         this.navigationDialog = navigationDialog;
+        this.realtimeChat = realtimeChat;
     }
 
     @Override
@@ -66,6 +80,9 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                                                           String utteranceId,
                                                           OnlineAudioSink audioSink,
                                                           OnlineAsrSink asrSink) {
+        if (isChatting(context)) {
+            return track(utteranceId, processChat(pcm16k, context, utteranceId, audioSink, null));
+        }
         AtomicReference<CompletableFuture<?>> stage = new AtomicReference<>();
         CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
             @Override public boolean cancel(boolean mayInterruptIfRunning) {
@@ -105,6 +122,15 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
         return out;
     }
 
+    private CompletableFuture<OnlineSpeechResult> track(
+            String utteranceId, CompletableFuture<OnlineSpeechResult> future) {
+        if (utteranceId != null && !utteranceId.isBlank()) {
+            active.put(utteranceId, future);
+            future.whenComplete((ignored, error) -> active.remove(utteranceId, future));
+        }
+        return future;
+    }
+
     private CompletableFuture<OnlineSpeechResult> route(byte[] pcm16k, SessionContext context,
                                                          String utteranceId, String transcript,
                                                          OnlineAudioSink audioSink) {
@@ -117,10 +143,10 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
         if (isEnter(normalized)) {
             if (chatSessions.size() >= MAX_CHAT_SESSIONS) chatSessions.clear();
             chatSessions.add(key);
-        }
-        if (chatSessions.contains(key)) {
-            return chatSpeech.process(pcm16k, context, utteranceId, audioSink)
-                    .thenApply(result -> new OnlineSpeechResult(result.reply(), transcript));
+            // 入口只切域，不再调用普通 qwen3.5-omni-plus HTTP 模型。客户端收到控制意图后
+            // 立即建立 qwen3.5-omni-plus-realtime 长会话，后续音频全走该连接。
+            return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                    Reply.ofAction(enterChatIntent(), ENTER_CHAT_REPLY), transcript));
         }
         Optional<Reply> deterministic = navigationDialog.resolve(context, transcript);
         CompletableFuture<Reply> reply = deterministic
@@ -130,6 +156,63 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
             navigationDialog.remember(context, value);
             return new OnlineSpeechResult(value, transcript);
         });
+    }
+
+    private CompletableFuture<OnlineSpeechResult> processChat(
+            byte[] pcm16k, SessionContext context, String utteranceId,
+            OnlineAudioSink audioSink, Intent forcedIntent) {
+        OnlineAudioSink controlled = controlSink(audioSink, forcedIntent, context);
+        return chatSpeech.process(pcm16k, context, utteranceId, controlled).thenApply(result -> {
+            Reply reply = forcedIntent == null ? result.reply() : withIntent(result.reply(), forcedIntent);
+            if (isConversationIntent(reply.intent(), "exit_chat")) {
+                chatSessions.remove(sessionKey(context));
+            }
+            return new OnlineSpeechResult(reply, "");
+        });
+    }
+
+    private OnlineAudioSink controlSink(OnlineAudioSink downstream, Intent forcedIntent,
+                                        SessionContext context) {
+        OnlineAudioSink sink = downstream == null ? OnlineAudioSink.NOOP : downstream;
+        return new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) {
+                sink.onStart(rate, channels, encoding);
+            }
+            @Override public void onChunk(byte[] pcm) { sink.onChunk(pcm); }
+            @Override public void onReplyText(String text, boolean isFinal) {
+                sink.onReplyText(text, isFinal);
+            }
+            @Override public void onComplete(String text, Intent intent, String asrText) {
+                Intent control = forcedIntent == null ? intent : forcedIntent;
+                if (isConversationIntent(control, "exit_chat")) {
+                    // 流结束事件发出前先解除服务端锁域；下一段立即恢复业务链。
+                    chatSessions.remove(sessionKey(context));
+                }
+                sink.onComplete(text, control, "");
+            }
+            @Override public void onError(Throwable error) { sink.onError(error); }
+        };
+    }
+
+    private static Reply withIntent(Reply reply, Intent intent) {
+        if ("audio".equals(reply.kind())) {
+            return Reply.ofAudio(reply.mime(), reply.data(), reply.speakText(), intent);
+        }
+        String text = reply.speakText() == null ? reply.text() : reply.speakText();
+        return Reply.ofAction(intent, text == null ? "" : text);
+    }
+
+    private static Intent enterChatIntent() {
+        return Intent.of("1.0", "conversation", "enter_chat", java.util.Map.of(), 1.0,
+                "hybrid-chat-router", null);
+    }
+
+    private static boolean isConversationIntent(Intent intent, String action) {
+        return intent != null && "conversation".equals(intent.domain()) && action.equals(intent.intent());
+    }
+
+    private static String sessionKey(SessionContext context) {
+        return context == null || context.sessionId() == null ? "" : context.sessionId();
     }
 
     private static boolean isEnter(String text) {
@@ -146,7 +229,36 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     }
 
     boolean isChatting(SessionContext context) {
-        return context != null && chatSessions.contains(context.sessionId());
+        return chatSessions.contains(sessionKey(context));
+    }
+
+    @Override
+    public RealtimeChatSession openRealtimeChat(SessionContext context, RealtimeChatSink sink) {
+        if (!isChatting(context)) {
+            throw new IllegalStateException("session is not in chat domain");
+        }
+        if (realtimeChat == null) {
+            throw new IllegalStateException("Qwen Realtime chat is not configured");
+        }
+        RealtimeChatSink controlled = new RealtimeChatSink() {
+            @Override public void onUserSpeechStarted() { sink.onUserSpeechStarted(); }
+            @Override public void onStart(int rate, int channels, String encoding) {
+                sink.onStart(rate, channels, encoding);
+            }
+            @Override public void onChunk(byte[] pcm) { sink.onChunk(pcm); }
+            @Override public void onReplyText(String text, boolean isFinal) {
+                sink.onReplyText(text, isFinal);
+            }
+            @Override public void onComplete(String text, Intent intent, String asrText) {
+                if (isConversationIntent(intent, "exit_chat")) {
+                    chatSessions.remove(sessionKey(context));
+                }
+                sink.onComplete(text, intent, "");
+            }
+            @Override public void onError(Throwable error) { sink.onError(error); }
+            @Override public void onSessionClosed(Throwable error) { sink.onSessionClosed(error); }
+        };
+        return realtimeChat.open(context, controlled);
     }
 
     @Override public String id() { return "deepseek-business+qwen-omni-chat"; }

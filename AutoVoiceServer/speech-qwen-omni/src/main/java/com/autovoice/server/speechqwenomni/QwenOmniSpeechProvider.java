@@ -70,7 +70,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     public static final String DEFAULT_VOICE = "Tina";
     public static final String DEFAULT_CHAT_SYSTEM_PROMPT =
             "你是车内陪伴型语音助手，现在处于闲聊模式。自然、简短、有温度地回应；"
-            + "不要执行导航或车控，也不要假装已经完成任何现实操作。用户要结束闲聊时简短告别。";
+            + "不要执行导航或车控，也不要假装已经完成任何现实操作。"
+            + "用户表达退出、结束或不想继续聊天时，必须调用 exit_chat；否则绝不调用。";
+    public static final String EXIT_CHAT_TOOL = "exit_chat";
+    private static final FunctionTool EXIT_CHAT = new FunctionTool(EXIT_CHAT_TOOL,
+            "仅当用户明确要退出或结束当前闲聊会话时调用",
+            "{\"type\":\"object\",\"properties\":{}}");
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     /** 工具循环上限：正常导航为 resolve_navigation → navigate → 语音确认；
@@ -125,6 +130,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
 
     public static List<FunctionTool> defaultTools() {
         return VehicleAgentTools.definitions();
+    }
+
+    public static FunctionTool exitChatTool() {
+        return EXIT_CHAT;
     }
 
     @Override
@@ -214,7 +223,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         RequestToolExecutor requestTools = new RequestToolExecutor(call -> {
             ToolCall qwenCall = new ToolCall(call.id(), call.name(), call.argumentsJson());
             if (VehicleAgentTools.CAR_CONTROL.equals(call.name())
-                    || VehicleAgentTools.NAVIGATE.equals(call.name())) {
+                    || VehicleAgentTools.NAVIGATE.equals(call.name())
+                    || EXIT_CHAT_TOOL.equals(call.name())) {
                 terminalIntent.set(parseTerminal(qwenCall));
                 return "Action validated. Reply briefly in the user's spoken language.";
             }
@@ -556,6 +566,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
 
     private static Intent parseTerminal(ToolCall call) throws IOException {
         JsonNode args = MAPPER.readTree(call.arguments);
+        if (EXIT_CHAT_TOOL.equals(call.name)) {
+            return Intent.of("1.0", "conversation", "exit_chat", Map.of(), 1.0,
+                    "qwen-omni.exit-chat", call.arguments);
+        }
         if ("car_control".equals(call.name)) {
             String domain = args.path("domain").asText("");
             String action = args.path("action").asText("");

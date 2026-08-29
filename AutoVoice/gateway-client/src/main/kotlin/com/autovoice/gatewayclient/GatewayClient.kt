@@ -224,6 +224,23 @@ class GatewayClient(
         )
     }
 
+    /** 开启闲聊域的长连接上行；收到 chat_ready 后可连续发送二进制 PCM。 */
+    fun sendChatStart(sessionId: String) {
+        sendFrame(mapOf("type" to "chat_start", "payload" to mapOf("sessionId" to sessionId)))
+    }
+
+    /** 闲聊域连续 PCM；不受模型输出/播放状态影响。 */
+    fun sendChatAudioChunk(pcm: ByteArray) {
+        val ws = webSocket ?: throw GatewayException("not connected")
+        if (!ws.send(pcm.toByteString())) {
+            throw GatewayException("send chat audio chunk failed: websocket not open")
+        }
+    }
+
+    fun sendChatFinish(sessionId: String) {
+        sendFrame(mapOf("type" to "chat_finish", "payload" to mapOf("sessionId" to sessionId)))
+    }
+
     /** 端侧车窗候选胜出：取消对应云端轮，服务端据此终止 Qwen Call。 */
     fun sendCancelTurn(segmentId: String, reason: String = "device_local_won") {
         sendFrame(

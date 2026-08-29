@@ -6,7 +6,7 @@
 
 - 在线语音后端在构建时二选一：`classic`（ASR → DeepSeek）或 `omni` 混合模式。
   混合模式默认仍是 ASR → DeepSeek 业务链路；只有用户明确说“陪我聊会天”后，
-  后续语音才进入 qwen3.5-omni-plus S2S 闲聊域。
+  后续语音才进入 `qwen3.5-omni-plus-realtime` S2S 闲聊域。
 - 同一份音频始终并发进入候选链路；仲裁只拦截输出，不控制音频是否进入模型。
 - 保留两级独立仲裁，不引入三路总仲裁器。
 - TTS/播放架构不拆除：文本继续请求 TTS 合成，S2S 音频交给同一个 TTS 播放模块。
@@ -29,7 +29,7 @@
 
 1. Android 同时执行车窗端侧识别和音频上传。
 2. 服务端同时执行空调离线识别和选定的在线语音后端。
-3. 云端空调命中时取消在线候选；否则放行在线候选。
+3. 云端空调命中时拦截在线候选输出但不取消调用；否则放行在线候选。
 4. 云端结果到达 Android 后仍需经过端侧仲裁；车窗命中时云端结果被拦截。
 5. S2S 音频只有连续通过云端、端侧两道仲裁门后才能进入播放器。
 
@@ -49,42 +49,34 @@
   `speech-classic.jar`。
 - 部署工作流通过 `voice_backend` 输入或仓库变量 `VOICE_BACKEND` 选择构建变体。
 
-密钥不进入构建产物，Omni 当前读取 `DASHSCOPE_API_KEY`。
+密钥不进入构建产物。Omni 读取 `DASHSCOPE_API_KEY`，Realtime URL 还需要
+`DASHSCOPE_WORKSPACE_ID`（可选的百炼业务空间 ID；留空时使用北京地域通用实时地址）。
 
 每轮音频先经过 ASR，其结果通过独立 `asr_partial(text, isFinal)` 通道即时更新识别框，并作为
 域路由依据。默认调用 DeepSeek 业务链路；用户说“陪我聊会天”（兼容“进入闲聊/开始闲聊”）后，
-该会话进入闲聊域，后续原始音频交给 Qwen；说“退出闲聊/结束闲聊/不聊了”等退出。Qwen 的
-text modality 是“回答字幕”，不是用户原话。ASR/PGS 不进入 NLU 仲裁门；闲聊提示词要求跟随
-用户当前语音语言回答，除非用户明确要求翻译。
+该会话进入闲聊域。之后端侧不再运行本地 ASR/NLU，也不再发普通 `audio_start/audio_end`；原始
+16k PCM 连续送入 Realtime 长连接，播放期间也不停。Qwen 的 text modality 是“回答字幕”，不是
+用户原话；未启用 input audio transcription，所以闲聊域不更新识别框。闲聊提示词要求跟随用户
+当前语音语言回答，除非用户明确要求翻译。
 
 端侧本地链显式拆为 `AsrStage` 与 `NluStage`：通用 ASR 的 partial/final 先上屏，再把最终
 ASR 结果交给 NLU；当前讯飞 2C 命令词是“文本+语义同源”，其文本归入 `NluResult`，不能冒充
 提前到达的 ASR。只有该 NLU 候选胜出时，才用其自带文本刷新识别框。
 
-## 4. Omni 请求与工具复用
+## 4. Omni Realtime 请求与工具隔离
 
-Omni 后端把 16kHz/mono/s16le PCM 封装为 WAV，通过 OpenAI-compatible
-`chat/completions` 请求 qwen3.5-omni-plus：
+闲聊使用 `SDK/QwenOmniRealtime.md` 定义的原生 WebSocket API，模型固定为
+`qwen3.5-omni-plus-realtime`：输入 16kHz/mono/PCM s16le，输出 24kHz/mono/PCM s16le，
+`turn_detection=semantic_vad`，客户端持续发送 `input_audio_buffer.append`。关闭
+`enable_input_audio_transcription`，避免闲聊域再产生 ASR 文本。
 
-- `stream=true`
-- `modalities=[text,audio]`
-- `audio.voice=Tina`
-- `audio.format=wav`
+模型输出通过 `response.audio.delta` 流式交给原 TTS/AudioTrack 播放入口。收到
+`input_audio_buffer.speech_started` 时只关闭当前播放闸门，不发送 `response.cancel`，麦克风与上游
+长连接继续工作。模型以 `exit_chat` Function Call 退出锁域。
 
-按[千问官方模型说明](https://platform.qianwenai.com/docs/developer-guides/speech/s2s-models)，
-该无后缀模型属于 HTTP 文件模式：当前实现是“整段输入、流式输出”，不是录音时同步上传给模型。
-若后续要求输入也实时流式，应另立变体切换 `qwen3.5-omni-plus-realtime` WebSocket API；该实时
-变体目前不支持 Function Calling，不能直接替换本方案的共享 Skills/MCP 工具循环。
-
-SSE 解析器分别累计 text、audio 和按 index 分片的 tool call arguments。`audio.data` 按官方示例
-作为一条跨 delta 的连续 Base64 串增量解码；输出裸 PCM 按 24kHz/mono/s16le 播放，兼容完整回复
-时再封装 WAV。
-
-工具按域隔离：DeepSeek 业务域包含内置 `car_control`/`navigate` 与 scope=`llm` 的 MCP Skill；
-Qwen 闲聊域只注入 scope=`chat` 的 MCP Skill，不暴露车控和导航。两域复用
-`McpToolExecutor`，但执行时再次校验 scope，模型即使伪造工具名也不能跨域调用。不同域可以安全
-复用同一工具名；同一域内仍拒绝重复名称。业务提示词来自 `/api/config/system-prompt`，闲聊提示词
-来自 `/api/config/chat-system-prompt`，两者分别热更新、互不覆盖；闲聊提示词留空时回退内置默认。
+工具按域隔离：DeepSeek 业务域包含车控/导航与 scope=`llm` 的 MCP Skill；Realtime 闲聊当前只
+注入 `exit_chat`，不暴露车控和导航。业务提示词来自 `/api/config/system-prompt`，闲聊提示词来自
+`/api/config/chat-system-prompt`，两者分别热更新、互不覆盖；闲聊提示词留空时回退 Realtime 默认。
 
 ### 工具循环与导航延迟
 
@@ -143,6 +135,7 @@ S2S 音频 → 音频输入入口 ─┘
 | P6 | 同语言回答、旁路 ASR 识别框与协议下发 | 已完成（待真机验收） |
 | P6.1 | ASR/NLU 拆分、PGS 独立显示、回复字幕随音频流式上屏 | 已完成（待真机验收） |
 | P6.2 | Omni 混合域路由、业务/闲聊 prompt 与 Skill 隔离 | 已完成（待真实环境验收） |
+| P6.3 | qwen3.5-omni-plus-realtime 长连接、常开麦、播放期连续上送与语义打断 | 已完成（待真机验收） |
 | P7 | 真实 DashScope、真机、弱网、取消和长音频验收 | 待外部环境 |
 
 ## 7. 验证重点

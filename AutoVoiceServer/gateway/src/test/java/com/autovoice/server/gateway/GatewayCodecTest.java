@@ -334,6 +334,23 @@ class GatewayCodecTest {
     }
 
     @Test
+    void realtimeChatControlFixturesDecodeAndChatFlagSurvivesEncoding() {
+        assertEquals("chat_start", GatewayCodec.decode(
+                TestFixtures.read("gateway-chat-start.json")).get("type"));
+        assertEquals("chat_finish", GatewayCodec.decode(
+                TestFixtures.read("gateway-chat-finish.json")).get("type"));
+        assertEquals("chat_ready", GatewayCodec.decode(
+                TestFixtures.read("gateway-chat-ready.json")).get("type"));
+        assertEquals("chat_speech_started", GatewayCodec.decode(
+                TestFixtures.read("gateway-chat-speech-started.json")).get("type"));
+
+        JsonNode start = read(GatewayCodec.encode("audio_reply_start", Map.of(
+                "segmentId", "chat-1", "mime", "audio/pcm", "sampleRate", 24000,
+                "channels", 1, "encoding", "pcm_s16le", "chat", true))).get("payload");
+        assertTrue(start.get("chat").asBoolean());
+    }
+
+    @Test
     void encodeRejectsUnknownType() {
         assertThrows(IllegalArgumentException.class, () -> GatewayCodec.encode("bogus", Map.of()));
     }

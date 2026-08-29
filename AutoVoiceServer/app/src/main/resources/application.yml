@@ -68,3 +68,5 @@ autovoice:
     aliyun-sk: ${ALIYUN_SK:}
     aliyun-nls-appkey: ${ALIYUN_NLS_APPKEY:}
     dashscope-api-key: ${DASHSCOPE_API_KEY:}
+    # Qwen Realtime 原生 WS URL 的百炼业务空间 ID（华北 2/北京）。
+    dashscope-workspace-id: ${DASHSCOPE_WORKSPACE_ID:}
