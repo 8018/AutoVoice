@@ -24,7 +24,7 @@ Headless 侧的自动化验证记录见仓库根 `ACCEPTANCE.md`。
 | `ALIYUN_SK` | 阿里云 AccessKey Secret——NLS 鉴权 | 同上 |
 | `ALIYUN_NLS_APPKEY` | 阿里云智能语音交互 AppKey——云端 ASR | 阿里云 NLS（智能语音交互）控制台 |
 | `DASHSCOPE_API_KEY` | 阿里云百炼 DashScope Key——云端 TTS（sambert 播报） | 阿里云百炼（Model Studio）控制台 |
-| `DASHSCOPE_WORKSPACE_ID` | 百炼业务空间 ID——`qwen3.5-omni-plus-realtime` WebSocket URL（Omni 闲聊） | 阿里云百炼业务空间 |
+| `DASHSCOPE_WORKSPACE_ID` | 可选的百炼业务空间 ID；配置后 Omni 闲聊使用专属域名，留空则使用北京地域通用实时地址 | 阿里云百炼业务空间 |
 
 > **服务端离线命令词链路**（仅阿里云部署启用）：额外环境变量见 §6 部署步骤——
 > `AUTOVOICE_OFFLINE_ENABLED=true` 等。默认关（`offline.enabled=false`），Mac 本地

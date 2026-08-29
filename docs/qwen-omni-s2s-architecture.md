@@ -50,7 +50,7 @@
 - 部署工作流通过 `voice_backend` 输入或仓库变量 `VOICE_BACKEND` 选择构建变体。
 
 密钥不进入构建产物。Omni 读取 `DASHSCOPE_API_KEY`，Realtime URL 还需要
-`DASHSCOPE_WORKSPACE_ID`（百炼业务空间 ID）。
+`DASHSCOPE_WORKSPACE_ID`（可选的百炼业务空间 ID；留空时使用北京地域通用实时地址）。
 
 每轮音频先经过 ASR，其结果通过独立 `asr_partial(text, isFinal)` 通道即时更新识别框，并作为
 域路由依据。默认调用 DeepSeek 业务链路；用户说“陪我聊会天”（兼容“进入闲聊/开始闲聊”）后，

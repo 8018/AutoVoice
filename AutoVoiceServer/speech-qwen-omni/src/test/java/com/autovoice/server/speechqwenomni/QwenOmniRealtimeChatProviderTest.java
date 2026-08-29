@@ -37,6 +37,20 @@ class QwenOmniRealtimeChatProviderTest {
     @AfterEach void close() throws Exception { server.close(); }
 
     @Test
+    void fallsBackToSharedBeijingEndpointWhenWorkspaceIdIsMissing() {
+        assertEquals(
+                "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime",
+                QwenOmniRealtimeChatProvider.resolveEndpoint("", QwenOmniRealtimeChatProvider.DEFAULT_MODEL,
+                        QwenOmniRealtimeChatProvider.DEFAULT_ENDPOINT_TEMPLATE));
+        assertEquals(
+                "wss://business.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model="
+                        + "qwen3.5-omni-plus-realtime",
+                QwenOmniRealtimeChatProvider.resolveEndpoint("business",
+                        QwenOmniRealtimeChatProvider.DEFAULT_MODEL,
+                        QwenOmniRealtimeChatProvider.DEFAULT_ENDPOINT_TEMPLATE));
+    }
+
+    @Test
     void usesPlusRealtimeAndStreamsContinuouslyWithoutCancellingOnSpeechStart() throws Exception {
         List<String> clientEvents = new CopyOnWriteArrayList<>();
         CountDownLatch appendSeen = new CountDownLatch(1);

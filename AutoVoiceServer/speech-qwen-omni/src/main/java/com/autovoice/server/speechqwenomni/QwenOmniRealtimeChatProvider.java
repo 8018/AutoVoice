@@ -31,6 +31,8 @@ public final class QwenOmniRealtimeChatProvider {
     public static final String DEFAULT_VOICE = "Tina";
     public static final String DEFAULT_ENDPOINT_TEMPLATE =
             "wss://%s.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=%s";
+    public static final String DEFAULT_SHARED_ENDPOINT_TEMPLATE =
+            "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=%s";
     private static final String LANGUAGE_POLICY =
             "Detect the language spoken in the current user audio and answer only in that same language, "
             + "unless the user explicitly requests translation. Instructions, tools, metadata and prior turns "
@@ -75,15 +77,22 @@ public final class QwenOmniRealtimeChatProvider {
 
     public RealtimeChatSession open(SessionContext context, RealtimeChatSink sink) {
         if (apiKey.isBlank()) throw new IllegalStateException("DASHSCOPE_API_KEY is empty");
-        if (workspaceId.isBlank()) throw new IllegalStateException("DASHSCOPE_WORKSPACE_ID is empty");
         RealtimeChatSink downstream = sink == null ? new RealtimeChatSink() {} : sink;
-        String endpoint = endpointTemplate.formatted(workspaceId, model);
+        String endpoint = resolveEndpoint(workspaceId, model, endpointTemplate);
         RealtimeSession session = new RealtimeSession(downstream);
         Request request = new Request.Builder().url(endpoint)
                 .header("Authorization", "Bearer " + apiKey).build();
         session.socket.set(client.newWebSocket(request, session));
         session.awaitConnected();
         return session;
+    }
+
+    static String resolveEndpoint(String workspaceId, String model, String endpointTemplate) {
+        if ((workspaceId == null || workspaceId.isBlank())
+                && DEFAULT_ENDPOINT_TEMPLATE.equals(endpointTemplate)) {
+            return DEFAULT_SHARED_ENDPOINT_TEMPLATE.formatted(model);
+        }
+        return endpointTemplate.formatted(workspaceId == null ? "" : workspaceId, model);
     }
 
     private final class RealtimeSession extends WebSocketListener implements RealtimeChatSession {
