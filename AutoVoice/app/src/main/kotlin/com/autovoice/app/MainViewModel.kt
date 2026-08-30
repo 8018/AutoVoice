@@ -287,16 +287,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         startRecording(fromWake = false)
     }
 
-    private fun startRecording(fromWake: Boolean, includeBargeInPreRoll: Boolean = false) {
+    private fun startRecording(
+        fromWake: Boolean,
+        includeBargeInPreRoll: Boolean = false,
+        interruptPlayback: Boolean = true,
+    ) {
         if (recording) return
         followUpTimeoutJob?.cancel()
         followUpTimeoutJob = null
         recorder.setFollowUpListening(false)
         pauseWakeObservation()
-        // barge-in：只停止旧轮播放，不取消端侧/云端候选。仲裁输出随后由本地
-        // DialogueStateMachine 判断是否仍属于当前 turn。
+        // 唤醒/按键本身是新会话证据，可立即停播；开放式 VAD 仅建立候选 capture，
+        // 必须等 ASR/NLU 触发 DialogueStateMachine 准入后再停。
         val interruptedPlayback = ttsPlayer.isSpeaking()
-        if (interruptedPlayback) {
+        if (interruptedPlayback && interruptPlayback) {
             Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
             ttsPlayer.stop()
         }
@@ -306,7 +310,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         resetCloudStreamGate()
         wakeTurn = fromWake
         denoisedBlocks.clear()
-        engine.onListeningStart()
+        // 开放式 VAD 只建立候选 capture；ASR/NLU 准入为新会话时由状态机停播。
+        engine.onListeningStart(interruptPlayback = interruptPlayback)
         if (!recorder.start(includeBargeInPreRoll)) {
             recording = false
             wakeTurn = false
@@ -500,9 +505,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun onOpenMicBargeInDetected() {
         if (!foreground || recording || !ttsPlayer.isSpeaking()) return
-        Log.i(TAG, "播报期检测到用户语音，开始开放式 barge-in")
-        // 与唤醒轮共用 VAD SpeechEnd/超时自动收口；只停播放，不取消旧轮候选。
-        startRecording(fromWake = true, includeBargeInPreRoll = true)
+        Log.i(TAG, "播报期 VAD 命中，仅建立候选 capture；等待 ASR/NLU 确认为新会话")
+        // 与唤醒轮共用 VAD SpeechEnd/超时自动收口；候选期保持播报，状态机准入后再停。
+        startRecording(
+            fromWake = true,
+            includeBargeInPreRoll = true,
+            interruptPlayback = false,
+        )
     }
 
     private fun onFollowUpSpeechDetected() {

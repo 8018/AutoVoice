@@ -83,6 +83,40 @@ class VoiceEngineTest {
         assertEquals(SessionState.LISTENING, engine.session.state.value)
     }
 
+    @Test
+    fun `vad candidate keeps playback until semantic admission creates a new turn`() = runBlocking {
+        var stops = 0
+        val player = object : AudioPlayer {
+            override fun play(reply: AudioReply) = Unit
+            override fun stop() { stops += 1 }
+        }
+        val engine = engine(
+            scope = this,
+            local = LocalChainRunner { delay(200); Intent.unknown("local") },
+            cloud = CloudRunner { TextReply("新会话回复") },
+            player = player,
+        ).first
+
+        // 先完成一轮，建立正在播报的旧 turn 快照。
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(300)
+        stops = 0
+
+        // 开放式 VAD 只建立 capture，不得把“可能的人声”当作已成立的新会话。
+        engine.onListeningStart(interruptPlayback = false)
+        engine.onVadStart()
+        assertEquals(0, stops)
+
+        // 最终语义是新会话证据；状态机准入该 turn 时才停止旧播报。
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(300)
+        assertEquals(1, stops)
+    }
+
     private fun cfg(cloudWaitMs: Long = 100): DemoConfig =
         DemoConfig(
             mode = "full",
