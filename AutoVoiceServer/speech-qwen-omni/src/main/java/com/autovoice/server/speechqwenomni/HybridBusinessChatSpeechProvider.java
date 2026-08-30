@@ -7,11 +7,14 @@ import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.RealtimeChatProvider;
 import com.autovoice.server.contracts.RealtimeChatSession;
 import com.autovoice.server.contracts.RealtimeChatSink;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.Intent;
 
 import java.util.Locale;
@@ -120,6 +123,33 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
             out.whenComplete((ignored, error) -> active.remove(utteranceId, out));
         }
         return out;
+    }
+
+    @Override
+    public OnlineSpeechStream openStream(SessionContext context, String utteranceId,
+                                         OnlineAudioSink audioSink, OnlineAsrSink asrSink) {
+        if (isChatting(context) || !(asr instanceof StreamingAsrProvider streaming)) {
+            return null;
+        }
+        StreamingAsrSession session = streaming.start(context, asrSink);
+        java.io.ByteArrayOutputStream pcm = new java.io.ByteArrayOutputStream();
+        return new OnlineSpeechStream() {
+            @Override public synchronized void append(byte[] chunk) {
+                if (chunk == null || chunk.length == 0) return;
+                pcm.writeBytes(chunk);
+                session.append(chunk);
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> finish() {
+                return session.finish().thenCompose(text -> {
+                    if (text == null || text.isBlank()) {
+                        return CompletableFuture.failedFuture(new IllegalStateException("ASR returned blank text"));
+                    }
+                    return track(utteranceId, route(pcm.toByteArray(), context, utteranceId,
+                            text.trim(), audioSink));
+                });
+            }
+            @Override public void cancel() { session.cancel(); }
+        };
     }
 
     private CompletableFuture<OnlineSpeechResult> track(

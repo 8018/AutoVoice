@@ -12,6 +12,8 @@ import com.autovoice.server.contracts.RealtimeChatProvider;
 import com.autovoice.server.contracts.RealtimeChatSession;
 import com.autovoice.server.contracts.RealtimeChatSink;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
@@ -719,6 +721,40 @@ class VoiceGatewayHandlerTest {
         assertEquals("reply", parse(s.sent.get(3)).get("type").asText());
         assertEquals("seg-1", parse(s.sent.get(3)).get("payload").get("segmentId").asText(),
                 "异步回复应回显本段 segmentId");
+    }
+
+    @Test
+    void binaryAudioFeedsStreamingAsrAndPublishesPartialBeforeAudioEnd() throws Exception {
+        CountDownLatch appended = new CountDownLatch(1);
+        StreamingAsrProvider streamingAsr = (ctx, sink) -> new StreamingAsrSession() {
+            @Override public void append(byte[] pcm16k) {
+                sink.onResult("今天天", false);
+                appended.countDown();
+            }
+            @Override public CompletableFuture<String> finish() {
+                sink.onResult("今天天气", true);
+                return CompletableFuture.completedFuture("今天天气");
+            }
+            @Override public void cancel() { }
+        };
+        VoiceGatewayHandler h = newHandler(streamingAsr, llm("晴天"), ttsOk());
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-stream")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1, 2, 3, 4}));
+
+        assertTrue(appended.await(1, TimeUnit.SECONDS));
+        assertEquals(2, s.sent.size(), "audio_end 前应已下发 ASR partial");
+        JsonNode partial = parse(s.sent.get(1));
+        assertEquals("asr_partial", partial.path("type").asText());
+        assertEquals("今天天", partial.at("/payload/text").asText());
+        assertFalse(partial.at("/payload/isFinal").asBoolean());
+
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        awaitSent(s, 5);
+        assertEquals("asr_partial", parse(s.sent.get(2)).path("type").asText());
+        assertTrue(parse(s.sent.get(2)).at("/payload/isFinal").asBoolean());
     }
 
     @Test

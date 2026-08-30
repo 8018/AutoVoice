@@ -61,6 +61,10 @@ class QwenOmniRealtimeChatProviderTest {
                     appendSeen.countDown();
                     ws.send("{\"type\":\"response.created\"}");
                     ws.send("{\"type\":\"input_audio_buffer.speech_started\"}");
+                    ws.send("{\"type\":\"conversation.item.input_audio_transcription.delta\","
+                            + "\"text\":\"今天天\",\"stash\":\"气\"}");
+                    ws.send("{\"type\":\"conversation.item.input_audio_transcription.completed\","
+                            + "\"transcript\":\"今天天气\"}");
                     ws.send("{\"type\":\"response.audio.delta\",\"delta\":\""
                             + Base64.getEncoder().encodeToString(new byte[]{1, 2, 3}) + "\"}");
                     ws.send("{\"type\":\"response.audio_transcript.done\",\"transcript\":\"hello\"}");
@@ -78,9 +82,13 @@ class QwenOmniRealtimeChatProviderTest {
         CountDownLatch speechStarted = new CountDownLatch(1);
         CountDownLatch completed = new CountDownLatch(1);
         AtomicReference<byte[]> audio = new AtomicReference<>();
+        List<String> transcripts = new CopyOnWriteArrayList<>();
         QwenOmniRealtimeChatProvider provider = provider();
         RealtimeChatSession session = provider.open(context(), new RealtimeChatSink() {
             @Override public void onUserSpeechStarted() { speechStarted.countDown(); }
+            @Override public void onUserTranscript(String text, boolean isFinal) {
+                transcripts.add(text + ":" + isFinal);
+            }
             @Override public void onChunk(byte[] pcm) { audio.set(pcm); }
             @Override public void onComplete(String text, Intent intent, String asrText) {
                 completed.countDown();
@@ -93,12 +101,15 @@ class QwenOmniRealtimeChatProviderTest {
         assertTrue(completed.await(2, TimeUnit.SECONDS));
         // speech_started 后旧回答被输出门拦截；下一回答正常播出，且未发送 response.cancel。
         assertArrayEquals(new byte[]{4, 5}, audio.get());
+        assertEquals(List.of("今天天气:false", "今天天气:true"), transcripts);
         assertFalse(clientEvents.stream().anyMatch(value -> value.contains("response.cancel")));
 
         JsonNode update = JSON.readTree(clientEvents.get(0));
         assertEquals("session.update", update.path("type").asText());
         assertEquals("semantic_vad", update.at("/session/turn_detection/type").asText());
-        assertFalse(update.at("/session/enable_input_audio_transcription").asBoolean());
+        assertTrue(update.at("/session/enable_input_audio_transcription").asBoolean());
+        assertEquals("qwen3-asr-flash-realtime",
+                update.at("/session/input_audio_transcription/model").asText());
         assertEquals(16_000, update.at("/session/audio/input/format/sample_rate").asInt());
         assertEquals(24_000, update.at("/session/audio/output/format/sample_rate").asInt());
         assertEquals("exit_chat", update.at("/session/tools/0/name").asText());

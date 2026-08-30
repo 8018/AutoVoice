@@ -6,9 +6,12 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialogState;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -54,6 +57,32 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);
         }
+        return completeFromText(text, context, utteranceId);
+    }
+
+    @Override
+    public OnlineSpeechStream openStream(SessionContext context, String utteranceId,
+                                         OnlineAudioSink audioSink, OnlineAsrSink asrSink) {
+        if (!(asr instanceof StreamingAsrProvider streaming)) {
+            return null;
+        }
+        StreamingAsrSession session = streaming.start(context, asrSink);
+        return new OnlineSpeechStream() {
+            @Override public void append(byte[] pcm16k) { session.append(pcm16k); }
+            @Override public CompletableFuture<OnlineSpeechResult> finish() {
+                return session.finish().thenCompose(text -> {
+                    if (text == null || text.isBlank()) {
+                        return CompletableFuture.failedFuture(new AsrException("ASR returned blank text"));
+                    }
+                    return completeFromText(text, context, utteranceId);
+                });
+            }
+            @Override public void cancel() { session.cancel(); }
+        };
+    }
+
+    private CompletableFuture<OnlineSpeechResult> completeFromText(
+            String text, SessionContext context, String utteranceId) {
         CompletableFuture<com.autovoice.server.contracts.Reply> source = navigationDialog
                 .resolve(context, text)
                 .map(CompletableFuture::completedFuture)

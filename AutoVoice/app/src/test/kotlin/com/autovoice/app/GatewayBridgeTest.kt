@@ -348,6 +348,34 @@ class GatewayBridgeTest {
     }
 
     @Test
+    fun `realtime chat ASR updates recognition without a normal reply slot`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val recognized = Channel<Triple<String, Boolean, String>>(Channel.BUFFERED)
+        GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onAsrResult = { text, isFinal, turnId ->
+                recognized.trySend(Triple(text, isFinal, turnId))
+            },
+        )
+        try {
+            client.connect()
+            gateway.sendText(
+                """{"type":"asr_partial","payload":{"text":"今天天气","isFinal":true,"chat":true}}""",
+            )
+            assertEquals(Triple("今天天气", true, ""), recognized.receive())
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `matching reply partial updates reply text before audio or final reply`() = runBlocking {
         val gateway = FakeGatewayServer()
         gateway.start()

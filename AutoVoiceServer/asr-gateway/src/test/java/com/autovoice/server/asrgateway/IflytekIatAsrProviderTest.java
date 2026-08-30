@@ -2,6 +2,7 @@ package com.autovoice.server.asrgateway;
 
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.HttpUrl;
@@ -25,6 +26,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -158,6 +161,37 @@ class IflytekIatAsrProviderTest {
         checkFrame(receivedFrames.get(2), 2, pcm, IflytekIatAsrProvider.FRAME_BYTES * 2);
     }
 
+    @Test
+    void streamingSessionEmitsPgsPartialAndAppliesReplacement() throws Exception {
+        List<String> snapshots = new CopyOnWriteArrayList<>();
+        CountDownLatch partial = new CountDownLatch(1);
+        List<String> receivedFrames = new CopyOnWriteArrayList<>();
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
+                receivedFrames.add(message);
+                if (receivedFrames.size() == 1) {
+                    ws.send("{\"code\":0,\"data\":{\"status\":1,\"result\":{\"sn\":0,\"pgs\":\"apd\",\"ws\":[{\"cw\":[{\"w\":\"导航到天\"}]}]}}}");
+                } else if (receivedFrames.size() == 2) {
+                    ws.send("{\"code\":0,\"data\":{\"status\":2,\"result\":{\"sn\":1,\"pgs\":\"rpl\",\"rg\":[0,0],\"ws\":[{\"cw\":[{\"w\":\"导航到天府机场\"}]}]}}}");
+                }
+            }
+        }));
+        IflytekIatAsrProvider provider = new IflytekIatAsrProvider(client, APP_ID, API_KEY, API_SECRET,
+                server.url("/v2/iat").toString(), Clock.systemUTC());
+        StreamingAsrSession session = provider.start(ctx("stream"), (text, isFinal) -> {
+            snapshots.add(text + ":" + isFinal);
+            if (!isFinal) partial.countDown();
+        });
+
+        session.append(new byte[IflytekIatAsrProvider.FRAME_BYTES]);
+        session.append(new byte[IflytekIatAsrProvider.FRAME_BYTES]);
+        assertTrue(partial.await(2, TimeUnit.SECONDS));
+        assertEquals("导航到天府机场", session.finish().get(2, TimeUnit.SECONDS));
+        assertEquals(List.of("导航到天:false", "导航到天府机场:true"), snapshots);
+        assertEquals(0, frameStatus(receivedFrames.get(0)));
+        assertEquals(2, frameStatus(receivedFrames.get(1)));
+    }
+
     /** 单帧内不足一帧的余量：尾帧（status=2）携带剩余字节。 */
     @Test
     void sendsPartialTailFrameAsStatus2() throws Exception {
@@ -196,6 +230,10 @@ class IflytekIatAsrProviderTest {
         // 尾帧可能不足整帧：按实际发送长度比较
         int end = Math.min(offset + IflytekIatAsrProvider.FRAME_BYTES, pcm.length);
         assertArrayEquals(Arrays.copyOfRange(pcm, offset, end), audio);
+    }
+
+    private static int frameStatus(String frameJson) throws Exception {
+        return MAPPER.readTree(frameJson).path("data").path("status").asInt();
     }
 
     // ------------------------------------------------------------------ 错误路径

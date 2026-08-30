@@ -11,6 +11,16 @@ import java.util.concurrent.CompletableFuture;
  */
 public interface OnlineSpeechProvider {
 
+    /**
+     * 打开一轮流式输入。返回 null 表示后端只支持完整 PCM；支持流式 ASR 的实现覆盖
+     * 本方法，在 append 阶段持续产生 asrSink partial。
+     */
+    default OnlineSpeechStream openStream(
+            SessionContext context, String utteranceId,
+            OnlineAudioSink audioSink, OnlineAsrSink asrSink) {
+        return null;
+    }
+
     /** 启动在线候选；返回的 future 必须支持取消，并尽可能向底层网络调用传播取消。 */
     CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId);
