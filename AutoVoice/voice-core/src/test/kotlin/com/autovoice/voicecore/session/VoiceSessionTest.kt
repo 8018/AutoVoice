@@ -261,6 +261,35 @@ class VoiceSessionTest {
     }
 
     @Test
+    fun `cloud unavailable and local unknown does not report a local winner`() {
+        val t = turn(
+            local = LocalChainRunner { Intent.unknown("fake.local") },
+            cloud = CloudRunner { error("云端链不应被启动") },
+            beforeFeed = { it.onCloudUnavailable() },
+        )
+        assertTrue(t.results.single() is RaceWinner.Failed)
+        assertEquals(listOf("cloud_unreachable_local_unknown"), t.entries.map { it.reason })
+        assertEquals(
+            listOf(
+                SessionState.IDLE, SessionState.LISTENING, SessionState.UNDERSTANDING,
+                SessionState.IDLE,
+            ),
+            t.states,
+        )
+    }
+
+    @Test
+    fun `no cloud segment and local unknown does not report a local winner`() {
+        val t = turn(
+            local = LocalChainRunner { Intent.unknown("fake.local") },
+            cloud = CloudRunner { error("云端链不应被启动") },
+            cloudSegments = 0,
+        )
+        assertTrue(t.results.single() is RaceWinner.Failed)
+        assertEquals(listOf("no_cloud_segment_local_unknown"), t.entries.map { it.reason })
+    }
+
+    @Test
     fun `both routes fail → Failed result, straight back to IDLE`() {
         val t = turn(
             local = LocalChainRunner { awaitCancellation() },

@@ -24,12 +24,10 @@ class RuleNluProviderTest {
 
     // ------------------------------------------------------ 能力分级（2026-08-15）：空调归云端命令词
 
-    /** 空调别名已删除 → "打开空调" 兜底 misc/power_on（非车窗，不触发端侧直接胜出）。 */
+    /** 空调别名已删除 → 即使包含“打开”也必须拒识，不能生成不可执行的 misc 意图。 */
     @Test
-    fun `ac on command falls back to misc power on`() {
-        val i = RuleNluProvider.understand("打开空调")
-        assertEquals("misc", i.domain)
-        assertEquals("power_on", i.intent)
+    fun `ac on command is unknown on-device`() {
+        assertTrue(RuleNluProvider.understand("打开空调").isUnknown())
     }
 
     /** set_temperature 规则已删除 → 空调调温端侧不识别（unknown，拒识/只等云端）。 */
@@ -39,10 +37,14 @@ class RuleNluProviderTest {
     }
 
     @Test
-    fun `ac off command falls back to misc power off`() {
-        val i = RuleNluProvider.understand("关闭空调")
-        assertEquals("misc", i.domain)
-        assertEquals("power_off", i.intent)
+    fun `ac off command is unknown on-device`() {
+        assertTrue(RuleNluProvider.understand("关闭空调").isUnknown())
+    }
+
+    /** SDK 偶发误识别出动作词时，缺少受支持领域仍不能参与端侧仲裁。 */
+    @Test
+    fun `weather query is unknown on-device`() {
+        assertTrue(RuleNluProvider.understand("今天天气").isUnknown())
     }
 
     @Test

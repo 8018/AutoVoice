@@ -256,6 +256,18 @@ class VoiceSession(
         reason: String = "cloud_unreachable",
     ): RaceWinner {
         val nlu = local.run(segment, utteranceId)
+        if (nlu.intent.isUnknown()) {
+            sink.onDecision(
+                DecisionEntry(
+                    arbiter = "on-device",
+                    route = "none",
+                    reason = "${reason}_local_unknown",
+                    utteranceId = utteranceId,
+                    timestampMs = System.currentTimeMillis(),
+                ),
+            )
+            return RaceWinner.Failed
+        }
         if (!arbiter.claimSemantic(utteranceId, "local")) return RaceWinner.Intercepted
         sink.onDecision(
             DecisionEntry(
