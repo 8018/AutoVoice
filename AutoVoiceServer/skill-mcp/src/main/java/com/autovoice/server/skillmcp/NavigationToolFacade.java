@@ -16,9 +16,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.BiFunction;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /** One model call resolving one or more spoken destinations to navigation-ready coordinates. */
 final class NavigationToolFacade {
     static final String NAME = "resolve_navigation";
+    private static final Logger LOG = LoggerFactory.getLogger(NavigationToolFacade.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> SOURCE_TOOLS = Set.of(
             "maps_text_search", "maps_around_search", "maps_regeocode", "maps_geo");
@@ -109,8 +113,21 @@ final class NavigationToolFacade {
         values.put("limit", effectiveLimit);
         values.put("page_size", effectiveLimit);
         values.put("pageSize", effectiveLimit);
-        String raw = caller.apply(search.name(), arguments(search, values));
+        String raw;
+        try {
+            raw = caller.apply(search.name(), arguments(search, values));
+        } catch (McpToolException primaryError) {
+            if (!"maps_around_search".equals(search.name())
+                    || !tools.containsKey("maps_text_search")) {
+                throw primaryError;
+            }
+            LOG.warn("AMap around search failed; falling back to text search: {}",
+                    primaryError.getMessage());
+            search = tools.get("maps_text_search");
+            raw = caller.apply(search.name(), arguments(search, values));
+        }
         List<Candidate> direct = candidates(raw, effectiveLimit);
+        List<Place> places = places(raw, effectiveLimit);
 
         if (broadAirportQuery && !location.isBlank() && tools.containsKey("maps_text_search")) {
             String resolvedCity = city.isBlank() ? reverseGeocodeCity(location) : city;
@@ -121,13 +138,17 @@ final class NavigationToolFacade {
                 try {
                     String textRaw = caller.apply(textSearch.name(), arguments(textSearch, textValues));
                     direct = mergeAirportCandidates(direct, candidates(textRaw, effectiveLimit));
-                } catch (McpToolException ignored) {
+                    // 高德当前 POI 搜索可能只返回名称/地址、不返回 location。城市级结果必须
+                    // 一并进入后续 geocode，否则周边结果占满 limit 时会稳定漏掉较远机场。
+                    places = mergePlaces(places(textRaw, effectiveLimit), places, effectiveLimit * 2);
+                } catch (McpToolException error) {
                     // Citywide enrichment is best-effort; keep nearby candidates on MCP failure.
+                    LOG.warn("AMap citywide airport enrichment failed; keeping nearby results: {}",
+                            error.getMessage());
                 }
-                if (!direct.isEmpty()) return toJson(direct, effectiveLimit);
             }
         }
-        if (!direct.isEmpty()) {
+        if (!direct.isEmpty() && !broadAirportQuery) {
             return toJson(direct.stream()
                     .map(candidate -> candidate.name().isBlank()
                             ? new Candidate(query, candidate.lat(), candidate.lon(), candidate.address())
@@ -135,24 +156,43 @@ final class NavigationToolFacade {
                     .toList(), limit);
         }
 
-        List<Place> places = places(raw, effectiveLimit);
+        if (broadAirportQuery && !direct.isEmpty()) {
+            Set<String> resolvedAirports = direct.stream()
+                    .map(candidate -> airportKey(candidate.name()))
+                    .collect(java.util.stream.Collectors.toSet());
+            places = places.stream()
+                    .filter(place -> !resolvedAirports.contains(airportKey(place.name())))
+                    .toList();
+            if (places.isEmpty()) return toJson(direct, effectiveLimit);
+        }
+
         if (places.isEmpty()) places = List.of(new Place(query, query));
         List<Candidate> geocoded = new ArrayList<>();
         FunctionTool geo = tools.get("maps_geo");
+        McpToolException firstGeoError = null;
         for (Place place : places) {
             Map<String, Object> geoValues = new LinkedHashMap<>();
             String address = String.join(" ", city, place.address(), place.name()).trim();
             geoValues.put("address", address);
             geoValues.put("city", city);
-            List<Candidate> points = candidates(
-                    caller.apply(geo.name(), arguments(geo, geoValues)), 1);
-            if (!points.isEmpty()) {
-                Candidate point = points.getFirst();
-                geocoded.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
+            try {
+                List<Candidate> points = candidates(
+                        caller.apply(geo.name(), arguments(geo, geoValues)), 1);
+                if (!points.isEmpty()) {
+                    Candidate point = points.getFirst();
+                    geocoded.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
+                }
+            } catch (McpToolException error) {
+                if (firstGeoError == null) firstGeoError = error;
+                LOG.warn("AMap geocode failed for one candidate; continuing with remaining candidates: {}",
+                        error.getMessage());
             }
             if (geocoded.size() >= effectiveLimit) break;
         }
-        return toJson(geocoded, effectiveLimit);
+        if (direct.isEmpty() && geocoded.isEmpty() && firstGeoError != null) throw firstGeoError;
+        List<Candidate> result = broadAirportQuery
+                ? mergeAirportCandidates(direct, geocoded) : geocoded;
+        return toJson(result, effectiveLimit);
     }
 
     private String reverseGeocodeCity(String location) {
@@ -183,6 +223,13 @@ final class NavigationToolFacade {
         if (existing == null || isRootAirport(candidate.name()) && !isRootAirport(existing.name())) {
             merged.put(key, candidate);
         }
+    }
+
+    private static List<Place> mergePlaces(List<Place> preferred, List<Place> fallback, int limit) {
+        LinkedHashMap<String, Place> merged = new LinkedHashMap<>();
+        for (Place place : preferred) merged.putIfAbsent(compact(place.name()), place);
+        for (Place place : fallback) merged.putIfAbsent(compact(place.name()), place);
+        return merged.values().stream().limit(limit).toList();
     }
 
     private static String airportKey(String name) {
