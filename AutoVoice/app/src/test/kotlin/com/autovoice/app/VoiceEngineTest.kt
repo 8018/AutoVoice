@@ -169,7 +169,7 @@ class VoiceEngineTest {
         debugBuild: Boolean = true,
         /** B5：云端 pending 占位回调（生产 create() 装配 UI 状态；默认 no-op）。 */
         onCloudPending: (Boolean) -> Unit = {},
-        onCloudWon: () -> Unit = {},
+        onCloudWon: (String) -> Unit = {},
         onRecognized: (String?) -> Unit = {},
         /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
@@ -381,7 +381,7 @@ class VoiceEngineTest {
                     null // 只验证请求发出，不验证播放
                 },
                 onCloudPending = { pendingStates.add(it) },
-                onCloudWon = { cloudTextReleased++ },
+                onCloudWon = { _ -> cloudTextReleased++ },
                 pending = pendingSignals,
             )
             engine = pair.first
@@ -391,8 +391,7 @@ class VoiceEngineTest {
             pendingSignals.trySend(Unit)
             engine.setCloudPending(true)
             delay(150) // 越过原 cloudWaitMs=100：pending 未延长窗口时此处已兜底播报
-            // 序列：utter() 起始置 false（onListeningStart）→ pending 置 true
-            assertEquals(listOf(false, true), pendingStates.toList(), "pending 期间 UI 状态应为 true")
+            assertEquals(listOf(true), pendingStates.toList(), "pending 期间 UI 状态应为 true")
             assertEquals(0, ttsTexts.size, "pending 本身不播报；窗口延长后仍在等云端（未走兜底）")
             assertFalse(vehicle.isAcOn, "pending 无执行")
             assertFalse(vehicle.isWindowsOpen, "pending 无执行")
@@ -400,7 +399,7 @@ class VoiceEngineTest {
             cloudReply.complete(TextReply("已为您打开车窗"))
             // complete() 只安排协程恢复：让出事件循环等竞速收敛 + speakViaTts 子协程执行
             delay(100)
-            assertEquals(listOf(false, true, false), pendingStates.toList(), "final 到达应清除 pending（置 false）")
+            assertEquals(listOf(true, false), pendingStates.toList(), "final 到达应清除 pending（置 false）")
             assertEquals(listOf("已为您打开车窗"), ttsTexts, "final 照常播报")
             assertEquals(1, cloudTextReleased, "回复字幕只在云端通过端侧仲裁后释放")
         }
@@ -588,13 +587,9 @@ class VoiceEngineTest {
         }
     }
 
-    /**
-     * B2（需求 2/4）：非最新 uid 的会话语义被拦截——云端链返回前 utteranceId 已刷新
-     * （新一轮 vad start），语义丢弃：不播报不执行、不写决策，round 内记录
-     * device_arbiter_lost(route=cloud, reason=not_latest_round)。
-     */
+    /** 仲裁器不知道当前轮；下游状态机独立判断是否采用该轮语义。 */
     @Test
-    fun `stale round semantic is intercepted with not_latest_round lost event`() {
+    fun `changing legacy session id does not affect arbitration`() {
         val server = MockWebServer()
         server.start()
         server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
@@ -627,15 +622,13 @@ class VoiceEngineTest {
                 engine = pair.first
                 utter(engine)
             }
-            assertEquals(emptyList<String>(), entries.map { it.reason }, "拦截不写决策")
+            assertEquals(listOf("cloud_won"), entries.map { it.reason })
             val roundReq = takeRequestUntil(server, "/api/telemetry/round")
             assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
             val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
-            val lost = findEvent(events, TelemetryStages.DEVICE_ARBITER_LOST)
-            assertNotNull(lost, "应记录 device_arbiter_lost(not_latest_round)")
-            assertEquals("cloud", lost!!.getJSONObject("payload").getString("route"))
-            assertEquals("not_latest_round", lost.getJSONObject("payload").getString("reason"))
-            assertNull(findEvent(events, TelemetryStages.DEVICE_ARBITER_WON), "拦截的语义不得有 won 事件")
+            val won = findEvent(events, TelemetryStages.DEVICE_ARBITER_WON)
+            assertNotNull(won)
+            assertEquals("cloud", won!!.getJSONObject("payload").getString("route"))
         } finally {
             telemetryScope.cancel()
             server.shutdown()
@@ -752,7 +745,8 @@ class VoiceEngineTest {
             utter(engine)
         }
         assertEquals(listOf("both_failed"), entries.map { it.reason })
-        assertEquals(listOf("网络开小差了，请稍后再试"), ttsRequests)
+        // 没有 ASR/有效语义证据时仍是临时 capture；噪声不得触发失败播报。
+        assertEquals(emptyList<String>(), ttsRequests)
     }
 
     @Test

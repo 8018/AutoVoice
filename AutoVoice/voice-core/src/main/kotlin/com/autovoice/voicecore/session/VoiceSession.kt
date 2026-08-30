@@ -25,6 +25,9 @@ import kotlinx.coroutines.launch
  */
 fun interface LocalChainRunner {
     suspend fun run(segment: ByteArray): NluResult
+
+    /** 独立 ASR 回调需要保留所属 capture/turn，避免迟到文本覆盖另一轮 UI。 */
+    suspend fun run(segment: ByteArray, utteranceId: String): NluResult = run(segment)
 }
 
 /** 兼容只返回 Intent 的旧装配/测试；新 2C 适配器应直接返回带文本的 [NluResult]。 */
@@ -64,9 +67,6 @@ class CloudUnavailableException(message: String, cause: Throwable? = null) : Exc
 /** 云端已连接但拒绝/处理失败；本轮转本地，不把健康连接误判为断网并重连。 */
 class CloudRequestFailedException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-/** 候选尚未发出/重试时轮次已过期：不启动过期请求，按最新轮闸门收口。 */
-class CloudTurnSupersededException(message: String) : Exception(message)
-
 /**
  * 语音会话：状态机（spec §7.1）+ 本地/云端双路由编排（spec §5.1）。
  *
@@ -93,7 +93,7 @@ class CloudTurnSupersededException(message: String) : Exception(message)
  * 协程语义：链内异常不吞，按协程语义传播；唯一特例是云端链的 [CloudUnavailableException]
  * ——会话捕获后转本地单链兜底路径（`cloud_unreachable` 决策 + [RaceWinner.Local]，Task 15 M1）。
  * 候选在独立 Supervisor scope 并发启动；仲裁收敛后输家自然完成，
- * 迟到结果由 utteranceId 最新轮闸门拦截。
+ * 迟到结果仍下发；是否为当前轮由下游 DialogueStateMachine 判断。
  */
 class VoiceSession(
     private val cfg: DemoConfig,
@@ -151,7 +151,7 @@ class VoiceSession(
 
     /**
      * 录音开始：普通轮 IDLE → LISTENING；用户在理解/播报期间发起新轮时，
-     * 也允许直接转 LISTENING。旧轮候选不取消，由 utteranceId 最新轮闸门拦截。
+     * 也允许直接转 LISTENING。旧轮候选不取消，结果交给下游状态机判断。
      */
     fun onListeningStart() {
         if (_state.value == SessionState.LISTENING) return
@@ -183,9 +183,11 @@ class VoiceSession(
      * 收敛后置 EXECUTING/SPEAKING，结果回调后立即回 IDLE。
      * 非 LISTENING 状态调用忽略并返回（防御，不抛）。
      */
-    fun onTurnSegment(segment: ByteArray) {
+    fun onTurnSegment(segment: ByteArray) = onTurnSegment(segment, currentUtteranceId)
+
+    /** 显式 capture/turn 关联；状态机的当前轮可晚于 VAD capture 建立。 */
+    fun onTurnSegment(segment: ByteArray, utteranceId: String) {
         if (_state.value != SessionState.LISTENING) return
-        val utteranceId = currentUtteranceId
         val cloudAudio = takeCloudAudio()
         transition(SessionState.UNDERSTANDING)
         scope.launch { runTurn(utteranceId, segment, cloudAudio) }
@@ -219,8 +221,6 @@ class VoiceSession(
                 } catch (e: CloudRequestFailedException) {
                     // BUSY / provider error 等服务端业务错误不重连、不 latch 连接不可达。
                     localOnly(utteranceId, segment, reason = "cloud_request_failed")
-                } catch (e: CloudTurnSupersededException) {
-                    RaceWinner.Intercepted
                 }
             } else {
                 // 本轮没有任何云端段（VAD 未切出 / 云端未启用）：跳过竞速，本地直接赢
@@ -231,15 +231,15 @@ class VoiceSession(
                 )
             }
 
-            val gatedWinner = if (isCurrent(utteranceId)) winner else RaceWinner.Intercepted
             if (isCurrent(utteranceId)) {
-                when (gatedWinner) {
+                when (winner) {
                     is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
                     is RaceWinner.Local -> transition(SessionState.EXECUTING)
                     is RaceWinner.Failed, is RaceWinner.Intercepted -> Unit
                 }
             }
-            resultListener.onResult(utteranceId, gatedWinner)
+            // 仲裁结果一律下发；是否属于状态机当前轮由下游 DialogueStateMachine 判断。
+            resultListener.onResult(utteranceId, winner)
         } finally {
             // 旧轮自然完成时不得把新轮 LISTENING/UNDERSTANDING 状态踩回 IDLE。
             if (isCurrent(utteranceId)) {
@@ -255,7 +255,8 @@ class VoiceSession(
         segment: ByteArray,
         reason: String = "cloud_unreachable",
     ): RaceWinner {
-        if (!isCurrent(utteranceId)) return RaceWinner.Intercepted
+        val nlu = local.run(segment, utteranceId)
+        if (!arbiter.claimSemantic(utteranceId, "local")) return RaceWinner.Intercepted
         sink.onDecision(
             DecisionEntry(
                 arbiter = "on-device",
@@ -266,7 +267,7 @@ class VoiceSession(
                 timestampMs = System.currentTimeMillis(),
             ),
         )
-        return RaceWinner.Local(local.run(segment))
+        return RaceWinner.Local(nlu)
     }
 
     private suspend fun raceCloudVsLocal(
@@ -278,14 +279,16 @@ class VoiceSession(
             // 从 await 原样上抛，经 race 到 runTurn 的
             // catch 转本地兜底路径；取消语义同样不被 withTimeoutOrNull 吞掉（Task 14 M2）。
         // 候选挂在会话 Supervisor scope，仲裁收敛不会等待输家，也不会取消输家。
-        // 迟到结果只能通过 utteranceId 闸门记录/拦截，不得执行或播报。
+        // 候选自然完成；仲裁只做按轮单输出，是否采用交给下游状态机。
         val cloudD = candidateScope.async { cloud.run(cloudAudio, utteranceId) }
-        val localD = candidateScope.async { local.run(segment) }
-        return arbiter.race(cloudD, localD)
+        val localD = candidateScope.async { local.run(segment, utteranceId) }
+        return arbiter.race(utteranceId, cloudD, localD)
     }
 
     fun close() {
         candidateScope.cancel()
+        cloudSegments.clear()
+        transition(SessionState.IDLE)
     }
 
     private fun isCurrent(utteranceId: String): Boolean =
