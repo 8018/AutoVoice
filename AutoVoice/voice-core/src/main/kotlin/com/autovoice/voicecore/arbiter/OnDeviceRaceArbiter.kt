@@ -27,10 +27,7 @@ sealed class RaceWinner {
     /** 云端与本地均超时。 */
     data object Failed : RaceWinner()
 
-    /**
-     * 语义被拦截（B2 需求 2/4）：语义到达时 utteranceId 已刷新（非最新轮会话）——
-     * 结果属于已过期的轮，丢弃不执行（应用层静默回 IDLE，不播报不执行）。
-     */
+    /** 同一 turn 已经输出过语义；后续候选在仲裁层被拦截。 */
     data object Intercepted : RaceWinner()
 }
 
@@ -51,7 +48,7 @@ sealed class OnDeviceArbiterEvent {
 
     /**
      * 仲裁失败：cloud_already_won 已有云端语义胜出、command_already_won 已有命令词胜出、
-     * not_latest_round 不是最新轮会话（语义被拦截）。
+     * turn_already_output 表示该轮已经输出过语义。
      */
     data class Lost(val route: String, val reason: String) : OnDeviceArbiterEvent()
 
@@ -90,14 +87,12 @@ sealed class OnDeviceArbiterEvent {
  *    `command_already_won` 已有命令词胜出——云端在超时窗口边缘迟到，但本地已赢）；
  *  - **B5 pending 占位**：收到云端 pending 记 [OnDeviceArbiterEvent.Pending]（route=cloud）
  *    ——非收敛事件，窗口延长后继续等最终语义；
- *  - **非最新轮拦截**：race 进入快照 [utteranceId]，候选到达时若 utteranceId 已刷新
- *    （新一轮 vad start 产生的 uuid），语义属于过期轮 → 记 [OnDeviceArbiterEvent.Lost]
- *    （`not_latest_round` 不是最新轮会话）并返回 [RaceWinner.Intercepted]（丢弃）。
+ *  - **按轮单输出**：仲裁器不知道状态机当前轮；同一 turn 已经输出过语义时记录
+ *    `turn_already_output` 并返回 [RaceWinner.Intercepted]。是否采用由下游状态机判断。
  *
  * 决策日志经 [DecisionSink] 写出：arbiter = `on-device`，
- * utteranceId 由注入的 [utteranceId] provider 提供（装配方绑到会话的
- * [com.autovoice.voicecore.session.VoiceSession.currentUtteranceId]，T7 起填真实值；
- * 未注入时默认空串），timestampMs 用注入的 [clock]。
+ * 新调用显式传入 turnId；无显式 ID 的兼容调用才读取 [utteranceId] provider。
+ * timestampMs 使用注入的 [clock]。
  *
  * 协程语义：`withTimeoutOrNull` 只把自身超时转换为 null；块内抛出的
  * [kotlinx.coroutines.CancellationException]（如父协程取消导致 `await` 中断）
@@ -108,7 +103,7 @@ class OnDeviceRaceArbiter(
     private val localFallbackMs: Long = 10_000,
     private val clock: () -> Long = System::currentTimeMillis,
     private val sink: DecisionSink,
-    /** 本轮话语 utteranceId 读取器（T7）：装配方绑到会话的 currentUtteranceId；默认空串保兼容。 */
+    /** 旧调用的 turnId 读取器；生产编排使用 race(turnId, ...) 显式传入。 */
     private val utteranceId: () -> String = { "" },
     /** B2：仲裁过程事件（收到候选/胜出/失败）→ 装配方转 telemetry 插桩。默认 no-op。 */
     private val onEvent: (OnDeviceArbiterEvent) -> Unit = {},
@@ -117,12 +112,16 @@ class OnDeviceRaceArbiter(
      * Deferred 只完成一次，relaunch 循环里已完成 Deferred 会立刻再发 Pending → 死循环。
      */
     private val pending: ReceiveChannel<Unit> = Channel(),
+    /** 生产链路按 turn 隔离 pending；null 时沿用 [pending] 兼容测试/旧装配。 */
+    private val pendingByTurn: PendingSignalRegistry? = null,
     /**
      * B5：收到 pending 后阶段 1 的扩展窗口。LLM 工具循环最长约 15s（服务端
      * Classic 工具循环约 15s；qwen3.5-omni-plus HTTP 文件模式由服务端保证至少 45s。
      * 端侧使用 50s，确保 pending 后不会先于任一构建变体的服务端 safety 收敛。
      */
     private val pendingWaitMs: Long = 50_000,
+    /** 每轮最多向下游输出一次语义；不包含、也不查询“当前轮”概念。 */
+    private val emissionLedger: SemanticEmissionLedger = SemanticEmissionLedger(),
 ) {
     /** 阶段 1 收敛结果（能力分级 2026-08-15 + B5）：本地车窗开关 / 云端语义 / pending 占位。 */
     private sealed interface Outcome {
@@ -136,9 +135,15 @@ class OnDeviceRaceArbiter(
         data object Pending : Outcome
     }
 
-    suspend fun race(cloud: Deferred<Reply>, local: Deferred<NluResult>): RaceWinner {
-        // B2：非最新轮拦截——快照本轮 utteranceId，候选到达时若已过期则丢弃
-        val uidAtStart = utteranceId()
+    suspend fun race(cloud: Deferred<Reply>, local: Deferred<NluResult>): RaceWinner =
+        race(utteranceId(), cloud, local)
+
+    suspend fun race(
+        turnId: String,
+        cloud: Deferred<Reply>,
+        local: Deferred<NluResult>,
+    ): RaceWinner {
+        val turnPending = pendingByTurn?.channel(turnId) ?: pending
 
         // 阶段 1（cloudWaitMs 窗口，并发等 cloud 与 local，能力分级 2026-08-15）：
         // 两端结果经 Channel 汇合，先注册本地分支（同时完成时本地车窗优先）。
@@ -160,7 +165,7 @@ class OnDeviceRaceArbiter(
                     }
                     val cloudJob = launch { results.send(Outcome.Cloud(cloud.await())) }
                     val pendingJob = launch {
-                        pending.receive()
+                        turnPending.receive()
                         results.send(Outcome.Pending)
                     }
                     val winner = results.receive()
@@ -177,12 +182,11 @@ class OnDeviceRaceArbiter(
                 // 本地车窗开关先到 → 能力分级直接胜出（reason = local_command_won，不等云端）
                 is Outcome.LocalWin -> {
                     onEvent(OnDeviceArbiterEvent.Received("local"))
-                    if (isStale(uidAtStart)) {
-                        onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
+                    if (!claimSemantic(turnId, "local")) {
                         return RaceWinner.Intercepted
                     }
                     onEvent(OnDeviceArbiterEvent.Won("local", "local_command"))
-                    sink.onDecision(decision(route = "local", reason = "local_command_won"))
+                    sink.onDecision(decision(turnId, route = "local", reason = "local_command_won"))
                     // 单赢家：云端语义若已同时到达（本地先赢）→ 记失败（已有命令词胜出）
                     if (completedValue(cloud) != null) {
                         onEvent(OnDeviceArbiterEvent.Received("cloud"))
@@ -194,12 +198,11 @@ class OnDeviceRaceArbiter(
                 // 云端语义先到 → 云端胜出（reason = cloud_won，现逻辑）
                 is Outcome.Cloud -> {
                     onEvent(OnDeviceArbiterEvent.Received("cloud"))
-                    if (isStale(uidAtStart)) {
-                        onEvent(OnDeviceArbiterEvent.Lost("cloud", "not_latest_round"))
+                    if (!claimSemantic(turnId, "cloud")) {
                         return RaceWinner.Intercepted
                     }
                     onEvent(OnDeviceArbiterEvent.Won("cloud", "priority"))
-                    sink.onDecision(decision(route = "cloud", reason = "cloud_won"))
+                    sink.onDecision(decision(turnId, route = "cloud", reason = "cloud_won"))
                     // 单赢家：本地命令词若已到达（云端先赢）→ 记失败（已有云端语义胜出）
                     if (completedValue(local) != null) {
                         onEvent(OnDeviceArbiterEvent.Received("local"))
@@ -226,18 +229,15 @@ class OnDeviceRaceArbiter(
         val nlu = withTimeoutOrNull(localFallbackMs) { local.await() }
         if (nlu != null) {
             onEvent(OnDeviceArbiterEvent.Received("local"))
-            if (isStale(uidAtStart)) {
-                onEvent(OnDeviceArbiterEvent.Lost("local", "not_latest_round"))
-                return RaceWinner.Intercepted
-            }
             // 拒识（语音拒识 = unknown 意图，需求 1 静默）：本地未命中语义不参与仲裁
             // 胜出——云端超时场景直接失败（不执行不播报），避免 unknown 兜底胜出
             if (nlu.intent.isUnknown()) {
                 onEvent(OnDeviceArbiterEvent.Lost("local", "unknown_intent"))
                 return RaceWinner.Failed
             }
+            if (!claimSemantic(turnId, "local")) return RaceWinner.Intercepted
             onEvent(OnDeviceArbiterEvent.Won("local", "cloud_timeout"))
-            sink.onDecision(decision(route = "local", reason = "cloud_timeout_use_local"))
+            sink.onDecision(decision(turnId, route = "local", reason = "cloud_timeout_use_local"))
             // 云端语义若在超时窗口边缘迟到（本地先赢）→ 记失败（已有命令词胜出）
             if (completedValue(cloud) != null) {
                 onEvent(OnDeviceArbiterEvent.Received("cloud"))
@@ -246,24 +246,27 @@ class OnDeviceRaceArbiter(
             return RaceWinner.Local(nlu)
         }
 
-        sink.onDecision(decision(route = "local", reason = "both_failed"))
+        sink.onDecision(decision(turnId, route = "local", reason = "both_failed"))
         return RaceWinner.Failed
     }
 
-    /** B2：语义是否属于过期轮（utteranceId 已刷新）。provider 空（未接 telemetry）时不拦截。 */
-    private fun isStale(uidAtStart: String): Boolean =
-        uidAtStart.isNotBlank() && uidAtStart != utteranceId()
+    /** 本地单链等绕过 race 的路径也必须经过同一份按轮输出账本。 */
+    fun claimSemantic(turnId: String, route: String): Boolean {
+        val accepted = emissionLedger.tryEmit(turnId) == SemanticEmissionResult.ACCEPTED
+        if (!accepted) onEvent(OnDeviceArbiterEvent.Lost(route, "turn_already_output"))
+        return accepted
+    }
 
     /** 输家已完成（成功取到值）→ 语义确实到达过；被取消/未完成/异常返回 null（不算到达）。 */
     private fun <T> completedValue(d: Deferred<T>): T? =
         if (d.isCompleted && !d.isCancelled) runCatching { d.getCompleted() }.getOrNull() else null
 
-    private fun decision(route: String, reason: String): DecisionEntry =
+    private fun decision(turnId: String, route: String, reason: String): DecisionEntry =
         DecisionEntry(
             arbiter = "on-device",
             route = route,
             reason = reason,
-            utteranceId = utteranceId(),
+            utteranceId = turnId,
             timestampMs = clock(),
         )
 }

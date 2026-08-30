@@ -161,12 +161,8 @@ class OnDeviceRaceArbiterTest {
         )
     }
 
-    /**
-     * B2（需求 2/4）：非最新 uid 拦截——race 期间 utteranceId 刷新（新一轮 vad start），
-     * 到达的云端语义属过期轮 → lost(cloud, not_latest_round) 并返回 Intercepted（丢弃），
-     * 不写决策。
-     */
-    @Test fun `stale round cloud semantic is intercepted with not_latest_round`() = runBlocking {
+    /** 仲裁器不持有当前轮：外部 current uid 变化不能拦截已在仲裁的该轮语义。 */
+    @Test fun `current turn changes do not affect cloud arbitration`() = runBlocking {
         val events = mutableListOf<OnDeviceArbiterEvent>()
         var uid = "utt-1"
         val arbiter = OnDeviceRaceArbiter(
@@ -178,23 +174,23 @@ class OnDeviceRaceArbiterTest {
         )
         val cloud = async { delay(100); TextReply("好的") }
         val local = CompletableDeferred<NluResult>()
-        val race = async { arbiter.race(cloud, local) }
-        delay(10) // 让 race 先快照（utt-1）
-        uid = "utt-2" // 竞速中：新一轮 vad start 产生新 utteranceId
+        val race = async { arbiter.race("utt-1", cloud, local) }
+        delay(10)
+        uid = "utt-2"
         val w = race.await()
-        assertTrue(w is RaceWinner.Intercepted, "过期轮的云端语义应被拦截")
+        assertTrue(w is RaceWinner.Cloud)
         assertEquals(
             listOf(
                 OnDeviceArbiterEvent.Received("cloud"),
-                OnDeviceArbiterEvent.Lost("cloud", "not_latest_round"),
+                OnDeviceArbiterEvent.Won("cloud", "priority"),
             ),
             events,
         )
-        assertEquals(0, entries.size, "拦截不写决策")
+        assertEquals("utt-1", entries.single().utteranceId)
     }
 
-    /** 云端超时后本地语义到达时轮已过期 → lost(local, not_latest_round) + Intercepted。 */
-    @Test fun `stale round local semantic is intercepted with not_latest_round`() = runBlocking {
+    /** unknown 是否拒绝只取决于该轮仲裁规则，与状态机当前轮无关。 */
+    @Test fun `current turn changes do not affect local unknown rejection`() = runBlocking {
         val events = mutableListOf<OnDeviceArbiterEvent>()
         var uid = "utt-1"
         val arbiter = OnDeviceRaceArbiter(
@@ -206,19 +202,18 @@ class OnDeviceRaceArbiterTest {
         )
         val cloud = CompletableDeferred<Reply>() // 永不完成 → 云端超时
         val local = async { delay(100); nlu(Intent.unknown("t")) }
-        val race = async { arbiter.race(cloud, local) }
-        delay(10) // 云端超时已发生，等待本地中
+        val race = async { arbiter.race("utt-1", cloud, local) }
+        delay(10)
         uid = "utt-2"
         val w = race.await()
-        assertTrue(w is RaceWinner.Intercepted, "过期轮的本地语义应被拦截")
+        assertTrue(w is RaceWinner.Failed)
         assertEquals(
             listOf(
                 OnDeviceArbiterEvent.Received("local"),
-                OnDeviceArbiterEvent.Lost("local", "not_latest_round"),
+                OnDeviceArbiterEvent.Lost("local", "unknown_intent"),
             ),
             events,
         )
-        assertEquals(0, entries.size, "拦截不写决策")
     }
 
     // ------------------------------------------------------ 能力分级（2026-08-15）：本地车窗直接胜出
@@ -286,8 +281,32 @@ class OnDeviceRaceArbiterTest {
         assertEquals("cloud_won", entries.last().reason)
     }
 
-    /** B2：本地车窗命令到达时轮已过期 → lost(local, not_latest_round) + Intercepted。 */
-    @Test fun `stale window command is intercepted with not_latest_round`() = runBlocking {
+    @Test fun `same turn cannot emit semantic twice`() = runBlocking {
+        val events = mutableListOf<OnDeviceArbiterEvent>()
+        val arbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = 500,
+            sink = sink,
+            onEvent = { events.add(it) },
+        )
+
+        val first = arbiter.race(
+            "turn-1",
+            async { TextReply("第一次") },
+            CompletableDeferred<NluResult>(),
+        )
+        val second = arbiter.race(
+            "turn-1",
+            async { TextReply("第二次") },
+            CompletableDeferred<NluResult>(),
+        )
+
+        assertTrue(first is RaceWinner.Cloud)
+        assertTrue(second is RaceWinner.Intercepted)
+        assertTrue(events.contains(OnDeviceArbiterEvent.Lost("cloud", "turn_already_output")))
+    }
+
+    /** 当前轮变化不属于仲裁职责，本地车窗仍按硬规则胜出。 */
+    @Test fun `current turn changes do not affect window priority`() = runBlocking {
         val events = mutableListOf<OnDeviceArbiterEvent>()
         var uid = "utt-1"
         val arbiter = OnDeviceRaceArbiter(
@@ -298,19 +317,19 @@ class OnDeviceRaceArbiterTest {
             onEvent = { events.add(it) },
         )
         val cloud = CompletableDeferred<Reply>() // 永不完成
-        val race = async { arbiter.race(cloud, async { delay(50); nlu(windowIntent()) }) }
-        delay(10) // 让 race 先快照（utt-1）
-        uid = "utt-2" // 竞速中：新一轮 vad start 产生新 utteranceId
+        val race = async { arbiter.race("utt-1", cloud, async { delay(50); nlu(windowIntent()) }) }
+        delay(10)
+        uid = "utt-2"
         val w = race.await()
-        assertTrue(w is RaceWinner.Intercepted, "过期轮的车窗命令应被拦截")
+        assertTrue(w is RaceWinner.Local)
         assertEquals(
             listOf(
                 OnDeviceArbiterEvent.Received("local"),
-                OnDeviceArbiterEvent.Lost("local", "not_latest_round"),
+                OnDeviceArbiterEvent.Won("local", "local_command"),
             ),
             events,
         )
-        assertEquals(0, entries.size, "拦截不写决策")
+        assertEquals("utt-1", entries.last().utteranceId)
     }
 
     // ------------------------------------------- B5：云端 pending 占位扩展等待窗口

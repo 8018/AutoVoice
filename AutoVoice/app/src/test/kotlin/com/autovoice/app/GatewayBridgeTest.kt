@@ -201,7 +201,6 @@ class GatewayBridgeTest {
             client.connect()
             val old = bridge.newReplySlot("seg-old", "utt-old")
             val newest = bridge.newReplySlot("seg-new", "utt-new")
-            bridge.markLatestTurn("utt-new")
             gateway.sendText(replyFrame("seg-old", "旧轮自然完成"))
             gateway.sendText(replyFrame("seg-new", "新轮回复"))
 
@@ -327,18 +326,20 @@ class GatewayBridgeTest {
         val okHttp = OkHttpClient()
         val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val recognized = Channel<Pair<String, Boolean>>(Channel.BUFFERED)
+        val recognized = Channel<Triple<String, Boolean, String>>(Channel.BUFFERED)
         val bridge = GatewayBridge(
             client = client,
             sink = DecisionSink {},
             scope = bridgeScope,
-            onAsrResult = { text, isFinal -> recognized.trySend(text to isFinal) },
+            onAsrResult = { text, isFinal, turnId ->
+                recognized.trySend(Triple(text, isFinal, turnId))
+            },
         )
         try {
             client.connect()
-            val slot = bridge.newReplySlot("seg-1")
+            val slot = bridge.newReplySlot("seg-1", "turn-1")
             gateway.sendText(partialFrame("asr_partial", "seg-1", "打开车", false))
-            assertEquals("打开车" to false, recognized.receive())
+            assertEquals(Triple("打开车", false, "turn-1"), recognized.receive())
             assertFalse(slot.isCompleted, "ASR partial 只更新识别框，不应等待或完成语义回复")
         } finally {
             bridgeScope.cancel()
@@ -358,7 +359,7 @@ class GatewayBridgeTest {
             client = client,
             sink = DecisionSink {},
             scope = bridgeScope,
-            onReplyText = { text, isFinal -> replies.trySend(text to isFinal) },
+            onReplyText = { text, isFinal, _ -> replies.trySend(text to isFinal) },
         )
         try {
             client.connect()
@@ -389,7 +390,7 @@ class GatewayBridgeTest {
             sink = DecisionSink {},
             scope = bridgeScope,
             pendingSignals = signals,
-            onPendingReceived = { uiCallback++ },
+            onPendingReceived = { _ -> uiCallback++ },
         )
         try {
             client.connect()
@@ -420,7 +421,7 @@ class GatewayBridgeTest {
             sink = DecisionSink {},
             scope = bridgeScope,
             pendingSignals = signals,
-            onPendingReceived = { uiCallback++ },
+            onPendingReceived = { _ -> uiCallback++ },
         )
         try {
             client.connect()
@@ -455,7 +456,7 @@ class GatewayBridgeTest {
             sink = DecisionSink {},
             scope = bridgeScope,
             pendingSignals = signals,
-            onPendingReceived = { uiCallback++ },
+            onPendingReceived = { _ -> uiCallback++ },
         )
         try {
             client.connect()

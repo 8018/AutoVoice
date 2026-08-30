@@ -126,6 +126,10 @@ class AudioRecorder(
     private val bargeInGate = OpenMicBargeInGate()
     private val bargeInPreRoll = ArrayDeque<ByteArray>()
     private var pendingBargeInPreRoll: List<ByteArray> = emptyList()
+    @Volatile
+    private var followUpListening = false
+    @Volatile
+    private var bargeInListening = false
     private val turnProcessingLock = Any()
 
     private val _pcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
@@ -194,6 +198,7 @@ class AudioRecorder(
     /** 播报开始/结束时切换打断 VAD；不创建第二路 AudioRecord。 */
     fun setOpenMicBargeInListening(enabled: Boolean) {
         if (enabled && openMicBargeInAvailable && bargeInVad != null) {
+            bargeInListening = true
             bargeInVad.resetDiagnostics()
             synchronized(bargeInPreRoll) {
                 bargeInPreRoll.clear()
@@ -201,6 +206,22 @@ class AudioRecorder(
             }
             bargeInGate.start()
         } else {
+            bargeInListening = false
+            if (!followUpListening) bargeInGate.stop()
+        }
+    }
+
+    /** 播报真正结束后的免唤醒窗口；复用同一 VAD/预卷缓冲，但不要求 AEC。 */
+    fun setFollowUpListening(enabled: Boolean) {
+        followUpListening = enabled && bargeInVad != null
+        if (followUpListening) {
+            bargeInVad?.resetDiagnostics()
+            synchronized(bargeInPreRoll) {
+                bargeInPreRoll.clear()
+                pendingBargeInPreRoll = emptyList()
+            }
+            bargeInGate.start()
+        } else if (!bargeInListening) {
             bargeInGate.stop()
         }
     }
@@ -208,7 +229,7 @@ class AudioRecorder(
     /** 待机原始 PCM 同时喂给打断 VAD；每次播报最多触发一次。 */
     fun detectOpenMicBargeIn(block: ByteArray): Boolean {
         val vad = bargeInVad ?: return false
-        if (!openMicBargeInAvailable || turnActive || !bargeInGate.listening) return false
+        if (!bargeInListening || !openMicBargeInAvailable || turnActive || !bargeInGate.listening) return false
         synchronized(bargeInPreRoll) {
             bargeInPreRoll.addLast(block.copyOf())
             while (bargeInPreRoll.size > BARGE_IN_PRE_ROLL_BLOCKS) bargeInPreRoll.removeFirst()
@@ -218,6 +239,22 @@ class AudioRecorder(
             synchronized(bargeInPreRoll) {
                 pendingBargeInPreRoll = bargeInPreRoll.toList()
             }
+        }
+        return triggered
+    }
+
+    /** 延时聆听期检测到连续人声后仅触发 capture；是否形成 turn 仍由 ASR/语义准入确认。 */
+    fun detectFollowUpSpeech(block: ByteArray): Boolean {
+        val vad = bargeInVad ?: return false
+        if (!followUpListening || turnActive || !bargeInGate.listening) return false
+        synchronized(bargeInPreRoll) {
+            bargeInPreRoll.addLast(block.copyOf())
+            while (bargeInPreRoll.size > BARGE_IN_PRE_ROLL_BLOCKS) bargeInPreRoll.removeFirst()
+        }
+        val triggered = bargeInGate.feed(vad.feed(block))
+        if (triggered) {
+            followUpListening = false
+            synchronized(bargeInPreRoll) { pendingBargeInPreRoll = bargeInPreRoll.toList() }
         }
         return triggered
     }
@@ -300,6 +337,8 @@ class AudioRecorder(
     override fun close() {
         monitoringRequested = false
         turnActive = false
+        followUpListening = false
+        bargeInListening = false
         stopCapture()
         try {
             vadSegmenter?.close()
@@ -453,6 +492,8 @@ class AudioRecorder(
     }
 
     private fun releaseCaptureEffects() {
+        followUpListening = false
+        bargeInListening = false
         bargeInGate.stop()
         openMicBargeInAvailable = false
         runCatching { echoCanceler?.release() }

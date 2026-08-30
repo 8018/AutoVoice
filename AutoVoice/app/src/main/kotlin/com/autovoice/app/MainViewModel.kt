@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent as AndroidIntent
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,6 +22,8 @@ import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
+import com.autovoice.voicecore.dialog.DialogueSnapshot
+import com.autovoice.voicecore.dialog.DialogueState
 import com.autovoice.voicecore.session.SessionState
 import java.io.File
 import java.time.Instant
@@ -184,6 +187,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var wakeSetupJob: Job? = null
     private var wakeTurnTimeoutJob: Job? = null
     private var navigationDialogTimeoutJob: Job? = null
+    private var followUpTimeoutJob: Job? = null
+    private var timedInteractionId: String? = null
+    private var interactionStartedAtMs = 0L
 
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
@@ -211,6 +217,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     if (recorder.detectOpenMicBargeIn(block)) {
                         viewModelScope.launch { onOpenMicBargeInDetected() }
+                    } else if (recorder.detectFollowUpSpeech(block)) {
+                        viewModelScope.launch { onFollowUpSpeechDetected() }
                     }
                 }
             }
@@ -241,13 +249,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 开始录音（唤醒命中或调试 API；幂等）：清段缓冲 → 启动录音 → 会话进 LISTENING
      * （engine 按网络状态恢复/挂起云端路由）。权限缺失时 recorder 静默失败 → 提示授权。
      */
-    fun startRecording() = startRecording(fromWake = false)
+    fun startRecording() {
+        engine.onWake()
+        startRecording(fromWake = false)
+    }
 
     private fun startRecording(fromWake: Boolean, includeBargeInPreRoll: Boolean = false) {
         if (recording) return
+        followUpTimeoutJob?.cancel()
+        followUpTimeoutJob = null
+        recorder.setFollowUpListening(false)
         pauseWakeObservation()
-        // barge-in：只停止旧轮播放，不取消端侧/云端候选。后续旧结果由
-        // VoiceEngine/VoiceSession 的 utteranceId 最新轮闸门拦截。
+        // barge-in：只停止旧轮播放，不取消端侧/云端候选。仲裁输出随后由本地
+        // DialogueStateMachine 判断是否仍属于当前 turn。
         val interruptedPlayback = ttsPlayer.isSpeaking()
         if (interruptedPlayback) {
             Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
@@ -305,6 +319,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 前台可见范围内监听；退到后台停止共享麦克风，避免无前台服务的隐式常驻录音。 */
     fun onBackground() {
         foreground = false
+        stopFollowUpListening(resetDialogue = true)
         // 导航 Activity 覆盖本应用时 AudioRecord 必须释放。同时取消尚未完成的初始化，
         // 防止它在 onStop 之后反向重新 arm。IVW 原生 handle 必须保留：此 SDK 在同一
         // AIKit 进程中 end 后重新 start 会持续返回 10005；前台恢复时 observer 会把
@@ -436,6 +451,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun onWakeDetected(keyword: String) {
         if (!foreground || recording) return
         Log.i(TAG, "离线唤醒命中：$keyword${if (ttsPlayer.isSpeaking()) "（barge-in）" else ""}")
+        engine.onWake()
         startRecording(fromWake = true)
     }
 
@@ -444,6 +460,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Log.i(TAG, "播报期检测到用户语音，开始开放式 barge-in")
         // 与唤醒轮共用 VAD SpeechEnd/超时自动收口；只停播放，不取消旧轮候选。
         startRecording(fromWake = true, includeBargeInPreRoll = true)
+    }
+
+    private fun onFollowUpSpeechDetected() {
+        if (!foreground || recording || chatLocked) return
+        Log.i(TAG, "延时聆听检测到人声，建立临时 capture")
+        followUpTimeoutJob?.cancel()
+        followUpTimeoutJob = null
+        startRecording(fromWake = true, includeBargeInPreRoll = true)
+    }
+
+    private fun handleDialogueState(snapshot: DialogueSnapshot) {
+        snapshot.interactionId?.takeIf { it != timedInteractionId }?.let {
+            timedInteractionId = it
+            interactionStartedAtMs = SystemClock.elapsedRealtime()
+        }
+        val state = when (snapshot.state) {
+            DialogueState.DORMANT -> SessionState.IDLE
+            DialogueState.AWAKE,
+            DialogueState.SPEECH_CANDIDATE,
+            DialogueState.FOLLOW_UP_LISTENING,
+            -> SessionState.LISTENING
+            DialogueState.THINKING,
+            DialogueState.SEMANTIC_PROCESSING,
+            DialogueState.RESPONDING,
+            -> SessionState.UNDERSTANDING
+            DialogueState.SPEAKING -> SessionState.SPEAKING
+        }
+        _uiState.update { it.copy(sessionState = state) }
+        if (snapshot.state == DialogueState.FOLLOW_UP_LISTENING) {
+            armFollowUpListening(snapshot)
+        } else if (snapshot.state == DialogueState.DORMANT) {
+            timedInteractionId = null
+            interactionStartedAtMs = 0L
+            stopFollowUpListening(resetDialogue = false)
+            rearmWakeWhenIdle()
+        }
+    }
+
+    private fun armFollowUpListening(snapshot: DialogueSnapshot) {
+        val interactionId = snapshot.interactionId ?: return
+        if (chatLocked || !foreground) return
+        pauseWakeObservation()
+        if (!recorder.startMonitoring()) {
+            engine.onFollowUpExpired(interactionId)
+            return
+        }
+        recorder.setFollowUpListening(true)
+        followUpTimeoutJob?.cancel()
+        val requestedWindow = if (_uiState.value.navigationCandidates.isNotEmpty()) {
+            NAVIGATION_FOLLOW_UP_LISTEN_MS
+        } else {
+            FOLLOW_UP_LISTEN_MS
+        }
+        val absoluteRemaining = (MAX_INTERACTION_MS -
+            (SystemClock.elapsedRealtime() - interactionStartedAtMs)).coerceAtLeast(0L)
+        val timeoutMs = minOf(requestedWindow, absoluteRemaining)
+        followUpTimeoutJob = viewModelScope.launch {
+            delay(timeoutMs)
+            if (engine.dialogue.snapshot.value.interactionId == interactionId && !recording) {
+                recorder.setFollowUpListening(false)
+                engine.onFollowUpExpired(interactionId)
+            }
+        }
+    }
+
+    private fun stopFollowUpListening(resetDialogue: Boolean) {
+        followUpTimeoutJob?.cancel()
+        followUpTimeoutJob = null
+        recorder.setFollowUpListening(false)
+        if (resetDialogue) engine.resetDialogue()
     }
 
     private fun onWakeFailure(error: Throwable) {
@@ -651,15 +737,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // B5：云端 LLM 处理中占位 → Header"处理中…"徽标（清除由引擎收口）
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
             onConversationMode = ::setChatMode,
+            onDialogueState = ::handleDialogueState,
         )
-        engine.session.onState { state ->
-            _uiState.update {
-                it.copy(sessionState = if (chatLocked && state == SessionState.IDLE) {
-                    SessionState.LISTENING
-                } else state)
-            }
-            if (state == SessionState.IDLE) rearmWakeWhenIdle()
-        }
         return engine
     }
 
@@ -724,6 +803,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wakeTurnTimeoutJob?.cancel()
         wakeSetupJob?.cancel()
         navigationDialogTimeoutJob?.cancel()
+        followUpTimeoutJob?.cancel()
         wakeObserver.close()
         engine.close() // 断开网关 + 取消引擎作用域（Task 21）
         recorder.close()
@@ -754,5 +834,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         /** 与服务端候选状态一致：两分钟无选择自动收起应用内弹窗。 */
         const val NAVIGATION_DIALOG_TTL_MS = 120_000L
+
+        /** 普通回复真实播报结束后保持的免唤醒窗口。 */
+        const val FOLLOW_UP_LISTEN_MS = 10_000L
+
+        /** 导航候选明确期待用户选择，给更长的免唤醒窗口。 */
+        const val NAVIGATION_FOLLOW_UP_LISTEN_MS = 30_000L
+
+        /** 防止多次误报/追问让同一 interaction 无限续期。 */
+        const val MAX_INTERACTION_MS = 60_000L
     }
 }
