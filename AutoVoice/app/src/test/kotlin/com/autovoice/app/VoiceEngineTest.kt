@@ -174,6 +174,7 @@ class VoiceEngineTest {
         /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
         pending: Channel<Unit> = Channel(),
+        streamingCloud: StreamingCloudRunner? = null,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
         // B2：仲裁器 utteranceId 延迟绑定引擎会话（生产 create() 同款 engineRef 模式，
@@ -230,9 +231,38 @@ class VoiceEngineTest {
             onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
             onCloudWon = onCloudWon,
+            streamingCloud = streamingCloud,
         )
         engineRef = engine
         return engine to vehicle
+    }
+
+    @Test
+    fun `vad lifecycle starts appends and finishes streaming cloud turn`() = runBlocking {
+        val events = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) { events += "start:$utteranceId" }
+            override fun appendStreamingAudio(pcm: ByteArray) { events += "chunk:${pcm.size}" }
+            override fun finishStreamingTurn(utteranceId: String) { events += "finish:$utteranceId" }
+            override fun cancelStreamingTurn(utteranceId: String) { events += "cancel:$utteranceId" }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("ok") },
+            streamingCloud = streaming,
+        )
+
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.appendStreamingCloudAudio(ByteArray(960))
+        engine.onVadEnd()
+        engine.finishStreamingCloudAudio()
+
+        assertEquals(3, events.size)
+        assertTrue(events[0].startsWith("start:"))
+        assertEquals("chunk:960", events[1])
+        assertEquals(events[0].removePrefix("start:"), events[2].removePrefix("finish:"))
     }
 
     /**

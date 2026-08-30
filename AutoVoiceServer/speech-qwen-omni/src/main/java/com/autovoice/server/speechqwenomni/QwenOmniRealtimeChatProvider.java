@@ -128,6 +128,15 @@ public final class QwenOmniRealtimeChatProvider {
                         suppressCurrentResponse.set(true);
                         sink.onUserSpeechStarted();
                     }
+                    case "conversation.item.input_audio_transcription.delta" -> {
+                        String preview = event.path("text").asText("")
+                                + event.path("stash").asText("");
+                        if (!preview.isBlank()) sink.onUserTranscript(preview, false);
+                    }
+                    case "conversation.item.input_audio_transcription.completed" -> {
+                        String complete = event.path("transcript").asText("");
+                        if (!complete.isBlank()) sink.onUserTranscript(complete, true);
+                    }
                     case "response.audio.delta" -> {
                         if (suppressCurrentResponse.get()) return;
                         if (audioStarted.compareAndSet(false, true)) {
@@ -241,7 +250,9 @@ public final class QwenOmniRealtimeChatProvider {
             modalities.add("text").add("audio");
             session.put("voice", voice);
             session.put("instructions", configuredPrompt());
-            session.put("enable_input_audio_transcription", false);
+            session.put("enable_input_audio_transcription", true);
+            session.putObject("input_audio_transcription")
+                    .put("model", "qwen3-asr-flash-realtime");
             ObjectNode audio = session.putObject("audio");
             audio.putObject("input").putObject("format").put("type", "pcm").put("sample_rate", 16_000);
             audio.putObject("output").putObject("format").put("type", "pcm").put("sample_rate", 24_000);

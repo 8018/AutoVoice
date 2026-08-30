@@ -102,6 +102,14 @@ private interface RealtimeChatRunner {
     fun finishRealtimeChat()
 }
 
+/** 普通业务域的一轮实时上行；与持续全双工闲聊相互独立。 */
+interface StreamingCloudRunner {
+    fun beginStreamingTurn(utteranceId: String)
+    fun appendStreamingAudio(pcm: ByteArray)
+    fun finishStreamingTurn(utteranceId: String)
+    fun cancelStreamingTurn(utteranceId: String)
+}
+
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
 private const val CLOUD_CHUNK_BYTES = 16_384
 
@@ -186,6 +194,7 @@ class VoiceEngine(
     private val onConversationMode: (Boolean) -> Unit = {},
     /** 本地交互状态；只由 DialogueStateMachine 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     private val onDialogueState: (DialogueSnapshot) -> Unit = {},
+    private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
     val dialogue = DialogueStateMachine()
@@ -367,6 +376,7 @@ class VoiceEngine(
         admission.open(currentUtteranceId)
         onDialogueState(dialogue.onVadStart(currentUtteranceId))
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
+        streamingCloud?.beginStreamingTurn(currentUtteranceId)
     }
 
     /**
@@ -376,6 +386,20 @@ class VoiceEngine(
     fun onVadEnd() {
         if (currentUtteranceId.isBlank() || awaitingVadStart) return
         telemetry.record(TelemetryStages.VAD_END, "info", emptyMap())
+    }
+
+    fun appendStreamingCloudAudio(pcm: ByteArray) {
+        if (pcm.isNotEmpty()) streamingCloud?.appendStreamingAudio(pcm)
+    }
+
+    /** 按钮抬手时 VAD 可能尚未产生 SpeechEnd，显式收口，幂等。 */
+    fun finishStreamingCloudAudio() {
+        streamingCloud?.finishStreamingTurn(currentUtteranceId)
+    }
+
+    /** VAD 误报/过短录音不形成业务轮时，撤销已经预先打开的实时上行。 */
+    fun cancelStreamingCloudAudio() {
+        streamingCloud?.cancelStreamingTurn(currentUtteranceId)
     }
 
     /**
@@ -789,7 +813,8 @@ class VoiceEngine(
             )
             cloudRunner.onAsrResult = { text, _, turnId ->
                 if (text.isNotBlank()) {
-                    engineRef?.onRecognized(turnId, text, AdmissionEvidence.CLOUD_ASR)
+                    if (turnId.isBlank()) onLocalRecognized(text)
+                    else engineRef?.onRecognized(turnId, text, AdmissionEvidence.CLOUD_ASR)
                         ?: onLocalRecognized(text)
                 }
             }
@@ -891,6 +916,7 @@ class VoiceEngine(
                 onConversationMode = onConversationMode,
                 onCloudWon = cloudRunner::releaseReplyText,
                 onDialogueState = onDialogueState,
+                streamingCloud = cloudRunner,
             )
             engineRef = engine
             cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
@@ -1086,7 +1112,7 @@ private class GatewayCloudRunner(
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
-) : CloudRunner, TtsRequester, RealtimeChatRunner {
+) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClient(
         url = cfg.gatewayUrl,
@@ -1131,6 +1157,15 @@ private class GatewayCloudRunner(
     private var realtimeChatDesired = false
 
     private val realtimeReconnectRunning = AtomicBoolean(false)
+
+    private data class LiveUpload(
+        val utteranceId: String,
+        val segmentId: String = UUID.randomUUID().toString(),
+        val chunks: Channel<ByteArray> = Channel(Channel.UNLIMITED),
+        val reply: CompletableDeferred<Reply> = CompletableDeferred(),
+    )
+
+    private val liveUpload = AtomicReference<LiveUpload?>(null)
 
     /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
@@ -1227,6 +1262,10 @@ private class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        liveUpload.getAndSet(null)?.let {
+            it.chunks.close(CancellationException("gateway runner closed"))
+            it.reply.cancel()
+        }
         finishRealtimeChat()
         client.disconnect()
     }
@@ -1252,6 +1291,87 @@ private class GatewayCloudRunner(
         readyReceived = true
         onReadySessionId(sessionId)
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
+    }
+
+    override fun beginStreamingTurn(utteranceId: String) {
+        if (!cfg.enabled || utteranceId.isBlank()) return
+        val upload = LiveUpload(utteranceId)
+        while (true) {
+            val previous = liveUpload.get()
+            // 同一按钮轮可能包含多个 VAD 段；它们属于同一条业务音频流。
+            if (previous?.utteranceId == utteranceId) return
+            if (liveUpload.compareAndSet(previous, upload)) {
+                previous?.chunks?.close(CancellationException("superseded by new streaming turn"))
+                previous?.reply?.cancel()
+                break
+            }
+        }
+        scope.launch { executeLiveUpload(upload) }
+    }
+
+    override fun appendStreamingAudio(pcm: ByteArray) {
+        if (pcm.isNotEmpty()) liveUpload.get()?.chunks?.trySend(pcm.copyOf())
+    }
+
+    override fun finishStreamingTurn(utteranceId: String) {
+        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.chunks?.close()
+    }
+
+    override fun cancelStreamingTurn(utteranceId: String) {
+        val upload = liveUpload.get()?.takeIf { it.utteranceId == utteranceId } ?: return
+        if (!liveUpload.compareAndSet(upload, null)) return
+        upload.chunks.cancel(CancellationException("streaming turn discarded"))
+        upload.reply.cancel()
+        if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
+            runCatching { client.sendCancelTurn(upload.segmentId) }
+        }
+        bridge.cancelStream(upload.segmentId)
+    }
+
+    private suspend fun executeLiveUpload(upload: LiveUpload) {
+        val slot = bridge.newReplySlot(upload.segmentId, upload.utteranceId)
+        try {
+            ensureReady()
+            val location = locationProvider()
+            client.sendAudioStart(
+                sessionId,
+                upload.segmentId,
+                upload.utteranceId,
+                location?.first,
+                location?.second,
+            )
+            for (chunk in upload.chunks) client.sendAudioChunk(chunk)
+            client.sendAudioEnd(sessionId)
+            upload.reply.complete(slot.await())
+        } catch (cancelled: CancellationException) {
+            if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
+                runCatching { client.sendCancelTurn(upload.segmentId) }
+            }
+            bridge.cancelStream(upload.segmentId)
+            upload.reply.cancel(cancelled)
+        } catch (error: GatewayRemoteException) {
+            if (error.code == "CONNECTION_FAILED" || error.code == "CONNECTION_CLOSED") {
+                readyReceived = false
+                sessionId = ""
+                client.disconnect()
+            }
+            upload.reply.completeExceptionally(
+                if (error.code == "CONNECTION_FAILED" || error.code == "CONNECTION_CLOSED") {
+                    CloudUnavailableException("流式云端链路故障：${error.message}", error)
+                } else {
+                    CloudRequestFailedException("流式云端请求失败（${error.code}）：${error.message}", error)
+                },
+            )
+        } catch (error: GatewayException) {
+            readyReceived = false
+            sessionId = ""
+            client.disconnect()
+            upload.reply.completeExceptionally(
+                CloudUnavailableException("流式云端链路故障：${error.message}", error),
+            )
+        } finally {
+            bridge.clearReplySlot(slot)
+        }
     }
 
     override suspend fun startRealtimeChat() {
@@ -1284,6 +1404,14 @@ private class GatewayCloudRunner(
         run(segment, utteranceIdProvider())
 
     override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
+        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.let { upload ->
+            upload.chunks.close()
+            return try {
+                upload.reply.await()
+            } finally {
+                liveUpload.compareAndSet(upload, null)
+            }
+        }
         pendingReplyText.remove(utteranceId)
         releasedReplyTurns.remove(utteranceId)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
@@ -1507,6 +1635,12 @@ internal class GatewayBridge(
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
             "asr_partial" -> {
+                if (msg.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
+                    val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+                    val final = msg.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+                    onAsrResult(text, final, "")
+                    return
+                }
                 val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
                 val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return

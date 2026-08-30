@@ -2,7 +2,10 @@ package com.autovoice.server.asrgateway;
 
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -22,6 +25,9 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
+import java.util.ArrayDeque;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -40,7 +46,7 @@ import java.util.concurrent.TimeoutException;
  * <p>错误语义：鉴权失败 / HTTP 非 2xx / code 非 0 / JSON 解析失败 / IO 异常 / 超时
  * 全部包装为 {@link AsrException}（ASR 侧失败，由调用方按 AsrProvider 契约处理）。</p>
  */
-public final class IflytekIatAsrProvider implements AsrProvider {
+public final class IflytekIatAsrProvider implements StreamingAsrProvider {
 
     /** 讯飞语音听写（流式版）默认地址。 */
     public static final String DEFAULT_ENDPOINT = "wss://iat-api.xfyun.cn/v2/iat";
@@ -93,24 +99,25 @@ public final class IflytekIatAsrProvider implements AsrProvider {
 
     @Override
     public String transcribe(byte[] pcm16k, SessionContext ctx) {
-        HttpUrl url = buildSignedUrl();
-        CompletableFuture<String> result = new CompletableFuture<>();
-        WebSocket ws = client.newWebSocket(
-                new Request.Builder().url(url).build(),
-                new IatListener(result, pcm16k));
+        StreamingAsrSession session = start(ctx, OnlineAsrSink.NOOP);
+        session.append(pcm16k);
         try {
-            return result.get(timeoutMs, TimeUnit.MILLISECONDS);
+            return session.finish().get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            ws.cancel();
+            session.cancel();
             throw new AsrException("iflytek iat timed out after " + timeoutMs + "ms", e);
         } catch (Exception e) {
-            // InterruptedException / ExecutionException（listener 已把失败包装为 AsrException）
-            ws.cancel();
+            session.cancel();
             if (e.getCause() instanceof AsrException asr) {
                 throw asr;
             }
             throw new AsrException("iflytek iat failed: " + e.getMessage(), e);
         }
+    }
+
+    @Override
+    public StreamingAsrSession start(SessionContext ctx, OnlineAsrSink sink) {
+        return new IatSession(sink == null ? OnlineAsrSink.NOOP : sink);
     }
 
     // ------------------------------------------------------------------ 签名
@@ -154,40 +161,84 @@ public final class IflytekIatAsrProvider implements AsrProvider {
 
     // ------------------------------------------------------------------ 帧协议
 
-    /** 客户端 WS 监听器：onOpen 分帧发送 PCM，onMessage 累积结果文本。 */
-    private final class IatListener extends WebSocketListener {
+    /** 一轮听写会话：保留最后一块直到 finish，以正确发送 status=2 终帧。 */
+    private final class IatSession extends WebSocketListener implements StreamingAsrSession {
 
         private final CompletableFuture<String> result;
-        private final byte[] pcm;
-        private final StringBuilder text = new StringBuilder();
+        private final OnlineAsrSink sink;
+        private final ArrayDeque<byte[]> queued = new ArrayDeque<>();
+        private final NavigableMap<Integer, String> pieces = new TreeMap<>();
+        private WebSocket socket;
+        private boolean opened;
+        private boolean finishing;
+        private boolean firstFrame = true;
+        private int fallbackSequence;
 
-        IatListener(CompletableFuture<String> result, byte[] pcm) {
-            this.result = result;
-            this.pcm = pcm;
+        IatSession(OnlineAsrSink sink) {
+            this.result = new CompletableFuture<>();
+            this.sink = sink;
+            this.socket = client.newWebSocket(
+                    new Request.Builder().url(buildSignedUrl()).build(), this);
         }
 
         @Override
-        public void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
-            // WS 升级成功响应是 101 Switching Protocols；isSuccessful() 只覆盖 2xx
+        public synchronized void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
             if (response.code() != 101 && !response.isSuccessful()) {
                 result.completeExceptionally(
                         new AsrException("iflytek iat handshake failed: HTTP " + response.code()));
                 ws.close(1000, "bad handshake");
                 return;
             }
-            try {
-                int frames = (pcm.length + FRAME_BYTES - 1) / FRAME_BYTES; // 向上取整
-                for (int i = 0; i < frames; i++) {
-                    int start = i * FRAME_BYTES;
-                    int end = Math.min(start + FRAME_BYTES, pcm.length);
-                    // 首帧 0、中间帧 1，最后一帧必须是 2（单帧音频整帧即尾帧，照讯飞 demo 语义）
-                    int status = i == frames - 1 ? 2 : (i == 0 ? 0 : 1);
-                    ws.send(frame(status, java.util.Arrays.copyOfRange(pcm, start, end)));
-                }
-            } catch (Exception e) {
-                result.completeExceptionally(new AsrException("iflytek iat frame build failed: " + e.getMessage(), e));
-                ws.close(1000, "frame build failed");
+            socket = ws;
+            opened = true;
+            drain();
+        }
+
+        @Override public synchronized void append(byte[] pcm16k) {
+            if (finishing || result.isDone() || pcm16k == null || pcm16k.length == 0) return;
+            for (int offset = 0; offset < pcm16k.length; offset += FRAME_BYTES) {
+                int end = Math.min(offset + FRAME_BYTES, pcm16k.length);
+                queued.add(java.util.Arrays.copyOfRange(pcm16k, offset, end));
             }
+            drain();
+        }
+
+        @Override public synchronized CompletableFuture<String> finish() {
+            finishing = true;
+            drain();
+            return result;
+        }
+
+        @Override public synchronized void cancel() {
+            finishing = true;
+            queued.clear();
+            if (socket != null) socket.cancel();
+            result.cancel(true);
+        }
+
+        private void drain() {
+            if (!opened || result.isDone()) return;
+            try {
+                while (queued.size() > 1) sendNext(false);
+                if (finishing) {
+                    byte[] last = queued.isEmpty() ? new byte[0] : queued.removeFirst();
+                    send(last, 2);
+                }
+            } catch (RuntimeException e) {
+                result.completeExceptionally(new AsrException("iflytek iat frame send failed", e));
+                socket.cancel();
+            }
+        }
+
+        private void sendNext(boolean last) {
+            send(queued.removeFirst(), last ? 2 : (firstFrame ? 0 : 1));
+        }
+
+        private void send(byte[] audio, int status) {
+            if (!socket.send(frame(status, audio))) {
+                throw new AsrException("iflytek iat websocket send rejected");
+            }
+            firstFrame = false;
         }
 
         @Override
@@ -208,14 +259,33 @@ public final class IflytekIatAsrProvider implements AsrProvider {
                 return;
             }
             JsonNode data = root.path("data");
-            for (JsonNode wsNode : data.path("result").path("ws")) {
+            JsonNode recognition = data.path("result");
+            StringBuilder fragment = new StringBuilder();
+            for (JsonNode wsNode : recognition.path("ws")) {
                 for (JsonNode cw : wsNode.path("cw")) {
-                    text.append(cw.path("w").asText());
+                    fragment.append(cw.path("w").asText());
                 }
             }
+            String pgs = recognition.path("pgs").asText();
+            int sequence = recognition.path("sn").asInt(fallbackSequence++);
+            // 老接口/测试桩可能固定返回同一个 sn 且不带 PGS；保持原来的追加语义。
+            if (pgs.isBlank() && pieces.containsKey(sequence)) {
+                sequence = pieces.isEmpty() ? sequence : pieces.lastKey() + 1;
+            }
+            if ("rpl".equals(pgs)
+                    && recognition.path("rg").isArray() && recognition.path("rg").size() == 2) {
+                int from = recognition.path("rg").get(0).asInt();
+                int to = recognition.path("rg").get(1).asInt();
+                pieces.subMap(from, true, to, true).clear();
+            }
+            pieces.put(sequence, fragment.toString());
+            String text = String.join("", pieces.values());
             if (data.path("status").asInt() == 2) {
-                result.complete(text.toString());
+                sink.onResult(text, true);
+                result.complete(text);
                 ws.close(1000, "done"); // 终帧已收：结果确定，主动关闭
+            } else if (!text.isBlank()) {
+                sink.onResult(text, false);
             }
         }
 

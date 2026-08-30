@@ -6,8 +6,10 @@ import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
+import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.RealtimeChatProvider;
 import com.autovoice.server.contracts.RealtimeChatSession;
@@ -41,6 +43,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -246,6 +249,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 byte[] bytes = new byte[buf.remaining()];
                 buf.get(bytes);
                 st.pcm.writeBytes(bytes);
+                OnlineSpeechStream stream = st.onlineStream;
+                if (stream != null) {
+                    try { stream.append(bytes); }
+                    catch (RuntimeException error) {
+                        stream.cancel();
+                        st.onlineStream = null;
+                        LOG.warn("streaming ASR append failed; batch fallback on audio_end", error);
+                    }
+                }
             }
             return;
         }
@@ -290,6 +302,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private void removeConnection(WebSocketSession session) {
         ConnectionState st = connections.remove(session);
         if (st != null) {
+            if (st.onlineStream != null) st.onlineStream.cancel();
             closeRealtimeChat(st);
             st.connExecutor.shutdownNow();
             activeConnections.decrementAndGet();
@@ -345,6 +358,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 responseSegment = null;
                 responseStarted = false;
                 send(session, "chat_speech_started", Map.of("sessionId", st.ctx.sessionId()));
+            }
+
+            @Override public void onUserTranscript(String text, boolean isFinal) {
+                if (text == null || text.isBlank()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("text", text);
+                payload.put("isFinal", isFinal);
+                payload.put("chat", true);
+                send(session, "asr_partial", payload);
             }
 
             @Override public void onStart(int sampleRate, int channels, String encoding) {
@@ -464,6 +486,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 ? clientUtteranceId
                 : "u-" + ++st.segmentSeq; // 兼容旧客户端：无 utteranceId 时回退自增
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        if (st.onlineStream != null) st.onlineStream.cancel();
+        try {
+            // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
+            st.onlineStream = online.openStream(st.ctx, st.utteranceId,
+                    OnlineAudioSink.NOOP, asrSink(st.session, st, st.segmentId));
+        } catch (RuntimeException error) {
+            st.onlineStream = null;
+            LOG.warn("streaming ASR start failed; batch fallback on audio_end", error);
+        }
         // 云端"最新会话拦截"（与端侧 isStale 同构）：处理中又来新话语（不同 utteranceId）→
         // 立即 void 在途轮；同 utteranceId 的 attempt 重发不触发（幂等重放，protocol.md §3.2）。
         // 不取消在途 provider 调用（拦截而非取消），其结果在仲裁器/音频门丢弃。
@@ -497,6 +528,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.audioActive = false;
         if (st.processing) {
             LOG.warn("segment dropped: previous segment still processing (session={})", st.ctx.sessionId());
+            if (st.onlineStream != null) {
+                st.onlineStream.cancel();
+                st.onlineStream = null;
+            }
+            st.pcm.reset();
             sendError(session, st, "BUSY", "previous segment still processing");
             return;
         }
@@ -505,9 +541,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         SessionContext ctx = st.ctx;
         String utteranceId = st.utteranceId;
         String segmentId = st.segmentId;
+        OnlineSpeechStream onlineStream = st.onlineStream;
+        st.onlineStream = null;
         st.processingUtteranceId = utteranceId;
         st.processingSegmentId = segmentId;
-        st.connExecutor.submit(() -> processSegment(session, st, pcm, ctx, utteranceId, segmentId));
+        st.connExecutor.submit(() -> processSegment(
+                session, st, pcm, ctx, utteranceId, segmentId, onlineStream));
     }
 
     private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
@@ -522,6 +561,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         } else if (segmentId.equals(st.segmentId)) {
             // 累积段尚未提交：无 decide() 在途，worker 起动时 isCancelled 早退即可
             st.cancelledSegments.add(segmentId);
+            if (st.onlineStream != null) {
+                st.onlineStream.cancel();
+                st.onlineStream = null;
+            }
         }
     }
 
@@ -532,16 +575,25 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
      */
     private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
                                 SessionContext ctx, String utteranceId, String segmentId) {
+        processSegment(session, st, pcm, ctx, utteranceId, segmentId, null);
+    }
+
+    private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
+                                SessionContext ctx, String utteranceId, String segmentId,
+                                OnlineSpeechStream inputStream) {
         try {
             if (pcm.length == 0) {
+                if (inputStream != null) inputStream.cancel();
                 return;
             }
             if (isCancelled(st, segmentId)) {
+                if (inputStream != null) inputStream.cancel();
                 return;
             }
             TurnKey turnKey = new TurnKey(st.deviceId != null ? st.deviceId : ctx.sessionId(), utteranceId);
             CachedTurn cached = completedTurns.get(turnKey);
             if (cached != null && cached.expiresAtMs() > System.currentTimeMillis()) {
+                if (inputStream != null) inputStream.cancel();
                 // 流式首发的重放改成单帧 reply；结果携带完整音频，端侧仍走统一播放器。
                 sendReply(session, st, cached.result(), segmentId);
                 return;
@@ -549,8 +601,25 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (cached != null) completedTurns.remove(turnKey, cached);
             SegmentPipeline.SegmentResult result;
             try {
+                CompletableFuture<OnlineSpeechResult> onlineCandidate = null;
+                if (inputStream != null) {
+                    try {
+                        CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
+                        OnlineAsrSink fallbackAsr = asrSink(session, st, segmentId);
+                        onlineCandidate = streamed.handle((value, error) -> {
+                            if (error == null) return CompletableFuture.completedFuture(value);
+                            LOG.warn("streaming ASR failed; retrying once with buffered PCM", error);
+                            return online.process(pcm, ctx, utteranceId,
+                                    OnlineAudioSink.NOOP, fallbackAsr);
+                        }).thenCompose(future -> future);
+                    }
+                    catch (RuntimeException error) {
+                        LOG.warn("streaming ASR finish failed; batch fallback", error);
+                    }
+                }
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
-                        streamSink(session, st, segmentId), asrSink(session, st, segmentId));
+                        streamSink(session, st, segmentId), asrSink(session, st, segmentId),
+                        onlineCandidate);
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
@@ -652,7 +721,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** ASR/PGS 旁路：不经过语义仲裁门，识别一出字就下发；仅拦截取消/过期轮。 */
     private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st, String segmentId) {
         return (text, isFinal) -> {
-            if (segmentId == null || !segmentId.equals(st.processingSegmentId)
+            boolean active = segmentId != null && (segmentId.equals(st.segmentId)
+                    || segmentId.equals(st.processingSegmentId));
+            if (!active
                     || isCancelled(st, segmentId) || text == null || text.isBlank()) return;
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("segmentId", segmentId);
@@ -891,6 +962,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         long chatResponseSeq;
         boolean audioActive;
         volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
+        volatile OnlineSpeechStream onlineStream;
         long segmentSeq;
     }
 

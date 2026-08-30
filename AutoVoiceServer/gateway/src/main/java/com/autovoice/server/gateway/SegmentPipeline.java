@@ -125,6 +125,14 @@ public final class SegmentPipeline {
     public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
                                        String segmentId, OnlineAudioSink downstreamAudio,
                                        OnlineAsrSink downstreamAsr) {
+        return handleSegment(pcm, ctx, utteranceId, segmentId, downstreamAudio, downstreamAsr, null);
+    }
+
+    /** audio_start 时已启动的在线流候选；非空时不再重复调用完整 PCM process。 */
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
+                                       String segmentId, OnlineAudioSink downstreamAudio,
+                                       OnlineAsrSink downstreamAsr,
+                                       CompletableFuture<OnlineSpeechResult> streamingOnline) {
         // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
         // RaceArbiter 只拦截输出，空调离线命中时也不取消在线候选。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
@@ -133,7 +141,9 @@ public final class SegmentPipeline {
         final CompletableFuture<OnlineSpeechResult> onlineF;
         try {
             // ASR 事件旁路 audioGate/RaceArbiter；只让 NLU reply 与回答音频/文本受仲裁。
-            onlineF = online.process(pcm, ctx, utteranceId, audioGate, downstreamAsr);
+            onlineF = streamingOnline != null
+                    ? streamingOnline
+                    : online.process(pcm, ctx, utteranceId, audioGate, downstreamAsr);
         } catch (RuntimeException e) {
             recordOnlineStartFailure(e, pcm, utteranceId, onlineStart);
             return waitOfflineFallback(offlineF, ctx, utteranceId);

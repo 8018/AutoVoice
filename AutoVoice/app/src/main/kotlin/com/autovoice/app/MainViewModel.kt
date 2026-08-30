@@ -181,6 +181,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var wakeTurn = false
 
     @Volatile
+    private var cloudVadActive = false
+    private val cloudStreamLock = Any()
+    private val cloudPreRoll = ArrayDeque<ByteArray>()
+
+    private fun resetCloudStreamGate() = synchronized(cloudStreamLock) {
+        cloudVadActive = false
+        cloudPreRoll.clear()
+    }
+
+    @Volatile
     private var foreground = false
 
     private var wakeInitialized = false
@@ -201,7 +211,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine = buildEngine(loadConfig(mode))
         viewModelScope.launch {
             recorder.pcmBlocks.collect { block ->
-                if (recording && !chatLocked) denoisedBlocks.add(block)
+                if (recording && !chatLocked) {
+                    denoisedBlocks.add(block)
+                    val streamNow = synchronized(cloudStreamLock) {
+                        if (cloudVadActive) true else {
+                            cloudPreRoll.addLast(block.copyOf())
+                            while (cloudPreRoll.size > CLOUD_PRE_ROLL_BLOCKS) cloudPreRoll.removeFirst()
+                            false
+                        }
+                    }
+                    if (streamNow) engine.appendStreamingCloudAudio(block)
+                }
             }
         }
         // 单一 AudioRecord 的原始流观察者：待机 IVW 直接吃原始 PCM，不经过 Silero VAD。
@@ -229,10 +249,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recorder.vadEvents.collect { event ->
                 when (event) {
                     VadEvent.SpeechStart -> {
-                        if (!chatLocked) engine.onVadStart()
+                        if (!chatLocked) {
+                            engine.onVadStart()
+                            val preRoll = synchronized(cloudStreamLock) {
+                                cloudVadActive = true
+                                cloudPreRoll.toList().also { cloudPreRoll.clear() }
+                            }
+                            preRoll.forEach(engine::appendStreamingCloudAudio)
+                        }
                     }
                     VadEvent.SpeechEnd -> {
-                        if (!chatLocked) engine.onVadEnd()
+                        if (!chatLocked) {
+                            synchronized(cloudStreamLock) {
+                                cloudVadActive = false
+                                cloudPreRoll.clear()
+                            }
+                            engine.onVadEnd()
+                        }
                         if (!chatLocked && wakeTurn && recording) {
                             // 唤醒进入的普通轮没有“松手”事件，VAD 后端点就是自动提交边界。
                             stopRecording()
@@ -270,6 +303,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 先建立新轮并置位，使 recorder.start 同步补入的打断 pre-roll
         // 的 PCM/VAD 事件都归属新 utteranceId，也能被收集器接住。
         recording = true
+        resetCloudStreamGate()
         wakeTurn = fromWake
         denoisedBlocks.clear()
         engine.onListeningStart()
@@ -358,6 +392,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopRecording() {
         if (!recording) return
         recording = false
+        resetCloudStreamGate()
         wakeTurn = false
         wakeTurnTimeoutJob?.cancel()
         wakeTurnTimeoutJob = null
@@ -366,6 +401,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val denoised = concatBlocks(denoisedBlocks)
         denoisedBlocks.clear()
         val cloudSegments = recorder.finishSegments()
+        if (denoised.size >= MIN_SEGMENT_BYTES && cloudSegments.isNotEmpty()) {
+            engine.finishStreamingCloudAudio()
+        } else {
+            // SpeechStart 会提前建流；过短音频或 VAD 未形成有效段时必须显式撤销。
+            engine.cancelStreamingCloudAudio()
+        }
         for (seg in cloudSegments) engine.onCloudSegment(seg)
         if (denoised.size >= MIN_SEGMENT_BYTES) {
             dumpLocalSegment(denoised) // Task 58 诊断：本地整段落盘，验证真实麦克风音频进了链路
@@ -382,10 +423,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun cancelRecording() {
         if (!recording) return
         recording = false
+        resetCloudStreamGate()
         wakeTurn = false
         wakeTurnTimeoutJob?.cancel()
         recorder.stop()
         denoisedBlocks.clear()
+        engine.cancelStreamingCloudAudio()
         engine.onListeningStop()
         _uiState.update { it.copy(recording = false) }
         rearmWakeWhenIdle()
@@ -824,6 +867,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         /** 最小语音段字节数（300ms @16k 16bit = 9600B；瞬时误触发过滤）。 */
         const val MIN_SEGMENT_BYTES = 9_600
+
+        /** VAD 首字保护：保留约 300ms（10 × 30ms）的降噪 PCM。 */
+        const val CLOUD_PRE_ROLL_BLOCKS = 10
 
         /** 竞速胜出方 UI 标志文本（Task 61）。 */
         const val WINNER_LOCAL = "端侧"

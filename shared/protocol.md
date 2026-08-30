@@ -84,7 +84,9 @@
 
 ### 3.2 audio_start
 
-一段录音流开始前声明流参数。此后客户端持续发送二进制音频帧（PCM S16LE，16 kHz，单声道），直到 `audio_end`。
+一段录音流开始前声明流参数。业务域客户端在 VAD `SpeechStart` 时立即发出该帧（包含约
+300ms 前卷音频），此后边录边持续发送二进制音频帧（PCM S16LE，16 kHz，单声道），直到
+有效语音结束后发送 `audio_end`。VAD 误报或最终未形成有效语音段时发送 `cancel_turn`，不提交语义处理。
 
 ```json
 {
@@ -140,6 +142,10 @@
 > 连接专用线程异步进行（`decision` → `reply` 时序不变，见 §5）。**每连接同一时刻最多一段
 > 话语处理中**：上一段尚未产出结果又收到新 `audio_end` → `error`（code `BUSY`，**不关闭
 > 连接**），客户端可稍后重试或仅依赖本地兜底。处理期间的 `audio_start` 照常接受（累积新段）。
+>
+> **流式 ASR 与降级**：支持流式能力的在线链路从首个二进制帧起持续送入 ASR，并可在
+> `audio_end` 之前返回 `asr_partial`；`audio_end` 只负责收口并启动 NLU/LLM。流式 ASR
+> 异常时，服务端使用本轮已缓冲 PCM 做一次批式识别降级，不要求客户端重传。
 
 ### 3.4 tts_request
 
@@ -257,6 +263,7 @@
 | `segmentId` | string | 当前录音段 ID，用于丢弃上一轮迟到结果 |
 | `text` | string | 当前已识别文本 |
 | `isFinal` | boolean | 是否为最终结果 |
+| `chat` | boolean（可选） | `true` 表示来自 S2S 闲聊域输入转写；不依赖业务域 `segmentId` |
 
 ### 4.3.1 reply_partial
 

@@ -6,6 +6,9 @@ public interface RealtimeChatSink extends OnlineAudioSink {
     /** 服务端语义 VAD 检测到用户开始说话；端侧仅停止当前播放，不停止录音或上行。 */
     default void onUserSpeechStarted() {}
 
+    /** Qwen Realtime 输入音频转录；只更新识别框，不参与业务语义仲裁。 */
+    default void onUserTranscript(String text, boolean isFinal) {}
+
     /** 会话因远端关闭或错误结束。 */
     default void onSessionClosed(Throwable error) {}
 }
