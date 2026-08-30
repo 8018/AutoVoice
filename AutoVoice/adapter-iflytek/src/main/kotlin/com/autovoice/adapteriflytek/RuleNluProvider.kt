@@ -45,9 +45,6 @@ object RuleNluProvider {
     /** 提取命令文本中的首个数字（支持小数）。 */
     private val NUMBER_REGEX = Regex("""\d+(\.\d+)?""")
 
-    /** 意图命中但无领域别名时的兜底领域（当前词表内命令均含领域别名）。 */
-    private const val DEFAULT_DOMAIN = "misc"
-
     /**
      * 命令文本 → [Intent]。
      * 领域：首个命中的领域别名；意图：首个命中的意图规则；均未命中 → [Intent.unknown]([SOURCE])。
@@ -55,7 +52,7 @@ object RuleNluProvider {
     fun understand(command: String): Intent {
         val domain = DOMAIN_ALIASES.entries
             .firstOrNull { (alias, _) -> command.contains(alias) }
-            ?.value ?: DEFAULT_DOMAIN
+            ?.value ?: return Intent.unknown(SOURCE)
 
         val rule = INTENT_RULES.firstOrNull { r -> r.keywords.any { command.contains(it) } }
             ?: return Intent.unknown(SOURCE)
