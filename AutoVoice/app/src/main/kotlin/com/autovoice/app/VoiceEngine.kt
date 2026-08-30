@@ -323,15 +323,15 @@ class VoiceEngine(
      * 场景），否则立即挂起云端（本轮起只跑本地链，reason `cloud_unreachable`），
      * 再进入 LISTENING。
      */
-    fun onListeningStart() {
+    fun onListeningStart(interruptPlayback: Boolean = true) {
         // 先建立 captureId 用于链路关联；只有 ASR/有效语义证据才能把它晋升为当前 turn。
         currentUtteranceId = UUID.randomUUID().toString()
         // captureId 先用于链路关联；尚未得到语音证据时不替换状态机当前 turnId。
         onTurnStarted(currentUtteranceId)
         telemetry.begin(currentUtteranceId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
-        // 播放中发起新轮时只停旧声音，候选计算仍自然完成。
-        player.stop()
+        // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
+        if (interruptPlayback) player.stop()
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
