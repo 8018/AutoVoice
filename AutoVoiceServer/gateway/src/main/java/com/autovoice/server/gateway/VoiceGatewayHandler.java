@@ -51,6 +51,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -720,16 +721,28 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     /** ASR/PGS 旁路：不经过语义仲裁门，识别一出字就下发；仅拦截取消/过期轮。 */
     private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st, String segmentId) {
-        return (text, isFinal) -> {
-            boolean active = segmentId != null && (segmentId.equals(st.segmentId)
-                    || segmentId.equals(st.processingSegmentId));
-            if (!active
-                    || isCancelled(st, segmentId) || text == null || text.isBlank()) return;
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("segmentId", segmentId);
-            payload.put("text", text);
-            payload.put("isFinal", isFinal);
-            send(session, "asr_partial", payload);
+        return new OnlineAsrSink() {
+            private final AtomicBoolean turnEstablishedSent = new AtomicBoolean();
+
+            private boolean active() {
+                return segmentId != null && (segmentId.equals(st.segmentId)
+                        || segmentId.equals(st.processingSegmentId))
+                        && !isCancelled(st, segmentId);
+            }
+
+            @Override public void onTurnEstablished() {
+                if (!active() || !turnEstablishedSent.compareAndSet(false, true)) return;
+                send(session, "asr_turn_started", Map.of("segmentId", segmentId));
+            }
+
+            @Override public void onResult(String text, boolean isFinal) {
+                if (!active() || text == null || text.isBlank()) return;
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("segmentId", segmentId);
+                payload.put("text", text);
+                payload.put("isFinal", isFinal);
+                send(session, "asr_partial", payload);
+            }
         };
     }
 

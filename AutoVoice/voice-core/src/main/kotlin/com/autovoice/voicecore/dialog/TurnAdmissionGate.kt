@@ -12,7 +12,8 @@ data class AdmittedTurn(val turnId: String, val evidence: AdmissionEvidence)
 
 /**
  * VAD 误报隔离层。每次只保留一个待确认 capture，确认操作幂等。
- * partial/final ASR 均可确认，但空文本不能确认；没有 ASR 的链路可由有效最终语义兜底。
+ * 本层不读取或判断 ASR 文本；ASR 模块明确发出“话语成立”后才确认。没有 ASR 的链路可由
+ * 有效最终语义兜底。
  */
 class TurnAdmissionGate {
     private var pendingCaptureId: String? = null
@@ -25,8 +26,8 @@ class TurnAdmissionGate {
     }
 
     @Synchronized
-    fun confirmText(captureId: String, text: String, source: AdmissionEvidence): AdmittedTurn? {
-        if (text.isBlank()) return null
+    fun confirmAsr(captureId: String, source: AdmissionEvidence): AdmittedTurn? {
+        require(source == AdmissionEvidence.LOCAL_ASR || source == AdmissionEvidence.CLOUD_ASR)
         return confirm(captureId, source)
     }
 

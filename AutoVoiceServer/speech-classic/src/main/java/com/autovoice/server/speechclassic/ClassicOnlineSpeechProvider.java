@@ -52,6 +52,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
                 throw new CompletionException(new AsrException("ASR returned blank text"));
             }
             // ASR 一完成立即独立输出，不等待 LLM/NLU，更不等待语义仲裁。
+            asrSink.onTurnEstablished();
             asrSink.onResult(text, true);
         } catch (Exception e) {
             if (e instanceof CompletionException completion) throw completion;

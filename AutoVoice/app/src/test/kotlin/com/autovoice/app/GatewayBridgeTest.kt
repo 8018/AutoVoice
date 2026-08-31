@@ -348,6 +348,40 @@ class GatewayBridgeTest {
     }
 
     @Test
+    fun `ASR text and turn establishment are independent events`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val recognized = Channel<String>(Channel.BUFFERED)
+        val established = Channel<String>(Channel.BUFFERED)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onAsrResult = { text, _, _ -> recognized.trySend(text) },
+            onAsrTurnEstablished = { established.trySend(it) },
+        )
+        try {
+            client.connect()
+            bridge.newReplySlot("seg-1", "turn-1")
+
+            gateway.sendText(partialFrame("asr_partial", "seg-1", "打开车", false))
+            assertEquals("打开车", recognized.receive())
+            assertTrue(established.tryReceive().isFailure, "识别文本不得隐式建立新轮")
+
+            gateway.sendText(
+                """{"type":"asr_turn_started","payload":{"segmentId":"seg-1"}}""",
+            )
+            assertEquals("turn-1", established.receive())
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `realtime chat ASR updates recognition without a normal reply slot`() = runBlocking {
         val gateway = FakeGatewayServer()
         gateway.start()

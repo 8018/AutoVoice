@@ -16,6 +16,7 @@ import com.autovoice.gatewayclient.GatewayConnectionState
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AsrResult
+import com.autovoice.voicecore.AsrSink
 import com.autovoice.voicecore.AsrStage
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.CloudConfig
@@ -503,12 +504,13 @@ class VoiceEngine(
     private fun confirmTurn(
         turnId: String,
         evidence: AdmissionEvidence,
-        text: String? = null,
     ): Boolean {
-        // partial/final ASR 可重复到达；已晋升的当前轮只更新文本，不得把 SPEAKING 等状态退回 THINKING。
+        // ASR 话语成立事件可幂等到达；已晋升的当前轮不得把 SPEAKING 等状态退回 THINKING。
         if (dialogue.isCurrentTurn(turnId)) return true
-        val admitted = if (text != null) {
-            admission.confirmText(turnId, text, evidence)
+        val admitted = if (evidence == AdmissionEvidence.LOCAL_ASR ||
+            evidence == AdmissionEvidence.CLOUD_ASR
+        ) {
+            admission.confirmAsr(turnId, evidence)
         } else {
             admission.confirmSemantic(turnId, evidence)
         } ?: return dialogue.isCurrentTurn(turnId)
@@ -522,26 +524,29 @@ class VoiceEngine(
         return true
     }
 
-    /** ASR 独立更新识别框，同时把非空文本作为 VAD capture 成立的最高优先级证据。 */
-    private fun onRecognized(turnId: String, text: String, evidence: AdmissionEvidence) {
+    /** ASR 文本只更新识别框；不得从文本内容、partial/final 推断新轮。 */
+    private fun onRecognized(turnId: String, text: String) {
         if (text.isBlank()) return
-        if (confirmTurn(turnId, evidence, text)) onLocalRecognized(text)
+        if (turnId.isBlank()) {
+            onLocalRecognized(text)
+            return
+        }
+        val snapshot = dialogue.snapshot.value
+        if (snapshot.captureId == turnId || snapshot.turnId == turnId) onLocalRecognized(text)
+    }
+
+    /** ASR/AEC 独立确认新话语；状态机只消费该事件，不检查识别文本。 */
+    private fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) {
+        if (turnId.isNotBlank()) confirmTurn(turnId, evidence)
     }
 
     private fun onTurnResult(utteranceId: String, winner: RaceWinner) {
         // 仲裁器只保证“该 turn 尚未输出过语义”。这里才判断是否为状态机当前轮。
         when (winner) {
-            is RaceWinner.Cloud -> {
-                if (winner.reply.asrText.isNotBlank()) {
-                    confirmTurn(utteranceId, AdmissionEvidence.CLOUD_ASR, winner.reply.asrText)
-                } else {
-                    confirmTurn(utteranceId, AdmissionEvidence.CLOUD_FINAL_SEMANTIC)
-                }
-            }
+            is RaceWinner.Cloud -> confirmTurn(utteranceId, AdmissionEvidence.CLOUD_FINAL_SEMANTIC)
             is RaceWinner.Local -> confirmTurn(
                 utteranceId,
                 AdmissionEvidence.LOCAL_SEMANTIC,
-                winner.recognizedText,
             )
             is RaceWinner.Failed -> {
                 if (admission.reject(utteranceId)) {
@@ -805,7 +810,7 @@ class VoiceEngine(
             // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
             val pendingSignals = Channel<Unit>(Channel.BUFFERED)
             val pendingByTurn = PendingSignalRegistry()
-            // ASR 回调需要回到引擎做 capture→turn 准入；构造完成后再绑定。
+            // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
             var engineRef: VoiceEngine? = null
             val cloudRunner = GatewayCloudRunner(
                 cfg.cloud, telemetrySink, scope, pendingSignals,
@@ -813,10 +818,11 @@ class VoiceEngine(
             )
             cloudRunner.onAsrResult = { text, _, turnId ->
                 if (text.isNotBlank()) {
-                    if (turnId.isBlank()) onLocalRecognized(text)
-                    else engineRef?.onRecognized(turnId, text, AdmissionEvidence.CLOUD_ASR)
-                        ?: onLocalRecognized(text)
+                    engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
                 }
+            }
+            cloudRunner.onAsrTurnEstablished = { turnId ->
+                engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.CLOUD_ASR)
             }
             cloudRunner.onReplyText = { text, _ ->
                 if (text.isNotBlank()) onReplyText(text)
@@ -890,10 +896,10 @@ class VoiceEngine(
                     scope,
                     { turnId, text ->
                         if (!text.isNullOrBlank()) {
-                            engineRef?.onRecognized(turnId, text, AdmissionEvidence.LOCAL_ASR)
-                                ?: onLocalRecognized(text)
+                            engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
                         }
                     },
+                    { turnId -> engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR) },
                     offlineStageRef,
                     telemetry,
                 ),
@@ -963,6 +969,7 @@ class VoiceEngine(
             context: Context,
             scope: CoroutineScope,
             onLocalRecognized: (String, String?) -> Unit,
+            onLocalTurnEstablished: (String) -> Unit,
             /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
             offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
             /** T7 插桩：local_asr 事件（识别文本/意图/耗时；enabled=false 时 no-op）。 */
@@ -1022,17 +1029,23 @@ class VoiceEngine(
                 override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
                     val startMs = System.currentTimeMillis()
                     return try {
-                        val asrResult = asr.recognize(segment) { result ->
-                            // 不等待 NLU、更不等待仲裁；PGS partial/final 都即时更新同一个识别框。
-                            if (result.text.isNotBlank()) {
-                                onLocalRecognized(utteranceId, result.text)
-                                telemetry.record(
-                                    TelemetryStages.LOCAL_ASR,
-                                    "info",
-                                    mapOf("text" to result.text, "isFinal" to result.isFinal),
-                                )
+                        val asrResult = asr.recognize(segment, object : AsrSink {
+                            override fun onTurnEstablished() {
+                                onLocalTurnEstablished(utteranceId)
                             }
-                        }
+
+                            override fun onTranscript(result: AsrResult) {
+                                // 不等待 NLU、更不等待仲裁；PGS partial/final 都即时更新识别框。
+                                if (result.text.isNotBlank()) {
+                                    onLocalRecognized(utteranceId, result.text)
+                                    telemetry.record(
+                                        TelemetryStages.LOCAL_ASR,
+                                        "info",
+                                        mapOf("text" to result.text, "isFinal" to result.isFinal),
+                                    )
+                                }
+                            }
+                        })
                         val nluResult = nlu.understand(segment, asrResult)
                         val intent = nluResult.intent
                         Log.i(TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
@@ -1132,6 +1145,7 @@ private class GatewayCloudRunner(
         pendingSignals,
         { turnId -> onPendingReceived(turnId) },
         { text, final, turnId -> onAsrResult(text, final, turnId) },
+        { turnId -> onAsrTurnEstablished(turnId) },
         { text, final, turnId -> handleReplyText(text, final, turnId) },
         { reply -> onRealtimeReply(reply) },
         { onRealtimeSpeechStarted() },
@@ -1181,6 +1195,10 @@ private class GatewayCloudRunner(
     /** 独立 ASR/PGS 输出，不等待语义仲裁。 */
     @Volatile
     var onAsrResult: (String, Boolean, String) -> Unit = { _, _, _ -> }
+
+    /** ASR/AEC 确认新话语；与识别文本事件独立。 */
+    @Volatile
+    var onAsrTurnEstablished: (String) -> Unit = {}
 
     /** 模型回答文本累计快照，用于音频播放期间上屏。 */
     @Volatile
@@ -1551,6 +1569,8 @@ internal class GatewayBridge(
     private val onPendingReceived: (String) -> Unit = {},
     /** ASR/PGS partial/final，按 segmentId 对账后立即交 UI。 */
     private val onAsrResult: (String, Boolean, String) -> Unit = { _, _, _ -> },
+    /** ASR/AEC 确认新话语，按 segmentId 对账后交给本地状态机。 */
+    private val onAsrTurnEstablished: (String) -> Unit = {},
     /** 回答文本 partial/final，按 segmentId 对账后立即交 UI。 */
     private val onReplyText: (String, Boolean, String) -> Unit = { _, _, _ -> },
     /** Realtime 闲聊是长会话，模型回答不依赖普通话语 reply slot。 */
@@ -1634,6 +1654,11 @@ internal class GatewayBridge(
     private fun handle(msg: GatewayMessage) {
         when (msg.type) {
             "decision" -> parseDecision(msg.payload)?.let(sink::onDecision)
+            "asr_turn_started" -> {
+                val slot = findSlot(msg.payload, pendingReplies) ?: return
+                if (!isForCurrentUtterance(msg.payload, slot)) return
+                onAsrTurnEstablished(slot.utteranceId)
+            }
             "asr_partial" -> {
                 if (msg.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
                     val text = msg.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return

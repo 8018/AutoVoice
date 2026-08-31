@@ -86,7 +86,10 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
             }
         }, ASR_WORKERS);
         CompletableFuture<TranscriptDecision> transcriptDecision = transcript.thenApply(text -> {
-            if (!text.isBlank()) asrSink.onResult(text, true);
+            if (!text.isBlank()) {
+                asrSink.onTurnEstablished();
+                asrSink.onResult(text, true);
+            }
             java.util.Optional<com.autovoice.server.contracts.Reply> selection =
                     navigationDialog.resolve(context, text);
             // asr_partial 调用先于音频门释放或丢弃，保证同一 WS 上识别文本先上屏。

@@ -9,9 +9,26 @@ data class AsrResult(
     val isFinal: Boolean = true,
 )
 
+/**
+ * ASR 的两个独立输出。识别文本用于 UI/后续 NLU；只有 ASR 自己确认话语成立后才发送
+ * [onTurnEstablished]。状态机不得根据文本长度、partial/final 或内容自行推断新轮。
+ */
+interface AsrSink {
+    fun onTranscript(result: AsrResult)
+
+    fun onTurnEstablished()
+
+    companion object {
+        val NOOP: AsrSink = object : AsrSink {
+            override fun onTranscript(result: AsrResult) = Unit
+            override fun onTurnEstablished() = Unit
+        }
+    }
+}
+
 /** ASR 阶段：PCM → 0..n 个识别结果。 */
 fun interface AsrStage {
-    suspend fun recognize(segment: ByteArray, onResult: (AsrResult) -> Unit): AsrResult?
+    suspend fun recognize(segment: ByteArray, sink: AsrSink): AsrResult?
 }
 
 /**

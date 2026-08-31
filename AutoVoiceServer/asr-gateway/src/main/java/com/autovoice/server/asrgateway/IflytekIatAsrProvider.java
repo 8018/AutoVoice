@@ -172,6 +172,7 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
         private boolean opened;
         private boolean finishing;
         private boolean firstFrame = true;
+        private boolean turnEstablished;
         private int fallbackSequence;
 
         IatSession(OnlineAsrSink sink) {
@@ -280,6 +281,10 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
             }
             pieces.put(sequence, fragment.toString());
             String text = String.join("", pieces.values());
+            if (!text.isBlank() && !turnEstablished) {
+                turnEstablished = true;
+                sink.onTurnEstablished();
+            }
             if (data.path("status").asInt() == 2) {
                 sink.onResult(text, true);
                 result.complete(text);

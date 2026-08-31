@@ -28,7 +28,9 @@
 
 `并发候选 → 端/云硬规则仲裁 → 按轮单次语义输出 → 状态机当前轮校验 → 执行/TTS`
 
-ASR 字幕走独立旁路，按自己的 `turnId`/`captureId` 对账后立即更新识别框，不等待语义仲裁。
+ASR 提供两个独立输出：字幕按自己的 `turnId`/`captureId` 对账后立即更新识别框；
+`turnEstablished` 由 ASR/AEC 在确认有效新话语后发出。两者都不等待语义仲裁，状态机也
+不得从字幕文本反推 `turnEstablished`。
 
 ## 既有硬规则
 
@@ -44,24 +46,26 @@ ASR 字幕走独立旁路，按自己的 `turnId`/`captureId` 对账后立即更
 - `DORMANT`：未唤醒。
 - `AWAKE`：已唤醒，尚未检测到候选语音。
 - `SPEECH_CANDIDATE`：VAD 已触发，但尚未确认是有效新轮。
-- `THINKING`：ASR 或有效语义已把 capture 晋升为 turn。
+- `THINKING`：ASR 的 `turnEstablished` 或有效最终语义已把 capture 晋升为 turn。
 - `SEMANTIC_PROCESSING`：收到 pending/模型处理中信号。
 - `RESPONDING`：当前轮最终语义已被采用，正在准备执行或音频。
 - `SPEAKING`：播放器真实开始播放。
 - `FOLLOW_UP_LISTENING`：播放器真实结束后的免唤醒追问窗口。
 
-核心触发点：唤醒、VAD start、非空 ASR、语义处理中、最终语义、TTS 播放开始/结束、延时聆听定时器结束。
+核心触发点：唤醒、VAD start、ASR `turnEstablished`、语义处理中、最终语义、TTS 播放开始/结束、延时聆听定时器结束。
 
 ## VAD 误报与轮次准入
 
-VAD start 只创建临时 capture，不替换当前 turn。准入证据优先级为：
+VAD start 只创建临时 capture，不替换当前 turn。准入证据为：
 
-1. 非空本地 ASR；
-2. 非空云端 ASR；
-3. 带有效文本/意图的本地语义；
+1. 本地 ASR 明确发出的 `turnEstablished`；
+2. 云端 ASR 明确发出的 `asr_turn_started`；
+3. 本地有效最终语义；
 4. 没有 ASR 的链路以有效云端最终语义兜底。
 
-空 ASR、过短音频或双路均无有效语义时拒绝 capture。这样环境噪声不会抢占当前轮，也不会触发失败播报。
+识别文本和轮次准入严格分离：partial/final 仅用于识别框和 NLU，文本是否为空、长度、
+稳定次数及与 TTS 的相似度都不能由状态机判断。TTS 回声、AEC 和识别稳定性属于 ASR
+模块；ASR 未发出 `turnEstablished` 且双路均无有效语义时拒绝 capture。
 
 ## 延时聆听
 
@@ -80,6 +84,6 @@ VAD start 只创建临时 capture，不替换当前 turn。准入证据优先级
 - `voice-core/dialog/TurnAdmissionGate.kt`：VAD capture 准入。
 - `voice-core/arbiter/SemanticEmissionLedger.kt`：仲裁流水线按轮单次语义输出。
 - `VoiceSession`：只负责候选并发编排，不再把当前轮判断塞进仲裁结果。
-- `GatewayBridge`：按 `segmentId` 对账并把 ASR 连同原始 `turnId` 上送，不再按全局最新录音提前过滤。
+- `GatewayBridge`：按 `segmentId` 分别对账 `asr_partial` 和 `asr_turn_started`，不把识别文本隐式转换为新轮。
 - `VoiceEngine`：连接准入、状态机当前轮校验和执行/TTS。
 - `MainViewModel` / `AudioRecorder`：真实播放结束计时、共享麦克风和延时聆听 VAD。

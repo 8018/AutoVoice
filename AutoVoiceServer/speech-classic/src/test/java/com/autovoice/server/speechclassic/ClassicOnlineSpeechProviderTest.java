@@ -2,6 +2,8 @@ package com.autovoice.server.speechclassic;
 
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.OnlineAsrSink;
+import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
@@ -9,6 +11,8 @@ import com.autovoice.server.contracts.SlotValue;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,6 +20,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ClassicOnlineSpeechProviderTest {
+    @Test
+    void asrEstablishesTurnIndependentlyBeforePublishingTranscript() throws Exception {
+        List<String> events = new ArrayList<>();
+        ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
+                (pcm, ctx) -> "今天天气",
+                (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText("晴天")));
+        OnlineAsrSink sink = new OnlineAsrSink() {
+            @Override public void onTurnEstablished() { events.add("established"); }
+            @Override public void onResult(String text, boolean isFinal) {
+                events.add("transcript:" + text + ":" + isFinal);
+            }
+        };
+
+        provider.process(new byte[]{1}, new SessionContext("s1", "zh-CN", Map.of()), "u1",
+                OnlineAudioSink.NOOP, sink).get(1, TimeUnit.SECONDS);
+
+        assertEquals(List.of("established", "transcript:今天天气:true"), events);
+    }
+
     @Test
     void explicitSecondTurnSelectionBypassesLlm() throws Exception {
         SessionContext context = new SessionContext("s1", "zh-CN", Map.of());
