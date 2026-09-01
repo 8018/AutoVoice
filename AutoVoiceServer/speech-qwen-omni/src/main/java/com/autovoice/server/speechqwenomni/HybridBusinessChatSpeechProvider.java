@@ -109,6 +109,7 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                 out.completeExceptionally(new IllegalStateException("ASR returned blank text"));
                 return;
             }
+            asrSink.onTurnEstablished();
             asrSink.onResult(text, true);
             CompletableFuture<OnlineSpeechResult> routed = route(
                     pcm16k, context, utteranceId, text, audioSink);

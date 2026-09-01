@@ -254,6 +254,16 @@ class GatewayCodecTest {
     }
 
     @Test
+    void encodesAsrTurnStartedWithoutTranscriptFields() {
+        JsonNode frame = read(GatewayCodec.encode("asr_turn_started", Map.of(
+                "segmentId", "seg-1",
+                "text", "不得透传")));
+        assertEquals("asr_turn_started", frame.get("type").asText());
+        assertEquals("seg-1", frame.at("/payload/segmentId").asText());
+        assertFalse(frame.get("payload").has("text"));
+    }
+
+    @Test
     void decodesValidPending() {
         // LLM 处理中占位（B5）：S→C 独立消息，两字段均可选，宽松解析
         Map<String, Object> msg = GatewayCodec.decode(TestFixtures.read("gateway-pending.json"));

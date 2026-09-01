@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -130,6 +130,20 @@
             "reason": { "type": "string" },
             "utteranceId": { "type": "string" },
             "timestampMs": { "type": "integer" }
+          }
+        }
+      }
+    },
+    {
+      "title": "asr_turn_started (server -> client, ASR 确认新话语成立)",
+      "properties": {
+        "type": { "const": "asr_turn_started" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId"],
+          "properties": {
+            "sessionId": { "type": "string" },
+            "segmentId": { "type": "string" }
           }
         }
       }

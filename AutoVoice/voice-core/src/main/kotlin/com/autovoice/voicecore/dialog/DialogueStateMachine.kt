@@ -27,7 +27,7 @@ data class DialogueSnapshot(
 /**
  * 只管理本地交互生命周期；不判断业务意图，也不参与端侧/云端仲裁。
  *
- * VAD 只建立临时 capture。只有 ASR 或有效最终语义确认后，capture 才晋升为 turn，
+ * VAD 只建立临时 capture。只有 ASR 明确发出话语成立事件或有效最终语义确认后，capture 才晋升为 turn，
  * 因而环境噪声不会抢占上一轮输出。
  */
 class DialogueStateMachine(

@@ -35,6 +35,7 @@
 | `ready` | 服务端 → 客户端 | 握手成功，服务端就绪 |
 | `decision` | 服务端 → 客户端 | 决策日志事件：本次请求由谁仲裁、走哪条路线及原因 |
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
+| `asr_turn_started` | 服务端 → 客户端 | ASR/AEC 确认输入为有效新话语；状态机据此建立新轮 |
 | `reply_partial` | 服务端 → 客户端 | 模型回答文本累计快照，音频播放期间增量上屏 |
 | `pending` | 服务端 → 客户端 | LLM 处理中占位：最终 `reply` 前的中间通知（可选，0..1 次） |
 | `reply` | 服务端 → 客户端 | 最终回复（文本 / 动作意图；**TTS 解耦后不再携带音频**） |
@@ -144,7 +145,7 @@
 > 连接**），客户端可稍后重试或仅依赖本地兜底。处理期间的 `audio_start` 照常接受（累积新段）。
 >
 > **流式 ASR 与降级**：支持流式能力的在线链路从首个二进制帧起持续送入 ASR，并可在
-> `audio_end` 之前返回 `asr_partial`；`audio_end` 只负责收口并启动 NLU/LLM。流式 ASR
+> `audio_end` 之前返回独立的 `asr_turn_started`（至多一次）和 `asr_partial`；`audio_end` 只负责收口并启动 NLU/LLM。流式 ASR
 > 异常时，服务端使用本轮已缓冲 PCM 做一次批式识别降级，不要求客户端重传。
 
 ### 3.4 tts_request
@@ -241,7 +242,20 @@
 }
 ```
 
-### 4.3 asr_partial
+### 4.3 asr_turn_started / asr_partial
+
+ASR 有两个相互独立的输出。`asr_turn_started` 只表示 ASR/AEC 已确认有效新话语，同一
+ASR 会话至多发送一次；客户端状态机只能消费这个事件建立新 turn，不得根据文本长度、
+partial/final 或内容自行推断。TTS 回声和识别稳定性属于 ASR/AEC 内部职责。
+
+```json
+{
+  "type": "asr_turn_started",
+  "payload": { "segmentId": "seg-001" }
+}
+```
+
+`asr_partial` 只负责识别框展示和 NLU 输入，不隐含新轮成立：
 
 云端 ASR 的流式中间结果，可在录音过程中持续下发（PGS 每帧一条）；`isFinal` 为 `true`
 表示该 utterance 的最终识别文本。该消息独立于 NLU 和语义仲裁：只要属于当前 segment，
@@ -486,9 +500,10 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
 ```
 
 `audio_reply_end.asrText` 是旁路 ASR 产生的用户原话最终快照，用于校正/收口；首次及中间
-识别展示走不受仲裁阻塞的 `asr_partial`。
+识别展示走不受仲裁阻塞的 `asr_partial`；新话语成立只看独立的 `asr_turn_started`。
 Omni 回答音频与旁路 ASR 仍并发生成，但首个 `audio_reply_start`/音频块需经过有限字幕门：
-从首音频事件起最多等待旁路 ASR 800ms；ASR 先完成时必须先发送 `asr_partial` 再放行音频，
+从首音频事件起最多等待旁路 ASR 800ms；ASR 先完成时必须发送 `asr_turn_started` 和
+`asr_partial` 后再放行音频，
 超时则优先放行音频。该门只缓存输出，不取消 Qwen、ASR 或任一仲裁候选。
 
 Qwen 工具可用轮还必须经过服务端的**输出类型仲裁**：首段音频最多缓存 500ms
@@ -505,7 +520,7 @@ Realtime 闲聊使用 Qwen `semantic_vad`。收到上游 `input_audio_buffer.spe
 `audio_reply_end.intent` 可选，结构与 `reply/action.intent` 相同。音频不绕过 TTS 架构：端侧把 PCM
 块交给 TTS 模块新增的流式音频入口，由其统一负责 AudioTrack 播放、停止和 telemetry；它不再做文本合成。
 
-云端仲裁门先于 S2S **回答字幕、音频和语义**下行；`asr_partial` 是明确的例外。同一输入音频从
+云端仲裁门先于 S2S **回答字幕、音频和语义**下行；`asr_turn_started` 与 `asr_partial` 是明确的例外。同一输入音频从
 一开始便并发交给空调离线识别、旁路 ASR 和 S2S；空调离线命中则丢弃缓存的 S2S 回答，但不取消在线
 请求，也不拦截 ASR 展示。未命中/失败才按原顺序放行 S2S 回答。这里的“未命中才放行”不是
 “未命中才上传/调用模型”。
@@ -527,6 +542,8 @@ Realtime 闲聊使用 Qwen `semantic_vad`。收到上游 `input_audio_buffer.spe
      │ ─────────────────────────────────────────────────► │
      │ 5. 二进制帧 PCM（S16LE / 16 kHz / 单声道，可多帧）  │
      │ ─────────────────────────────────────────────────► │
+     │      （并行）asr_turn_started（0..1 次）            │
+     │ ◄───────────────────────────────────────────────── │
      │      （并行）文本帧 asr_partial（0..n 次）          │
      │ ◄───────────────────────────────────────────────── │
      │ 6. 文本帧 audio_end                                │

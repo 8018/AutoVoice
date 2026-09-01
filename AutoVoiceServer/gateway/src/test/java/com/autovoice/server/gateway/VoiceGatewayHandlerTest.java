@@ -164,13 +164,14 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
-        awaitSent(s, 4); // ready + 独立 ASR + decision + reply
+        awaitSent(s, 5); // ready + ASR 话语成立 + 独立文本 + decision + reply
 
-        JsonNode asrPartial = parse(s.sent.get(1));
+        assertEquals("asr_turn_started", parse(s.sent.get(1)).get("type").asText());
+        JsonNode asrPartial = parse(s.sent.get(2));
         assertEquals("asr_partial", asrPartial.get("type").asText());
         assertEquals("把空调调到二十四度", asrPartial.get("payload").get("text").asText());
         // ASR 不等仲裁；语义链内仍保持 decision 先于 reply。
-        JsonNode decision = parse(s.sent.get(2));
+        JsonNode decision = parse(s.sent.get(3));
         assertEquals("decision", decision.get("type").asText());
         assertEquals("llm_reply", decision.get("payload").get("reason").asText());
         assertEquals("cloud", decision.get("payload").get("arbiter").asText());
@@ -178,7 +179,7 @@ class VoiceGatewayHandlerTest {
                 "旧客户端（无 utteranceId）回退自增 u-N，行为与改造前一致");
 
         // TTS 解耦：reply 只携带语义（action + speakText），无 mime/dataBase64
-        JsonNode reply = parse(s.sent.get(3));
+        JsonNode reply = parse(s.sent.get(4));
         assertEquals("reply", reply.get("type").asText());
         JsonNode p = reply.get("payload");
         assertEquals("action", p.get("kind").asText());
@@ -224,7 +225,7 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(first, new TextMessage(audioStartWithUtteranceId(sid, "seg-retry", "utt-retry")));
         h.handleMessage(first, new BinaryMessage(new byte[]{1}));
         h.handleMessage(first, new TextMessage(audioEnd(sid)));
-        awaitSent(first, 4);
+        awaitSent(first, 5);
 
         StubSession second = open(h);
         h.handleMessage(second, new TextMessage(helloWithSessionId(sid)));
@@ -419,17 +420,18 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
         // pending 在 LLM 完成前同步下发（offline 已完成 + LLM 未 done → 立即发占位事件）
-        awaitSent(s, 5); // ready + ASR + pending + decision + reply
-        assertEquals("asr_partial", parse(s.sent.get(1)).get("type").asText());
-        JsonNode pending = parse(s.sent.get(2));
+        awaitSent(s, 6); // ready + ASR 成立 + ASR 文本 + pending + decision + reply
+        assertEquals("asr_turn_started", parse(s.sent.get(1)).get("type").asText());
+        assertEquals("asr_partial", parse(s.sent.get(2)).get("type").asText());
+        JsonNode pending = parse(s.sent.get(3));
         assertEquals("pending", pending.get("type").asText());
         assertEquals("seg-1", pending.get("payload").get("segmentId").asText(),
                 "pending 应回显 audio_start 的 segmentId（端侧按话语对账）");
         assertEquals("正在处理，请稍候", pending.get("payload").get("text").asText());
 
         // 最终结果不受 pending 影响：decision 先行、reply 照常（空调离线命中路径无 pending，见上一用例）
-        assertEquals("decision", parse(s.sent.get(3)).get("type").asText());
-        JsonNode reply = parse(s.sent.get(4));
+        assertEquals("decision", parse(s.sent.get(4)).get("type").asText());
+        JsonNode reply = parse(s.sent.get(5));
         assertEquals("reply", reply.get("type").asText());
         assertEquals("已为您打开车窗", reply.get("payload").get("speakText").asText());
     }
@@ -484,8 +486,9 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-        awaitSent(s, 5);
-        assertEquals(5, s.sent.size(), "TTS 失败后连接仍可继续语音轮次（ready+error+ASR+decision+reply）");
+        awaitSent(s, 6);
+        assertEquals(6, s.sent.size(),
+                "TTS 失败后连接仍可继续语音轮次（ready+error+ASR成立+文本+decision+reply）");
     }
 
     @Test
@@ -715,11 +718,12 @@ class VoiceGatewayHandlerTest {
         assertEquals(1, s.sent.size(), "处理中不应有 decision/reply（WS 线程未被占死，处理在后台）");
 
         release.countDown();
-        awaitSent(s, 4);
-        assertEquals("asr_partial", parse(s.sent.get(1)).get("type").asText());
-        assertEquals("decision", parse(s.sent.get(2)).get("type").asText());
-        assertEquals("reply", parse(s.sent.get(3)).get("type").asText());
-        assertEquals("seg-1", parse(s.sent.get(3)).get("payload").get("segmentId").asText(),
+        awaitSent(s, 5);
+        assertEquals("asr_turn_started", parse(s.sent.get(1)).get("type").asText());
+        assertEquals("asr_partial", parse(s.sent.get(2)).get("type").asText());
+        assertEquals("decision", parse(s.sent.get(3)).get("type").asText());
+        assertEquals("reply", parse(s.sent.get(4)).get("type").asText());
+        assertEquals("seg-1", parse(s.sent.get(4)).get("payload").get("segmentId").asText(),
                 "异步回复应回显本段 segmentId");
     }
 
@@ -728,6 +732,7 @@ class VoiceGatewayHandlerTest {
         CountDownLatch appended = new CountDownLatch(1);
         StreamingAsrProvider streamingAsr = (ctx, sink) -> new StreamingAsrSession() {
             @Override public void append(byte[] pcm16k) {
+                sink.onTurnEstablished();
                 sink.onResult("今天天", false);
                 appended.countDown();
             }
@@ -745,16 +750,17 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{1, 2, 3, 4}));
 
         assertTrue(appended.await(1, TimeUnit.SECONDS));
-        assertEquals(2, s.sent.size(), "audio_end 前应已下发 ASR partial");
-        JsonNode partial = parse(s.sent.get(1));
+        assertEquals(3, s.sent.size(), "audio_end 前应已分别下发 ASR 成立事件与 partial");
+        assertEquals("asr_turn_started", parse(s.sent.get(1)).path("type").asText());
+        JsonNode partial = parse(s.sent.get(2));
         assertEquals("asr_partial", partial.path("type").asText());
         assertEquals("今天天", partial.at("/payload/text").asText());
         assertFalse(partial.at("/payload/isFinal").asBoolean());
 
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-        awaitSent(s, 5);
-        assertEquals("asr_partial", parse(s.sent.get(2)).path("type").asText());
-        assertTrue(parse(s.sent.get(2)).at("/payload/isFinal").asBoolean());
+        awaitSent(s, 6);
+        assertEquals("asr_partial", parse(s.sent.get(3)).path("type").asText());
+        assertTrue(parse(s.sent.get(3)).at("/payload/isFinal").asBoolean());
     }
 
     @Test

@@ -8,11 +8,10 @@ import org.junit.jupiter.api.Test
 
 class TurnAdmissionGateTest {
     @Test
-    fun `blank asr does not admit false vad`() {
+    fun `capture remains pending until asr explicitly establishes turn`() {
         val gate = TurnAdmissionGate()
         gate.open("capture")
 
-        assertNull(gate.confirmText("capture", "  ", AdmissionEvidence.LOCAL_ASR))
         assertTrue(gate.reject("capture"))
     }
 
@@ -21,7 +20,7 @@ class TurnAdmissionGateTest {
         val gate = TurnAdmissionGate()
         gate.open("capture")
 
-        val admitted = gate.confirmText("capture", "去机场", AdmissionEvidence.CLOUD_ASR)
+        val admitted = gate.confirmAsr("capture", AdmissionEvidence.CLOUD_ASR)
         assertEquals(AdmittedTurn("capture", AdmissionEvidence.CLOUD_ASR), admitted)
         assertEquals(admitted, gate.confirmSemantic("capture", AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
         assertFalse(gate.reject("capture"))
