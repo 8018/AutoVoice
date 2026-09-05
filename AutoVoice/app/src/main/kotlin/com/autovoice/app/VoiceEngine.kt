@@ -1,8 +1,6 @@
 package com.autovoice.app
 
 import android.content.Context
-import android.content.pm.PackageManager
-import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
@@ -776,6 +774,7 @@ class VoiceEngine(
             /** S2S 闲聊锁域进入/退出。 */
             onConversationMode: (Boolean) -> Unit = {},
             onDialogueState: (DialogueSnapshot) -> Unit = {},
+            vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         ): VoiceEngine {
             // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
             // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
@@ -814,7 +813,7 @@ class VoiceEngine(
             var engineRef: VoiceEngine? = null
             val cloudRunner = GatewayCloudRunner(
                 cfg.cloud, telemetrySink, scope, pendingSignals,
-                locationProvider = { context.lastKnownCoordinates() },
+                locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
             )
             cloudRunner.onAsrResult = { text, _, turnId ->
                 if (text.isNotBlank()) {
@@ -1089,24 +1088,6 @@ class VoiceEngine(
             return active != null
         }
 
-        /**
-         * 读取系统已有的最近定位。语音链不主动启动持续定位，避免额外耗电；没有授权或
-         * 系统尚无定位缓存时返回 null，服务端会自然退化为普通关键词搜索。
-         */
-        private fun Context.lastKnownCoordinates(): Pair<Double, Double>? {
-            val permitted = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED ||
-                checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
-            if (!permitted) return null
-            val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
-            val latest = runCatching {
-                manager.allProviders.mapNotNull { provider ->
-                    runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-                }.maxByOrNull { it.time }
-            }.getOrNull() ?: return null
-            return latest.latitude to latest.longitude
-        }
     }
 }
 

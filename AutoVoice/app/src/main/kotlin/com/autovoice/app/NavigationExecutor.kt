@@ -2,9 +2,6 @@ package com.autovoice.app
 
 import com.autovoice.voicecore.Intent
 import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import com.google.gson.Gson
-import com.google.gson.JsonSyntaxException
 
 /**
  * 导航执行器（spec §4.2）：把 navigation/navigate 意图转成高德 URI，交给注入的 opener 拉起高德 App。
@@ -25,21 +22,23 @@ import com.google.gson.JsonSyntaxException
  */
 class NavigationExecutor(
     private val onCandidates: (List<NavigationCandidate>) -> Unit = {},
+    val session: NavigationSession = NavigationSession(),
     private val opener: (String) -> Boolean,
 ) {
 
-    private val gson = Gson()
 
     /** 执行导航意图；非 navigation/navigate、槽位缺失或拉起失败返回 false。 */
-    fun execute(intent: Intent): Boolean {
+    @Synchronized fun execute(intent: Intent): Boolean {
         if (intent.domain != DOMAIN_NAVIGATION) return false
         if (intent.intent == INTENT_CANCEL_NAVIGATION) {
+            if (!session.cancelSelection()) return false
             onCandidates(emptyList())
             return true
         }
         if (intent.intent == INTENT_CHOOSE_DESTINATION) {
             val json = intent.slots?.get(SLOT_CANDIDATES)?.value as? String ?: return false
             val candidates = parseCandidates(json) ?: return false
+            session.offer(candidates)
             onCandidates(candidates)
             return true
         }
@@ -49,18 +48,18 @@ class NavigationExecutor(
         val lat = (slots[SLOT_LAT]?.value as? Number)?.toDouble() ?: return false
         val lon = (slots[SLOT_LON]?.value as? Number)?.toDouble() ?: return false
         val waypointsJson = slots[SLOT_WAYPOINTS]?.value as? String
-        val opened = if (waypointsJson == null || waypointsJson.isBlank()) {
-            // 无 waypoints 槽 → 单目的地 navi（直接开始导航）
-            clearCandidatesBeforeOpen()
-            opener(buildNaviUri(poiname, lat, lon))
-        } else {
-            // 多目的地 → route/plan；JSON 非法/空数组 → 不拉起（数据契约破坏，
-            // 静默回退单目的地会误导用户以为"先去A"仍生效，记 skipped 由调用方兜底）
-            parseWaypoints(waypointsJson)?.let { wp ->
-                clearCandidatesBeforeOpen()
-                opener(buildRoutePlanUri(poiname, lat, lon, wp))
-            } ?: false
-        }
+        val waypoints = if (waypointsJson.isNullOrBlank()) emptyList() else parseWaypoints(waypointsJson) ?: return false
+        val trip = runCatching {
+            NavigationTrip(NavigationTarget(poiname, lat, lon), waypoints.map {
+                NavigationTarget(it.poiname, it.lat, it.lon)
+            })
+        }.getOrNull() ?: return false
+        val uri = if (waypoints.isEmpty()) buildNaviUri(poiname, lat, lon)
+            else buildRoutePlanUri(poiname, lat, lon, waypoints)
+        session.beginHandoff(trip)
+        clearCandidatesBeforeOpen()
+        val opened = runCatching { opener(uri) }.getOrDefault(false)
+        session.finishHandoff(opened)
         return opened
     }
 
@@ -71,22 +70,23 @@ class NavigationExecutor(
     }
 
     private fun parseCandidates(json: String): List<NavigationCandidate>? =
-        try {
-            gson.fromJson(json, Array<NavigationCandidate>::class.java).toList()
-                .filter { it.poiname.isNotBlank() }
-                .takeIf { it.isNotEmpty() }
-        } catch (e: JsonSyntaxException) {
-            null
-        }
+        runCatching {
+            val array = com.google.gson.JsonParser.parseString(json).asJsonArray
+            require(!array.isEmpty)
+            array.map { element ->
+                val item = element.asJsonObject
+                require(item["poiname"].asJsonPrimitive.isString)
+                require(item["lat"].asJsonPrimitive.isNumber && item["lon"].asJsonPrimitive.isNumber)
+                val point = NavigationTarget(item["poiname"].asString, item["lat"].asDouble, item["lon"].asDouble)
+                NavigationCandidate(point.name, point.latitude, point.longitude,
+                    item.get("address")?.takeUnless { it.isJsonNull }?.asString ?: "")
+            }
+            // Reject the whole list on malformed items; filtering would change spoken ordinals.
+        }.getOrNull()
 
     /** 解析 waypoints string 槽（JSON 文本）；JSON 非法/空数组 → null（不拉起）。 */
     private fun parseWaypoints(json: String): List<Waypoint>? =
-        try {
-            val list = gson.fromJson(json, Array<Waypoint>::class.java).toList()
-            if (list.isEmpty()) null else list
-        } catch (e: JsonSyntaxException) {
-            null
-        }
+        parseCandidates(json)?.map { Waypoint(it.poiname, it.lat, it.lon) }
 
     /** 单目的地高德导航 URI（spec §4.2）；poiname 经 URL 编码（中文/空格合法化）。 */
     private fun buildNaviUri(poiname: String, lat: Double, lon: Double): String {

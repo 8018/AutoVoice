@@ -68,6 +68,17 @@ fun VoiceScreen(
         )
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
+        if (state.navigation.trip != null) {
+            Text(
+                text = when (state.navigation.handoff) {
+                    com.autovoice.app.NavigationHandoff.OPENING -> "正在打开高德…"
+                    com.autovoice.app.NavigationHandoff.ACCEPTED -> "已交给高德：${state.navigation.trip.destination.name}（行程请在高德中管理）"
+                    com.autovoice.app.NavigationHandoff.FAILED -> "未能打开高德，请确认已安装高德地图"
+                    else -> ""
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         Spacer(Modifier.height(12.dp))
         // Task 53 对话区：识别 + 回复各占一半主空间（仲裁结果只进 logcat，不再上屏）
         // Task 61：识别卡片标题行带竞速胜出徽标（端侧胜出 / 云端胜出，null = 尚无结果不显示）
