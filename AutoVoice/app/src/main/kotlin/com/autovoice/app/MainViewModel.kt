@@ -75,6 +75,7 @@ data class VehicleUiState(
  *   文本（Task 53：仲裁结果不再上屏，logcat 打印，界面留给识别/回复对话区）。
  */
 data class UiState(
+    val navigation: NavigationSnapshot = NavigationSnapshot(),
     val sessionState: SessionState = SessionState.IDLE,
     val vehicle: VehicleUiState = VehicleUiState(),
     val mode: DemoMode = DemoMode.DEMO_OFFLINE,
@@ -105,10 +106,11 @@ data class UiState(
     /** 唤醒初始化/资源错误；null 表示无错误。 */
     val wakeError: String? = null,
     /** 导航 POI 候选；非空时在本应用内显示语音选择弹窗，尚未拉起地图。 */
-    val navigationCandidates: List<NavigationExecutor.NavigationCandidate> = emptyList(),
     /** 已进入 S2S 闲聊锁域；麦克风常开且绕过端侧 ASR/NLU。 */
     val chatMode: Boolean = false,
-)
+) {
+    val navigationCandidates: List<NavigationExecutor.NavigationCandidate> get() = navigation.candidates
+}
 
 /**
  * 主 ViewModel（Task 19 + Task 20 接线；Task 50 按钮录音双路）：持有 [AudioRecorder]
@@ -166,6 +168,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val navigationSession = NavigationSession { snapshot ->
+        _uiState.update { it.copy(navigation = snapshot) }
+    }
+    private val navigationExecutor by lazy {
+        NavigationExecutor(session = navigationSession, onCandidates = { candidates ->
+            navigationDialogTimeoutJob?.cancel()
+            if (candidates.isNotEmpty()) {
+                val version = navigationSession.snapshot.candidateVersion
+                navigationDialogTimeoutJob = viewModelScope.launch {
+                    delay(NAVIGATION_DIALOG_TTL_MS)
+                    navigationSession.expire(version)
+                }
+            }
+        }) { uri ->
+            runCatching {
+                getApplication<Application>().startActivity(
+                    AndroidIntent(AndroidIntent.ACTION_VIEW, Uri.parse(uri))
+                        .addFlags(AndroidIntent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                true
+            }.getOrDefault(false)
+        }
+    }
 
     /** 本地整段装配缓冲：按住期间收集的 960B 降噪块（Task 18 块格式；抬手后 concat）。 */
     private val denoisedBlocks = mutableListOf<ByteArray>()
@@ -668,7 +693,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
         navigationDialogTimeoutJob?.cancel()
-        _uiState.update { it.copy(mode = mode, navigationCandidates = emptyList()) }
+        navigationSession.cancelSelection()
+        _uiState.update { it.copy(mode = mode) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
@@ -762,26 +788,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             vehicle = vehicleState,
             // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；
             // 未安装/无处理 Activity 时 runCatching 吞掉异常返回 false（记 skipped）
-            navigation = NavigationExecutor(
-                onCandidates = { candidates ->
-                    _uiState.update { it.copy(navigationCandidates = candidates) }
-                    navigationDialogTimeoutJob?.cancel()
-                    if (candidates.isNotEmpty()) {
-                        navigationDialogTimeoutJob = viewModelScope.launch {
-                            delay(NAVIGATION_DIALOG_TTL_MS)
-                            _uiState.update { it.copy(navigationCandidates = emptyList()) }
-                        }
-                    }
-                },
-            ) { uri ->
-                runCatching {
-                    getApplication<Application>().startActivity(
-                        AndroidIntent(AndroidIntent.ACTION_VIEW, Uri.parse(uri))
-                            .addFlags(AndroidIntent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                    true
-                }.getOrDefault(false)
-            },
+            navigation = navigationExecutor,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
             onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },
