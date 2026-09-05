@@ -814,6 +814,7 @@ class VoiceEngine(
             val cloudRunner = GatewayCloudRunner(
                 cfg.cloud, telemetrySink, scope, pendingSignals,
                 locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
+                navigationSelectionProvider = { navigation?.session?.snapshot?.selectionId ?: "" },
             )
             cloudRunner.onAsrResult = { text, _, turnId ->
                 if (text.isNotBlank()) {
@@ -1106,6 +1107,7 @@ private class GatewayCloudRunner(
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
+    private val navigationSelectionProvider: () -> String = { "" },
 ) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClient(
@@ -1155,6 +1157,7 @@ private class GatewayCloudRunner(
 
     private data class LiveUpload(
         val utteranceId: String,
+        val navigationSelectionId: String,
         val segmentId: String = UUID.randomUUID().toString(),
         val chunks: Channel<ByteArray> = Channel(Channel.UNLIMITED),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
@@ -1294,7 +1297,7 @@ private class GatewayCloudRunner(
 
     override fun beginStreamingTurn(utteranceId: String) {
         if (!cfg.enabled || utteranceId.isBlank()) return
-        val upload = LiveUpload(utteranceId)
+        val upload = LiveUpload(utteranceId, navigationSelectionProvider())
         while (true) {
             val previous = liveUpload.get()
             // 同一按钮轮可能包含多个 VAD 段；它们属于同一条业务音频流。
@@ -1338,6 +1341,7 @@ private class GatewayCloudRunner(
                 upload.utteranceId,
                 location?.first,
                 location?.second,
+                navigationSelectionId = upload.navigationSelectionId,
             )
             for (chunk in upload.chunks) client.sendAudioChunk(chunk)
             client.sendAudioEnd(sessionId)
@@ -1415,6 +1419,7 @@ private class GatewayCloudRunner(
         releasedReplyTurns.remove(utteranceId)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
+        val navigationSelectionId = navigationSelectionProvider()
         var lastFailure: GatewayException? = null
         for (attempt in 0..1) {
             val replySlot = bridge.newReplySlot(segmentId, utteranceId)
@@ -1431,6 +1436,7 @@ private class GatewayCloudRunner(
                     location?.first,
                     location?.second,
                     attempt,
+                    navigationSelectionId = navigationSelectionId,
                 )
                 var offset = 0
                 while (offset < segment.size) {

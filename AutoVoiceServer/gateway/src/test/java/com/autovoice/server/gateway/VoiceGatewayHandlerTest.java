@@ -152,6 +152,7 @@ class VoiceGatewayHandlerTest {
         byte[][] asrReceived = new byte[1][];
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrReceived[0] = pcm;
+            assertEquals("selection-airports", ctx.attrs().get("navigationSelectionId"));
             return "把空调调到二十四度";
         }, llmAction(), ttsOk());
         StubSession s = open(h);
@@ -159,7 +160,7 @@ class VoiceGatewayHandlerTest {
         String sid = parse(s.sent.get(0)).get("payload").get("sessionId").asText();
 
         // audio_start 携带客户端生成的 segmentId（每轮话语唯一，reply/error 原样回显）
-        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1").replace("\"encoding\":", "\"navigationSelectionId\":\"selection-airports\",\"encoding\":")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1, 2}));
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
@@ -946,6 +947,47 @@ class VoiceGatewayHandlerTest {
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts) {
         return newHandler(asr, llm, tts, noopOffline());
+    }
+
+    @Test
+    void twoAudioTurnsSelectDisplayedAirportWithoutCallingLlmAgain() throws Exception {
+        var transcript = new java.util.concurrent.atomic.AtomicReference<>("导航去机场");
+        var llmCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var candidates = """
+                [{"poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471},
+                 {"poiname":"成都天府国际机场","lat":30.312,"lon":104.441}]
+                """;
+        var handler = newHandler((pcm, ctx) -> transcript.get(), (text, ctx) -> {
+            llmCalls.incrementAndGet();
+            return CompletableFuture.completedFuture(Reply.ofAction(Intent.of("1.0", "navigation",
+                    "choose_destination", Map.of("candidates", com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
+                    1.0, "test", null), "请选择"));
+        }, ttsOk());
+        try {
+            var socket = open(handler);
+            String sid = handshake(handler, socket);
+            handler.handleMessage(socket, new TextMessage(audioStart(sid, "search")));
+            handler.handleMessage(socket, new BinaryMessage(new byte[]{1, 2}));
+            handler.handleMessage(socket, new TextMessage(audioEnd(sid)));
+            var offer = awaitType(socket, "reply").path("payload").path("intent");
+            String selectionId = offer.path("slots").path("selectionId").path("value").asText();
+            assertFalse(selectionId.isBlank());
+            var displayed = MAPPER.readTree(offer.path("slots").path("candidates").path("value").asText());
+            transcript.set("第二个");
+            socket.sent.clear();
+            handler.handleMessage(socket, new TextMessage(audioStart(sid, "select")
+                    .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+            handler.handleMessage(socket, new BinaryMessage(new byte[]{3, 4}));
+            handler.handleMessage(socket, new TextMessage(audioEnd(sid)));
+            var selected = awaitType(socket, "reply").path("payload").path("intent");
+            assertEquals("navigate", selected.path("intent").asText());
+            assertEquals(selectionId, selected.path("slots").path("selectionId").path("value").asText());
+            assertEquals(displayed.get(1).path("candidateId").asText(), selected.path("slots").path("candidateId").path("value").asText());
+            assertEquals("成都天府国际机场", selected.path("slots").path("poiname").path("value").asText());
+            assertEquals(1, llmCalls.get());
+        } finally {
+            handler.close();
+        }
     }
 
     private VoiceGatewayHandler newHandler(AsrProvider asr, LlmProvider llm, TtsProvider tts,

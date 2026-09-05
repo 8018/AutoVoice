@@ -47,16 +47,34 @@ public final class NavigationDialogState {
     }
 
     /** Remember a choose_destination action produced by either online backend. */
-    public void remember(SessionContext context, Reply reply) {
-        if (context == null || context.sessionId() == null || reply == null) return;
+    public Reply remember(SessionContext context, Reply reply) {
+        if (context == null || context.sessionId() == null || reply == null) return reply;
         Intent intent = reply.intent();
-        if (intent == null || !DOMAIN.equals(intent.domain()) || !CHOOSE_INTENT.equals(intent.intent())) return;
+        if (intent == null || !DOMAIN.equals(intent.domain()) || !CHOOSE_INTENT.equals(intent.intent())) return reply;
         SlotValue raw = intent.slots() == null ? null : intent.slots().get(SLOT_CANDIDATES);
-        if (raw == null || !(raw.value() instanceof String json)) return;
+        if (raw == null || !(raw.value() instanceof String json)) return reply;
         List<Candidate> candidates = parseCandidates(json);
-        if (candidates.isEmpty()) return;
+        if (candidates.isEmpty()) return Reply.ofText("地点结果无效，请重新搜索");
+        String selectionId = java.util.UUID.randomUUID().toString();
+        try {
+            var array = JSON.createArrayNode();
+            for (Candidate candidate : candidates) {
+                var item = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(candidate.raw);
+                item.put("candidateId", java.util.UUID.randomUUID().toString());
+                array.add(item);
+            }
+            candidates = parseCandidates(array.toString());
+            Map<String, SlotValue> slots = new LinkedHashMap<>(intent.slots());
+            slots.put("selectionId", SlotValue.stringValue(selectionId));
+            slots.put(SLOT_CANDIDATES, SlotValue.stringValue(array.toString()));
+            Intent enriched = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0, "navigation.dialog", json);
+            reply = Reply.ofAction(enriched, reply.speakText());
+        } catch (Exception error) {
+            return Reply.ofText("地点结果无效，请重新搜索");
+        }
         pruneIfNeeded();
-        pending.put(context.sessionId(), new Pending(candidates, clock.millis() + ttlMs));
+        pending.put(context.sessionId(), new Pending(candidates, clock.millis() + ttlMs, selectionId));
+        return reply;
     }
 
     public boolean hasPending(SessionContext context) {
@@ -69,11 +87,19 @@ public final class NavigationDialogState {
      */
     public Optional<Reply> resolve(SessionContext context, String transcript) {
         Optional<Pending> snapshot = current(context);
-        if (snapshot.isEmpty() || transcript == null || transcript.isBlank()) return Optional.empty();
+        if (transcript == null || transcript.isBlank()) return Optional.empty();
+        if (snapshot.isEmpty()) {
+            if (context != null && context.attrs().get("navigationSelectionId") instanceof String id
+                    && !id.isBlank() && ordinal(compact(transcript)) != null) {
+                return Optional.of(Reply.ofText("地点选择已失效，请重新搜索"));
+            }
+            return Optional.empty();
+        }
         String compact = compact(transcript);
         if (compact.matches(".*(取消|算了|不去了|关闭).*")) {
-            pending.remove(context.sessionId());
-            Intent cancel = Intent.of("1.0", DOMAIN, CANCEL_INTENT, Map.of(), 1.0,
+            if (!matchesSelection(context, snapshot.get())) return Optional.of(Reply.ofText("地点列表已更新，请重新搜索"));
+            pending.remove(context.sessionId(), snapshot.get());
+            Intent cancel = Intent.of("1.0", DOMAIN, CANCEL_INTENT, Map.of("selectionId", SlotValue.stringValue(snapshot.get().selectionId)), 1.0,
                     "navigation.dialog", transcript);
             return Optional.of(Reply.ofAction(cancel, "已取消导航"));
         }
@@ -83,7 +109,7 @@ public final class NavigationDialogState {
             if (ordinal < 1 || ordinal > snapshot.get().candidates.size()) {
                 return Optional.of(Reply.ofText("没有第" + ordinal + "个，请重新选择"));
             }
-            return Optional.of(select(context.sessionId(), snapshot.get().candidates.get(ordinal - 1)));
+            return Optional.of(select(context, snapshot.get(), snapshot.get().candidates.get(ordinal - 1)));
         }
 
         String choice = compact.replace("选择", "").replace("选", "")
@@ -93,24 +119,24 @@ public final class NavigationDialogState {
             List<Candidate> exactNameMatches = snapshot.get().candidates.stream()
                     .filter(candidate -> compact(candidate.poiname).equals(choice)).toList();
             if (exactNameMatches.size() == 1) {
-                return Optional.of(select(context.sessionId(), exactNameMatches.getFirst()));
+                return Optional.of(select(context, snapshot.get(), exactNameMatches.getFirst()));
             }
             List<Candidate> exactAddressMatches = snapshot.get().candidates.stream()
                     .filter(candidate -> !candidate.address.isBlank()
                             && compact(candidate.address).equals(choice)).toList();
             if (exactAddressMatches.size() == 1) {
-                return Optional.of(select(context.sessionId(), exactAddressMatches.getFirst()));
+                return Optional.of(select(context, snapshot.get(), exactAddressMatches.getFirst()));
             }
             List<Candidate> matches = snapshot.get().candidates.stream()
                     .filter(candidate -> matches(candidate, choice)).toList();
             if (matches.size() == 1) {
-                return Optional.of(select(context.sessionId(), matches.getFirst()));
+                return Optional.of(select(context, snapshot.get(), matches.getFirst()));
             }
             // “导航去机场”是新的查询，不是对当前候选的模糊选择。清掉旧候选并交回
             // 正常 LLM/Skill 链路重新搜索；否则旧实现会只播“有多个相似地点”，既不刷新
             // 弹窗，也会让旧候选继续污染后续轮次。
             if (NEW_NAVIGATION_REQUEST.matcher(compact).matches()) {
-                pending.remove(context.sessionId());
+                pending.remove(context.sessionId(), snapshot.get());
                 return Optional.empty();
             }
             if (matches.size() > 1) {
@@ -140,9 +166,19 @@ public final class NavigationDialogState {
         }
     }
 
-    private Reply select(String sessionId, Candidate candidate) {
-        pending.remove(sessionId);
+    private boolean matchesSelection(SessionContext context, Pending snapshot) {
+        // Missing field is the legacy-client path; modern clients explicitly send empty when no list is visible.
+        Object id = context.attrs().get("navigationSelectionId");
+        return id == null || snapshot.selectionId.equals(id);
+    }
+
+    private Reply select(SessionContext context, Pending snapshot, Candidate candidate) {
+        if (!matchesSelection(context, snapshot) || !pending.remove(context.sessionId(), snapshot)) {
+            return Reply.ofText("地点列表已更新或失效，请重新搜索");
+        }
         Map<String, SlotValue> slots = new LinkedHashMap<>();
+        slots.put("selectionId", SlotValue.stringValue(snapshot.selectionId));
+        slots.put("candidateId", SlotValue.stringValue(candidate.candidateId));
         slots.put("poiname", SlotValue.stringValue(candidate.poiname));
         slots.put("lat", SlotValue.number(candidate.lat));
         slots.put("lon", SlotValue.number(candidate.lon));
@@ -192,9 +228,11 @@ public final class NavigationDialogState {
                 String name = item.path("poiname").asText("");
                 JsonNode lat = item.path("lat");
                 JsonNode lon = item.path("lon");
-                if (name.isBlank() || !lat.isNumber() || !lon.isNumber()) continue;
+                if (name.isBlank() || !lat.isNumber() || !lon.isNumber()
+                        || !Double.isFinite(lat.asDouble()) || !Double.isFinite(lon.asDouble())
+                        || Math.abs(lat.asDouble()) > 90 || Math.abs(lon.asDouble()) > 180) return List.of();
                 out.add(new Candidate(name, item.path("address").asText(""),
-                        lat.asDouble(), lon.asDouble(), item.toString()));
+                        lat.asDouble(), lon.asDouble(), item.toString(), item.path("candidateId").asText("")));
             }
         } catch (Exception ignored) {
             return List.of();
@@ -202,6 +240,6 @@ public final class NavigationDialogState {
         return List.copyOf(out);
     }
 
-    private record Pending(List<Candidate> candidates, long expiresAtMs) {}
-    private record Candidate(String poiname, String address, double lat, double lon, String raw) {}
+    private record Pending(List<Candidate> candidates, long expiresAtMs, String selectionId) {}
+    private record Candidate(String poiname, String address, double lat, double lon, String raw, String candidateId) {}
 }

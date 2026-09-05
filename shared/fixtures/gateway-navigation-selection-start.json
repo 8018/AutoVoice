@@ -1,0 +1,1 @@
+{"type":"audio_start","payload":{"sessionId":"navigation-regression","sampleRate":16000,"channels":1,"encoding":"pcm_s16le","utteranceId":"select-second","navigationSelectionId":"selection-airports"}}

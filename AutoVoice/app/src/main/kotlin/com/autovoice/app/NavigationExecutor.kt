@@ -31,6 +31,9 @@ class NavigationExecutor(
     @Synchronized fun execute(intent: Intent): Boolean {
         if (intent.domain != DOMAIN_NAVIGATION) return false
         if (intent.intent == INTENT_CANCEL_NAVIGATION) {
+            val selectionId = intent.slots["selectionId"]?.value as? String
+            if (session.snapshot.selectionId != null && selectionId != session.snapshot.selectionId) return false
+            if (selectionId != null && selectionId != session.snapshot.selectionId) return false
             if (!session.cancelSelection()) return false
             onCandidates(emptyList())
             return true
@@ -38,7 +41,10 @@ class NavigationExecutor(
         if (intent.intent == INTENT_CHOOSE_DESTINATION) {
             val json = intent.slots?.get(SLOT_CANDIDATES)?.value as? String ?: return false
             val candidates = parseCandidates(json) ?: return false
-            session.offer(candidates)
+            val selectionId = intent.slots["selectionId"]?.value as? String
+            if (selectionId != null && (selectionId.isBlank() || candidates.any { it.candidateId.isBlank() }
+                    || candidates.map { it.candidateId }.toSet().size != candidates.size)) return false
+            session.offer(candidates, selectionId)
             onCandidates(candidates)
             return true
         }
@@ -54,6 +60,14 @@ class NavigationExecutor(
                 NavigationTarget(it.poiname, it.lat, it.lon)
             })
         }.getOrNull() ?: return false
+        val selectionId = slots["selectionId"]?.value as? String
+        val candidateId = slots["candidateId"]?.value as? String
+        val pending = session.snapshot
+        if (selectionId != null || candidateId != null || pending.selectionId != null) {
+            if (selectionId == null || selectionId != pending.selectionId || candidateId.isNullOrBlank()) return false
+            val candidate = pending.candidates.singleOrNull { it.candidateId == candidateId } ?: return false
+            if (candidate.poiname != poiname || candidate.lat != lat || candidate.lon != lon || waypoints.isNotEmpty()) return false
+        }
         val uri = if (waypoints.isEmpty()) buildNaviUri(poiname, lat, lon)
             else buildRoutePlanUri(poiname, lat, lon, waypoints)
         session.beginHandoff(trip)
@@ -79,7 +93,8 @@ class NavigationExecutor(
                 require(item["lat"].asJsonPrimitive.isNumber && item["lon"].asJsonPrimitive.isNumber)
                 val point = NavigationTarget(item["poiname"].asString, item["lat"].asDouble, item["lon"].asDouble)
                 NavigationCandidate(point.name, point.latitude, point.longitude,
-                    item.get("address")?.takeUnless { it.isJsonNull }?.asString ?: "")
+                    item.get("address")?.takeUnless { it.isJsonNull }?.asString ?: "",
+                    item.get("candidateId")?.takeUnless { it.isJsonNull }?.asString ?: "")
             }
             // Reject the whole list on malformed items; filtering would change spoken ordinals.
         }.getOrNull()
@@ -120,6 +135,7 @@ class NavigationExecutor(
         val lat: Double,
         val lon: Double,
         val address: String = "",
+        val candidateId: String = "",
     )
 
     companion object {

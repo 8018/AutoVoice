@@ -129,10 +129,10 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
             if (decision.selection.isPresent()) {
                 return new OnlineSpeechResult(decision.selection.get(), decision.text);
             }
-            navigationDialog.remember(context, result.reply());
+            var remembered = navigationDialog.remember(context, result.reply());
             StreamEnd end = streamEnd.get();
-            if (end != null) downstream.onComplete(end.speakText, end.intent, decision.text);
-            return new OnlineSpeechResult(result.reply(), decision.text);
+            if (end != null) downstream.onComplete(end.speakText, remembered.intent(), decision.text);
+            return new OnlineSpeechResult(remembered, decision.text);
         }).whenComplete((result, error) -> {
             if (error == null) combined.complete(result);
             else if (!combined.isDone()) combined.completeExceptionally(unwrap(error));

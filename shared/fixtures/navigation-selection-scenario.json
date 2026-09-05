@@ -1,0 +1,10 @@
+{
+  "selectionId": "selection-airports",
+  "candidates": [
+    {"candidateId":"shuangliu","poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471,"address":"双流区"},
+    {"candidateId":"tianfu","poiname":"成都天府国际机场","lat":30.312,"lon":104.441,"address":"简阳市"}
+  ],
+  "answers": ["第二个", "成都天府国际机场"],
+  "expectedCandidateId": "tianfu",
+  "expectedUri": "androidamap://navi?sourceApplication=autovoice&poiname=%E6%88%90%E9%83%BD%E5%A4%A9%E5%BA%9C%E5%9B%BD%E9%99%85%E6%9C%BA%E5%9C%BA&lat=30.312&lon=104.441"
+}

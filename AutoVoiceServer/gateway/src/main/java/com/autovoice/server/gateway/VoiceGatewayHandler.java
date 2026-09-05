@@ -487,6 +487,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 ? clientUtteranceId
                 : "u-" + ++st.segmentSeq; // 兼容旧客户端：无 utteranceId 时回退自增
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        // Snapshot before opening ASR: the streaming provider must see this turn's displayed list.
+        st.ctx = st.ctx.withAttr("navigationSelectionId", payload.get("navigationSelectionId") instanceof String id ? id : null);
         if (st.onlineStream != null) st.onlineStream.cancel();
         try {
             // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
