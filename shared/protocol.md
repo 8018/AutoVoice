@@ -649,3 +649,24 @@ S2S 编译变体的结果阶段替换为：
 - `reply` 中 `intent` 的结构：`shared/contracts/intent.schema.json`。
 - 端侧与云端语音链路的配置项：`shared/contracts/config.schema.json`。
 - 端云网关的 JSON 示例可直接复用 `shared/fixtures/gateway-*.json`；端云两侧的契约测试直接把这些 fixture 挂进 classpath（见两个模块的 `sourceSets.test.resources.srcDir("../../shared/fixtures")`）。
+# Navigation selection identity (2026-09)
+
+`choose_destination` carries a string slot `selectionId`. Each entry in its JSON `candidates`
+slot carries a unique `candidateId`. The server creates these identifiers, not the LLM.
+The Android client snapshots the visible `selectionId` at the start of each audio request and
+sends `audio_start.payload.navigationSelectionId`; retries reuse this snapshot. An empty string
+means no visible selection. An absent field is reserved for older clients.
+
+When resolving an ordinal or a name, the server checks the supplied list ID before consuming
+pending selection state. Mismatch or an expired/disconnected ordinal selection returns a text
+prompt to search again. A selected `navigate` action returns both IDs with the original name and
+coordinates; `cancel_navigation` returns the list ID. The client checks them against its visible
+list before execution. An expired, replaced, duplicated or coordinate-modified selection cannot
+launch the map. New unrelated navigation requests retain the existing search path.
+
+Rollout: deploy the server first, then the APK. Legacy clients that omit the audio field keep the
+existing selection behavior. ID-less offers from older servers remain a compatibility path and
+do not provide cross-device identity protection. A modern list cannot accept an ID-less action.
+The protocol does not restore pending selections after a new server session is created; users
+are asked to search again. A late list may invalidate another server list; the mismatch then fails
+closed rather than selecting from the wrong list.

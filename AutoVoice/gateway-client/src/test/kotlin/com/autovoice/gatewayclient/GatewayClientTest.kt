@@ -400,11 +400,13 @@ class GatewayClientTest {
         val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
         try {
             client.connect()
-            client.sendAudioStart("srv-sess-1", "seg-1", "utt-1", 30.2741, 120.1551)
+            client.sendAudioStart("srv-sess-1", "seg-1", "utt-1", 30.2741, 120.1551,
+                navigationSelectionId = "selection-airports")
             assertTrue(awaitTrue { gateway.frames.any { it.type == "audio_start" } })
             val payload = gateway.frames.first { it.type == "audio_start" }.payload
             assertEquals(30.2741, payload.get("latitude").asDouble, 0.000001)
             assertEquals(120.1551, payload.get("longitude").asDouble, 0.000001)
+            assertEquals("selection-airports", payload.get("navigationSelectionId").asString)
         } finally {
             gateway.closeAll(client, okHttp)
         }

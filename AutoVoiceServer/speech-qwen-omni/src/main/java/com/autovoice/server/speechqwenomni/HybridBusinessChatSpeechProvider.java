@@ -184,8 +184,7 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                 .map(CompletableFuture::completedFuture)
                 .orElseGet(() -> businessLlm.chat(transcript, context, utteranceId));
         return reply.thenApply(value -> {
-            navigationDialog.remember(context, value);
-            return new OnlineSpeechResult(value, transcript);
+            return new OnlineSpeechResult(navigationDialog.remember(context, value), transcript);
         });
     }
 

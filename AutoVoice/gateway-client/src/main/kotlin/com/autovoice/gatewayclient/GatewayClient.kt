@@ -179,6 +179,7 @@ class GatewayClient(
         latitude: Double? = null,
         longitude: Double? = null,
         attempt: Int = 0,
+        navigationSelectionId: String? = null,
     ) {
         val payload = linkedMapOf<String, Any>(
             "sessionId" to sessionId,
@@ -197,6 +198,7 @@ class GatewayClient(
             payload["longitude"] = longitude
         }
         payload["attempt"] = attempt
+        if (navigationSelectionId != null) payload["navigationSelectionId"] = navigationSelectionId
         sendFrame(mapOf("type" to "audio_start", "payload" to payload))
         pcmBytesInSegment = 0
     }

@@ -46,6 +46,8 @@ android {
         buildConfig = true
     }
 
+    sourceSets.getByName("test").resources.srcDir("../../shared/fixtures")
+
     testOptions {
         // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
         unitTests.all { it.useJUnitPlatform() }

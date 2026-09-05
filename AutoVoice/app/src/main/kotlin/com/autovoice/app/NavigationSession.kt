@@ -18,6 +18,7 @@ enum class NavigationHandoff { NONE, OPENING, ACCEPTED, FAILED }
 
 data class NavigationSnapshot(
     val candidateVersion: Long = 0,
+    val selectionId: String? = null,
     val candidates: List<NavigationExecutor.NavigationCandidate> = emptyList(),
     val trip: NavigationTrip? = null,
     val handoff: NavigationHandoff = NavigationHandoff.NONE,
@@ -28,8 +29,9 @@ class NavigationSession(private val publish: (NavigationSnapshot) -> Unit = {}) 
     @Volatile var snapshot = NavigationSnapshot()
         private set
 
-    @Synchronized fun offer(candidates: List<NavigationExecutor.NavigationCandidate>) {
-        update(snapshot.copy(candidateVersion = snapshot.candidateVersion + 1, candidates = candidates.toList()))
+    @Synchronized fun offer(candidates: List<NavigationExecutor.NavigationCandidate>, selectionId: String? = null) {
+        update(snapshot.copy(candidateVersion = snapshot.candidateVersion + 1, candidates = candidates.toList(),
+            selectionId = selectionId.takeIf { candidates.isNotEmpty() }))
     }
 
     /** An old dialog timer must not clear a newer result list. */
@@ -46,6 +48,7 @@ class NavigationSession(private val publish: (NavigationSnapshot) -> Unit = {}) 
 
     @Synchronized fun beginHandoff(trip: NavigationTrip) {
         update(snapshot.copy(candidateVersion = snapshot.candidateVersion + 1, candidates = emptyList(),
+            selectionId = null,
             trip = trip.copy(waypoints = trip.waypoints.toList()), handoff = NavigationHandoff.OPENING))
     }
 

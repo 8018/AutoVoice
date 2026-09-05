@@ -98,8 +98,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
         source.whenComplete((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
             else {
-                navigationDialog.remember(context, reply);
-                out.complete(new OnlineSpeechResult(reply, text));
+                out.complete(new OnlineSpeechResult(navigationDialog.remember(context, reply), text));
             }
         });
         return out;
