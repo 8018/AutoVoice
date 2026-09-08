@@ -15,6 +15,36 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NavigationToolFacadeTest {
+    @Test
+    void airportRecallDoesNotLoseFartherAirportBehindManyTerminals() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_regeocode")) return "{\"city\":\"成都\"}";
+            if (name.equals("maps_geo")) return "{}";
+            return """
+                {"pois":[
+                {"name":"成都双流国际机场T1航站楼","location":"103.95,30.57"},
+                {"name":"成都双流国际机场T2航站楼","location":"103.95,30.57"},
+                {"name":"成都双流国际机场停车场","location":"103.95,30.57"},
+                {"name":"机场酒店","location":"103.95,30.57"},
+                {"name":"成都双流国际机场","location":"103.95,30.57"},
+                {"name":"成都天府国际机场","location":"104.44,30.31"}]}
+                """;
+        });
+        var candidates = JSON.readTree(facade.resolve("{\"destinations\":[\"机场\"],\"location\":\"104.06,30.65\"}"))
+                .path("destinations").get(0).path("candidates");
+        assertEquals(2, candidates.size());
+        assertEquals("成都双流国际机场", candidates.get(0).path("poiname").asText());
+        assertEquals("成都天府国际机场", candidates.get(1).path("poiname").asText());
+    }
+
+    @Test
+    void explicitlyRequestedAirportParkingIsPreserved() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) ->
+                "{\"pois\":[{\"name\":\"天府机场停车场\",\"location\":\"104.44,30.31\"}]}");
+        var candidates = JSON.readTree(facade.resolve("{\"destinations\":[\"天府机场停车场\"],\"location\":\"104.06,30.65\"}"))
+                .path("destinations").get(0).path("candidates");
+        assertEquals("天府机场停车场", candidates.get(0).path("poiname").asText());
+    }
     private static final ObjectMapper JSON = new ObjectMapper();
 
     @Test

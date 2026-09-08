@@ -957,8 +957,15 @@ class VoiceGatewayHandlerTest {
                 [{"poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471},
                  {"poiname":"成都天府国际机场","lat":30.312,"lon":104.441}]
                 """;
-        var handler = newHandler((pcm, ctx) -> transcript.get(), (text, ctx) -> {
+        var handler = newHandler((pcm, ctx) -> {
+            if (transcript.get().equals("第二个")) {
+                assertNull(ctx.attrs().get("latitude"), "no fix in second request must clear prior latitude");
+                assertNull(ctx.attrs().get("longitude"));
+            }
+            return transcript.get();
+        }, (text, ctx) -> {
             llmCalls.incrementAndGet();
+            assertEquals(30.6, ctx.attrs().get("latitude"));
             return CompletableFuture.completedFuture(Reply.ofAction(Intent.of("1.0", "navigation",
                     "choose_destination", Map.of("candidates", com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
                     1.0, "test", null), "请选择"));
@@ -966,7 +973,8 @@ class VoiceGatewayHandlerTest {
         try {
             var socket = open(handler);
             String sid = handshake(handler, socket);
-            handler.handleMessage(socket, new TextMessage(audioStart(sid, "search")));
+            handler.handleMessage(socket, new TextMessage(audioStart(sid, "search")
+                    .replace("\"encoding\":", "\"latitude\":30.6,\"longitude\":104.0,\"encoding\":")));
             handler.handleMessage(socket, new BinaryMessage(new byte[]{1, 2}));
             handler.handleMessage(socket, new TextMessage(audioEnd(sid)));
             var offer = awaitType(socket, "reply").path("payload").path("intent");
