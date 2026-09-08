@@ -68,6 +68,7 @@ fun VoiceScreen(
         )
         Spacer(Modifier.height(12.dp))
         VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
+        state.locationHint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         if (state.navigation.trip != null) {
             Text(
                 text = when (state.navigation.handoff) {

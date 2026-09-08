@@ -75,6 +75,7 @@ data class VehicleUiState(
  *   文本（Task 53：仲裁结果不再上屏，logcat 打印，界面留给识别/回复对话区）。
  */
 data class UiState(
+    val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
     val sessionState: SessionState = SessionState.IDLE,
     val vehicle: VehicleUiState = VehicleUiState(),
@@ -168,6 +169,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
+        _uiState.update { it.copy(locationHint = hint) }
+    }
     private val navigationSession = NavigationSession { snapshot ->
         _uiState.update { it.copy(navigation = snapshot) }
     }
@@ -318,6 +322,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         interruptPlayback: Boolean = true,
     ) {
         if (recording) return
+        vehicleContext.refresh()
         followUpTimeoutJob?.cancel()
         followUpTimeoutJob = null
         recorder.setFollowUpListening(false)
@@ -369,6 +374,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Activity 回到前台时提前恢复 WebSocket，避免第一句话承担握手时延。 */
     fun onForeground() {
         foreground = true
+        vehicleContext.refresh()
         Log.i(TAG, "App 回到前台：重建共享麦克风与 IVW 会话")
         engine.onForeground()
         if (chatLocked) startChatCapture() else startWakeMonitoring()
@@ -376,6 +382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Activity 已取得 RECORD_AUDIO 权限，启动共享录音流与待机唤醒。 */
     fun onAudioPermissionGranted() {
+        vehicleContext.refresh()
         _uiState.update { it.copy(permissionHint = false) }
         if (chatLocked) startChatCapture() else startWakeMonitoring()
     }
@@ -383,6 +390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 前台可见范围内监听；退到后台停止共享麦克风，避免无前台服务的隐式常驻录音。 */
     fun onBackground() {
         foreground = false
+        vehicleContext.stopRefresh()
         stopFollowUpListening(resetDialogue = true)
         // 导航 Activity 覆盖本应用时 AudioRecord 必须释放。同时取消尚未完成的初始化，
         // 防止它在 onStop 之后反向重新 arm。IVW 原生 handle 必须保留：此 SDK 在同一
@@ -786,6 +794,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             vehicle = vehicleState,
+            vehicleContext = vehicleContext,
             // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；
             // 未安装/无处理 Activity 时 runCatching 吞掉异常返回 false（记 skipped）
             navigation = navigationExecutor,
@@ -859,6 +868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        vehicleContext.stopRefresh()
         wakeTurnTimeoutJob?.cancel()
         wakeSetupJob?.cancel()
         navigationDialogTimeoutJob?.cancel()

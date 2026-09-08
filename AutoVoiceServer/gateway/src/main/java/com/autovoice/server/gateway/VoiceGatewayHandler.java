@@ -489,6 +489,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
         // Snapshot before opening ASR: the streaming provider must see this turn's displayed list.
         st.ctx = st.ctx.withAttr("navigationSelectionId", payload.get("navigationSelectionId") instanceof String id ? id : null);
+        // Position belongs to this audio request. Absence must clear a previous fix.
+        st.ctx = st.ctx.withAttr("latitude", null).withAttr("longitude", null);
+        Object latitude = payload.get("latitude");
+        Object longitude = payload.get("longitude");
+        if (latitude instanceof Number lat && longitude instanceof Number lon
+                && Double.isFinite(lat.doubleValue()) && Double.isFinite(lon.doubleValue())
+                && Math.abs(lat.doubleValue()) <= 90 && Math.abs(lon.doubleValue()) <= 180) {
+            st.ctx = st.ctx.withAttr("latitude", lat.doubleValue()).withAttr("longitude", lon.doubleValue());
+        }
         if (st.onlineStream != null) st.onlineStream.cancel();
         try {
             // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
@@ -508,14 +517,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 st.cancelledSegments.add(processingSeg); // 抑制旧段迟到下行帧
             }
             st.arbiter.voidTurn(processingUid, RaceArbiter.REASON_SUPERSEDED);
-        }
-        Object latitude = payload.get("latitude");
-        Object longitude = payload.get("longitude");
-        if (latitude instanceof Number lat && longitude instanceof Number lon
-                && lat.doubleValue() >= -90 && lat.doubleValue() <= 90
-                && lon.doubleValue() >= -180 && lon.doubleValue() <= 180) {
-            st.ctx = st.ctx.withAttr("latitude", lat.doubleValue())
-                    .withAttr("longitude", lon.doubleValue());
         }
     }
 
