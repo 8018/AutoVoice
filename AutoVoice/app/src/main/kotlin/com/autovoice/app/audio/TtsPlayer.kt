@@ -95,7 +95,7 @@ object WavHeader {
  *   所有异常捕获后 Log.w + [onError]，不抛到 UI。
  * - 播放事件回调 [onPlayEvent]（T7 数据平台插桩，默认 no-op）：stage =
  *   `start` / `completed` / `failed` / `interrupted`，level = info / error / warn，
- *   payload 含 bytes/mime/error 等；装配方（VoiceEngine.create）接到
+ *   payload 含 bytes/mime/error 等；装配方（VoiceEngineFactory.create）接到
  *   telemetry.record(tts_play)，enabled=false 时整体零影响。
  * - 临时文件在播放完成/失败/stop 后删除。
  */
