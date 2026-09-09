@@ -13,6 +13,7 @@ import com.autovoice.adapterlocal.vad.SileroVad
 import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.adapterlocal.vad.VadSegmenter
 import com.autovoice.adapterlocal.vad.VoiceActivityGate
+import com.autovoice.app.RecordingCapture
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
@@ -87,14 +88,14 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
  *   取全部段（含强制切出的未闭合尾段）。
  * - RNNoise 网格（480 samples/帧，独立于 VAD 网格）：块内切 480 帧、尾 32 samples 丢弃
  *   （Task 18 chunk 语义），降噪后 960B/块进 [pcmBlocks]——本地路整段音频，
- *   由 MainViewModel 按"按住期间"收集。
+ *   由 RecordingCoordinator 按普通轮采集期间收集。
  *
  * 测试模式（Task 58 云端联调）：demo-full.json 声明 testAudio asset 时，输入源从
  * 麦克风切换为预置语音（[TestAudioSource]），读循环按真实 32ms/块节奏喂同一双网格
  * —— 除麦克风采集外整条端云链路可验证，且无需 RECORD_AUDIO 权限。
  *
  * recorder 保持哑通道，只出 PCM 流 + VAD 事件流 + 抬手取段入口；
- * 段装配/双路送识别的编排在 MainViewModel。
+ * 麦克风使用权、段装配与双路送识别由 RecordingCoordinator 编排。
  *
  * SileroVad 模型加载失败（assets 缺失等）→ [vadEvents] 不产生事件、[finishSegments]
  * 返回空（VAD 不可用，上层提示），录音降噪流不受影响。
@@ -114,7 +115,7 @@ class AudioRecorder(
     },
     private val denoiser: RnnoiseProcessor = RnnoiseProcessor(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-) : AutoCloseable {
+) : RecordingCapture {
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
     private val bargeInVad: SileroVad? = try {
@@ -134,8 +135,8 @@ class AudioRecorder(
 
     private val _pcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
 
-    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；按住期间收集在 MainViewModel。 */
-    val pcmBlocks: SharedFlow<ByteArray> = _pcmBlocks.asSharedFlow()
+    /** 降噪后 PCM 块流（960B/块，16k 单声道 PCM16）；普通轮由 RecordingCoordinator 收集。 */
+    override val pcmBlocks: SharedFlow<ByteArray> = _pcmBlocks.asSharedFlow()
 
     private val _rawPcmBlocks = MutableSharedFlow<ByteArray>(extraBufferCapacity = BUFFER_CAPACITY)
 
@@ -143,15 +144,15 @@ class AudioRecorder(
      * 麦克风原始 PCM 块流（1024B/块，16k 单声道 PCM16）。这是唯一 AudioRecord 的共享
      * 输出；待机时唤醒观察者消费它，进入一轮后 VAD/RNNoise 也消费同一批后续块。
      */
-    val rawPcmBlocks: SharedFlow<ByteArray> = _rawPcmBlocks.asSharedFlow()
+    override val rawPcmBlocks: SharedFlow<ByteArray> = _rawPcmBlocks.asSharedFlow()
 
     private val _vadEvents = MutableSharedFlow<VadEvent>(extraBufferCapacity = BUFFER_CAPACITY)
 
     /** VAD 事件流（SpeechStart / SpeechEnd；模型加载失败时永不发射）。 */
-    val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
+    override val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
 
     /** VAD 是否可用（模型加载成功）。 */
-    val vadAvailable: Boolean get() = vadSegmenter != null
+    override val vadAvailable: Boolean get() = vadSegmenter != null
 
     @Volatile
     private var record: AudioRecord? = null
@@ -161,7 +162,7 @@ class AudioRecorder(
 
     /** 只有系统 AEC 真正启用时才允许普通话术打断，避免扬声器回声自激。 */
     @Volatile
-    var openMicBargeInAvailable: Boolean = false
+    override var openMicBargeInAvailable: Boolean = false
         private set
 
     private var readJob: Job? = null
@@ -180,7 +181,7 @@ class AudioRecorder(
      * 测试音频源不支持常驻唤醒，避免 fixture 在后台无限循环触发。
      */
     @Synchronized
-    fun startMonitoring(): Boolean {
+    override fun startMonitoring(): Boolean {
         if (testAudioSource != null) return false
         monitoringRequested = true
         if (ensureMicrophoneCapture()) return true
@@ -190,13 +191,13 @@ class AudioRecorder(
 
     /** 停止待机监听；若当前仍在收集一轮语音，麦克风保持运行到 [stop]。 */
     @Synchronized
-    fun stopMonitoring() {
+    override fun stopMonitoring() {
         monitoringRequested = false
         if (!turnActive) stopCapture()
     }
 
     /** 播报开始/结束时切换打断 VAD；不创建第二路 AudioRecord。 */
-    fun setOpenMicBargeInListening(enabled: Boolean) {
+    override fun setOpenMicBargeInListening(enabled: Boolean) {
         if (enabled && openMicBargeInAvailable && bargeInVad != null) {
             bargeInListening = true
             bargeInVad.resetDiagnostics()
@@ -212,7 +213,7 @@ class AudioRecorder(
     }
 
     /** 播报真正结束后的免唤醒窗口；复用同一 VAD/预卷缓冲，但不要求 AEC。 */
-    fun setFollowUpListening(enabled: Boolean) {
+    override fun setFollowUpListening(enabled: Boolean) {
         followUpListening = enabled && bargeInVad != null
         if (followUpListening) {
             bargeInVad?.resetDiagnostics()
@@ -227,7 +228,7 @@ class AudioRecorder(
     }
 
     /** 待机原始 PCM 同时喂给打断 VAD；每次播报最多触发一次。 */
-    fun detectOpenMicBargeIn(block: ByteArray): Boolean {
+    override fun detectOpenMicBargeIn(block: ByteArray): Boolean {
         val vad = bargeInVad ?: return false
         if (!bargeInListening || !openMicBargeInAvailable || turnActive || !bargeInGate.listening) return false
         synchronized(bargeInPreRoll) {
@@ -244,7 +245,7 @@ class AudioRecorder(
     }
 
     /** 延时聆听期检测到连续人声后仅触发 capture；是否形成 turn 仍由 ASR/语义准入确认。 */
-    fun detectFollowUpSpeech(block: ByteArray): Boolean {
+    override fun detectFollowUpSpeech(block: ByteArray): Boolean {
         val vad = bargeInVad ?: return false
         if (!followUpListening || turnActive || !bargeInGate.listening) return false
         synchronized(bargeInPreRoll) {
@@ -261,7 +262,7 @@ class AudioRecorder(
 
     /** 启动录音；已在录或创建 AudioRecord 失败（如缺 RECORD_AUDIO 权限）时返回 false。 */
     @Synchronized
-    fun start(includeBargeInPreRoll: Boolean = false): Boolean {
+    override fun start(includeBargeInPreRoll: Boolean): Boolean {
         if (turnActive) return false
         val source = testAudioSource
         if (source != null) {
@@ -296,7 +297,7 @@ class AudioRecorder(
      * 必须在 [stop] 之后调用（feed 已停，[VadSegmenter.finish] 与录音线程互斥安全）；
      * VAD 不可用时返回空列表。
      */
-    fun finishSegments(): List<ByteArray> {
+    override fun finishSegments(): List<ByteArray> {
         val segments = vadSegmenter?.finish() ?: emptyList()
         // Task 55 诊断：云端段为空时区分"VAD 未启用/概率过低/未切段"
         val vs = vadSegmenter
@@ -314,7 +315,7 @@ class AudioRecorder(
      * AudioRecord 与原始 PCM 流保持不变；否则释放麦克风。
      */
     @Synchronized
-    fun stop() {
+    override fun stop() {
         synchronized(turnProcessingLock) { turnActive = false }
         if (testAudioSource != null || !monitoringRequested) stopCapture()
     }
