@@ -82,10 +82,11 @@ VAD start 只在准入层创建临时 capture，不改变对话状态或当前 t
 
 ## 当前代码落点
 
-- `voice-core/dialog/DialogueStateMachine.kt`：当前轮和本地交互状态。
-- `voice-core/dialog/TurnAdmissionGate.kt`：VAD capture 准入。
+- `voice-core/dialog/ConversationController.kt`：统一拥有 capture、pending、准入与当前 turn，向外发布单一对话快照。
+- `voice-core/dialog/DialogueStateMachine.kt`：控制器内部的纯状态转换组件。
+- `voice-core/dialog/TurnAdmissionGate.kt`：控制器内部的 VAD capture 准入组件。
 - `voice-core/arbiter/SemanticEmissionLedger.kt`：仲裁流水线按轮单次语义输出。
 - `VoiceSession`：只负责候选并发编排，不再把当前轮判断塞进仲裁结果。
 - `GatewayBridge`：按 `segmentId` 分别对账 `asr_partial` 和 `asr_turn_started`，不把识别文本隐式转换为新轮。
-- `VoiceEngine`：连接准入、状态机当前轮校验和执行/TTS。
+- `VoiceEngine`：消费控制器事件，只负责连接语义结果、业务执行和 TTS。
 - `MainViewModel` / `AudioRecorder`：真实播放结束计时、共享麦克风和延时聆听 VAD。

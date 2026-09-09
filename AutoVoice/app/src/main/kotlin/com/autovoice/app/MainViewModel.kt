@@ -282,7 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.close()
         engine = buildEngine(loadConfig(mode))
         recordingCoordinator.onDialogueState(
-            engine.dialogue.snapshot.value,
+            engine.conversation.snapshot.value,
             _uiState.value.navigationCandidates.isNotEmpty(),
         )
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
@@ -355,7 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun close() = wakeObserver.close()
         },
         pipeline = object : RecordingPipeline {
-            override val dialogueSnapshot: DialogueSnapshot get() = engine.dialogue.snapshot.value
+            override val dialogueSnapshot: DialogueSnapshot get() = engine.conversation.snapshot.value
             override fun onWake() = engine.onWake()
             override fun onListeningStart(interruptPlayback: Boolean) =
                 engine.onListeningStart(interruptPlayback)
