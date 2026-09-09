@@ -53,6 +53,8 @@ import okhttp3.OkHttpClient
 /** 云端音频回复播放出口（应用层实现：TtsPlayer）。JVM 测试可注入 fake。 */
 fun interface AudioPlayer {
     fun play(reply: AudioReply)
+    fun play(reply: AudioReply, identity: PlaybackIdentity) = play(reply)
+    suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) = playStream(reply)
 
     /** 停止当前播放；只中断输出，不取消端侧/云端候选计算。 */
     fun stop() = Unit
@@ -141,6 +143,8 @@ class VoiceEngine(
     private val onConversationMode: (Boolean) -> Unit = {},
     /** 本地交互状态；只由 DialogueStateMachine 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     private val onDialogueState: (DialogueSnapshot) -> Unit = {},
+    /** 已通过播放身份校验的生命周期事件；驱动层迟到回调不会触发此钩子。 */
+    private val onPlaybackStage: (PlaybackStage) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
@@ -167,12 +171,7 @@ class VoiceEngine(
      */
     val onTtsPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit
 
-    /**
-     * 发起播报时快照的 utteranceId（T7 评审 C1）：onTurnResult 收口处（本轮所有 player.play
-     * / speakViaTts 的源头）取当前 utteranceId。播放完成/失败的异步回调
-     * 晚于 [telemetry.end] 收包，必须用这个快照而非 current（后者可能已被下一轮覆盖）；
-     * 回调经 [recordFor] 归属到快照轮（轮已关闭 → 单事件直传 /events，不并入下一轮）。
-     */
+    /** 仅用于合成缓存遥测和准入停播判断；真实播放事件归属由 PlaybackIdentity 固定。 */
     @Volatile
     private var playUtteranceId = ""
 
@@ -192,31 +191,25 @@ class VoiceEngine(
     /** 装配好的会话：状态机 + 双路由竞速编排。 */
     val session: VoiceSession
 
-    init {
-        // T7 评审 C1：网络播放事件绑定 telemetry（用 playUtteranceId 快照走 recordFor——
-        // 异步回调晚于 end() 收包；轮已关闭/跨轮时单事件直传 /api/telemetry/events）。
-        // B4 需求 1 事件细分：TtsPlayer 的 stage（start/completed/failed/interrupted）→
-        // tts_play_start / tts_play_interrupted / tts_play_end（completed 与 failed
-        // 都是播放结束，level 由 TtsPlayer 给出 info/error/warn），原始 stage 以
-        // event 字段进 payload
-        onTtsPlayEvent = { stage, level, payload ->
-            val ttsStage = when (stage) {
-                "start" -> TelemetryStages.TTS_PLAY_START
-                "interrupted" -> TelemetryStages.TTS_PLAY_INTERRUPTED
-                else -> TelemetryStages.TTS_PLAY_END
-            }
-            telemetry.recordFor(
-                playUtteranceId,
-                ttsStage,
-                level,
-                payload + mapOf("source" to "network", "event" to stage),
-            )
-            when (stage) {
-                "start" -> onDialogueState(dialogue.onPlaybackStarted(playUtteranceId))
-                "completed", "failed" -> onDialogueState(dialogue.onPlaybackEnded(playUtteranceId))
-                // interrupted 往往由已确认的新轮打断，不得错误开启旧轮延时聆听。
-            }
+    private val playbackCoordinator = PlaybackCoordinator(player) { identity, kind, level, payload ->
+        val stage = when (kind) {
+            PlaybackStage.STARTED -> TelemetryStages.TTS_PLAY_START
+            PlaybackStage.INTERRUPTED -> TelemetryStages.TTS_PLAY_INTERRUPTED
+            else -> TelemetryStages.TTS_PLAY_END
         }
+        telemetry.recordFor(identity.turnId, stage, level,
+            payload + mapOf("source" to "network", "event" to kind.wire))
+        onPlaybackStage(kind)
+        // Realtime playback has its own identity but never advances the ordinary dialogue.
+        if (identity.turnId.isNotBlank()) when (kind) {
+            PlaybackStage.STARTED -> onDialogueState(dialogue.onPlaybackStarted(identity.turnId))
+            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> onDialogueState(dialogue.onPlaybackEnded(identity.turnId))
+            PlaybackStage.INTERRUPTED -> Unit
+        }
+    }
+
+    init {
+        onTtsPlayEvent = playbackCoordinator::accept
         session = VoiceSession(
             cfg = cfg,
             arbiter = arbiter,
@@ -244,9 +237,13 @@ class VoiceEngine(
      */
     fun close() {
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
+        playbackCoordinator.stop()
         session.close()
         scope.cancel()
     }
+
+    /** 统一停止当前输出；用于 realtime 对端确认用户开始说话等非普通新轮入口。 */
+    fun stopPlayback() = playbackCoordinator.stop()
 
     fun onForeground() = onForeground.invoke()
 
@@ -281,7 +278,7 @@ class VoiceEngine(
         telemetry.begin(currentUtteranceId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
-        if (interruptPlayback) player.stop()
+        if (interruptPlayback) playbackCoordinator.stop()
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -416,7 +413,7 @@ class VoiceEngine(
     private fun playRealtimeChatReply(reply: StreamingAudioReply) {
         scope.launch {
             val playback = launch {
-                runCatching { player.playStream(reply) }
+                runCatching { playbackCoordinator.playStream(playbackCoordinator.prepare(""), reply) }
                     .onFailure { error ->
                         if (error !is CancellationException) Log.w(TAG, "realtime playback failed", error)
                     }
@@ -461,7 +458,7 @@ class VoiceEngine(
         } else {
             admission.confirmSemantic(turnId, evidence)
         } ?: return dialogue.isCurrentTurn(turnId)
-        if (playUtteranceId.isNotBlank() && playUtteranceId != admitted.turnId) player.stop()
+        if (playUtteranceId.isNotBlank() && playUtteranceId != admitted.turnId) playbackCoordinator.stop()
         session.currentUtteranceId = admitted.turnId
         onDialogueState(dialogue.onSpeechCommitted(admitted.turnId))
         if (cloudPendingTurnId != admitted.turnId) onCloudPending(false)
@@ -561,14 +558,15 @@ class VoiceEngine(
         if (reply.asrText.isNotBlank()) onLocalRecognized(reply.asrText)
         when (reply) {
             is AudioReply -> {
-                if (isLatestTurn(utteranceId)) player.play(reply)
+                if (isLatestTurn(utteranceId)) playbackCoordinator.play(playbackCoordinator.prepare(utteranceId), reply)
                 reply.intent?.takeIf { isLatestTurn(utteranceId) }?.let(::applyAndNotify)
             }
             is StreamingAudioReply -> scope.launch {
                 if (!isLatestTurn(utteranceId)) return@launch
                 // 播放与终帧独立等待：Gateway 收到 audio_reply_end 时立即更新
                 // ASR/回复文本，不再等 AudioTrack 把已缓冲的 PCM 全部播完。
-                val playback = launch { player.playStream(reply) }
+                val identity = playbackCoordinator.prepare(utteranceId)
+                val playback = launch { playbackCoordinator.playStream(identity, reply) }
                 val end = try {
                     reply.completion.await()
                 } catch (cancelled: CancellationException) {
@@ -607,6 +605,7 @@ class VoiceEngine(
         }
         // B4 需求 1：tts 播报请求（端侧发出播报请求）→ tts_play_request
         telemetry.record(TelemetryStages.TTS_PLAY_REQUEST, "info", mapOf("text" to text))
+        val identity = playbackCoordinator.prepare(utteranceId)
         scope.launch {
             if (!isLatestTurn(utteranceId)) return@launch
             // 架构变更（缓存移回端侧）：先查端侧缓存（tts_cache_check + 命中/未命中），
@@ -614,13 +613,13 @@ class VoiceEngine(
             val cached = ttsCache.get(text)
             if (cached != null) {
                 if (isLatestTurn(utteranceId)) {
-                    player.play(AudioReply(mime = "audio/wav", data = cached, speakText = text))
+                    playbackCoordinator.play(identity, AudioReply(mime = "audio/wav", data = cached, speakText = text))
                 }
             } else {
                 tts.request(text, utteranceId)?.let {
                     ttsCache.put(text, it.data) // 网络合成音频写缓存（下次同文本直接命中）
-                    if (isLatestTurn(utteranceId)) player.play(it)
-                } ?: recordTtsPlayFailed(utteranceId)
+                    if (isLatestTurn(utteranceId)) playbackCoordinator.play(identity, it)
+                } ?: playbackCoordinator.failed(identity, IllegalStateException("TTS synthesis failed"))
             }
         }
     }
@@ -660,22 +659,6 @@ class VoiceEngine(
         if (applied && intent.domain != NavigationExecutor.DOMAIN_NAVIGATION) {
             onVehicleApplied()
         }
-    }
-
-    /**
-     * B4 tts_play_end：网络 TTS 合成失败/超时（不再有系统 TTS 兜底，2026-08-15）。
-     * 用 [playUtteranceId] 快照走 [TelemetryClient.recordFor]（T7 评审 C1）：launch 内
-     * 的失败回调晚于 end() 收包，plain record 会丢事件或并进下一轮；轮已关闭 →
-     * 单事件直传 /events。
-     */
-    private fun recordTtsPlayFailed(utteranceId: String) {
-        telemetry.recordFor(
-            utteranceId,
-            TelemetryStages.TTS_PLAY_END,
-            "error",
-            mapOf("source" to "network", "result" to "failed"),
-        )
-        onDialogueState(dialogue.onPlaybackEnded(utteranceId))
     }
 
     /** T7：意图摘要（数据平台 execute 事件的 intent 字段，与本地 NLU 日志同格式）。 */
@@ -722,6 +705,7 @@ class VoiceEngine(
             /** S2S 闲聊锁域进入/退出。 */
             onConversationMode: (Boolean) -> Unit = {},
             onDialogueState: (DialogueSnapshot) -> Unit = {},
+            onPlaybackStage: (PlaybackStage) -> Unit = {},
             vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         ): VoiceEngine {
             // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -870,11 +854,12 @@ class VoiceEngine(
                 onConversationMode = onConversationMode,
                 onCloudWon = cloudRunner::releaseReplyText,
                 onDialogueState = onDialogueState,
+                onPlaybackStage = onPlaybackStage,
                 streamingCloud = cloudRunner,
             )
             engineRef = engine
             cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
-            cloudRunner.onRealtimeSpeechStarted = player::stop
+            cloudRunner.onRealtimeSpeechStarted = engine::stopPlayback
             ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
             // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
             // （telemetry 为构造参数，构造即绑定），此处无需再装配

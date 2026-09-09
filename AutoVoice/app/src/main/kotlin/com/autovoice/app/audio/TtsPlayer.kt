@@ -118,6 +118,7 @@ class TtsPlayer(
 
     /** 播放代次：stop()/新 play() 使旧代次回调失效。 */
     private var playToken = 0
+    private var playbackIdentity = com.autovoice.app.PlaybackIdentity("")
 
     /** 播放中标志（回声抑制：播报期间按录音 → 端侧丢弃本轮，防扬声器回声被 ASR 当指令）。 */
     @Volatile
@@ -132,15 +133,19 @@ class TtsPlayer(
         isPlayingFlag || (windowMs > 0L && System.currentTimeMillis() - lastPlayEndMs < windowMs)
 
     /** 播放一段音频回复；自动中断上一段。失败静默降级。 */
-    fun play(reply: AudioReply) {
+    fun play(reply: AudioReply, identity: com.autovoice.app.PlaybackIdentity = com.autovoice.app.PlaybackIdentity("")) {
         stop()
         val token = ++playToken
+        playbackIdentity = identity
+        fun emit(stage: String, level: String, payload: Map<String, Any?>) {
+            if (token == playToken) onPlayEvent(stage, level, payload + identity.payload())
+        }
         val file = try {
             writeAudioFile(reply)
         } catch (t: Throwable) {
             Log.w(TAG, "write audio file failed, degraded silently", t)
             onError?.invoke(t)
-            onPlayEvent("failed", "error",
+            emit("failed", "error",
                 mapOf("result" to "failed", "error" to (t.message ?: t.javaClass.simpleName)))
             return
         }
@@ -157,14 +162,14 @@ class TtsPlayer(
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener {
                 Log.i(TAG, "play completed: data=${reply.data.size}B")
-                onPlayEvent("completed", "info", mapOf("bytes" to reply.data.size))
+                emit("completed", "info", mapOf("bytes" to reply.data.size))
                 if (token == playToken) onCompleted?.invoke()
                 finishPlayback(token, mp)
             }
             mp.setOnErrorListener { _, what, extra ->
                 val err = IllegalStateException("MediaPlayer error what=$what extra=$extra")
                 Log.w(TAG, "playback failed, degraded silently", err)
-                onPlayEvent("failed", "error", mapOf("result" to "failed", "error" to err.message))
+                emit("failed", "error", mapOf("result" to "failed", "error" to err.message))
                 if (token == playToken) onError?.invoke(err)
                 finishPlayback(token, mp)
                 true // 事件已消费
@@ -174,10 +179,10 @@ class TtsPlayer(
             isPlayingFlag = true
             // T7 评审 M1：start 事件在真正开始播放后发出——prepare/start 抛异常时只有
             // failed 事件，不产生 start+failed 的失真成对
-            onPlayEvent("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
+            emit("start", "info", mapOf("bytes" to reply.data.size, "mime" to reply.mime))
         } catch (t: Throwable) {
             Log.w(TAG, "play failed, degraded silently", t)
-            onPlayEvent("failed", "error",
+            emit("failed", "error",
                 mapOf("result" to "failed", "error" to (t.message ?: t.javaClass.simpleName)))
             if (token == playToken) onError?.invoke(t)
             finishPlayback(token, mp)
@@ -185,12 +190,16 @@ class TtsPlayer(
     }
 
     /** 24k PCM 流式输入：由两级仲裁放行后调用，使用 AudioTrack 边收边播。 */
-    suspend fun playStream(reply: StreamingAudioReply) {
+    suspend fun playStream(reply: StreamingAudioReply, identity: com.autovoice.app.PlaybackIdentity = com.autovoice.app.PlaybackIdentity("")) {
         require(reply.encoding == "pcm_s16le" && reply.channels == 1) {
             "unsupported stream format: ${reply.encoding}/${reply.channels}ch"
         }
         stop()
         val token = ++playToken
+        playbackIdentity = identity
+        fun emit(stage: String, level: String, payload: Map<String, Any?>) {
+            if (token == playToken) onPlayEvent(stage, level, payload + identity.payload())
+        }
         val channelMask = android.media.AudioFormat.CHANNEL_OUT_MONO
         val queriedBuffer = AudioTrack.getMinBufferSize(
             reply.sampleRate,
@@ -215,7 +224,7 @@ class TtsPlayer(
         try {
             track.play()
             isPlayingFlag = true
-            onPlayEvent("start", "info", mapOf("mime" to reply.mime, "streaming" to true))
+            emit("start", "info", mapOf("mime" to reply.mime, "streaming" to true))
             for (chunk in reply.chunks) {
                 if (token != playToken) break
                 var offset = 0
@@ -228,18 +237,18 @@ class TtsPlayer(
             }
             if (token == playToken) {
                 reply.completion.await()
-                onPlayEvent("completed", "info", mapOf("bytes" to bytes, "streaming" to true))
+                emit("completed", "info", mapOf("bytes" to bytes, "streaming" to true))
                 onCompleted?.invoke()
             }
         } catch (cancelled: CancellationException) {
             if (token == playToken) {
-                onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted", "streaming" to true))
+                emit("interrupted", "warn", mapOf("result" to "interrupted", "streaming" to true))
             }
             throw cancelled
         } catch (t: Throwable) {
             if (token == playToken) {
                 Log.w(TAG, "stream playback failed", t)
-                onPlayEvent("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
+                emit("failed", "error", mapOf("error" to (t.message ?: t.javaClass.simpleName)))
                 onError?.invoke(t)
             }
         } finally {
@@ -257,7 +266,7 @@ class TtsPlayer(
     fun stop() {
         if (isPlayingFlag || player != null || streamPlayer != null) {
             Log.i(TAG, "play interrupted by stop()")
-            onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted"))
+            onPlayEvent("interrupted", "warn", mapOf("result" to "interrupted") + playbackIdentity.payload())
         }
         playToken++
         isPlayingFlag = false
