@@ -369,6 +369,7 @@ class VoiceEngineTest {
         server.enqueue(MockResponse().setResponseCode(200)) // /events POST
         val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         lateinit var engine: VoiceEngine
+        lateinit var playbackIdentity: PlaybackIdentity
         try {
             runBlocking {
                 val telemetry = TelemetryClient(
@@ -390,9 +391,12 @@ class VoiceEngineTest {
                         )
                     },
                     telemetry = telemetry,
-                    player = AudioPlayer {
-                        // 模拟 TtsPlayer 真实回调路径：routeCloudReply 内 play 同步发 start（轮未收包）
-                        engine.onTtsPlayEvent("start", "info", mapOf("bytes" to 8, "mime" to "audio/wav"))
+                    player = object : AudioPlayer {
+                        override fun play(reply: AudioReply) = Unit
+                        override fun play(reply: AudioReply, identity: PlaybackIdentity) {
+                            playbackIdentity = identity
+                            engine.onTtsPlayEvent("start", "info", identity.payload() + mapOf("bytes" to 8, "mime" to "audio/wav"))
+                        }
                     },
                 )
                 engine = pair.first
@@ -418,7 +422,7 @@ class VoiceEngineTest {
 
             // 轮已关闭后的迟到完成回调 → 单事件直传 /events，utteranceId 仍属本轮
             // （迟到的 /audio 请求若晚到会被 takeRequestUntil 跳过）
-            engine.onTtsPlayEvent("completed", "info", mapOf("bytes" to 8))
+            engine.onTtsPlayEvent("completed", "info", playbackIdentity.payload() + mapOf("bytes" to 8))
             val eventsReq = takeRequestUntil(server, "/api/telemetry/events")
             assertNotNull(eventsReq, "轮关闭后的迟到 tts_play 应 POST /api/telemetry/events")
             assertEquals("/api/telemetry/events", eventsReq!!.path)

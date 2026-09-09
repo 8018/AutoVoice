@@ -150,8 +150,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 2026-08-15：全部播报统一走网络 TTS（TtsPlayer 播放服务端合成音频），不再用系统 TTS。
      */
     private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
-        // 只在真实播放期打开普通话术 VAD；结束/失败/被打断立即关闭。
-        recorder.setOpenMicBargeInListening(stage == "start" && !chatLocked)
+        // 引擎先校验固定 playbackId，再通过 onPlaybackStage 改变监听状态。
         engine.onTtsPlayEvent(stage, level, payload)
     }
 
@@ -329,10 +328,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pauseWakeObservation()
         // 唤醒/按键本身是新会话证据，可立即停播；开放式 VAD 仅建立候选 capture，
         // 必须等 ASR/NLU 触发 DialogueStateMachine 准入后再停。
-        val interruptedPlayback = ttsPlayer.isSpeaking()
-        if (interruptedPlayback && interruptPlayback) {
+        if (ttsPlayer.isSpeaking() && interruptPlayback) {
             Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
-            ttsPlayer.stop()
         }
         // 先建立新轮并置位，使 recorder.start 同步补入的打断 pre-roll
         // 的 PCM/VAD 事件都归属新 utteranceId，也能被收集器接住。
@@ -341,6 +338,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         wakeTurn = fromWake
         denoisedBlocks.clear()
         // 开放式 VAD 只建立候选 capture；ASR/NLU 准入为新会话时由状态机停播。
+        // 由引擎内的 PlaybackCoordinator 统一失效身份并停止驱动。
         engine.onListeningStart(interruptPlayback = interruptPlayback)
         if (!recorder.start(includeBargeInPreRoll)) {
             recording = false
@@ -798,6 +796,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 override suspend fun playStream(reply: StreamingAudioReply) {
                     ttsPlayer.playStream(reply)
                 }
+                override fun play(reply: com.autovoice.voicecore.AudioReply, identity: PlaybackIdentity) {
+                    ttsPlayer.play(reply, identity)
+                }
+                override suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) {
+                    ttsPlayer.playStream(reply, identity)
+                }
             },
             vehicle = vehicleState,
             vehicleContext = vehicleContext,
@@ -812,6 +816,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
             onConversationMode = ::setChatMode,
             onDialogueState = ::handleDialogueState,
+            // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
+            onPlaybackStage = { stage ->
+                recorder.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
+            },
         )
         return engine
     }
