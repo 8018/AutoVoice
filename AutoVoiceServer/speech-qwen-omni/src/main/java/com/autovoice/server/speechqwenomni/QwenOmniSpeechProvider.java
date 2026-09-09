@@ -114,7 +114,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                                   String model, String voice, ToolProvider tools,
                                   ToolExecutor toolExecutor, Supplier<String> systemPrompt) {
         // SSE 可能在模型推理或工具调用期间长时间没有字节。OkHttp 默认 10s read timeout
-        // 会把健康流误判为中断；整轮上限由网关 safety timeout + cancel(Call) 统一管理。
+        // 会把健康流误判为中断；模型/工具循环自身预算到期时取消当前 Call，与仲裁拦截独立。
         this.client = Objects.requireNonNull(client, "client").newBuilder()
                 .readTimeout(0, TimeUnit.MILLISECONDS)
                 .callTimeout(0, TimeUnit.MILLISECONDS)
@@ -236,8 +236,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         }, (call, error) -> "工具执行失败：" + error.getMessage());
 
         AgentLoop<StreamResult, OnlineSpeechResult> loop = new AgentLoop<>(
-                new AgentLoop.Policy(MAX_ROUNDS, Long.MAX_VALUE, false), requestTools,
+                new AgentLoop.Policy(MAX_ROUNDS, Long.MAX_VALUE, false, 45_000), requestTools,
                 new AgentLoop.Adapter<>() {
+                    @Override public void cancelExecution() {
+                        Call call = activeCall.get();
+                        if (call != null) call.cancel();
+                    }
                     @Override
                     public StreamResult callModel(int round, boolean toolsAllowed) throws Exception {
                         boolean effectiveTools = toolsAllowed && terminalIntent.get() == null
@@ -383,6 +387,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 .build();
         Call call = client.newCall(request);
         activeCall.set(call);
+        if (Thread.currentThread().isInterrupted()) call.cancel();
         try (Response response = call.execute()) {
             if (!response.isSuccessful()) {
                 String error = response.body() == null ? "" : response.body().string();

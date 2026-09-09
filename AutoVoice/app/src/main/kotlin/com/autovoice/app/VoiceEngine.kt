@@ -303,14 +303,17 @@ class VoiceEngine(
     fun onForeground() = onForeground.invoke()
 
     fun onWake() {
+        admission.reset()
         onDialogueState(dialogue.onWake())
     }
 
     fun onFollowUpExpired(interactionId: String) {
+        if (dialogue.snapshot.value.interactionId == interactionId) admission.reset()
         onDialogueState(dialogue.onFollowUpExpired(interactionId))
     }
 
     fun resetDialogue() {
+        admission.reset()
         onDialogueState(dialogue.reset())
     }
 
@@ -352,7 +355,7 @@ class VoiceEngine(
     fun setCloudPending(turnId: String, v: Boolean) {
         cloudPendingTurnId = turnId.takeIf { v }
         val belongsToVisibleTurn = dialogue.isCurrentTurn(turnId) ||
-            dialogue.snapshot.value.captureId == turnId
+            admission.owns(turnId)
         onCloudPending(v && belongsToVisibleTurn)
         if (v) {
             dialogue.snapshot.value.turnId?.takeIf { it == turnId }?.let {
@@ -373,7 +376,6 @@ class VoiceEngine(
         if (session.state.value != SessionState.LISTENING) return
         awaitingVadStart = false
         admission.open(currentUtteranceId)
-        onDialogueState(dialogue.onVadStart(currentUtteranceId))
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
         streamingCloud?.beginStreamingTurn(currentUtteranceId)
     }
@@ -428,9 +430,8 @@ class VoiceEngine(
             telemetry.begin(currentUtteranceId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
         }
-        if (dialogue.snapshot.value.captureId != currentUtteranceId) {
+        if (!admission.owns(currentUtteranceId)) {
             admission.open(currentUtteranceId)
-            onDialogueState(dialogue.onVadStart(currentUtteranceId))
         }
         telemetry.record(
             TelemetryStages.VAD,
@@ -491,9 +492,9 @@ class VoiceEngine(
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
-        if (admission.reject(currentUtteranceId)) {
-            onDialogueState(dialogue.onCaptureRejected(currentUtteranceId))
-        }
+        admission.reject(currentUtteranceId)
+        // Reconcile capture resources against the unchanged dialogue snapshot.
+        onDialogueState(dialogue.snapshot.value)
         session.onListeningStop()
     }
 
@@ -530,7 +531,7 @@ class VoiceEngine(
             return
         }
         val snapshot = dialogue.snapshot.value
-        if (snapshot.captureId == turnId || snapshot.turnId == turnId) onLocalRecognized(text)
+        if (admission.owns(turnId) || snapshot.turnId == turnId) onLocalRecognized(text)
     }
 
     /** ASR/AEC 独立确认新话语；状态机只消费该事件，不检查识别文本。 */
@@ -547,9 +548,8 @@ class VoiceEngine(
                 AdmissionEvidence.LOCAL_SEMANTIC,
             )
             is RaceWinner.Failed -> {
-                if (admission.reject(utteranceId)) {
-                    onDialogueState(dialogue.onCaptureRejected(utteranceId))
-                }
+                admission.reject(utteranceId)
+                onDialogueState(dialogue.snapshot.value)
             }
             is RaceWinner.Intercepted -> Unit
         }

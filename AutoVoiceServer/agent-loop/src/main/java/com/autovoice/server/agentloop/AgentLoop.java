@@ -5,15 +5,24 @@ import java.util.Optional;
 
 /** Provider-neutral bounded model/tool loop shared by text and speech backends. */
 public final class AgentLoop<M, R> {
-    public record Policy(int maxRounds, long toolBudgetMs, boolean disableToolsOnLastRound) {
+    public record Policy(int maxRounds, long toolBudgetMs, boolean disableToolsOnLastRound,
+                         long executionBudgetMs) {
+        public Policy(int maxRounds, long toolBudgetMs, boolean disableToolsOnLastRound) {
+            this(maxRounds, toolBudgetMs, disableToolsOnLastRound,
+                    toolBudgetMs == Long.MAX_VALUE ? 45_000 : toolBudgetMs > 0 ? toolBudgetMs : 10_000);
+        }
         public Policy {
             if (maxRounds < 1) throw new IllegalArgumentException("maxRounds must be positive");
+            if (executionBudgetMs <= 0) throw new IllegalArgumentException("execution budget must be positive");
             toolBudgetMs = Math.max(0, toolBudgetMs);
         }
     }
 
     public interface Adapter<M, R> {
         M callModel(int round, boolean toolsAllowed) throws Exception;
+
+        /** Abort this request's transport only on its own deadline/interruption, never arbitration. */
+        default void cancelExecution() { }
 
         List<AgentToolCall> toolCalls(M message);
 
@@ -42,26 +51,38 @@ public final class AgentLoop<M, R> {
     }
 
     public R run() throws Exception {
-        long startedAt = System.currentTimeMillis();
+        ExecutionBudget budget = new ExecutionBudget(policy.executionBudgetMs());
+        return budget.run(() -> runWithinBudget(budget), adapter::cancelExecution);
+    }
+
+    private R runWithinBudget(ExecutionBudget budget) throws Exception {
+        long startedAt = System.nanoTime();
         M last = null;
         for (int round = 1; round <= policy.maxRounds(); round++) {
+            budget.check();
             if (Thread.currentThread().isInterrupted()) {
                 throw new InterruptedException("agent loop cancelled");
             }
             boolean withinBudget = policy.toolBudgetMs() == Long.MAX_VALUE
                     || policy.toolBudgetMs() > 0
-                    && System.currentTimeMillis() - startedAt <= policy.toolBudgetMs();
+                    && System.nanoTime() - startedAt < java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(policy.toolBudgetMs());
             boolean lastRound = round == policy.maxRounds();
             boolean toolsAllowed = withinBudget && !(lastRound && policy.disableToolsOnLastRound());
             last = adapter.callModel(round, toolsAllowed);
+            budget.check();
             List<AgentToolCall> calls = adapter.toolCalls(last);
             if (calls.isEmpty()) return adapter.finish(last);
-            Optional<R> terminal = adapter.terminal(last, calls);
-            if (terminal.isPresent()) return terminal.get();
             if (!toolsAllowed) {
                 throw new IllegalStateException("model called a tool while tools are disabled");
             }
-            List<AgentToolResult> results = tools.execute(calls);
+            if (policy.toolBudgetMs() != Long.MAX_VALUE && System.nanoTime() - startedAt >=
+                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(policy.toolBudgetMs())) {
+                throw new java.util.concurrent.TimeoutException("agent tool budget exhausted");
+            }
+            Optional<R> terminal = adapter.terminal(last, calls);
+            if (terminal.isPresent()) return terminal.get();
+            List<AgentToolResult> results = tools.execute(calls, budget);
+            budget.check();
             Optional<R> terminalAfterTools = adapter.terminalAfterTools(last, results);
             if (terminalAfterTools.isPresent()) return terminalAfterTools.get();
             adapter.appendToolResults(last, results);
