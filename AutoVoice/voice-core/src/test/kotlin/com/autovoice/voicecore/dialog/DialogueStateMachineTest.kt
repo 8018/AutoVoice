@@ -1,97 +1,93 @@
 package com.autovoice.voicecore.dialog
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 
 class DialogueStateMachineTest {
-    private var id = 0
-    private val machine = DialogueStateMachine { "id-${++id}" }
+    private val machine = DialogueStateMachine()
+    private val gate = TurnAdmissionGate()
 
     @Test
-    fun `vad is provisional until speech evidence commits the turn`() {
+    fun `candidate creation and rejection never change any dialogue phase`() {
+        for (state in DialogueState.entries) {
+            val m = DialogueStateMachine()
+            when (state) {
+                DialogueState.DORMANT -> Unit
+                DialogueState.AWAKE -> m.onWake()
+                else -> {
+                    m.onSpeechCommitted("old")
+                    when (state) {
+                        DialogueState.SEMANTIC_PROCESSING -> m.onSemanticProcessing("old")
+                        DialogueState.RESPONDING -> m.onFinalSemantic("old")
+                        DialogueState.SPEAKING -> m.onPlaybackStarted("old")
+                        DialogueState.FOLLOW_UP_LISTENING -> m.onPlaybackEnded("old")
+                        else -> Unit
+                    }
+                }
+            }
+            val before = m.snapshot.value
+            assertEquals(state, before.state)
+            gate.open("noise")
+            assertEquals(before, m.snapshot.value)
+            gate.reject("noise")
+            assertEquals(before, m.snapshot.value)
+        }
+    }
+
+    @Test
+    fun `only admitted evidence establishes the turn`() {
         val wake = machine.onWake()
-        val candidate = machine.onVadStart("capture-1")
-
-        assertEquals(DialogueState.AWAKE, wake.state)
-        assertEquals(DialogueState.SPEECH_CANDIDATE, candidate.state)
-        assertEquals(null, candidate.turnId)
-
-        val committed = machine.onSpeechCommitted("capture-1")
+        gate.open("candidate")
+        assertEquals(wake, machine.snapshot.value)
+        assertNull(gate.confirmAsr("stale", AdmissionEvidence.CLOUD_ASR))
+        val admitted = gate.confirmAsr("candidate", AdmissionEvidence.CLOUD_ASR)!!
+        val committed = machine.onSpeechCommitted(admitted.turnId)
         assertEquals(DialogueState.THINKING, committed.state)
-        assertEquals("capture-1", committed.turnId)
+        assertEquals("candidate", committed.turnId)
     }
 
     @Test
-    fun `stale events cannot move a newer turn`() {
-        machine.onWake()
-        machine.onVadStart("new")
-        machine.onSpeechCommitted("new")
-
+    fun `playback ends normally while candidate remains available for semantic admission`() {
+        machine.onSpeechCommitted("old")
         machine.onPlaybackStarted("old")
-
-        assertEquals(DialogueState.THINKING, machine.snapshot.value.state)
+        gate.open("new")
+        assertEquals(DialogueState.FOLLOW_UP_LISTENING, machine.onPlaybackEnded("old").state)
+        val admitted = gate.confirmSemantic("new", AdmissionEvidence.LOCAL_SEMANTIC)!!
+        assertEquals(DialogueState.THINKING, machine.onSpeechCommitted(admitted.turnId).state)
+        machine.onPlaybackEnded("old")
         assertEquals("new", machine.snapshot.value.turnId)
+        assertEquals(DialogueState.THINKING, machine.snapshot.value.state)
     }
 
     @Test
-    fun `playback completion starts follow up and timer expiry ends interaction`() {
-        val interaction = machine.onWake().interactionId!!
-        machine.onVadStart("turn")
+    fun `repeated admission and vad do not regress a speaking turn`() {
+        gate.open("turn")
+        gate.confirmAsr("turn", AdmissionEvidence.LOCAL_ASR)
         machine.onSpeechCommitted("turn")
-        machine.onFinalSemantic("turn")
         machine.onPlaybackStarted("turn")
+        gate.open("turn")
+        assertEquals("turn", gate.current()?.turnId)
+        assertEquals(DialogueState.SPEAKING, machine.onSpeechCommitted("turn").state)
+    }
 
+    @Test
+    fun `playback completion and timer expiry retain their lifecycle roles`() {
+        val interaction = machine.onWake().interactionId!!
+        machine.onSpeechCommitted("turn")
+        machine.onPlaybackStarted("turn")
         assertEquals(DialogueState.FOLLOW_UP_LISTENING, machine.onPlaybackEnded("turn").state)
         assertEquals(DialogueState.DORMANT, machine.onFollowUpExpired(interaction).state)
     }
 
     @Test
-    fun `false vad restores follow up without replacing committed turn`() {
-        machine.onWake()
-        machine.onVadStart("turn-1")
-        machine.onSpeechCommitted("turn-1")
-        machine.onPlaybackEnded("turn-1")
-        machine.onVadStart("noise")
-
-        val restored = machine.onCaptureRejected("noise")
-        assertEquals(DialogueState.FOLLOW_UP_LISTENING, restored.state)
-        assertEquals("turn-1", restored.turnId)
-    }
-
-    @Test
-    fun `false first capture keeps a finite wake-free interaction`() {
-        machine.onWake()
-        machine.onVadStart("noise")
-
-        val restored = machine.onCaptureRejected("noise")
-
-        assertEquals(DialogueState.FOLLOW_UP_LISTENING, restored.state)
-        assertEquals(null, restored.turnId)
-    }
-
-    @Test
-    fun `old playback completion cannot erase a newer provisional capture`() {
-        machine.onWake()
-        machine.onVadStart("old")
-        machine.onSpeechCommitted("old")
-        machine.onVadStart("new-capture")
-
-        val snapshot = machine.onPlaybackEnded("old")
-
-        assertEquals(DialogueState.SPEECH_CANDIDATE, snapshot.state)
-        assertEquals("new-capture", snapshot.captureId)
-        assertEquals(DialogueState.THINKING, machine.onSpeechCommitted("new-capture").state)
-    }
-
-    @Test
-    fun `state machine only checks whether semantic belongs to current turn`() {
-        machine.onWake()
-        machine.onVadStart("turn")
+    fun `state machine checks current turn downstream of arbitration`() {
         machine.onSpeechCommitted("turn")
-
-        assertEquals(true, machine.isCurrentTurn("turn"))
         assertEquals(false, machine.isCurrentTurn("old"))
         assertEquals(DialogueState.THINKING, machine.onFinalSemantic("old").state)
         assertEquals(DialogueState.RESPONDING, machine.onFinalSemantic("turn").state)
+        gate.open("pending")
+        gate.reset()
+        assertNull(gate.confirmSemantic("pending", AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
     }
 }
