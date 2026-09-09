@@ -77,7 +77,9 @@ class ExecutionBudgetTest {
         var budget = new ExecutionBudget(300);
         var executor = new RequestToolExecutor(call -> {
             new CountDownLatch(1).await(); return "unreachable";
-        }, (call, error) -> error.toString());
+        }, (call, error) -> error.toString(), ToolExecutionPolicy.declared(List.of(
+                new com.autovoice.server.contracts.FunctionTool("get_place", "", "{}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY))));
         assertThrows(TimeoutException.class, () -> budget.run(() -> executor.execute(List.of(
                 new AgentToolCall("1", "get_place", "{}"),
                 new AgentToolCall("2", "get_place", "{}")), budget), () -> {}));

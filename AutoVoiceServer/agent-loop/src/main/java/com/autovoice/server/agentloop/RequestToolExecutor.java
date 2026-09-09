@@ -9,7 +9,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 /**
- * Per-request tool runner. Identical calls are cached across rounds. Consecutive read-only calls run
+ * Per-request tool runner. Declared cacheable successful reads are reused across rounds. Independent reads run
  * concurrently; a possibly mutating call is a dependency barrier. Result order always matches the
  * assistant's tool-call order.
  */
@@ -59,6 +59,8 @@ public final class RequestToolExecutor {
                 reads.add(call);
             } else {
                 flush(reads, results, budget);
+                // An operation may change data read earlier, even if its response later fails.
+                if (!policy.isReadOnly(call)) cache.clear();
                 results.add(runAndCache(call, budget));
             }
         }
@@ -106,8 +108,9 @@ public final class RequestToolExecutor {
         } catch (java.util.concurrent.TimeoutException error) {
             return failure(call, error);
         }
+        String key = policy.cacheSuccess(call) ? call.cacheKey() : null;
         CompletableFuture<AgentToolResult> mine = new CompletableFuture<>();
-        CompletableFuture<AgentToolResult> existing = cache.putIfAbsent(call.cacheKey(), mine);
+        CompletableFuture<AgentToolResult> existing = key == null ? null : cache.putIfAbsent(key, mine);
         if (existing != null) {
             try {
                 AgentToolResult cached = budget == null ? existing.get() : budget.await(existing);
@@ -130,6 +133,7 @@ public final class RequestToolExecutor {
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
             result = failure(call, error);
         }
+        if (result.error() && key != null) cache.remove(key, mine);
         mine.complete(result);
         return result;
     }

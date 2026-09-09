@@ -273,7 +273,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         messages.add(userMessage(text));
         RequestToolExecutor requestTools = new RequestToolExecutor(
                 call -> runTool(call.name(), call.argumentsJson()),
-                (call, error) -> "工具执行失败：" + error.getMessage());
+                (call, error) -> "工具执行失败：" + error.getMessage(),
+                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot));
         AgentLoop<JsonNode, Reply> loop = new AgentLoop<>(
                 new AgentLoop.Policy(MAX_LLM_ROUNDS, toolLoopBudgetMs, true), requestTools,
                 new AgentLoop.Adapter<>() {
@@ -480,21 +481,16 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     }
 
     /**
-     * 执行一次工具调用：executor 缺失返回固定"不可用"文本；工具抛 RuntimeException →
-     * 错误文本作为 tool_result 回 LLM 续轮（不中断多轮循环）。
+     * 保留失败类型，由 RequestToolExecutor 转成错误 tool_result；失败不可伪装为成功缓存。
      */
     private String runTool(String name, String argumentsJson) {
         if (Thread.currentThread().isInterrupted()) {
             throw new LlmException("tool call cancelled before execution: " + name);
         }
         if (executor == null) {
-            return "工具执行不可用";
+            throw new LlmException("工具执行不可用");
         }
-        try {
-            return executor.execute(name, argumentsJson);
-        } catch (RuntimeException e) {
-            return "工具执行失败：" + e.getMessage();   // 错误文本回 LLM 续轮
-        }
+        return executor.execute(name, argumentsJson);
     }
 
     @Override

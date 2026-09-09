@@ -399,7 +399,8 @@ class QwenOmniSpeechProviderTest {
                 new OkHttpClient(), "test-key", server.url("/chat").toString(),
                 null, null,
                 () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
-                        "poi_search", "地点搜索", "{\"type\":\"object\"}")),
+                        "poi_search", "地点搜索", "{\"type\":\"object\"}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY)),
                 (name, args) -> {
                     executions.incrementAndGet();
                     return "resolved";
