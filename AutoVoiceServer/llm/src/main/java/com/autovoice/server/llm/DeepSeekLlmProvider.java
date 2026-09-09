@@ -54,8 +54,8 @@ import java.util.function.Supplier;
  * + {@code tools}（car_control skill + 注入的 MCP 工具）+ {@code stream:false}。</p>
  *
  * <p>多轮工具循环（spec §6）：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。第 1-N-1 次带 tools
- * （toolLoopBudgetMs 预算内）；第 N 次（最后）不带 tools 强制直答。每轮前检查
- * {@code now - start > budget} → 后续调用不带 tools。模型调用终局工具（{@code car_control} /
+ * （toolLoopBudgetMs 预算内）；第 N 次（最后）不带 tools 强制直答。模型与工具共享有限执行预算，
+ * 到期停止追加调用并取消当前模型请求。模型调用终局工具（{@code car_control} /
  * {@code navigate}）→ 立即终局（action 回复，不续轮）；MCP 工具 → {@link ToolExecutor#execute}
  * （异常 → 错误文本作为 tool_result 回 LLM 续轮）；无 tools 的调用仍返回 tool_calls →
  * {@link LlmException}。</p>
@@ -80,7 +80,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     /** DeepSeek OpenAI 兼容端点默认地址。 */
     public static final String DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 
-    /** 工具循环预算（毫秒）：起算于首次 LLM 调用，超时后后续调用不再带 tools。
+    /** 模型/工具循环预算（毫秒）：超时停止追加调用并取消当前模型请求。
      * resolve_navigation 已把多地点搜索/补坐标合并为一轮；预算仍为慢 MCP 和降级链路留余量。 */
     public static final long DEFAULT_TOOL_LOOP_BUDGET_MS = 20_000;
 
@@ -263,8 +263,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     }
 
     /**
-     * 多轮工具循环：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。每轮前检查预算
-     * （超预算 → 不带 tools），最后一轮强制直答。car_control 工具调用立即终局。
+     * 多轮工具循环：最多 {@link #MAX_LLM_ROUNDS} 次 LLM 调用。模型与工具共享单调时钟预算，
+     * 到期结束任务；预算内最后一轮强制直答。car_control 工具调用立即终局。
      */
     private Reply callAndParse(String text, SessionContext ctx, AtomicReference<Call> activeCall) throws IOException {
         List<FunctionTool> requestToolSnapshot = ToolSchemaCompactor.compact(this.tools.enabledTools());
@@ -277,6 +277,10 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         AgentLoop<JsonNode, Reply> loop = new AgentLoop<>(
                 new AgentLoop.Policy(MAX_LLM_ROUNDS, toolLoopBudgetMs, true), requestTools,
                 new AgentLoop.Adapter<>() {
+                    @Override public void cancelExecution() {
+                        Call call = activeCall.get();
+                        if (call != null) call.cancel();
+                    }
                     @Override
                     public JsonNode callModel(int round, boolean toolsAllowed) throws Exception {
                         List<FunctionTool> enabled = toolsAllowed ? requestToolSnapshot : List.of();
@@ -371,6 +375,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                 .build();
         Call call = client.newCall(request);
         activeCall.set(call);
+        if (Thread.currentThread().isInterrupted()) call.cancel();
         try (Response response = call.execute()) {
             String body = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) {
