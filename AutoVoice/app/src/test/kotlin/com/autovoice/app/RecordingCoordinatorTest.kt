@@ -1,0 +1,205 @@
+package com.autovoice.app
+
+import com.autovoice.adapterlocal.vad.VadEvent
+import com.autovoice.voicecore.dialog.DialogueSnapshot
+import com.autovoice.voicecore.dialog.DialogueState
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.*
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class RecordingCoordinatorTest {
+    @Test fun `wake turn owns capture then routes vad and completed audio in order`() = runTest {
+        val capture = FakeCapture().apply { segments = listOf(byteArrayOf(7, 8)) }
+        val wake = FakeWakeWord()
+        val pipeline = FakePipeline()
+        val states = mutableListOf<RecordingLifecycleSnapshot>()
+        val coordinator = coordinator(capture, wake, pipeline) { states += it }
+        runCurrent()
+
+        coordinator.onForeground()
+        runCurrent()
+        assertTrue(wake.armed)
+
+        coordinator.deliverWake("你好飞飞")
+        assertEquals(listOf(false), capture.startPreRoll)
+        assertEquals(listOf("wake", "listening:true"), pipeline.events.take(2))
+
+        repeat(10) { capture.pcm.emit(ByteArray(960) { 1 }) }
+        runCurrent()
+        capture.vad.emit(VadEvent.SpeechStart)
+        runCurrent()
+        capture.vad.emit(VadEvent.SpeechEnd)
+        runCurrent()
+
+        assertEquals(10, pipeline.streamingBlocks)
+        assertEquals(1, pipeline.finishStreaming)
+        assertEquals(listOf(byteArrayOf(7, 8).toList()), pipeline.cloudSegments.map(ByteArray::toList))
+        assertEquals(9_600, pipeline.turnSegments.single().size)
+        assertFalse(states.last().recording)
+    }
+
+    @Test fun `realtime chat exclusively receives raw pcm and resumes wake after exit`() = runTest {
+        val capture = FakeCapture()
+        val wake = FakeWakeWord()
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, wake, pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+
+        assertTrue(coordinator.setChatMode(true))
+        capture.raw.emit(byteArrayOf(1, 2, 3))
+        capture.pcm.emit(ByteArray(960))
+        runCurrent()
+
+        assertEquals(1, pipeline.startRealtime)
+        assertEquals(listOf(listOf<Byte>(1, 2, 3)), pipeline.realtimeBlocks.map(ByteArray::toList))
+        assertTrue(pipeline.turnSegments.isEmpty())
+
+        assertTrue(coordinator.setChatMode(false))
+        runCurrent()
+        assertEquals(1, pipeline.finishRealtime)
+        assertEquals(1, pipeline.dialogueResets)
+        assertTrue(wake.armed)
+    }
+
+    @Test fun `follow up timer expires only matching interaction`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+
+        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting, hasNavigationCandidates = false)
+        assertTrue(capture.followUpEnabled)
+
+        advanceTimeBy(999)
+        runCurrent()
+        assertTrue(pipeline.expiredInteractions.isEmpty())
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(listOf("interaction"), pipeline.expiredInteractions)
+    }
+
+    @Test fun `capture start failure rolls back pipeline and reports permission`() = runTest {
+        val capture = FakeCapture().apply { startResult = false }
+        val pipeline = FakePipeline()
+        val states = mutableListOf<RecordingLifecycleSnapshot>()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) { states += it }
+        runCurrent()
+
+        coordinator.startManualTurn()
+
+        assertEquals(listOf("wake", "listening:true", "listening:false"), pipeline.events)
+        assertEquals(1, pipeline.dialogueResets)
+        assertTrue(states.last().permissionRequired)
+        assertFalse(coordinator.isRecording)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.coordinator(
+        capture: FakeCapture,
+        wake: FakeWakeWord,
+        pipeline: FakePipeline,
+        onState: (RecordingLifecycleSnapshot) -> Unit,
+    ) = RecordingCoordinator(
+        capture = capture,
+        wakeWord = wake,
+        pipeline = pipeline,
+        scope = this,
+        isPlaybackSpeaking = { false },
+        onState = onState,
+        elapsedRealtimeMs = { testScheduler.currentTime },
+        timing = RecordingTiming(
+            wakeTurnTimeoutMs = 5_000,
+            followUpListenMs = 1_000,
+            navigationFollowUpListenMs = 2_000,
+            maxInteractionMs = 10_000,
+        ),
+        ioDispatcher = StandardTestDispatcher(testScheduler),
+    )
+
+    private class FakeCapture : RecordingCapture {
+        val pcm = MutableSharedFlow<ByteArray>(extraBufferCapacity = 16)
+        val raw = MutableSharedFlow<ByteArray>(extraBufferCapacity = 16)
+        val vad = MutableSharedFlow<VadEvent>(extraBufferCapacity = 16)
+        override val pcmBlocks = pcm
+        override val rawPcmBlocks = raw
+        override val vadEvents = vad
+        override val vadAvailable = true
+        override var openMicBargeInAvailable = true
+        var startResult = true
+        var segments = emptyList<ByteArray>()
+        var monitoring = false
+        var followUpEnabled = false
+        var bargeInListening = false
+        val startPreRoll = mutableListOf<Boolean>()
+
+        override fun startMonitoring(): Boolean { monitoring = true; return true }
+        override fun stopMonitoring() { monitoring = false }
+        override fun setOpenMicBargeInListening(enabled: Boolean) { bargeInListening = enabled }
+        override fun setFollowUpListening(enabled: Boolean) { followUpEnabled = enabled }
+        override fun detectOpenMicBargeIn(block: ByteArray) = false
+        override fun detectFollowUpSpeech(block: ByteArray) = false
+        override fun start(includeBargeInPreRoll: Boolean): Boolean {
+            startPreRoll += includeBargeInPreRoll
+            return startResult
+        }
+        override fun stop() = Unit
+        override fun finishSegments() = segments
+        override fun close() = Unit
+    }
+
+    private class FakeWakeWord : WakeWordPort {
+        override val keyword = "你好飞飞"
+        var initialized = false
+        var armed = false
+        override fun initialize() { initialized = true }
+        override fun arm() { armed = true }
+        override fun accept(pcm: ByteArray) = Unit
+        override fun pause() { armed = false }
+        override fun disarm() { armed = false }
+        override fun close() = Unit
+    }
+
+    private class FakePipeline : RecordingPipeline {
+        override var dialogueSnapshot = DialogueSnapshot()
+        val events = mutableListOf<String>()
+        var streamingBlocks = 0
+        var finishStreaming = 0
+        val cloudSegments = mutableListOf<ByteArray>()
+        val turnSegments = mutableListOf<ByteArray>()
+        val realtimeBlocks = mutableListOf<ByteArray>()
+        var startRealtime = 0
+        var finishRealtime = 0
+        var dialogueResets = 0
+        val expiredInteractions = mutableListOf<String>()
+
+        override fun onWake() { events += "wake" }
+        override fun onListeningStart(interruptPlayback: Boolean) { events += "listening:$interruptPlayback" }
+        override fun onListeningStop() { events += "listening:false" }
+        override fun onVadStart() { events += "vad:start" }
+        override fun onVadEnd() { events += "vad:end" }
+        override fun appendStreamingCloudAudio(block: ByteArray) { streamingBlocks++ }
+        override fun finishStreamingCloudAudio() { finishStreaming++ }
+        override fun cancelStreamingCloudAudio() { events += "stream:cancel" }
+        override fun onCloudSegment(segment: ByteArray) { cloudSegments += segment }
+        override fun onTurnSegment(segment: ByteArray) { turnSegments += segment }
+        override fun appendRealtimeChatAudio(block: ByteArray) { realtimeBlocks += block }
+        override fun startRealtimeChat() { startRealtime++ }
+        override fun finishRealtimeChat() { finishRealtime++ }
+        override fun onFollowUpExpired(interactionId: String) { expiredInteractions += interactionId }
+        override fun resetDialogue() {
+            dialogueResets++
+            dialogueSnapshot = DialogueSnapshot()
+        }
+    }
+}

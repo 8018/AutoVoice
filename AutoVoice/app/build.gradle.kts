@@ -77,6 +77,7 @@ dependencies {
     implementation(libs.gson)
 
     testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
     // 桥接对账测试：MockWebServer 假扮网关推送 reply/error（Task 20 fix round）
     testImplementation(libs.mockwebserver)
     // TelemetryClient JVM 单测（T6）：真实 org.json（mockable android.jar 的 JSONObject 是桩，

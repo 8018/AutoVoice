@@ -9,7 +9,6 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
-import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.adapteriflytek.IflytekWakeWordObserver
 import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.audio.TtsPlayer
@@ -114,25 +113,22 @@ data class UiState(
 }
 
 /**
- * 主 ViewModel（Task 19 + Task 20 接线；Task 50 按钮录音双路）：持有 [AudioRecorder]
- * （按住录音：VAD 切段 + 降噪整段）+ 装配好的 [VoiceEngine]（双链路竞速 + 播报/执行路由）
- * + [MockVehicleState] + UI 状态。
+ * 主 ViewModel 只装配 [RecordingCoordinator]、[VoiceEngine]、[MockVehicleState] 与 UI 状态。
+ * 麦克风所有权、音频扇出及录音定时器均由 RecordingCoordinator 管理。
  *
  * Task 50 按钮双路接线（按下录音，抬手双路送识别；VAD 保留用于云端路段切分）：
  *  - 按下 → [startRecording]：清段缓冲 → 启动录音 → [VoiceEngine.onListeningStart]
  *    （网络可用则恢复云端路由，否则挂起云端）；
- *  - 按住期间：recorder 内部 [AudioRecorder.finishSegments] 实时切云端段（Silero VAD，
- *    Task 49），pcmBlocks 收集器把降噪 960B/块攒进 [denoisedBlocks]（本地整段）；
+ *  - 按住期间：[AudioRecorder] 产生 PCM/VAD，RecordingCoordinator 组装云端流与本地整段；
  *  - 抬手 → [stopRecording]：停止录音 → 先逐段 [VoiceEngine.onCloudSegment]（云端路），
  *    再把整段降噪 PCM 送 [VoiceEngine.onTurnSegment]（本地路，启动竞速）；
  *    整段 < 300ms（误触）丢弃不送识别，直接回 IDLE；
  *  - 录音中切模式 → [cancelRecording]：停录音、不送识别（引擎随后释放/重建）；
  *  - 会话状态 → [UiState.sessionState]；决策 sink → [MainViewModel.addDecision]；
  *  - 弱网开关 → engine.weakNetwork（云端人为延迟 3s，debug 构建）；
- *  - [onCleared] → recorder.close() + 播报/播放资源释放。
+ *  - [onCleared] → RecordingCoordinator 统一释放录音与唤醒资源。
  *
- * PCM 块在 [viewModelScope] 收集，所有 UI 状态一律走 [uiState] StateFlow——
- * 回调协程/线程里不碰任何 Android 视图。
+ * 所有 UI 状态一律走 [uiState] StateFlow，回调线程不触碰 Android 视图。
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -162,9 +158,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appId = BuildConfig.XFYUN_APPID,
         apiKey = BuildConfig.XFYUN_API_KEY,
         apiSecret = BuildConfig.XFYUN_API_SECRET,
-        onWake = { keyword -> viewModelScope.launch { onWakeDetected(keyword) } },
-        onError = { error -> viewModelScope.launch { onWakeFailure(error) } },
+        onWake = { keyword -> viewModelScope.launch { recordingCoordinator.deliverWake(keyword) } },
+        onError = { error -> viewModelScope.launch { recordingCoordinator.deliverWakeError(error) } },
     )
+
+    /** 唯一麦克风使用权与音频流路由；不参与 ASR/NLU、仲裁或对话状态转换。 */
+    private lateinit var recordingCoordinator: RecordingCoordinator
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -195,39 +194,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 本地整段装配缓冲：按住期间收集的 960B 降噪块（Task 18 块格式；抬手后 concat）。 */
-    private val denoisedBlocks = mutableListOf<ByteArray>()
-
-    /** 当前是否按住录音中（按下置 true，抬手/中止置 false；pcmBlocks 收集器据此攒块）。 */
-    @Volatile
-    private var recording = false
-
-    @Volatile
-    private var chatLocked = false
-
-    @Volatile
-    private var wakeTurn = false
-
-    @Volatile
-    private var cloudVadActive = false
-    private val cloudStreamLock = Any()
-    private val cloudPreRoll = ArrayDeque<ByteArray>()
-
-    private fun resetCloudStreamGate() = synchronized(cloudStreamLock) {
-        cloudVadActive = false
-        cloudPreRoll.clear()
-    }
-
-    @Volatile
-    private var foreground = false
-
-    private var wakeInitialized = false
-    private var wakeSetupJob: Job? = null
-    private var wakeTurnTimeoutJob: Job? = null
     private var navigationDialogTimeoutJob: Job? = null
-    private var followUpTimeoutJob: Job? = null
-    private var timedInteractionId: String? = null
-    private var interactionStartedAtMs = 0L
 
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
@@ -237,327 +204,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val mode = restoreMode()
         _uiState.update { it.copy(mode = mode) }
         engine = buildEngine(loadConfig(mode))
-        viewModelScope.launch {
-            recorder.pcmBlocks.collect { block ->
-                if (recording && !chatLocked) {
-                    denoisedBlocks.add(block)
-                    val streamNow = synchronized(cloudStreamLock) {
-                        if (cloudVadActive) true else {
-                            cloudPreRoll.addLast(block.copyOf())
-                            while (cloudPreRoll.size > CLOUD_PRE_ROLL_BLOCKS) cloudPreRoll.removeFirst()
-                            false
-                        }
-                    }
-                    if (streamNow) engine.appendStreamingCloudAudio(block)
-                }
-            }
-        }
-        // 单一 AudioRecord 的原始流观察者：待机 IVW 直接吃原始 PCM，不经过 Silero VAD。
-        viewModelScope.launch(Dispatchers.IO) {
-            recorder.rawPcmBlocks.collect { block ->
-                if (chatLocked) {
-                    // Realtime 闲聊为真正全双工：不看本地 VAD、播放状态或会话状态，原始
-                    // 16k PCM 每块都持续上送；Qwen semantic_vad 在服务端自行切轮。
-                    engine.appendRealtimeChatAudio(block)
-                } else if (!recording) {
-                    if (_uiState.value.wakeListening) {
-                        runCatching { wakeObserver.accept(block) }.onFailure { onWakeFailure(it) }
-                    }
-                    if (recorder.detectOpenMicBargeIn(block)) {
-                        viewModelScope.launch { onOpenMicBargeInDetected() }
-                    } else if (recorder.detectFollowUpSpeech(block)) {
-                        viewModelScope.launch { onFollowUpSpeechDetected() }
-                    }
-                }
-            }
-        }
-        // B1/B2：VAD 段事件 → vad_start/vad_end 插桩（SpeechStart 由 engine 产生本轮
-        // utteranceId——vad start 的 uuid 就是 utteranceId，单一 id 贯穿全轮并同步仲裁器）
-        viewModelScope.launch {
-            recorder.vadEvents.collect { event ->
-                when (event) {
-                    VadEvent.SpeechStart -> {
-                        if (!chatLocked) {
-                            engine.onVadStart()
-                            val preRoll = synchronized(cloudStreamLock) {
-                                cloudVadActive = true
-                                cloudPreRoll.toList().also { cloudPreRoll.clear() }
-                            }
-                            preRoll.forEach(engine::appendStreamingCloudAudio)
-                        }
-                    }
-                    VadEvent.SpeechEnd -> {
-                        if (!chatLocked) {
-                            synchronized(cloudStreamLock) {
-                                cloudVadActive = false
-                                cloudPreRoll.clear()
-                            }
-                            engine.onVadEnd()
-                        }
-                        if (!chatLocked && wakeTurn && recording) {
-                            // 唤醒进入的普通轮没有“松手”事件，VAD 后端点就是自动提交边界。
-                            stopRecording()
-                        }
-                    }
-                }
-            }
-        }
+        recordingCoordinator = buildRecordingCoordinator()
     }
 
-    // ------------------------------------------------------------------ 按钮录音双路（Task 50）
+    // ------------------------------------------------------------------ 录音生命周期
 
-    /**
-     * 开始录音（唤醒命中或调试 API；幂等）：清段缓冲 → 启动录音 → 会话进 LISTENING
-     * （engine 按网络状态恢复/挂起云端路由）。权限缺失时 recorder 静默失败 → 提示授权。
-     */
     fun startRecording() {
-        engine.onWake()
-        startRecording(fromWake = false)
-    }
-
-    private fun startRecording(
-        fromWake: Boolean,
-        includeBargeInPreRoll: Boolean = false,
-        interruptPlayback: Boolean = true,
-    ) {
-        if (recording) return
         vehicleContext.refresh()
-        followUpTimeoutJob?.cancel()
-        followUpTimeoutJob = null
-        recorder.setFollowUpListening(false)
-        pauseWakeObservation()
-        // 唤醒/按键本身是新会话证据，可立即停播；开放式 VAD 仅建立候选 capture，
-        // 必须等 ASR/NLU 触发 DialogueStateMachine 准入后再停。
-        if (ttsPlayer.isSpeaking() && interruptPlayback) {
-            Log.i(TAG, "检测到新轮录音，停止旧轮播放（barge-in）")
-        }
-        // 先建立新轮并置位，使 recorder.start 同步补入的打断 pre-roll
-        // 的 PCM/VAD 事件都归属新 utteranceId，也能被收集器接住。
-        recording = true
-        resetCloudStreamGate()
-        wakeTurn = fromWake
-        denoisedBlocks.clear()
-        // 开放式 VAD 只建立候选 capture；ASR/NLU 准入为新会话时由状态机停播。
-        // 由引擎内的 PlaybackCoordinator 统一失效身份并停止驱动。
-        engine.onListeningStart(interruptPlayback = interruptPlayback)
-        if (!recorder.start(includeBargeInPreRoll)) {
-            recording = false
-            wakeTurn = false
-            engine.onListeningStop()
-            // 缺权限/创建失败时 recorder 静默降级（Log.w），这里提示用户授权
-            _uiState.update { it.copy(permissionHint = true) }
-            rearmWakeWhenIdle()
-            return
-        }
-        _uiState.update {
-            it.copy(
-                permissionHint = false,
-                vadUnavailable = !recorder.vadAvailable,
-                recording = true,
-                wakeListening = false,
-            )
-        }
-        wakeTurnTimeoutJob?.cancel()
-        if (fromWake) {
-            wakeTurnTimeoutJob = viewModelScope.launch {
-                delay(WAKE_TURN_TIMEOUT_MS)
-                if (wakeTurn && recording) {
-                    Log.i(TAG, "唤醒后等待命令超时，自动收口")
-                    stopRecording()
-                }
-            }
-        }
+        recordingCoordinator.startManualTurn()
     }
 
-    /** Activity 回到前台时提前恢复 WebSocket，避免第一句话承担握手时延。 */
+    fun stopRecording() = recordingCoordinator.stopTurn()
+
+    private fun cancelRecording() = recordingCoordinator.cancelTurn()
+
+    /** Activity 回到前台时提前恢复 WebSocket 与共享麦克风。 */
     fun onForeground() {
-        foreground = true
         vehicleContext.refresh()
-        Log.i(TAG, "App 回到前台：重建共享麦克风与 IVW 会话")
         engine.onForeground()
-        if (chatLocked) startChatCapture() else startWakeMonitoring()
+        recordingCoordinator.onForeground()
+        Log.i(TAG, "App 回到前台：重建共享麦克风与 IVW 会话")
     }
 
-    /** Activity 已取得 RECORD_AUDIO 权限，启动共享录音流与待机唤醒。 */
     fun onAudioPermissionGranted() {
         vehicleContext.refresh()
-        _uiState.update { it.copy(permissionHint = false) }
-        if (chatLocked) startChatCapture() else startWakeMonitoring()
+        recordingCoordinator.onAudioPermissionGranted()
     }
 
-    /** 前台可见范围内监听；退到后台停止共享麦克风，避免无前台服务的隐式常驻录音。 */
     fun onBackground() {
-        foreground = false
         vehicleContext.stopRefresh()
-        stopFollowUpListening(resetDialogue = true)
-        // 导航 Activity 覆盖本应用时 AudioRecord 必须释放。同时取消尚未完成的初始化，
-        // 防止它在 onStop 之后反向重新 arm。IVW 原生 handle 必须保留：此 SDK 在同一
-        // AIKit 进程中 end 后重新 start 会持续返回 10005；前台恢复时 observer 会把
-        // 新 AudioRecord 的首块重新标为 BEGIN。
-        wakeSetupJob?.cancel()
-        wakeSetupJob = null
-        if (chatLocked) {
-            // Android 无前台录音服务时后台必须释放麦克风；同时显式结束上游 Realtime，
-            // 前台回来重新 chat_start，避免旧会话占位导致收不到 chat_ready。
-            recording = false
-            recorder.stop()
-            engine.finishRealtimeChat()
-            denoisedBlocks.clear()
-            _uiState.update { it.copy(recording = false) }
-        } else if (recording) {
-            cancelRecording()
-        } else {
-            pauseWakeObservation()
-        }
-        recorder.stopMonitoring()
-        _uiState.update {
-            it.copy(wakeListening = false, openMicBargeInAvailable = false)
-        }
+        recordingCoordinator.onBackground()
         Log.i(TAG, "App 进入后台：共享麦克风已停止，IVW 会话已暂停")
     }
 
-    /**
-     * 结束录音（唤醒轮由 VAD SpeechEnd 触发；幂等）：停止录音 → 先逐段喂云端路
-     * （[AudioRecorder.finishSegments]：VAD 切段，时间顺序，必须先于本地路喂完）
-     * → 本地整段（concat 全部降噪块）送 [VoiceEngine.onTurnSegment] 启动双路竞速。
-     * 整段 < 300ms（瞬时噪声/误触）不送识别，直接回 IDLE。
-     *
-     * 新轮开始时已先停止旧播放；因此不再把播报期间的主动录音整轮丢弃。
-     * 打断可由按键/离线唤醒确认，或在设备 AEC 已启用时由播报期连续人声确认。
-     */
-    fun stopRecording() {
-        if (!recording) return
-        recording = false
-        resetCloudStreamGate()
-        wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        wakeTurnTimeoutJob = null
-        recorder.stop()
-        _uiState.update { it.copy(recording = false) }
-        val denoised = concatBlocks(denoisedBlocks)
-        denoisedBlocks.clear()
-        val cloudSegments = recorder.finishSegments()
-        if (denoised.size >= MIN_SEGMENT_BYTES && cloudSegments.isNotEmpty()) {
-            engine.finishStreamingCloudAudio()
-        } else {
-            // SpeechStart 会提前建流；过短音频或 VAD 未形成有效段时必须显式撤销。
-            engine.cancelStreamingCloudAudio()
-        }
-        for (seg in cloudSegments) engine.onCloudSegment(seg)
-        if (denoised.size >= MIN_SEGMENT_BYTES) {
-            dumpLocalSegment(denoised) // Task 58 诊断：本地整段落盘，验证真实麦克风音频进了链路
-            engine.onTurnSegment(denoised)
-        } else {
-            // 瞬时噪声/误触：不送识别不打扰
-            Log.d(TAG, "录音过短（${denoised.size}B < ${MIN_SEGMENT_BYTES}B），丢弃不送识别")
-            engine.onListeningStop()
-        }
-        rearmWakeWhenIdle()
-    }
+    fun onPermissionDenied() = recordingCoordinator.onPermissionDenied()
 
-    /** 中止录音（模式切换）：停止录音、清缓冲，不送识别（引擎随后释放/重建，幂等）。 */
-    private fun cancelRecording() {
-        if (!recording) return
-        recording = false
-        resetCloudStreamGate()
-        wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        recorder.stop()
-        denoisedBlocks.clear()
-        engine.cancelStreamingCloudAudio()
-        engine.onListeningStop()
-        _uiState.update { it.copy(recording = false) }
-        rearmWakeWhenIdle()
-    }
-
-    /** RECORD_AUDIO 权限被拒（Activity 回调）：显示提示，不开始录音。 */
-    fun onPermissionDenied() {
-        _uiState.update { it.copy(permissionHint = true) }
-    }
-
-    /** 清除权限提示（授权后、下次按下按钮时）。 */
-    fun clearPermissionHint() {
-        onAudioPermissionGranted()
-    }
-
-    // ------------------------------------------------------------------ 共享音频流上的离线唤醒
-
-    private fun startWakeMonitoring() {
-        if (chatLocked || !foreground || recording || wakeSetupJob?.isActive == true) return
-        wakeSetupJob = viewModelScope.launch(Dispatchers.IO) {
-            if (!recorder.startMonitoring()) return@launch
-            // startMonitoring/SDK 初始化可能阻塞；其间 Activity 可能已经被导航覆盖。
-            if (!foreground || recording) {
-                recorder.stopMonitoring()
-                return@launch
-            }
-            try {
-                if (!wakeInitialized) {
-                    wakeObserver.init(getApplication())
-                    wakeInitialized = true
-                }
-                if (!foreground || recording) {
-                    wakeObserver.pause()
-                    recorder.stopMonitoring()
-                    return@launch
-                }
-                wakeObserver.arm()
-                if (!foreground || recording) {
-                    wakeObserver.pause()
-                    recorder.stopMonitoring()
-                    return@launch
-                }
-                _uiState.update {
-                    it.copy(
-                        wakeListening = true,
-                        wakeError = null,
-                        openMicBargeInAvailable = recorder.openMicBargeInAvailable,
-                    )
-                }
-                Log.i(TAG, "离线唤醒已启用：${wakeObserver.keyword}")
-            } catch (t: Throwable) {
-                onWakeFailure(t)
-            }
-        }
-    }
-
-    /** 只暂停 IVW observer；共享 AudioRecord 不释放，语音链可无缝接管后续 PCM。 */
-    private fun pauseWakeObservation() {
-        _uiState.update { it.copy(wakeListening = false) }
-        wakeObserver.pause()
-    }
-
-    private fun onWakeDetected(keyword: String) {
-        if (!foreground || recording) return
-        Log.i(TAG, "离线唤醒命中：$keyword${if (ttsPlayer.isSpeaking()) "（barge-in）" else ""}")
-        engine.onWake()
-        startRecording(fromWake = true)
-    }
-
-    private fun onOpenMicBargeInDetected() {
-        if (!foreground || recording || !ttsPlayer.isSpeaking()) return
-        Log.i(TAG, "播报期 VAD 命中，仅建立候选 capture；等待 ASR/NLU 确认为新会话")
-        // 与唤醒轮共用 VAD SpeechEnd/超时自动收口；候选期保持播报，状态机准入后再停。
-        startRecording(
-            fromWake = true,
-            includeBargeInPreRoll = true,
-            interruptPlayback = false,
-        )
-    }
-
-    private fun onFollowUpSpeechDetected() {
-        if (!foreground || recording || chatLocked) return
-        Log.i(TAG, "延时聆听检测到人声，建立临时 capture")
-        followUpTimeoutJob?.cancel()
-        followUpTimeoutJob = null
-        startRecording(fromWake = true, includeBargeInPreRoll = true)
-    }
+    fun clearPermissionHint() = onAudioPermissionGranted()
 
     private fun handleDialogueState(snapshot: DialogueSnapshot) {
-        snapshot.interactionId?.takeIf { it != timedInteractionId }?.let {
-            timedInteractionId = it
-            interactionStartedAtMs = SystemClock.elapsedRealtime()
-        }
         val state = when (snapshot.state) {
             DialogueState.DORMANT -> SessionState.IDLE
             DialogueState.AWAKE,
@@ -570,121 +254,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             DialogueState.SPEAKING -> SessionState.SPEAKING
         }
         _uiState.update { it.copy(sessionState = state) }
-        if (snapshot.state != DialogueState.FOLLOW_UP_LISTENING && snapshot.state != DialogueState.AWAKE) {
-            followUpTimeoutJob?.cancel()
-            followUpTimeoutJob = null
-            recorder.setFollowUpListening(false)
-        }
-        if (snapshot.state == DialogueState.FOLLOW_UP_LISTENING || snapshot.state == DialogueState.AWAKE) {
-            armFollowUpListening(snapshot)
-        } else if (snapshot.state == DialogueState.DORMANT) {
-            timedInteractionId = null
-            interactionStartedAtMs = 0L
-            stopFollowUpListening(resetDialogue = false)
-            rearmWakeWhenIdle()
-        }
-    }
-
-    private fun armFollowUpListening(snapshot: DialogueSnapshot) {
-        val interactionId = snapshot.interactionId ?: return
-        if (chatLocked || !foreground || recording) return
-        pauseWakeObservation()
-        if (!recorder.startMonitoring()) {
-            engine.onFollowUpExpired(interactionId)
-            return
-        }
-        recorder.setFollowUpListening(true)
-        followUpTimeoutJob?.cancel()
-        val requestedWindow = if (_uiState.value.navigationCandidates.isNotEmpty()) {
-            NAVIGATION_FOLLOW_UP_LISTEN_MS
-        } else {
-            FOLLOW_UP_LISTEN_MS
-        }
-        val absoluteRemaining = (MAX_INTERACTION_MS -
-            (SystemClock.elapsedRealtime() - interactionStartedAtMs)).coerceAtLeast(0L)
-        val timeoutMs = minOf(requestedWindow, absoluteRemaining)
-        followUpTimeoutJob = viewModelScope.launch {
-            delay(timeoutMs)
-            val current = engine.dialogue.snapshot.value
-            if (current.interactionId == interactionId && !recording &&
-                (current.state == DialogueState.AWAKE || current.state == DialogueState.FOLLOW_UP_LISTENING)) {
-                recorder.setFollowUpListening(false)
-                engine.onFollowUpExpired(interactionId)
-            }
-        }
-    }
-
-    private fun stopFollowUpListening(resetDialogue: Boolean) {
-        followUpTimeoutJob?.cancel()
-        followUpTimeoutJob = null
-        recorder.setFollowUpListening(false)
-        if (resetDialogue) engine.resetDialogue()
-    }
-
-    private fun onWakeFailure(error: Throwable) {
-        Log.w(TAG, "离线唤醒不可用", error)
-        runCatching { wakeObserver.disarm() }
-        // IVW 与开放式打断共享麦克风，但故障域独立：唤醒 SDK 失败不得
-        // 停止 AEC/VAD 监听，否则普通话术打断也会被连带关闭。退后台由 onBackground 统一释放。
-        _uiState.update {
-            it.copy(
-                wakeListening = false,
-                openMicBargeInAvailable = recorder.openMicBargeInAvailable,
-                wakeError = error.message ?: error.javaClass.simpleName,
-            )
-        }
-    }
-
-    private fun rearmWakeWhenIdle() {
-        if (!chatLocked && foreground && !recording && _uiState.value.sessionState == SessionState.IDLE) {
-            startWakeMonitoring()
-        }
-    }
-
-    /** 进入闲聊后开启持续采集和 Qwen Realtime；不使用本地 VAD 切段。 */
-    private fun startChatCapture() {
-        if (!chatLocked || !foreground || recording) return
-        pauseWakeObservation()
-        denoisedBlocks.clear()
-        // 只打开共享原始 PCM，不把 turnActive 置起，因此 Silero/RNNoise/本地 ASR 路径
-        // 完全不运行；切轮由 Qwen semantic_vad 负责。
-        if (!recorder.startMonitoring()) {
-            _uiState.update { it.copy(permissionHint = true) }
-            return
-        }
-        recording = true
-        engine.startRealtimeChat()
-        _uiState.update {
-            it.copy(
-                chatMode = true,
-                recording = true,
-                wakeListening = false,
-                permissionHint = false,
-                vadUnavailable = !recorder.vadAvailable,
-            )
-        }
+        recordingCoordinator.onDialogueState(snapshot, _uiState.value.navigationCandidates.isNotEmpty())
     }
 
     private fun setChatMode(enabled: Boolean) {
-        if (chatLocked == enabled) return
-        chatLocked = enabled
+        if (!recordingCoordinator.setChatMode(enabled)) return
         _uiState.update {
             it.copy(
                 chatMode = enabled,
                 sessionState = if (enabled) SessionState.LISTENING else engine.session.state.value,
             )
-        }
-        if (enabled) {
-            startChatCapture()
-        } else {
-            engine.finishRealtimeChat()
-            if (recording) {
-                recording = false
-                recorder.stop()
-                denoisedBlocks.clear()
-                _uiState.update { it.copy(recording = false) }
-            }
-            rearmWakeWhenIdle()
         }
     }
 
@@ -698,10 +277,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
-        if (chatLocked) setChatMode(false)
+        if (recordingCoordinator.isChatLocked) setChatMode(false)
         else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
         engine = buildEngine(loadConfig(mode))
+        recordingCoordinator.onDialogueState(
+            engine.dialogue.snapshot.value,
+            _uiState.value.navigationCandidates.isNotEmpty(),
+        )
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
         navigationDialogTimeoutJob?.cancel()
@@ -746,19 +329,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ------------------------------------------------------------------ 内部
 
-    /** 拼接段内 960B 降噪块为一段 PCM（16k 单声道 PCM16，云端/本地链的输入边界）。 */
-    private fun concatBlocks(blocks: List<ByteArray>): ByteArray {
-        var total = 0
-        for (b in blocks) total += b.size
-        val out = ByteArray(total)
-        var offset = 0
-        for (b in blocks) {
-            b.copyInto(out, offset)
-            offset += b.size
-        }
-        return out
-    }
-
     /**
      * 诊断落盘（Task 58 联调）：debug 构建把本地链路整段降噪 PCM（16k 单声道 PCM16）
      * 写 app 私有目录（免存储权限），adb pull 分析真实麦克风信号电平/内容。
@@ -772,6 +342,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.i(TAG, "本地整段落盘: ${f.absolutePath} (${pcm.size}B ≈ ${pcm.size / 32}ms)")
         }.onFailure { Log.w(TAG, "本地整段落盘失败（静默）", it) }
     }
+
+    private fun buildRecordingCoordinator() = RecordingCoordinator(
+        capture = recorder,
+        wakeWord = object : WakeWordPort {
+            override val keyword: String get() = wakeObserver.keyword
+            override fun initialize() = wakeObserver.init(getApplication())
+            override fun arm() = wakeObserver.arm()
+            override fun accept(pcm: ByteArray) = wakeObserver.accept(pcm)
+            override fun pause() = wakeObserver.pause()
+            override fun disarm() = wakeObserver.disarm()
+            override fun close() = wakeObserver.close()
+        },
+        pipeline = object : RecordingPipeline {
+            override val dialogueSnapshot: DialogueSnapshot get() = engine.dialogue.snapshot.value
+            override fun onWake() = engine.onWake()
+            override fun onListeningStart(interruptPlayback: Boolean) =
+                engine.onListeningStart(interruptPlayback)
+            override fun onListeningStop() = engine.onListeningStop()
+            override fun onVadStart() = engine.onVadStart()
+            override fun onVadEnd() = engine.onVadEnd()
+            override fun appendStreamingCloudAudio(block: ByteArray) =
+                engine.appendStreamingCloudAudio(block)
+            override fun finishStreamingCloudAudio() = engine.finishStreamingCloudAudio()
+            override fun cancelStreamingCloudAudio() = engine.cancelStreamingCloudAudio()
+            override fun onCloudSegment(segment: ByteArray) = engine.onCloudSegment(segment)
+            override fun onTurnSegment(segment: ByteArray) = engine.onTurnSegment(segment)
+            override fun appendRealtimeChatAudio(block: ByteArray) = engine.appendRealtimeChatAudio(block)
+            override fun startRealtimeChat() = engine.startRealtimeChat()
+            override fun finishRealtimeChat() = engine.finishRealtimeChat()
+            override fun onFollowUpExpired(interactionId: String) = engine.onFollowUpExpired(interactionId)
+            override fun resetDialogue() = engine.resetDialogue()
+        },
+        scope = viewModelScope,
+        isPlaybackSpeaking = ttsPlayer::isSpeaking,
+        onState = { snapshot ->
+            _uiState.update {
+                it.copy(
+                    recording = snapshot.recording,
+                    wakeListening = snapshot.wakeListening,
+                    permissionHint = snapshot.permissionRequired,
+                    vadUnavailable = snapshot.vadUnavailable,
+                    openMicBargeInAvailable = snapshot.openMicBargeInAvailable,
+                    wakeError = snapshot.wakeError,
+                    chatMode = snapshot.chatMode,
+                )
+            }
+        },
+        onLocalSegment = ::dumpLocalSegment,
+        onLog = { Log.i(TAG, it) },
+        onWakeError = { Log.w(TAG, "离线唤醒不可用", it) },
+        elapsedRealtimeMs = SystemClock::elapsedRealtime,
+    )
 
     /**
      * 单一引擎装配点（Task 21）：init 与 [setMode] 共用。引擎使用专属协程作用域
@@ -817,9 +439,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onConversationMode = ::setChatMode,
             onDialogueState = ::handleDialogueState,
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
-            onPlaybackStage = { stage ->
-                recorder.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
-            },
+            onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
         )
         return engine
     }
@@ -883,13 +503,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         vehicleContext.stopRefresh()
-        wakeTurnTimeoutJob?.cancel()
-        wakeSetupJob?.cancel()
         navigationDialogTimeoutJob?.cancel()
-        followUpTimeoutJob?.cancel()
-        wakeObserver.close()
+        recordingCoordinator.close()
         engine.close() // 断开网关 + 取消引擎作用域（Task 21）
-        recorder.close()
         ttsPlayer.release()
         super.onCleared()
     }
@@ -905,29 +521,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val PREFS_NAME = "autovoice_settings"
         const val KEY_MODE = "demo_mode"
 
-        /** 最小语音段字节数（300ms @16k 16bit = 9600B；瞬时误触发过滤）。 */
-        const val MIN_SEGMENT_BYTES = 9_600
-
-        /** VAD 首字保护：保留约 300ms（10 × 30ms）的降噪 PCM。 */
-        const val CLOUD_PRE_ROLL_BLOCKS = 10
-
         /** 竞速胜出方 UI 标志文本（Task 61）。 */
         const val WINNER_LOCAL = "端侧"
         const val WINNER_CLOUD = "云端"
 
-        /** 唤醒后始终没有形成 VAD SpeechEnd 时的安全收口，避免永久占用一轮。 */
-        const val WAKE_TURN_TIMEOUT_MS = 10_000L
-
         /** 与服务端候选状态一致：两分钟无选择自动收起应用内弹窗。 */
         const val NAVIGATION_DIALOG_TTL_MS = 120_000L
-
-        /** 普通回复真实播报结束后保持的免唤醒窗口。 */
-        const val FOLLOW_UP_LISTEN_MS = 10_000L
-
-        /** 导航候选明确期待用户选择，给更长的免唤醒窗口。 */
-        const val NAVIGATION_FOLLOW_UP_LISTEN_MS = 30_000L
-
-        /** 防止多次误报/追问让同一 interaction 无限续期。 */
-        const val MAX_INTERACTION_MS = 60_000L
     }
 }
