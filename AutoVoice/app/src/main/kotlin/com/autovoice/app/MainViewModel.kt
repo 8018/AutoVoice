@@ -401,7 +401,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 在途竞速与网关桥接收集随作用域一并终止，不殃及 ViewModel 自己的收集器。
      */
     private fun buildEngine(cfg: DemoConfig): VoiceEngine {
-        val engine = VoiceEngine.create(
+        val engine = VoiceEngineFactory.create(
             cfg = cfg,
             context = getApplication(),
             sink = DecisionSink { addDecision(it) },

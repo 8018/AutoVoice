@@ -116,11 +116,11 @@ internal class GatewayCloudRunner(
 
     private val liveUpload = AtomicReference<LiveUpload?>(null)
 
-    /** 由 [VoiceEngine.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
+    /** 由 [VoiceEngineFactory.create] 在 engine 装配完成后绑定到 session.onCloudUnavailable()。 */
     lateinit var onCloudUnavailable: () -> Unit
 
     /**
-     * B5：收到云端 pending 帧的回调（由 [VoiceEngine.create] 装配后绑定 →
+     * B5：收到云端 pending 帧的回调（由 [VoiceEngineFactory.create] 装配后绑定 →
      * engine.setCloudPending(true)，UI 显示"处理中…"）。清除由 onTurnResult /
      * onListeningStart 收口。
      */
@@ -193,14 +193,14 @@ internal class GatewayCloudRunner(
     }
 
     /**
-     * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngine.create] 在 engine 装配完成后
+     * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngineFactory.create] 在 engine 装配完成后
      * 绑定到 `engine.currentUtteranceId`；空串时发帧不携带 utteranceId（服务端视为未提供）。
      */
     @Volatile
     var utteranceIdProvider: () -> String = { "" }
 
     /**
-     * ready 回执的 sessionId 回调（T6 评审 C1）：由 [VoiceEngine.create] 绑定到
+     * ready 回执的 sessionId 回调（T6 评审 C1）：由 [VoiceEngineFactory.create] 绑定到
      * `telemetry::onSessionId`——round body 按会话关联，缺此转发服务端
      * recordDeviceRound 会把 session_id="" 落库，轮次无法按会话查询。
      */
