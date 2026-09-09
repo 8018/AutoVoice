@@ -233,7 +233,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             LOG.info("qwen omni tool {} completed in {}ms", call.name(),
                     Math.max(1, System.currentTimeMillis() - started));
             return result;
-        }, (call, error) -> "工具执行失败：" + error.getMessage());
+        }, (call, error) -> "工具执行失败：" + error.getMessage(),
+                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot));
 
         AgentLoop<StreamResult, OnlineSpeechResult> loop = new AgentLoop<>(
                 new AgentLoop.Policy(MAX_ROUNDS, Long.MAX_VALUE, false, 45_000), requestTools,
@@ -561,12 +562,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     }
 
     private String executeTool(ToolCall call) {
-        if (toolExecutor == null) return "工具执行不可用";
-        try {
-            return toolExecutor.execute(call.name, call.arguments);
-        } catch (RuntimeException error) {
-            return "工具执行失败：" + error.getMessage();
-        }
+        if (toolExecutor == null) throw new IllegalStateException("工具执行不可用");
+        return toolExecutor.execute(call.name, call.arguments);
     }
 
     private static Intent parseTerminal(ToolCall call) throws IOException {

@@ -22,9 +22,9 @@ public final class ToolSchemaCompactor {
             JsonNode schema = JSON.readTree(tool.parametersJson());
             prune(schema);
             String description = oneLine(tool.description());
-            return new FunctionTool(tool.name(), description, JSON.writeValueAsString(schema));
+            return new FunctionTool(tool.name(), description, JSON.writeValueAsString(schema), tool.executionTraits());
         } catch (Exception ignored) {
-            return new FunctionTool(tool.name(), oneLine(tool.description()), tool.parametersJson());
+            return new FunctionTool(tool.name(), oneLine(tool.description()), tool.parametersJson(), tool.executionTraits());
         }
     }
 

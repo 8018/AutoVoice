@@ -40,7 +40,7 @@ final class NavigationToolFacade {
              "location":{"type":"string","description":"车辆坐标 lon,lat；有定位时必填"},
              "city":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":5}},
              "required":["destinations"]}
-            """);
+            """, com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY);
 
     private final Map<String, FunctionTool> tools;
     private final BiFunction<String, String, String> caller;
