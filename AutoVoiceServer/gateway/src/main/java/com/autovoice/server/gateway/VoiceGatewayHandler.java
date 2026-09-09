@@ -303,10 +303,23 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private void removeConnection(WebSocketSession session) {
         ConnectionState st = connections.remove(session);
         if (st != null) {
-            if (st.onlineStream != null) st.onlineStream.cancel();
+            releaseConnection(st);
+            activeConnections.decrementAndGet();
+        }
+    }
+
+    /** Both transport teardown and bean destruction own the same upstream resources. */
+    private void releaseConnection(ConnectionState st) {
+        st.chatRequested = false;
+        OnlineSpeechStream stream = st.onlineStream;
+        st.onlineStream = null;
+        try {
+            if (stream != null) stream.cancel();
+        } catch (RuntimeException ignored) {
+            // A failed upstream cancellation must not skip the other resource owners.
+        } finally {
             closeRealtimeChat(st);
             st.connExecutor.shutdownNow();
-            activeConnections.decrementAndGet();
         }
     }
 
@@ -986,8 +999,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     @Override
     public void close() {
         for (ConnectionState st : connections.values()) {
-            closeRealtimeChat(st);
-            st.connExecutor.shutdownNow();
+            releaseConnection(st);
         }
         connections.clear();
         completedTurns.clear();

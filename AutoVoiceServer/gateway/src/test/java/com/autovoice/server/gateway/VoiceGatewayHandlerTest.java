@@ -63,6 +63,43 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class VoiceGatewayHandlerTest {
 
+    @Test
+    void shutdownCancelsEveryOpenRecognitionStreamEvenWhenOneCancelFails() {
+        AtomicInteger cancelled = new AtomicInteger();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public String id() { return "shutdown-test"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("No completed utterance expected");
+            }
+            @Override public com.autovoice.server.contracts.OnlineSpeechStream openStream(
+                    SessionContext ctx, String uid, OnlineAudioSink audio,
+                    com.autovoice.server.contracts.OnlineAsrSink asr) {
+                return new com.autovoice.server.contracts.OnlineSpeechStream() {
+                    @Override public void append(byte[] pcm) { }
+                    @Override public CompletableFuture<OnlineSpeechResult> finish() {
+                        return new CompletableFuture<>();
+                    }
+                    @Override public void cancel() {
+                        cancelled.incrementAndGet();
+                        throw new IllegalStateException("upstream already disconnected");
+                    }
+                };
+            }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        for (int i = 0; i < 2; i++) {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            h.handleMessage(s, new TextMessage(audioStart(sid)));
+        }
+        h.close();
+        assertEquals(2, cancelled.get());
+        h.close();
+        assertEquals(2, cancelled.get(), "Repeated shutdown must not cancel detached streams again");
+    }
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final byte[] WAV = {0x52, 0x49, 0x46, 0x46};
     private static final long SAFETY = 1000;
