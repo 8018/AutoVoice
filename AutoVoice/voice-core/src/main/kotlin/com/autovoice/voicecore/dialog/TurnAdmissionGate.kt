@@ -21,6 +21,7 @@ class TurnAdmissionGate {
 
     @Synchronized
     fun open(captureId: String) {
+        if (pendingCaptureId == captureId) return
         pendingCaptureId = captureId
         admitted = null
     }
@@ -46,6 +47,15 @@ class TurnAdmissionGate {
 
     @Synchronized
     fun current(): AdmittedTurn? = admitted
+
+    @Synchronized
+    fun owns(captureId: String): Boolean = pendingCaptureId == captureId
+
+    @Synchronized
+    fun reset() {
+        pendingCaptureId = null
+        admitted = null
+    }
 
     private fun confirm(captureId: String, source: AdmissionEvidence): AdmittedTurn? {
         if (pendingCaptureId != captureId) return null

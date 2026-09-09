@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class DialogueState {
     DORMANT,
     AWAKE,
-    SPEECH_CANDIDATE,
     THINKING,
     SEMANTIC_PROCESSING,
     RESPONDING,
@@ -20,7 +19,6 @@ enum class DialogueState {
 data class DialogueSnapshot(
     val state: DialogueState = DialogueState.DORMANT,
     val interactionId: String? = null,
-    val captureId: String? = null,
     val turnId: String? = null,
 )
 
@@ -41,23 +39,14 @@ class DialogueStateMachine(
         DialogueSnapshot(state = DialogueState.AWAKE, interactionId = newId()),
     )
 
+    /** Only the admission layer may submit an established turn; no VAD/capture state is held here. */
     @Synchronized
-    fun onVadStart(captureId: String = newId()): DialogueSnapshot {
+    fun onSpeechCommitted(turnId: String): DialogueSnapshot {
+        require(turnId.isNotBlank())
         val current = _snapshot.value
-        return update(
-            current.copy(
-                state = DialogueState.SPEECH_CANDIDATE,
-                interactionId = current.interactionId ?: newId(),
-                captureId = captureId,
-            ),
-        )
-    }
-
-    @Synchronized
-    fun onSpeechCommitted(captureId: String): DialogueSnapshot {
-        val current = _snapshot.value
-        if (current.captureId != captureId) return current
-        return update(current.copy(state = DialogueState.THINKING, turnId = captureId))
+        if (current.turnId == turnId) return current
+        return update(current.copy(state = DialogueState.THINKING, turnId = turnId,
+            interactionId = current.interactionId ?: newId()))
     }
 
     @Synchronized
@@ -81,12 +70,7 @@ class DialogueStateMachine(
 
     @Synchronized
     fun onPlaybackEnded(turnId: String): DialogueSnapshot = forTurn(turnId) {
-        if (it.captureId != null && it.captureId != turnId) {
-            // 当前轮播完时可能已有一个尚未准入的新 capture，不能把它一起清掉。
-            it.copy(state = DialogueState.SPEECH_CANDIDATE)
-        } else {
-            it.copy(state = DialogueState.FOLLOW_UP_LISTENING, captureId = null)
-        }
+        it.copy(state = DialogueState.FOLLOW_UP_LISTENING)
     }
 
     @Synchronized
@@ -94,20 +78,6 @@ class DialogueStateMachine(
         val current = _snapshot.value
         if (current.interactionId != interactionId) return current
         return update(DialogueSnapshot())
-    }
-
-    /** 临时 VAD 被判为噪声，恢复到此次 capture 前仍有效的交互阶段。 */
-    @Synchronized
-    fun onCaptureRejected(captureId: String): DialogueSnapshot {
-        val current = _snapshot.value
-        if (current.captureId != captureId || current.turnId == captureId) return current
-        // 已唤醒后的噪声不直接结束交互，回到有限免唤醒窗口等待真正语音。
-        val fallback = if (current.interactionId == null) {
-            DialogueState.DORMANT
-        } else {
-            DialogueState.FOLLOW_UP_LISTENING
-        }
-        return update(current.copy(state = fallback, captureId = null))
     }
 
     @Synchronized

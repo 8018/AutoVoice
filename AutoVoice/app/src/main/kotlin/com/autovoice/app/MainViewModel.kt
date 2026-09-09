@@ -563,7 +563,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = when (snapshot.state) {
             DialogueState.DORMANT -> SessionState.IDLE
             DialogueState.AWAKE,
-            DialogueState.SPEECH_CANDIDATE,
             DialogueState.FOLLOW_UP_LISTENING,
             -> SessionState.LISTENING
             DialogueState.THINKING,
@@ -573,7 +572,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             DialogueState.SPEAKING -> SessionState.SPEAKING
         }
         _uiState.update { it.copy(sessionState = state) }
-        if (snapshot.state == DialogueState.FOLLOW_UP_LISTENING) {
+        if (snapshot.state != DialogueState.FOLLOW_UP_LISTENING && snapshot.state != DialogueState.AWAKE) {
+            followUpTimeoutJob?.cancel()
+            followUpTimeoutJob = null
+            recorder.setFollowUpListening(false)
+        }
+        if (snapshot.state == DialogueState.FOLLOW_UP_LISTENING || snapshot.state == DialogueState.AWAKE) {
             armFollowUpListening(snapshot)
         } else if (snapshot.state == DialogueState.DORMANT) {
             timedInteractionId = null
@@ -585,7 +589,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun armFollowUpListening(snapshot: DialogueSnapshot) {
         val interactionId = snapshot.interactionId ?: return
-        if (chatLocked || !foreground) return
+        if (chatLocked || !foreground || recording) return
         pauseWakeObservation()
         if (!recorder.startMonitoring()) {
             engine.onFollowUpExpired(interactionId)
@@ -603,7 +607,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val timeoutMs = minOf(requestedWindow, absoluteRemaining)
         followUpTimeoutJob = viewModelScope.launch {
             delay(timeoutMs)
-            if (engine.dialogue.snapshot.value.interactionId == interactionId && !recording) {
+            val current = engine.dialogue.snapshot.value
+            if (current.interactionId == interactionId && !recording &&
+                (current.state == DialogueState.AWAKE || current.state == DialogueState.FOLLOW_UP_LISTENING)) {
                 recorder.setFollowUpListening(false)
                 engine.onFollowUpExpired(interactionId)
             }

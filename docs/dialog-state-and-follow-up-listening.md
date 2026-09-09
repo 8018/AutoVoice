@@ -15,7 +15,8 @@
 - `captureId`：一次 VAD/录音候选。它可以被 ASR 判定为有效语音，也可以作为噪声丢弃。
 - `turnId`：被语音证据确认后的业务轮。当前实现直接把已确认的 `captureId` 晋升为 `turnId`。
 
-`captureId` 可以立即用于网关对账和遥测，但不能在确认前替换状态机当前 `turnId`。
+`captureId` 可以立即用于网关对账和遥测，由录音/准入层持有，不进入对话状态快照。
+VAD 和候选拒绝不向对话状态机发送状态转换事件；只有确认后的 `turnId` 才交给状态机。
 
 ## 两层拦截
 
@@ -45,18 +46,17 @@ ASR 提供两个独立输出：字幕按自己的 `turnId`/`captureId` 对账后
 
 - `DORMANT`：未唤醒。
 - `AWAKE`：已唤醒，尚未检测到候选语音。
-- `SPEECH_CANDIDATE`：VAD 已触发，但尚未确认是有效新轮。
 - `THINKING`：ASR 的 `turnEstablished` 或有效最终语义已把 capture 晋升为 turn。
 - `SEMANTIC_PROCESSING`：收到 pending/模型处理中信号。
 - `RESPONDING`：当前轮最终语义已被采用，正在准备执行或音频。
 - `SPEAKING`：播放器真实开始播放。
 - `FOLLOW_UP_LISTENING`：播放器真实结束后的免唤醒追问窗口。
 
-核心触发点：唤醒、VAD start、ASR `turnEstablished`、语义处理中、最终语义、TTS 播放开始/结束、延时聆听定时器结束。
+核心触发点：唤醒、ASR `turnEstablished`、有效语义准入、语义处理中、最终语义、TTS 播放开始/结束、延时聆听定时器结束。VAD start 不属于对话状态转换事件。
 
 ## VAD 误报与轮次准入
 
-VAD start 只创建临时 capture，不替换当前 turn。准入证据为：
+VAD start 只在准入层创建临时 capture，不改变对话状态或当前 turn。准入证据为：
 
 1. 本地 ASR 明确发出的 `turnEstablished`；
 2. 云端 ASR 明确发出的 `asr_turn_started`；
@@ -72,7 +72,9 @@ VAD start 只创建临时 capture，不替换当前 turn。准入证据为：
 - 普通回复在播放器 `completed` 后进入 10 秒延时聆听，而不是在语义结果到达或旧 Session 进入 IDLE 时启动。
 - 延时聆听复用唯一 `AudioRecord` 和独立 Silero VAD；无需 AEC，因为此时扬声器已停止播放。
 - 保留约 384ms 预卷音频，VAD 命中后建立临时 capture，避免丢失话首。
-- 延时窗口内的 VAD 仍需通过 ASR/有效语义准入，误报后恢复延时聆听。
+- 延时窗口内的 VAD 仍需通过 ASR/有效语义准入；误报仅清理候选，对话状态一直保持原值。
+- 原轮播报结束始终进入延时聆听，未确认的 capture 留在准入层，不阻挡播放结束事件。
+- 录音期间不重复启用监听；候选收口后按未变的对话快照协调监听资源。AWAKE 无有效话语时也使用有限窗口，定时器到期结束交互，不通过“候选拒绝”改变对话状态。
 - 定时器到期后回到 `DORMANT` 并恢复离线唤醒。
 - App 退后台、模式切换或进入 S2S 闲聊锁域时取消普通延时聆听。
 
