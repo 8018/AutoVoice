@@ -105,33 +105,33 @@ class VoiceEngineTest {
         delay(300)
         stops = 0
 
-        val oldTurn = engine.dialogue.snapshot.value.turnId!!
-        engine.dialogue.onPlaybackStarted(oldTurn)
-        val speaking = engine.dialogue.snapshot.value
+        val oldTurn = engine.conversation.snapshot.value.turnId!!
+        engine.conversation.onPlaybackStarted(oldTurn)
+        val speaking = engine.conversation.snapshot.value
 
         // A rejected VAD capture must leave the complete dialogue snapshot untouched.
         engine.onListeningStart(interruptPlayback = false)
         engine.onVadStart()
-        assertEquals(speaking, engine.dialogue.snapshot.value)
+        assertEquals(speaking, engine.conversation.snapshot.value)
         engine.onListeningStop()
-        assertEquals(speaking, engine.dialogue.snapshot.value)
+        assertEquals(speaking, engine.conversation.snapshot.value)
         assertEquals(0, stops)
 
         // 开放式 VAD 只建立 capture，不得把“可能的人声”当作已成立的新会话。
         engine.onListeningStart(interruptPlayback = false)
         engine.onVadStart()
         assertEquals(0, stops)
-        assertEquals(speaking, engine.dialogue.snapshot.value)
+        assertEquals(speaking, engine.conversation.snapshot.value)
 
         // Old playback completion still starts follow-up; it cannot erase the pending capture.
-        engine.dialogue.onPlaybackEnded(oldTurn)
+        engine.conversation.onPlaybackEnded(oldTurn)
 
         // 最终语义是新会话证据；状态机准入该 turn 时才停止旧播报。
         engine.onCloudSegment(segment)
         engine.onTurnSegment(segment)
         delay(300)
         assertEquals(1, stops)
-        assertTrue(engine.dialogue.snapshot.value.turnId != oldTurn)
+        assertTrue(engine.conversation.snapshot.value.turnId != oldTurn)
     }
 
     private fun cfg(cloudWaitMs: Long = 100): DemoConfig =

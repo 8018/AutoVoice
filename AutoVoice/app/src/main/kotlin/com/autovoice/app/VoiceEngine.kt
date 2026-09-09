@@ -28,9 +28,8 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.PendingSignalRegistry
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.dialog.AdmissionEvidence
+import com.autovoice.voicecore.dialog.ConversationController
 import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.dialog.DialogueStateMachine
-import com.autovoice.voicecore.dialog.TurnAdmissionGate
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
@@ -38,7 +37,6 @@ import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
 import java.io.File
 import java.io.ByteArrayOutputStream
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -141,28 +139,25 @@ class VoiceEngine(
     private val onCloudWon: (String) -> Unit = {},
     /** 服务端混合后端下发的闲聊锁域控制。 */
     private val onConversationMode: (Boolean) -> Unit = {},
-    /** 本地交互状态；只由 DialogueStateMachine 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
+    /** 本地交互状态；只由 ConversationController 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     private val onDialogueState: (DialogueSnapshot) -> Unit = {},
     /** 已通过播放身份校验的生命周期事件；驱动层迟到回调不会触发此钩子。 */
     private val onPlaybackStage: (PlaybackStage) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
-    val dialogue = DialogueStateMachine()
-    private val admission = TurnAdmissionGate()
 
     /** 弱网调试 hook（调试构建的 UI 开关）：true 且 [debugBuild] 时云端链人为延迟 [WEAK_NETWORK_DELAY_MS]。 */
     @Volatile
     var weakNetwork: Boolean = false
 
     /**
-     * 当前话语的链路追踪 ID（T6）：**由 VAD 段开始（[onVadStart]，SpeechStart）产生**——
-     * vad start 的 uuid 就是 utteranceId，单一 id 贯穿本轮全部插桩
+     * 当前话语的链路追踪 ID（T6）：由录音开始（[onListeningStart]）建立 captureId，
+     * VAD/ASR/NLU 与网关共用该 id，单一 id 贯穿本轮全部插桩
      * （audio_start/tts_request 上行 + telemetry 事件）；云端链在 IO 线程读取，
      * volatile 可见。无 VAD 场景（vadUnavailable）由 [onTurnSegment] 兜底产生。
      */
-    @Volatile
-    private var currentUtteranceId = ""
+    private val currentUtteranceId: String get() = conversation.captureId
 
     /**
      * TTS 网络播放事件入口（T7）：TtsPlayer（MainViewModel 装配）的 onPlayEvent 接到这里，
@@ -185,13 +180,22 @@ class VoiceEngine(
     @Volatile
     private var awaitingVadStart = true
 
-    @Volatile
-    private var cloudPendingTurnId: String? = null
-
     /** 装配好的会话：状态机 + 双路由竞速编排。 */
     val session: VoiceSession
 
-    private val playbackCoordinator = PlaybackCoordinator(player) { identity, kind, level, payload ->
+    /** Capture 准入、pending 可见性和当前 turn 的唯一拥有者。 */
+    val conversation: ConversationController = ConversationController(
+        onState = onDialogueState,
+        onTurnAdmitted = { admitted ->
+            if (playUtteranceId.isNotBlank() && playUtteranceId != admitted.turnId) {
+                playbackCoordinator.stop()
+            }
+            session.currentUtteranceId = admitted.turnId
+        },
+        onPendingVisible = onCloudPending,
+    )
+
+    private val playbackCoordinator: PlaybackCoordinator = PlaybackCoordinator(player) { identity, kind, level, payload ->
         val stage = when (kind) {
             PlaybackStage.STARTED -> TelemetryStages.TTS_PLAY_START
             PlaybackStage.INTERRUPTED -> TelemetryStages.TTS_PLAY_INTERRUPTED
@@ -202,8 +206,8 @@ class VoiceEngine(
         onPlaybackStage(kind)
         // Realtime playback has its own identity but never advances the ordinary dialogue.
         if (identity.turnId.isNotBlank()) when (kind) {
-            PlaybackStage.STARTED -> onDialogueState(dialogue.onPlaybackStarted(identity.turnId))
-            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> onDialogueState(dialogue.onPlaybackEnded(identity.turnId))
+            PlaybackStage.STARTED -> conversation.onPlaybackStarted(identity.turnId)
+            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(identity.turnId)
             PlaybackStage.INTERRUPTED -> Unit
         }
     }
@@ -247,35 +251,25 @@ class VoiceEngine(
 
     fun onForeground() = onForeground.invoke()
 
-    fun onWake() {
-        admission.reset()
-        onDialogueState(dialogue.onWake())
-    }
+    fun onWake() { conversation.onWake() }
 
-    fun onFollowUpExpired(interactionId: String) {
-        if (dialogue.snapshot.value.interactionId == interactionId) admission.reset()
-        onDialogueState(dialogue.onFollowUpExpired(interactionId))
-    }
+    fun onFollowUpExpired(interactionId: String) { conversation.onFollowUpExpired(interactionId) }
 
-    fun resetDialogue() {
-        admission.reset()
-        onDialogueState(dialogue.reset())
-    }
+    fun resetDialogue() { conversation.reset() }
 
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
     /**
-     * 录音开始：清空上一轮状态（utteranceId 由首个 VAD 段开始产生——vad start 的
-     * uuid 就是 utteranceId，需求 2 单一 id）；网络可用则重新启用云端路由（断网恢复
+     * 录音开始：建立新的 captureId，但不抢占状态机的当前 turn；网络可用则重新启用云端路由（断网恢复
      * 场景），否则立即挂起云端（本轮起只跑本地链，reason `cloud_unreachable`），
      * 再进入 LISTENING。
      */
     fun onListeningStart(interruptPlayback: Boolean = true) {
         // 先建立 captureId 用于链路关联；只有 ASR/有效语义证据才能把它晋升为当前 turn。
-        currentUtteranceId = UUID.randomUUID().toString()
+        val captureId = conversation.beginCapture()
         // captureId 先用于链路关联；尚未得到语音证据时不替换状态机当前 turnId。
-        onTurnStarted(currentUtteranceId)
-        telemetry.begin(currentUtteranceId)
+        onTurnStarted(captureId)
+        telemetry.begin(captureId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
         if (interruptPlayback) playbackCoordinator.stop()
@@ -297,30 +291,19 @@ class VoiceEngine(
      */
     fun setCloudPending(v: Boolean) = setCloudPending(currentUtteranceId, v)
 
-    fun setCloudPending(turnId: String, v: Boolean) {
-        cloudPendingTurnId = turnId.takeIf { v }
-        val belongsToVisibleTurn = dialogue.isCurrentTurn(turnId) ||
-            admission.owns(turnId)
-        onCloudPending(v && belongsToVisibleTurn)
-        if (v) {
-            dialogue.snapshot.value.turnId?.takeIf { it == turnId }?.let {
-                onDialogueState(dialogue.onSemanticProcessing(it))
-            }
-        }
-    }
+    fun setCloudPending(turnId: String, v: Boolean) = conversation.setPending(turnId, v)
 
     /**
      * VAD 语音段开始（录音实时，SpeechStart 触发，需求 2）：
-     *  - 本轮首个段：**产生 utteranceId**（vad start 的 uuid，单一 id 贯穿全轮）——
-     *    开启 telemetry 轮并记录话语开始；会话与云端链同步该 id（仲裁器 provider 读它，
-     *    非最新 uid 的会话语义被拦截，B2）；
+     *  - 打开由录音开始预先建立的 capture，但不改变对话状态；
+     *  - 会话与云端链共用该 id；
      *  - 同轮后续段：不重复产生，只记 vad_start。
      * 守卫：非录音中（LISTENING）的杂散 SpeechStart 忽略。
      */
     fun onVadStart() {
         if (session.state.value != SessionState.LISTENING) return
         awaitingVadStart = false
-        admission.open(currentUtteranceId)
+        conversation.openCapture(currentUtteranceId)
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
         streamingCloud?.beginStreamingTurn(currentUtteranceId)
     }
@@ -363,20 +346,18 @@ class VoiceEngine(
     }
 
     /**
-     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：无 VAD 场景（vadUnavailable /
-     * 未切出语音段）兜底产生 utteranceId 并开启 telemetry 轮（首个 SpeechStart 缺席，
+     * 本地路整段音频（Task 49 双路：抬手后完整降噪段）：无录音开始事件的直接输入场景
+     * 兜底产生 captureId 并开启 telemetry 轮（首个 SpeechStart 缺席，
      * 否则本轮事件全丢）；再记录 VAD 事件（含本轮聚合统计：段数/总时长；maxProb 在
      * VadSegmenter 内、AudioRecorder 持有，此处不可得）+ 上传 VAD 后 PCM 到数据平台
      * （T6），最后启动双路竞速收敛。
-     */
+    */
     fun onTurnSegment(segment: ByteArray) {
-        if (currentUtteranceId.isBlank()) {
-            currentUtteranceId = UUID.randomUUID().toString()
-            telemetry.begin(currentUtteranceId)
+        val hadCapture = currentUtteranceId.isNotBlank()
+        val captureId = conversation.ensureOpenCapture()
+        if (!hadCapture) {
+            telemetry.begin(captureId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
-        }
-        if (!admission.owns(currentUtteranceId)) {
-            admission.open(currentUtteranceId)
         }
         telemetry.record(
             TelemetryStages.VAD,
@@ -389,8 +370,8 @@ class VoiceEngine(
                 "totalMs" to turnSegmentsTotalMs + durationMs(segment.size),
             ),
         )
-        telemetry.uploadAudio(currentUtteranceId, segment)
-        session.onTurnSegment(segment, currentUtteranceId)
+        telemetry.uploadAudio(captureId, segment)
+        session.onTurnSegment(segment, captureId)
     }
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */
@@ -437,36 +418,11 @@ class VoiceEngine(
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
-        admission.reject(currentUtteranceId)
-        // Reconcile capture resources against the unchanged dialogue snapshot.
-        onDialogueState(dialogue.snapshot.value)
+        conversation.rejectCapture(currentUtteranceId)
         session.onListeningStop()
     }
 
     // ------------------------------------------------------------------ 结果路由
-
-    private fun confirmTurn(
-        turnId: String,
-        evidence: AdmissionEvidence,
-    ): Boolean {
-        // ASR 话语成立事件可幂等到达；已晋升的当前轮不得把 SPEAKING 等状态退回 THINKING。
-        if (dialogue.isCurrentTurn(turnId)) return true
-        val admitted = if (evidence == AdmissionEvidence.LOCAL_ASR ||
-            evidence == AdmissionEvidence.CLOUD_ASR
-        ) {
-            admission.confirmAsr(turnId, evidence)
-        } else {
-            admission.confirmSemantic(turnId, evidence)
-        } ?: return dialogue.isCurrentTurn(turnId)
-        if (playUtteranceId.isNotBlank() && playUtteranceId != admitted.turnId) playbackCoordinator.stop()
-        session.currentUtteranceId = admitted.turnId
-        onDialogueState(dialogue.onSpeechCommitted(admitted.turnId))
-        if (cloudPendingTurnId != admitted.turnId) onCloudPending(false)
-        if (cloudPendingTurnId == admitted.turnId) {
-            onDialogueState(dialogue.onSemanticProcessing(admitted.turnId))
-        }
-        return true
-    }
 
     /** ASR 文本只更新识别框；不得从文本内容、partial/final 推断新轮。 */
     private fun onRecognized(turnId: String, text: String) {
@@ -475,34 +431,33 @@ class VoiceEngine(
             onLocalRecognized(text)
             return
         }
-        val snapshot = dialogue.snapshot.value
-        if (admission.owns(turnId) || snapshot.turnId == turnId) onLocalRecognized(text)
+        if (conversation.isVisible(turnId)) onLocalRecognized(text)
     }
 
     /** ASR/AEC 独立确认新话语；状态机只消费该事件，不检查识别文本。 */
     private fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) {
-        if (turnId.isNotBlank()) confirmTurn(turnId, evidence)
+        if (turnId.isNotBlank()) conversation.confirmTurn(turnId, evidence)
     }
 
     private fun onTurnResult(utteranceId: String, winner: RaceWinner) {
         // 仲裁器只保证“该 turn 尚未输出过语义”。这里才判断是否为状态机当前轮。
         when (winner) {
-            is RaceWinner.Cloud -> confirmTurn(utteranceId, AdmissionEvidence.CLOUD_FINAL_SEMANTIC)
-            is RaceWinner.Local -> confirmTurn(
+            is RaceWinner.Cloud -> conversation.confirmTurn(
+                utteranceId,
+                AdmissionEvidence.CLOUD_FINAL_SEMANTIC,
+            )
+            is RaceWinner.Local -> conversation.confirmTurn(
                 utteranceId,
                 AdmissionEvidence.LOCAL_SEMANTIC,
             )
-            is RaceWinner.Failed -> {
-                admission.reject(utteranceId)
-                onDialogueState(dialogue.snapshot.value)
-            }
+            is RaceWinner.Failed -> conversation.rejectCapture(utteranceId)
             is RaceWinner.Intercepted -> Unit
         }
-        if (!dialogue.isCurrentTurn(utteranceId)) {
+        if (!conversation.isCurrentTurn(utteranceId)) {
             telemetry.end(utteranceId)
             return
         }
-        onDialogueState(dialogue.onFinalSemantic(utteranceId))
+        conversation.onFinalSemantic(utteranceId)
         // T7 评审 C1：本轮所有播报（player.play / speakViaTts）由此发起，
         // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
         playUtteranceId = utteranceId
@@ -600,7 +555,7 @@ class VoiceEngine(
     private fun speakViaTts(utteranceId: String, text: String) {
         if (!isLatestTurn(utteranceId)) return
         if (text.isBlank()) {
-            onDialogueState(dialogue.onPlaybackEnded(utteranceId))
+            conversation.onPlaybackEnded(utteranceId)
             return
         }
         // B4 需求 1：tts 播报请求（端侧发出播报请求）→ tts_play_request
@@ -625,7 +580,7 @@ class VoiceEngine(
     }
 
     private fun isLatestTurn(utteranceId: String): Boolean =
-        utteranceId.isBlank() || dialogue.isCurrentTurn(utteranceId)
+        utteranceId.isBlank() || conversation.isCurrentTurn(utteranceId)
 
     /**
      * 意图执行（spec §4.2 起按域分发）：navigation 域 → [NavigationExecutor] 拉起高德 App
