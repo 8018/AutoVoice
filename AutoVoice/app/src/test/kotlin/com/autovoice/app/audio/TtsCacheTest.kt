@@ -1,6 +1,7 @@
 package com.autovoice.app.audio
 
 import com.autovoice.app.telemetry.TelemetryStages
+import com.autovoice.voicecore.AudioReply
 import java.io.File
 import java.nio.file.Files
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -12,8 +13,7 @@ import org.junit.jupiter.api.io.TempDir
 
 /**
  * 端侧 TTS 缓存（架构变更：缓存移回端侧）纯 JVM 测试。
- * 语义与旧服务器 CachedTtsProvider 一致：内存键 = 原文文本，磁盘键 = sha256(text).hex + ".wav"，
- * 写穿两级，无 TTL/淘汰；空/损坏磁盘文件视为 miss；写盘失败静默。
+ * 内存键 = 原文文本，磁盘同时保存音频与 MIME；无 TTL/淘汰。
  */
 class TtsCacheTest {
 
@@ -35,19 +35,19 @@ class TtsCacheTest {
         val probe = EventProbe()
         val cache = TtsCache(dir = null, onEvent = probe::onEvent)
         cache.put("好的", wav)
-        assertArrayEquals(wav, cache.get("好的"), "内存缓存应命中")
+        assertArrayEquals(wav, cache.get("好的")?.data, "内存缓存应命中")
         assertTrue(dir.listFiles()?.isEmpty() ?: true, "dir=null 不应写盘")
     }
 
     @Test
-    fun `write-through persists one file on disk with same bytes`() {
+    fun `write-through persists audio and mime`() {
         val probe = EventProbe()
         val cache = TtsCache(dir = dir, onEvent = probe::onEvent)
         cache.put("好的", wav)
         val files = dir.listFiles()
-        assertEquals(1, files?.size, "写穿后磁盘应恰有 1 个缓存文件")
-        assertArrayEquals(wav, files!![0].readBytes(), "磁盘文件内容应等于缓存音频")
-        assertTrue(files[0].name.endsWith(".wav"), "磁盘键应为 sha256 hex + .wav")
+        assertEquals(2, files?.size, "写穿后磁盘应保存音频和 MIME")
+        assertArrayEquals(wav, files!!.first { it.name.endsWith(".audio") }.readBytes())
+        assertEquals("audio/wav", files.first { it.name.endsWith(".mime") }.readText())
     }
 
     @Test
@@ -55,11 +55,24 @@ class TtsCacheTest {
         TtsCache(dir = dir).put("好的", wav)
         val probe = EventProbe()
         val fresh = TtsCache(dir = dir, onEvent = probe::onEvent)
-        assertArrayEquals(wav, fresh.get("好的"), "新实例应命中磁盘缓存")
+        val restored = fresh.get("好的")
+        assertArrayEquals(wav, restored?.data, "新实例应命中磁盘缓存")
+        assertEquals("audio/wav", restored?.mime)
         assertEquals(1, probe.events.count { it.first == TelemetryStages.TTS_CACHE_HIT }, "磁盘命中应记 cache_hit")
         // 回填内存：第二次 get 不依赖磁盘（若未回填，删除磁盘文件后仍应命中）
-        Files.delete(dir.listFiles()!!.first().toPath())
-        assertArrayEquals(wav, fresh.get("好的"), "磁盘命中应回填内存")
+        dir.listFiles()!!.forEach { Files.delete(it.toPath()) }
+        assertArrayEquals(wav, fresh.get("好的")?.data, "磁盘命中应回填内存")
+    }
+
+    @Test
+    fun `cache preserves provider mime instead of assuming wav`() {
+        val encoded = AudioReply("audio/mpeg", wav, speakText = "好的")
+        TtsCache(dir = dir).put("好的", encoded)
+
+        val restored = TtsCache(dir = dir).get("好的")
+
+        assertEquals("audio/mpeg", restored?.mime)
+        assertArrayEquals(wav, restored?.data)
     }
 
     @Test
@@ -67,7 +80,7 @@ class TtsCacheTest {
         val cache = TtsCache(dir = dir)
         cache.put("好的", wav)
         // 模拟损坏：清空磁盘文件
-        dir.listFiles()!!.first().writeBytes(ByteArray(0))
+        dir.listFiles()!!.first { it.name.endsWith(".audio") }.writeBytes(ByteArray(0))
         val probe = EventProbe()
         val fresh = TtsCache(dir = dir, onEvent = probe::onEvent)
         assertNull(fresh.get("好的"), "空磁盘文件应视为损坏 → miss")

@@ -27,4 +27,6 @@ interface StreamingCloudRunner {
     fun appendStreamingAudio(pcm: ByteArray)
     fun finishStreamingTurn(utteranceId: String)
     fun cancelStreamingTurn(utteranceId: String)
+    /** Candidate audio has been admitted as a business turn by ASR or final semantic evidence. */
+    fun commitStreamingTurn(utteranceId: String) {}
 }

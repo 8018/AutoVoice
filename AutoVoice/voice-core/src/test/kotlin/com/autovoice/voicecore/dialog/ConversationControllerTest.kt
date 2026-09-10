@@ -103,6 +103,32 @@ class ConversationControllerTest {
         assertFalse(controller.isVisible("capture"))
     }
 
+    @Test fun `stale pending cannot replace or clear current turn pending`() {
+        val visible = mutableListOf<Boolean>()
+        var nextId = 0
+        val controller = ConversationController(
+            newCaptureId = { "capture-${++nextId}" },
+            onPendingVisible = visible::add,
+        )
+        controller.onWake()
+        val old = controller.beginCapture()
+        controller.openCapture(old)
+        assertTrue(controller.confirmTurn(old, AdmissionEvidence.CLOUD_ASR))
+
+        val current = controller.beginCapture()
+        controller.openCapture(current)
+        assertTrue(controller.confirmTurn(current, AdmissionEvidence.CLOUD_ASR))
+        assertTrue(controller.setPending(current, true))
+
+        assertFalse(controller.setPending(old, true))
+        assertFalse(controller.setPending(old, false))
+        assertEquals(true, visible.last())
+        assertEquals(DialogueState.SEMANTIC_PROCESSING, controller.snapshot.value.state)
+
+        assertTrue(controller.setPending(current, false))
+        assertEquals(false, visible.last())
+    }
+
     @Test fun `blocked admission callback does not lock state and later effects keep order`() {
         val admittedEntered = CountDownLatch(1)
         val releaseAdmission = CountDownLatch(1)

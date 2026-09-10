@@ -802,7 +802,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void audioEndWhileProcessingSendsBusyError() throws Exception {
+    void audioEndWhileProcessingQueuesOneCandidate() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
@@ -821,26 +821,19 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
         h.handleMessage(s, new BinaryMessage(new byte[]{1}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-        // 确定性：等工作线程越过 isCancelled 早退检查、进入 ASR 后再发下一段——
-        // 否则 supersede 的 cancelledSegments 标记可能先于 worker 起动到达，
-        // worker 在 :394 早退释放 processing，seg-2 不再 BUSY（合法但非本用例目标）
         assertTrue(entered.await(5, TimeUnit.SECONDS), "流水线应在工作线程启动并进入 ASR");
 
-        // 上一段处理中再来一轮：audio_start 正常累积 PCM，audio_end → BUSY（同步下发）
+        // A VAD candidate is retained behind the current turn instead of superseding or dropping it.
         h.handleMessage(s, new TextMessage(audioStart(sid, "seg-2")));
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        JsonNode error = parse(s.sent.get(1));
-        assertEquals("error", error.get("type").asText());
-        assertEquals("BUSY", error.get("payload").get("code").asText());
-        assertEquals("seg-2", error.get("payload").get("segmentId").asText(),
-                "BUSY 应回显被拒段的 segmentId");
+        assertEquals(1, s.sent.size(), "未准入候选不得作废旧轮或产生 BUSY");
 
         release.countDown();
-        // supersede 拦截：seg-1 已被新话语顶替，其 ASR/decision/reply 全部拦截不再下行
-        Thread.sleep(300);
-        assertEquals(2, s.sent.size(), "ready + BUSY（被顶替的 seg-1 零帧）");
+        awaitReplyFor(s, "seg-1");
+        awaitReplyFor(s, "seg-2");
+        assertFalse(s.sent.stream().map(VoiceGatewayHandlerTest::parse)
+                .anyMatch(n -> "error".equals(n.path("type").asText())));
     }
 
     // ---------- void（cancel_turn / superseded）：仲裁立即收敛 + processing 槽释放 ----------
@@ -898,9 +891,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void newAudioStartSupersedesInFlightTurn() throws InterruptedException {
-        // 云端"最新会话拦截"（与端侧 isStale 同构）：seg-1 处理中新 audio_start（新 utteranceId）
-        // 立即 void 在途轮——下一段 audio_end 无 BUSY、正常回复，seg-1 零帧
+    void committedCandidateSupersedesInFlightTurn() throws InterruptedException {
         CountDownLatch firstStarted = new CountDownLatch(1);
         AtomicInteger calls = new AtomicInteger();
         CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
@@ -926,11 +917,11 @@ class VoiceGatewayHandlerTest {
         assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
 
         long start = System.currentTimeMillis();
-        // 新一轮 vad start：新 utteranceId 上报 → 在途旧轮立即判定过期
+        // audio_start/audio_end only queue the candidate. turn_commit is the admission boundary.
         h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-2", "utt-2")));
-        Thread.sleep(50); // 等工作线程 void 收尾（µs 级，留调度余量）
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        h.handleMessage(s, new TextMessage(turnCommit("seg-2", "utt-2")));
         awaitReplyFor(s, "seg-2"); // seg-2 正常回复；被取代段零帧（无 BUSY）
         long elapsed = System.currentTimeMillis() - start;
         assertTrue(elapsed < 800, "被取代的轮应立即让位（elapsed=" + elapsed + "ms），"
@@ -941,8 +932,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void audioStartWithSameUtteranceIdDoesNotSupersede() throws InterruptedException {
-        // 同 utteranceId 重发（幂等重放）不触发最新会话拦截：处理槽仍被占用 → BUSY 保留
+    void audioStartWithSameUtteranceIdQueuesForIdempotentReplay() throws InterruptedException {
         CountDownLatch firstStarted = new CountDownLatch(1);
         CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
         OnlineSpeechProvider provider = new OnlineSpeechProvider() {
@@ -967,16 +957,9 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
-        awaitSent(s, 3); // ready + pending（LLM 未完成占位）+ BUSY
-        JsonNode error = null;
-        for (WebSocketMessage<?> m : s.sent) {
-            JsonNode n = parse(m);
-            if ("error".equals(n.get("type").asText())) {
-                error = n;
-            }
-        }
-        assertNotNull(error, "同 utteranceId 重发不触发顶替：处理槽仍占用，应收到 BUSY");
-        assertEquals("BUSY", error.get("payload").get("code").asText());
+        assertFalse(s.sent.stream().map(VoiceGatewayHandlerTest::parse)
+                .anyMatch(n -> "error".equals(n.path("type").asText())),
+                "同 utteranceId 重发进入候选队列，不应返回 BUSY");
         Thread.sleep(SAFETY + 200); // 等 SAFETY 兜底收敛在途轮，避免 worker 泄漏到其他测试
     }
 
@@ -1153,6 +1136,11 @@ class VoiceGatewayHandlerTest {
         return "{\"type\":\"audio_end\",\"payload\":{\"sessionId\":\"" + sessionId + "\",\"durationMs\":640}}";
     }
 
+    private static String turnCommit(String segmentId, String utteranceId) {
+        return "{\"type\":\"turn_commit\",\"payload\":{\"segmentId\":\"" + segmentId
+                + "\",\"utteranceId\":\"" + utteranceId + "\"}}";
+    }
+
     /** tts_request（segmentId 可选，protocol.md §4.5）：text 必填。 */
     private static String ttsRequest(String text, String segmentId) {
         String seg = segmentId == null ? "" : ",\"segmentId\":\"" + segmentId + "\"";
@@ -1202,9 +1190,14 @@ class VoiceGatewayHandlerTest {
     private static JsonNode awaitReplyFor(StubSession s, String segmentId) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 5000;
         while (System.currentTimeMillis() < deadline) {
-            JsonNode reply = findFrame(s, "reply");
-            if (reply != null && segmentId.equals(reply.get("payload").path("segmentId").asText())) {
-                return reply;
+            synchronized (s.sent) {
+                for (WebSocketMessage<?> message : s.sent) {
+                    JsonNode reply = parse(message);
+                    if ("reply".equals(reply.path("type").asText())
+                            && segmentId.equals(reply.path("payload").path("segmentId").asText())) {
+                        return reply;
+                    }
+                }
             }
             Thread.sleep(20);
         }

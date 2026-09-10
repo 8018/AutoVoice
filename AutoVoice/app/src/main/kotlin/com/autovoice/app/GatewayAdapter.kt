@@ -112,6 +112,9 @@ internal class GatewayCloudRunner(
         val segmentId: String = UUID.randomUUID().toString(),
         val chunks: Channel<ByteArray> = Channel(Channel.UNLIMITED),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
+        val admitted: AtomicBoolean = AtomicBoolean(false),
+        val audioStarted: AtomicBoolean = AtomicBoolean(false),
+        val commitSent: AtomicBoolean = AtomicBoolean(false),
     )
 
     private val liveUpload = AtomicReference<LiveUpload?>(null)
@@ -281,6 +284,24 @@ internal class GatewayCloudRunner(
         bridge.cancelStream(upload.segmentId)
     }
 
+    override fun commitStreamingTurn(utteranceId: String) {
+        val upload = liveUpload.get()?.takeIf { it.utteranceId == utteranceId } ?: return
+        upload.admitted.set(true)
+        sendCommitIfReady(upload)
+    }
+
+    /** Admission may beat connect/audio_start; persist it and send exactly once after start. */
+    private fun sendCommitIfReady(upload: LiveUpload) {
+        if (!upload.admitted.get() || !upload.audioStarted.get()) return
+        if (sessionId.isBlank() || client.connectionState.value != GatewayConnectionState.READY) return
+        if (!upload.commitSent.compareAndSet(false, true)) return
+        runCatching { client.sendTurnCommit(upload.segmentId, upload.utteranceId) }
+            .onFailure {
+                upload.commitSent.set(false)
+                Log.w("GatewayCloudRunner", "turn commit send failed", it)
+            }
+    }
+
     private suspend fun executeLiveUpload(upload: LiveUpload) {
         val slot = bridge.newReplySlot(upload.segmentId, upload.utteranceId)
         try {
@@ -294,6 +315,8 @@ internal class GatewayCloudRunner(
                 location?.second,
                 navigationSelectionId = upload.navigationSelectionId,
             )
+            upload.audioStarted.set(true)
+            sendCommitIfReady(upload)
             for (chunk in upload.chunks) client.sendAudioChunk(chunk)
             client.sendAudioEnd(sessionId)
             upload.reply.complete(slot.await())

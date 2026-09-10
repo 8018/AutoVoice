@@ -1,0 +1,7 @@
+{
+  "type": "turn_commit",
+  "payload": {
+    "segmentId": "seg-1",
+    "utteranceId": "utt-1"
+  }
+}

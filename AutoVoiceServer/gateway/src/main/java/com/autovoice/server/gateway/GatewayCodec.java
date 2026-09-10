@@ -31,7 +31,7 @@ public final class GatewayCodec {
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
             "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
-            "tts_request", "tts_response", "cancel_turn", "audio_reply_start", "audio_reply_end",
+            "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
             "chat_start", "chat_ready", "chat_finish", "chat_speech_started");
 
     /** reply 消息的合法 kind。 */
@@ -55,6 +55,7 @@ public final class GatewayCodec {
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),
             Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")),
             Map.entry("cancel_turn", Set.of("segmentId", "reason")),
+            Map.entry("turn_commit", Set.of("segmentId", "utteranceId")),
             Map.entry("audio_reply_start", Set.of("segmentId", "mime", "sampleRate", "channels", "encoding", "chat")),
             Map.entry("audio_reply_end", Set.of("segmentId", "speakText", "intent", "asrText", "chat")),
             Map.entry("chat_start", Set.of("sessionId")),
@@ -64,17 +65,18 @@ public final class GatewayCodec {
 
     /** 按 protocol.md §3 校验的消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。
      *  tts_response 虽是 S→C 消息，与 reply 一样按下行 schema 校验必需字段。 */
-    private static final Map<String, List<String>> REQUIRED_FIELDS = Map.of(
-            "hello", List.of("client", "protocolVersion"),
-            "audio_start", List.of("sessionId", "sampleRate", "channels", "encoding"),
-            "audio_end", List.of("sessionId", "durationMs"),
-            "chat_start", List.of("sessionId"),
-            "chat_finish", List.of("sessionId"),
-            "cancel_turn", List.of("segmentId"),
-            "audio_reply_start", List.of("segmentId", "mime", "sampleRate", "channels", "encoding"),
-            "audio_reply_end", List.of("segmentId"),
-            "tts_request", List.of("text"),
-            "tts_response", List.of("mime", "dataBase64"));
+    private static final Map<String, List<String>> REQUIRED_FIELDS = Map.ofEntries(
+            Map.entry("hello", List.of("client", "protocolVersion")),
+            Map.entry("audio_start", List.of("sessionId", "sampleRate", "channels", "encoding")),
+            Map.entry("audio_end", List.of("sessionId", "durationMs")),
+            Map.entry("chat_start", List.of("sessionId")),
+            Map.entry("chat_finish", List.of("sessionId")),
+            Map.entry("cancel_turn", List.of("segmentId")),
+            Map.entry("turn_commit", List.of("segmentId", "utteranceId")),
+            Map.entry("audio_reply_start", List.of("segmentId", "mime", "sampleRate", "channels", "encoding")),
+            Map.entry("audio_reply_end", List.of("segmentId")),
+            Map.entry("tts_request", List.of("text")),
+            Map.entry("tts_response", List.of("mime", "dataBase64")));
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 

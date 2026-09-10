@@ -77,6 +77,15 @@ class GatewayCodecTest {
     }
 
     @Test
+    void decodesTurnCommitWithBothIdentities() {
+        Map<String, Object> msg = GatewayCodec.decode("""
+                {"type":"turn_commit","payload":{"segmentId":"seg-1","utteranceId":"utt-1"}}
+                """);
+        assertEquals("turn_commit", msg.get("type"));
+        assertEquals("utt-1", ((Map<?, ?>) msg.get("payload")).get("utteranceId"));
+    }
+
+    @Test
     void decodesValidReplyKinds() {
         GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"text\",\"text\":\"hi\",\"speakText\":\"hi\"}}");
         GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"audio\",\"mime\":\"audio/wav\",\"dataBase64\":\"AAAA\",\"speakText\":\"hi\"}}");

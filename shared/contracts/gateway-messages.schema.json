@@ -7,7 +7,7 @@
   "required": ["type"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
@@ -72,6 +72,20 @@
           "properties": {
             "segmentId": { "type": "string" },
             "reason": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "turn_commit (client -> server)",
+      "properties": {
+        "type": { "const": "turn_commit" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "utteranceId"],
+          "properties": {
+            "segmentId": { "type": "string" },
+            "utteranceId": { "type": "string" }
           }
         }
       }

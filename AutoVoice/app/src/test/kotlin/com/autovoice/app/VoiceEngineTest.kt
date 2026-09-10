@@ -318,6 +318,33 @@ class VoiceEngineTest {
         assertEquals(events[0].removePrefix("start:"), events[2].removePrefix("finish:"))
     }
 
+    @Test
+    fun `semantic admission commits streaming candidate with the same turn id`() = runBlocking {
+        val events = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) { events += "start:$utteranceId" }
+            override fun appendStreamingAudio(pcm: ByteArray) = Unit
+            override fun finishStreamingTurn(utteranceId: String) = Unit
+            override fun cancelStreamingTurn(utteranceId: String) = Unit
+            override fun commitStreamingTurn(utteranceId: String) { events += "commit:$utteranceId" }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("ok") },
+            streamingCloud = streaming,
+        )
+
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onTurnSegment(segment)
+        delay(100)
+
+        val started = events.single { it.startsWith("start:") }.substringAfter(':')
+        val committed = events.single { it.startsWith("commit:") }.substringAfter(':')
+        assertEquals(started, committed)
+    }
+
     /**
      * 一轮话语（Task 50 双路）：onListeningStart → onCloudSegment（云端路段，0..n 个）
      * → onTurnSegment（本地整段，启动竞速）。在 runBlocking 内调用。
@@ -1214,7 +1241,7 @@ class VoiceEngineTest {
             assertEquals(listOf("好的，车窗已打开"), requested, "未命中应先请求 TTS")
             assertEquals(1, played.size, "网络音频应播放")
             assertArrayEquals(ttsAudio.data, played[0].data)
-            assertArrayEquals(ttsAudio.data, cache.get("好的，车窗已打开"), "收到音频应写入缓存")
+            assertArrayEquals(ttsAudio.data, cache.get("好的，车窗已打开")?.data, "收到音频应写入缓存")
             // launch 内 check+miss 直传 /events（断言处的 get 会再产生 check+hit，聚合后只断言存在性）
             val events = collectLateEvents(server)
             assertTrue(
