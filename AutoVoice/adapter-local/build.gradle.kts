@@ -24,6 +24,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    buildTypes {
+        getByName("debug") {
+            enableUnitTestCoverage = true
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

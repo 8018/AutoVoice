@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
@@ -11,5 +12,13 @@ export default defineConfig({
   build: {
     outDir: '../skill-manager/src/main/resources/static/skill-manager',
     emptyOutDir: true,
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/testSetup.ts'],
+    clearMocks: true,
+    coverage: {
+      thresholds: { lines: 60, statements: 60, branches: 60, functions: 40 },
+    },
   },
 });

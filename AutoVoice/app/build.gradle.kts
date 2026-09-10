@@ -8,7 +8,7 @@ plugins {
 }
 
 // 讯飞离线唤醒/命令词共享的 AIKit 授权凭据：从 local.properties（gitignored）注入。
-// 未配置时为空字符串 → 引擎侧 SDK 未配置降级 fake-cmd（runbook §1.2/§5.1），功能不中断。
+// 未配置时为空字符串 → 讯飞生产候选不可用；仅显式配置 fake-cmd 才使用 Demo 结果。
 val xfyunProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) FileInputStream(f).use { load(it) }
@@ -29,7 +29,7 @@ android {
         // 真机 instrumented 测试（Task 48：Silero VAD 真机验证）
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // 讯飞离线命令词凭据（Task 34 接线；空串时 VoiceEngine 降级 fake-cmd）
+        // 讯飞离线命令词凭据（Task 34 接线；空串时本地候选按未命中收口）
         buildConfigField("String", "XFYUN_APPID", xfyunProp("xfyun.appid"))
         buildConfigField("String", "XFYUN_API_KEY", xfyunProp("xfyun.apiKey"))
         buildConfigField("String", "XFYUN_API_SECRET", xfyunProp("xfyun.apiSecret"))
@@ -44,6 +44,12 @@ android {
         compose = true
         // 调试构建开关（BuildConfig.DEBUG）——弱网调试 hook 仅 debug 暴露（Task 20 裁定）
         buildConfig = true
+    }
+
+    buildTypes {
+        getByName("debug") {
+            enableUnitTestCoverage = true
+        }
     }
 
     sourceSets.getByName("test").resources.srcDir("../../shared/fixtures")

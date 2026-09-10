@@ -51,8 +51,13 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew ${{ matrix.test_args }} -PvoiceBackend=${{ matrix.backend }}
+      - name: Enforce aggregate server line coverage
+        run: node ../shared/verify-jacoco-coverage.mjs 75 .
       - name: Verify selected speech backend is exclusive
         shell: bash
         run: |
@@ -89,10 +94,24 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
       - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: ./gradlew test lint :app:assembleDebug -PuseIflytekStub=true
+      - run: ./gradlew test lint :app:assembleDebug androidUnitTestCoverage -PuseIflytekStub=true
+      - name: Enforce Android line coverage baselines
+        run: |
+          node ../shared/verify-jacoco-coverage.mjs 70 \
+            voice-core/build/reports/jacoco/test/jacocoTestReport.xml \
+            gateway-client/build/reports/jacoco/test/jacocoTestReport.xml
+          node ../shared/verify-jacoco-coverage.mjs 25 \
+            app/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
+          node ../shared/verify-jacoco-coverage.mjs 70 \
+            adapter-local/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
+          node ../shared/verify-jacoco-coverage.mjs 20 \
+            adapter-iflytek/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
       - name: Upload Android reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,7 +121,7 @@ jobs:
             AutoVoice/**/build/test-results/**/*.xml
             AutoVoice/**/build/reports/tests/**
             AutoVoice/**/build/reports/lint-results-*
-            AutoVoice/**/build/reports/jacoco/test/**
+            AutoVoice/**/build/reports/jacoco/**
 
   web:
     name: ${{ matrix.name }} lint, test, coverage and build
