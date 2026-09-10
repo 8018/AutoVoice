@@ -184,18 +184,18 @@ class VoiceSessionTest {
             scope = this,
             resultListener = ResultListener { _, winner -> result.complete(winner) },
         )
-        session.currentUtteranceId = "utt-old"
-        session.onListeningStart()
+        session.onListeningStart("utt-old")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
 
-        session.currentUtteranceId = "utt-new"
-        session.onListeningStart()
+        // 新 capture 尚未得到 ASR/NLU 准入，也必须先取得采集资源所有权。
+        session.onListeningStart("capture-new")
         oldCloud.complete(TextReply("迟到回复"))
 
         // 编排层不再把“是否当前轮”塞进仲裁；原始赢家下发给 DialogueStateMachine 判断。
         assertTrue(result.await() is RaceWinner.Cloud)
         assertEquals(SessionState.LISTENING, session.state.value)
+        assertEquals("capture-new", session.currentUtteranceId)
         session.close()
     }
 

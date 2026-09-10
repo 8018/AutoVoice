@@ -81,6 +81,8 @@ class VoiceEngineTest {
 
         assertEquals(1, stops)
         assertEquals(SessionState.LISTENING, engine.session.state.value)
+        assertEquals(engine.conversation.captureId, engine.session.currentUtteranceId)
+        assertNull(engine.conversation.snapshot.value.turnId)
     }
 
     @Test

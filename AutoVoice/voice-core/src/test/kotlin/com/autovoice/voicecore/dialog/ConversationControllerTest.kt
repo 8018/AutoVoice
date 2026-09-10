@@ -4,6 +4,10 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class ConversationControllerTest {
     @Test fun `capture and vad candidate do not replace current dialogue turn`() {
@@ -97,6 +101,45 @@ class ConversationControllerTest {
         assertEquals(false, visible.last())
         assertFalse(controller.isVisible(""))
         assertFalse(controller.isVisible("capture"))
+    }
+
+    @Test fun `blocked admission callback does not lock state and later effects keep order`() {
+        val admittedEntered = CountDownLatch(1)
+        val releaseAdmission = CountDownLatch(1)
+        val states = Collections.synchronizedList(mutableListOf<DialogueState>())
+        val controller = ConversationController(
+            newCaptureId = { "capture" },
+            onTurnAdmitted = {
+                admittedEntered.countDown()
+                assertTrue(releaseAdmission.await(5, TimeUnit.SECONDS))
+            },
+            onState = { states += it.state },
+        )
+        controller.onWake()
+        controller.beginCapture()
+        controller.openCapture()
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val admission = executor.submit<Boolean> {
+                controller.confirmTurn("capture", AdmissionEvidence.LOCAL_ASR)
+            }
+            assertTrue(admittedEntered.await(5, TimeUnit.SECONDS))
+
+            val playbackEnd = executor.submit<DialogueSnapshot> {
+                controller.onPlaybackEnded("capture")
+            }
+            assertEquals(DialogueState.FOLLOW_UP_LISTENING, playbackEnd.get(5, TimeUnit.SECONDS).state)
+
+            releaseAdmission.countDown()
+            assertTrue(admission.get(5, TimeUnit.SECONDS))
+            assertEquals(
+                listOf(DialogueState.AWAKE, DialogueState.THINKING, DialogueState.FOLLOW_UP_LISTENING),
+                states,
+            )
+        } finally {
+            releaseAdmission.countDown()
+            executor.shutdownNow()
+        }
     }
 
     private fun controller() = ConversationController(

@@ -268,7 +268,7 @@ class VoiceEngine(
         // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
         if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
         session.onCloudAvailable()
-        session.onListeningStart()
+        session.onListeningStart(captureId)
     }
 
     /**
