@@ -116,9 +116,9 @@ class VoiceSession(
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
     /**
-     * 本轮话语 utteranceId（T7）：由应用层 [VoiceSession.onListeningStart] 调用前设置
-     * （VoiceEngine.onListeningStart 同步写入）；本会话写出的 on-device 决策日志携带
-     * 真实值（[localOnly]），装配时注入 [OnDeviceRaceArbiter] 的 provider 也读它——
+     * 当前采集/编排 ID（协议仍称 utteranceId）：由 [onListeningStart] 在录音建立时写入，
+     * 不等待 ASR/NLU 把 capture 晋升为业务 turn。本会话写出的 on-device 决策日志携带
+     * 该值（[localOnly]），装配时注入 [OnDeviceRaceArbiter] 的 provider 也读它——
      * 数据平台按 utteranceId 汇合端云事件。默认空串（未接 telemetry 时零影响）。
      */
     @Volatile
@@ -150,11 +150,12 @@ class VoiceSession(
     }
 
     /**
-     * 录音开始：普通轮 IDLE → LISTENING；用户在理解/播报期间发起新轮时，
-     * 也允许直接转 LISTENING。旧轮候选不取消，结果交给下游状态机判断。
+     * 录音开始：立即转移采集资源所有权，再进入 LISTENING。用户在理解/播报期间发起
+     * 新 capture 时不需要等待 ASR 准入；旧轮候选不取消，结果交给下游状态机判断。
      */
-    fun onListeningStart() {
+    fun onListeningStart(captureId: String = currentUtteranceId) {
         if (_state.value == SessionState.LISTENING) return
+        currentUtteranceId = captureId
         cloudSegments.clear()
         transition(SessionState.LISTENING)
     }

@@ -3,6 +3,9 @@ package com.autovoice.app
 import com.autovoice.voicecore.AudioReply
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class PlaybackCoordinatorTest {
     @Test fun `late same turn playback and duplicate terminal events are ignored`() {
@@ -57,5 +60,32 @@ class PlaybackCoordinatorTest {
         coordinator.accept("completed", "info", emptyMap())
         assertTrue(events.isEmpty())
         assertTrue(coordinator.isActive(id))
+    }
+
+    @Test fun `blocked event consumer does not hold playback state lock`() {
+        val eventEntered = CountDownLatch(1)
+        val releaseEvent = CountDownLatch(1)
+        val coordinator = PlaybackCoordinator(AudioPlayer {}) { _, stage, _, _ ->
+            if (stage == PlaybackStage.STARTED) {
+                eventEntered.countDown()
+                assertTrue(releaseEvent.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val current = coordinator.prepare("old")
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val start = executor.submit { coordinator.accept("start", "info", current.payload()) }
+            assertTrue(eventEntered.await(5, TimeUnit.SECONDS))
+
+            val next = executor.submit<PlaybackIdentity> { coordinator.prepare("new") }
+                .get(5, TimeUnit.SECONDS)
+            assertTrue(coordinator.isActive(next))
+
+            releaseEvent.countDown()
+            start.get(5, TimeUnit.SECONDS)
+        } finally {
+            releaseEvent.countDown()
+            executor.shutdownNow()
+        }
     }
 }
