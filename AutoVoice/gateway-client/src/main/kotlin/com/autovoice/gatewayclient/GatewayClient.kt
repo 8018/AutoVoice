@@ -442,9 +442,15 @@ class GatewayClient(
         val domain = o.get("domain")?.stringOrNull() ?: return null
         val intent = o.get("intent")?.stringOrNull() ?: return null
         val confidence = o.get("confidence")?.numberOrNull() ?: return null
-        val source = o.get("source")?.stringOrNull() ?: return null
+        // source 在 v1.x 协议中是可选的诊断字段。旧服务端缺失时保留 intent，
+        // 使用明确占位值；该值不得参与路由、仲裁或轮次判断。
+        val sourceElement = o.get("source")
+        val source = if (sourceElement == null) Intent.SOURCE_UNSPECIFIED
+        else sourceElement.stringOrNull() ?: return null
         val slots = parseSlots(o.get("slots")) ?: return null
-        val rawSemantic = o.get("rawSemantic")?.stringOrNull()
+        val rawSemanticElement = o.get("rawSemantic")
+        val rawSemantic = if (rawSemanticElement == null) null
+        else rawSemanticElement.stringOrNull() ?: return null
         return Intent(schemaVersion, domain, intent, slots, confidence, source, rawSemantic)
     }
 
@@ -457,13 +463,15 @@ class GatewayClient(
             val slot = slotEl.asJsonObject
             val type = slot.get("type")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
                 ?: return null
+            val unitElement = slot.get("unit")
+            val unit = if (unitElement == null) null else unitElement.stringOrNull() ?: return null
             val valueEl = slot.get("value") ?: return null
             result[name] = when (type) {
-                "number" -> valueEl.numberOrNull()?.let { SlotValue.Number(it) } ?: return null
-                "enum" -> valueEl.stringOrNull()?.let { SlotValue.EnumValue(it) } ?: return null
-                "string" -> valueEl.stringOrNull()?.let { SlotValue.StringValue(it) } ?: return null
+                "number" -> valueEl.numberOrNull()?.let { SlotValue.Number(it, unit) } ?: return null
+                "enum" -> valueEl.stringOrNull()?.let { SlotValue.EnumValue(it, unit) } ?: return null
+                "string" -> valueEl.stringOrNull()?.let { SlotValue.StringValue(it, unit) } ?: return null
                 "boolean" -> valueEl.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
-                    ?.let { SlotValue.Bool(it) } ?: return null
+                    ?.let { SlotValue.Bool(it, unit) } ?: return null
                 else -> return null
             }
         }

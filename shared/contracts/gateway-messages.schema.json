@@ -4,7 +4,7 @@
   "title": "GatewayMessage",
   "description": "端云网关统一消息信封：{\"type\": \"...\", \"payload\": {...}}。type 决定 payload 形状（oneOf 分支）。各消息字段含义与示例以 shared/protocol.md 为准。additionalProperties 放开，不做过严校验。",
   "type": "object",
-  "required": ["type"],
+  "required": ["type", "payload"],
   "properties": {
     "type": {
       "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
@@ -34,6 +34,7 @@
         "type": { "const": "audio_start" },
         "payload": {
           "type": "object",
+          "required": ["sessionId", "sampleRate", "channels", "encoding"],
           "properties": {
             "sessionId": { "type": "string" },
             "sampleRate": { "type": "integer" },
@@ -55,6 +56,7 @@
         "type": { "const": "audio_end" },
         "payload": {
           "type": "object",
+          "required": ["sessionId", "durationMs"],
           "properties": {
             "sessionId": { "type": "string" },
             "durationMs": { "type": "integer" }
@@ -124,6 +126,7 @@
         "type": { "const": "ready" },
         "payload": {
           "type": "object",
+          "required": ["segmentId", "text", "isFinal"],
           "properties": {
             "sessionId": { "type": "string" },
             "language": { "type": "string" },
@@ -217,14 +220,17 @@
           "properties": {
             "kind": { "enum": ["text", "audio", "action"] },
             "speakText": { "type": "string" },
-            "text": { "type": "string" }
+            "text": { "type": "string" },
+            "segmentId": { "type": "string" },
+            "asrText": { "type": "string" }
           },
           "oneOf": [
             {
               "title": "reply/text",
               "properties": {
                 "kind": { "const": "text" }
-              }
+              },
+              "required": ["kind", "text", "speakText"]
             },
             {
               "title": "reply/audio",
@@ -232,30 +238,7 @@
                 "kind": { "const": "audio" },
                 "mime": { "type": "string" },
                 "dataBase64": { "type": "string" },
-                "intent": {
-                  "type": "object",
-                  "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
-                  "properties": {
-                    "schemaVersion": { "type": "string", "const": "1.0" },
-                    "domain": { "type": "string" },
-                    "intent": { "type": "string" },
-                    "slots": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": ["type", "value"],
-                        "properties": {
-                          "type": { "enum": ["number", "enum", "string", "boolean"] },
-                          "value": {},
-                          "unit": { "type": "string" }
-                        }
-                      }
-                    },
-                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "source": { "type": "string" },
-                    "rawSemantic": { "type": "string" }
-                  }
-                }
+                "intent": { "$ref": "intent.schema.json" }
               },
               "required": ["kind", "mime", "dataBase64"]
             },
@@ -263,30 +246,7 @@
               "title": "reply/action",
               "properties": {
                 "kind": { "const": "action" },
-                "intent": {
-                  "type": "object",
-                  "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
-                  "properties": {
-                    "schemaVersion": { "type": "string", "const": "1.0" },
-                    "domain": { "type": "string" },
-                    "intent": { "type": "string" },
-                    "slots": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": ["type", "value"],
-                        "properties": {
-                          "type": { "enum": ["number", "enum", "string", "boolean"] },
-                          "value": {},
-                          "unit": { "type": "string" }
-                        }
-                      }
-                    },
-                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-                    "source": { "type": "string" },
-                    "rawSemantic": { "type": "string" }
-                  }
-                },
+                "intent": { "$ref": "intent.schema.json" },
                 "speakText": { "type": "string" }
               },
               "required": ["kind", "intent", "speakText"]
@@ -370,7 +330,8 @@
           "properties": {
             "sessionId": { "type": "string" },
             "code": { "type": "string" },
-            "message": { "type": "string" }
+            "message": { "type": "string" },
+            "segmentId": { "type": "string" }
           }
         }
       }

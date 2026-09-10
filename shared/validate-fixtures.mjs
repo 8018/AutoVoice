@@ -23,8 +23,24 @@ function validate(schemaFile, dataFile, data = readJson(dataFile)) {
   }
 }
 
+function reject(schemaFile, dataFile) {
+  let check = validators.get(schemaFile);
+  if (!check) {
+    const schema = readJson(schemaFile);
+    check = ajv.getSchema(schema.$id) ?? ajv.compile(schema);
+    validators.set(schemaFile, check);
+  }
+  if (check(readJson(dataFile))) {
+    throw new Error(`${dataFile} unexpectedly matches ${schemaFile}`);
+  }
+}
+
 for (const name of fs.readdirSync(path.join(root, "fixtures")).filter((n) => n.startsWith("gateway-") && n.endsWith(".json"))) {
   validate("contracts/gateway-messages.schema.json", `fixtures/${name}`);
+}
+
+for (const name of fs.readdirSync(path.join(root, "fixtures/invalid")).filter((n) => n.endsWith(".json"))) {
+  reject("contracts/gateway-messages.schema.json", `fixtures/invalid/${name}`);
 }
 
 validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-full.json");
@@ -33,4 +49,8 @@ validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-
 const actionFixture = readJson("fixtures/gateway-reply-action.json");
 validate("contracts/intent.schema.json", "fixtures/gateway-reply-action.json#payload.intent", actionFixture.payload.intent);
 
-console.log("Schema validation passed for gateway fixtures, demo configs, and canonical intent.");
+const actionWithoutSource = readJson("fixtures/gateway-reply-action-no-source.json");
+validate("contracts/intent.schema.json", "fixtures/gateway-reply-action-no-source.json#payload.intent",
+  actionWithoutSource.payload.intent);
+
+console.log("Schema validation passed for valid/invalid gateway fixtures, demo configs, and canonical intent.");

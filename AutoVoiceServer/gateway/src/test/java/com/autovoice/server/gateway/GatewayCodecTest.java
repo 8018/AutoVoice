@@ -8,6 +8,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -28,6 +31,23 @@ class GatewayCodecTest {
         Map<?, ?> payload = (Map<?, ?>) msg.get("payload");
         assertEquals("demo-1", payload.get("sessionId"));
         assertEquals("autovoice-android", payload.get("client"));
+    }
+
+    @Test
+    void decodesEverySharedGatewayFixture() {
+        for (String name : TestFixtures.gatewayFixtureNames()) {
+            GatewayCodec.decode(TestFixtures.read(name));
+        }
+    }
+
+    @Test
+    void supportedMessageTypesMatchSchemaEnum() {
+        JsonNode values = read(TestFixtures.read("gateway-messages.schema.json"))
+                .at("/properties/type/enum");
+        Set<String> schemaTypes = StreamSupport.stream(values.spliterator(), false)
+                .map(JsonNode::asText)
+                .collect(Collectors.toSet());
+        assertEquals(schemaTypes, GatewayCodec.supportedTypes());
     }
 
     @Test
@@ -90,6 +110,26 @@ class GatewayCodecTest {
         GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"text\",\"text\":\"hi\",\"speakText\":\"hi\"}}");
         GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"audio\",\"mime\":\"audio/wav\",\"dataBase64\":\"AAAA\",\"speakText\":\"hi\"}}");
         GatewayCodec.decode("{\"type\":\"reply\",\"payload\":{\"kind\":\"action\",\"intent\":{\"schemaVersion\":\"1.0\",\"domain\":\"climate\",\"intent\":\"set_temperature\",\"slots\":{},\"confidence\":0.9},\"speakText\":\"hi\"}}");
+    }
+
+    @Test
+    void decodesSharedActionWithoutOptionalSource() {
+        Map<String, Object> message = GatewayCodec.decode(
+                TestFixtures.read("gateway-reply-action-no-source.json"));
+        Map<?, ?> payload = (Map<?, ?>) message.get("payload");
+        Map<?, ?> intent = (Map<?, ?>) payload.get("intent");
+        assertEquals("navigation", intent.get("domain"));
+        assertFalse(intent.containsKey("source"));
+    }
+
+    @Test
+    void rejectsSharedFixturesWithInvalidRequiredFields() {
+        assertThrows(IllegalArgumentException.class, () -> GatewayCodec.decode(
+                TestFixtures.read("invalid/gateway-reply-text-missing-text.json")));
+        assertThrows(IllegalArgumentException.class, () -> GatewayCodec.decode(
+                TestFixtures.read("invalid/gateway-reply-action-bad-confidence.json")));
+        assertThrows(IllegalArgumentException.class, () -> GatewayCodec.decode(
+                TestFixtures.read("invalid/gateway-reply-action-bad-source.json")));
     }
 
     @Test

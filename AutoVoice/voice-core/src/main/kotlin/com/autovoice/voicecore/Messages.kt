@@ -16,9 +16,13 @@ sealed class SlotValue {
     /** schema 中的 value，无 backing field，不参与 Gson 序列化。 */
     abstract val value: Any
 
+    /** 可选单位，字段与 canonical intent 的 slot 结构保持一致。 */
+    abstract val unit: String?
+
     /** `{"type":"number","value":<double>}`，JSON 数字无引号。 */
     data class Number(
         @SerializedName("value") val v: Double,
+        override val unit: String? = null,
     ) : SlotValue() {
         override val type: String = "number"
         override val value: Any get() = v
@@ -27,6 +31,7 @@ sealed class SlotValue {
     /** `{"type":"enum","value":"<string>"}`。 */
     data class EnumValue(
         @SerializedName("value") val v: String,
+        override val unit: String? = null,
     ) : SlotValue() {
         override val type: String = "enum"
         override val value: Any get() = v
@@ -35,6 +40,7 @@ sealed class SlotValue {
     /** `{"type":"string","value":"<string>"}`。 */
     data class StringValue(
         @SerializedName("value") val v: String,
+        override val unit: String? = null,
     ) : SlotValue() {
         override val type: String = "string"
         override val value: Any get() = v
@@ -43,6 +49,7 @@ sealed class SlotValue {
     /** `{"type":"boolean","value":<bool>}`。 */
     data class Bool(
         @SerializedName("value") val v: Boolean,
+        override val unit: String? = null,
     ) : SlotValue() {
         override val type: String = "boolean"
         override val value: Any get() = v
@@ -74,6 +81,8 @@ data class Intent(
 
     companion object {
         const val INTENT_UNKNOWN = "unknown"
+        /** 旧协议未携带 source 时的诊断值；不参与路由、仲裁或轮次判断。 */
+        const val SOURCE_UNSPECIFIED = "protocol.unspecified"
 
         /** 构造一个未识别意图（domain 传递用户领域，其余字段为约定兜底值）。 */
         fun unknown(domain: String): Intent =

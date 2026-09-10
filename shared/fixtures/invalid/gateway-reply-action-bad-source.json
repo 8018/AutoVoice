@@ -1,0 +1,15 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "climate",
+      "intent": "power_on",
+      "slots": {},
+      "confidence": 1.0,
+      "source": 7
+    },
+    "speakText": "已打开空调"
+  }
+}

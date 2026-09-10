@@ -14,15 +14,37 @@
       "additionalProperties": {
         "type": "object",
         "required": ["type", "value"],
-        "properties": {
-          "type": { "enum": ["number", "enum", "string", "boolean"] },
-          "value": {},
-          "unit": { "type": "string" }
-        }
+        "properties": { "unit": { "type": "string" } },
+        "oneOf": [
+          {
+            "properties": {
+              "type": { "const": "number" },
+              "value": { "type": "number" }
+            }
+          },
+          {
+            "properties": {
+              "type": { "const": "enum" },
+              "value": { "type": "string" }
+            }
+          },
+          {
+            "properties": {
+              "type": { "const": "string" },
+              "value": { "type": "string" }
+            }
+          },
+          {
+            "properties": {
+              "type": { "const": "boolean" },
+              "value": { "type": "boolean" }
+            }
+          }
+        ]
       }
     },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "source": { "type": "string" },
+    "source": { "type": "string", "description": "可选诊断来源；缺失时消费者映射为 protocol.unspecified，不参与路由、仲裁或轮次判断" },
     "rawSemantic": { "type": "string" }
   }
 }
