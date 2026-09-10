@@ -20,7 +20,8 @@
 
 ## 2. 消息总览
 
-统一信封：`{"type": "<消息类型>", "payload": { ... }}`（`type` 必填，取值见下表）。
+统一信封：`{"type": "<消息类型>", "payload": { ... }}`（`type` 与对象类型的 `payload`
+均必填，`type` 取值见下表）。
 
 | type | 方向 | 作用 |
 | --- | --- | --- |
@@ -46,6 +47,19 @@
 | `tts_response` | 服务端 → 客户端 | TTS 合成结果：音频数据（§4.6） |
 | `error` | 服务端 → 客户端 | 错误通知 |
 | `bye` | 服务端 → 客户端 | 服务端主动结束会话 |
+
+### 2.1 兼容与校验规则
+
+- 消息方向、必填字段和类型由 `shared/contracts/gateway-messages.schema.json` 定义；
+  intent 统一引用 `shared/contracts/intent.schema.json`，不在 reply 分支复制结构。
+- 接收端允许未知扩展字段，发送端只发送当前版本声明的字段。缺失必填字段或字段类型错误时，
+  服务端拒绝消息；客户端不执行无法解析的回复。
+- `source` 是可选诊断字段。旧服务端未发送时，Android 映射为
+  `protocol.unspecified`。该值不参与业务路由、仲裁优先级或当前轮判断。
+- `segmentId`、`utteranceId` 是否必填由具体消息定义。兼容字段可以缺失，
+  但接收端不得使用虚构 ID 绕过当前轮校验。
+- 共享 fixture 同时进入 Schema、Java 网关 codec 和 Kotlin 客户端测试；
+  `fixtures/invalid` 保存应被拒绝的负例。
 
 ## 3. 客户端 → 服务端消息
 
@@ -377,7 +391,7 @@ partial/final 或内容自行推断。TTS 回声和识别稳定性属于 ASR/AEC
 | `slots` 特例 | string | 多目的地导航（先去A再去B）：`navigate` 意图加可选 `waypoints` 槽，type=string，value 为 `[{poiname,lat,lon}]` JSON 文本（SlotValue 无数组类型，数组 value 会被端侧 parseSlots 丢弃，故走 string 槽）；端侧据此拼 `amapuri://route/plan` 途经点参数（vian/vialons/vialats/vianames） |
 | `slots` 特例 | string | 导航二轮首轮：`navigation/choose_destination` 的 `query` 为原搜索词，`candidates` 为 `[{poiname,lat,lon,address?}]` JSON 文本。端侧仅显示应用内候选弹窗；第二轮明确说序号或名称后，服务端才下发 `navigation/navigate`。 |
 | `confidence` | number | 置信度，0 ~ 1 |
-| `source` | string | 来源，如 `nlu.iflytek.api`、`llm.deepseek` |
+| `source` | string（可选） | 诊断来源，如 `nlu.iflytek.api`、`llm.deepseek`；缺失时映射为 `protocol.unspecified`，不参与业务判断 |
 | `rawSemantic` | string | 可选：上游原始语义 JSON 原文，用于排查 |
 
 ### 4.5 error

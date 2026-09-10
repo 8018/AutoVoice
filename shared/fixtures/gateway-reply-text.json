@@ -1,0 +1,10 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "text",
+    "text": "今天天气不错",
+    "speakText": "今天天气不错",
+    "asrText": "今天天气怎么样",
+    "segmentId": "seg-text-1"
+  }
+}

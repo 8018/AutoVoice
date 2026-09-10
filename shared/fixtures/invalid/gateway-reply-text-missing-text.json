@@ -1,0 +1,7 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "text",
+    "speakText": "今天天气不错"
+  }
+}

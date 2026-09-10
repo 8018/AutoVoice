@@ -9,7 +9,8 @@
       "slots": {
         "temperature": {
           "type": "number",
-          "value": 24
+          "value": 24,
+          "unit": "celsius"
         },
         "zone": {
           "type": "enum",

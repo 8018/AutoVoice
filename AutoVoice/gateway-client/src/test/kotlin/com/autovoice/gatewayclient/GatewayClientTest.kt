@@ -3,6 +3,7 @@ package com.autovoice.gatewayclient
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.GatewayMessage
+import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.TextReply
 import com.google.gson.Gson
@@ -208,7 +209,7 @@ class GatewayClientTest {
             assertEquals("climate", reply.intent.domain)
             assertEquals("set_temperature", reply.intent.intent)
             assertEquals(0.95, reply.intent.confidence, 1e-9)
-            assertEquals(SlotValue.Number(24.0), reply.intent.slots["temperature"])
+            assertEquals(SlotValue.Number(24.0, "celsius"), reply.intent.slots["temperature"])
             assertEquals(SlotValue.EnumValue("driver"), reply.intent.slots["zone"])
             assertEquals("nlu.iflytek.api", reply.intent.source)
 
@@ -556,9 +557,47 @@ class GatewayClientTest {
         assertEquals("climate", reply.intent.domain)
         assertEquals("set_temperature", reply.intent.intent)
         assertEquals(0.95, reply.intent.confidence, 1e-9)
-        assertEquals(SlotValue.Number(24.0), reply.intent.slots["temperature"])
+        assertEquals(SlotValue.Number(24.0, "celsius"), reply.intent.slots["temperature"])
         assertEquals(SlotValue.EnumValue("driver"), reply.intent.slots["zone"])
         assertEquals("nlu.iflytek.api", reply.intent.source)
+    }
+
+    @Test
+    fun `parseReply keeps schema-valid action when optional source is absent`() {
+        val client = parseClient()
+        val payload = gson.fromJson(fixture("gateway-reply-action-no-source.json"), JsonObject::class.java)
+            .getAsJsonObject("payload")
+
+        val reply = client.parseReply(payload)
+
+        assertNotNull(reply)
+        assertTrue(reply is ActionReply)
+        reply as ActionReply
+        assertEquals("navigation", reply.intent.domain)
+        assertEquals("navigate", reply.intent.intent)
+        assertEquals(Intent.SOURCE_UNSPECIFIED, reply.intent.source)
+        assertEquals("导航去天府机场", reply.asrText)
+    }
+
+    @Test
+    fun `parseReply rejects shared fixtures with invalid required fields`() {
+        val client = parseClient()
+        val missingText = gson.fromJson(
+            fixture("invalid/gateway-reply-text-missing-text.json"),
+            JsonObject::class.java,
+        ).getAsJsonObject("payload")
+        val badConfidence = gson.fromJson(
+            fixture("invalid/gateway-reply-action-bad-confidence.json"),
+            JsonObject::class.java,
+        ).getAsJsonObject("payload")
+        val badSource = gson.fromJson(
+            fixture("invalid/gateway-reply-action-bad-source.json"),
+            JsonObject::class.java,
+        ).getAsJsonObject("payload")
+
+        assertNull(client.parseReply(missingText))
+        assertNull(client.parseReply(badConfidence))
+        assertNull(client.parseReply(badSource))
     }
 
     /** B5：gateway-pending.json fixture（协议 §4.8）→ 信封 type=pending + payload.segmentId/text。 */

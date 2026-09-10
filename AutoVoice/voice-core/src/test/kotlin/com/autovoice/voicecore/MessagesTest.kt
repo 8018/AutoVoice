@@ -40,9 +40,10 @@ class MessagesTest {
 
     @Test
     fun `slot values serialize as typed shape`() {
-        val number = gson.toJson(SlotValue.Number(24.0))
+        val number = gson.toJson(SlotValue.Number(24.0, "celsius"))
         assertTrue(number.contains("\"type\":\"number\""), number)
         assertTrue(number.contains("\"value\":24.0"), number)
+        assertTrue(number.contains("\"unit\":\"celsius\""), number)
         assertTrue(gson.toJson(SlotValue.EnumValue("driver")).contains("\"type\":\"enum\""))
         assertTrue(gson.toJson(SlotValue.StringValue("x")).contains("\"value\":\"x\""))
         assertTrue(gson.toJson(SlotValue.Bool(true)).contains("\"type\":\"boolean\""))

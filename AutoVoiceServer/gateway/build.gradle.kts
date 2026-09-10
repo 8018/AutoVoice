@@ -26,7 +26,10 @@ dependencies {
     testImplementation(project(":speech-classic"))
 }
 
-sourceSets.test { resources.srcDir("../../shared/fixtures") }
+sourceSets.test {
+    resources.srcDir("../../shared/fixtures")
+    resources.srcDir("../../shared/contracts")
+}
 
 tasks.test {
     useJUnitPlatform()

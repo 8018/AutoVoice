@@ -6,6 +6,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * 共享 fixture 读取（build.gradle.kts 已接线 {@code sourceSets.test.resources.srcDir("../../shared/fixtures")}，
@@ -27,6 +28,22 @@ final class TestFixtures {
             return new String(Files.readAllBytes(Path.of(url.toURI())), StandardCharsets.UTF_8);
         } catch (IOException | URISyntaxException e) {
             throw new IllegalStateException("cannot read shared fixture: " + name, e);
+        }
+    }
+
+    static List<String> gatewayFixtureNames() {
+        try {
+            URL hello = TestFixtures.class.getClassLoader().getResource("gateway-hello.json");
+            if (hello == null) throw new IllegalStateException("shared fixtures not on test classpath");
+            try (var files = Files.list(Path.of(hello.toURI()).getParent())) {
+                return files.map(path -> path.getFileName().toString())
+                        .filter(name -> name.startsWith("gateway-") && name.endsWith(".json"))
+                        .filter(name -> !name.endsWith(".schema.json"))
+                        .sorted()
+                        .toList();
+            }
+        } catch (IOException | URISyntaxException e) {
+            throw new IllegalStateException("cannot list shared gateway fixtures", e);
         }
     }
 }

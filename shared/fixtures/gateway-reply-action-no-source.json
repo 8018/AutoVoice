@@ -1,0 +1,20 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "navigation",
+      "intent": "navigate",
+      "slots": {
+        "poiname": { "type": "string", "value": "成都天府国际机场" },
+        "lat": { "type": "number", "value": 30.312 },
+        "lon": { "type": "number", "value": 104.441 }
+      },
+      "confidence": 0.98
+    },
+    "speakText": "开始导航去成都天府国际机场",
+    "asrText": "导航去天府机场",
+    "segmentId": "seg-no-source"
+  }
+}

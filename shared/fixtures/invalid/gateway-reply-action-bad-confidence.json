@@ -1,0 +1,14 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "navigation",
+      "intent": "navigate",
+      "slots": {},
+      "confidence": "high"
+    },
+    "speakText": "开始导航"
+  }
+}

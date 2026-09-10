@@ -83,6 +83,11 @@ public final class GatewayCodec {
     private GatewayCodec() {
     }
 
+    /** Package-private contract-test view; runtime callers still use decode/encode only. */
+    static Set<String> supportedTypes() {
+        return TYPES;
+    }
+
     /**
      * 解码一条 JSON 消息。
      *
@@ -129,7 +134,7 @@ public final class GatewayCodec {
         return out;
     }
 
-    /** reply 按 schema 校验 kind 及其分支必需字段（audio → mime/dataBase64；action → intent/speakText）。 */
+    /** reply 按 schema 校验 kind、分支必需字段和规范 intent。 */
     private static void validateReply(JsonNode payload) {
         JsonNode kindNode = payload.get("kind");
         String kind = kindNode != null && kindNode.isTextual() ? kindNode.asText() : null;
@@ -137,24 +142,94 @@ public final class GatewayCodec {
             throw new IllegalArgumentException("reply message requires kind in {text, audio, action}, got: " + kind);
         }
         switch (kind) {
+            case "text" -> {
+                requireText(payload, "text");
+                requireText(payload, "speakText");
+            }
             case "audio" -> {
-                requireField(payload, "mime");
-                requireField(payload, "dataBase64");
+                requireText(payload, "mime");
+                requireText(payload, "dataBase64");
+                if (payload.hasNonNull("intent")) validateIntent(payload.get("intent"));
             }
             case "action" -> {
                 requireField(payload, "intent");
-                requireField(payload, "speakText");
+                requireText(payload, "speakText");
+                validateIntent(payload.get("intent"));
             }
-            default -> {
-                // text：schema 仅要求 kind
-            }
+            default -> throw new IllegalStateException("validated reply kind is not handled: " + kind);
         }
+    }
+
+    private static void validateIntent(JsonNode intent) {
+        if (!intent.isObject()) {
+            throw new IllegalArgumentException("reply intent must be an object");
+        }
+        requireExactText(intent, "schemaVersion", "1.0");
+        requireText(intent, "domain");
+        requireText(intent, "intent");
+        JsonNode slots = intent.get("slots");
+        if (slots == null || !slots.isObject()) {
+            throw new IllegalArgumentException("reply intent requires object field 'slots'");
+        }
+        slots.fields().forEachRemaining(entry -> validateSlot(entry.getKey(), entry.getValue()));
+        JsonNode confidence = intent.get("confidence");
+        if (confidence == null || !confidence.isNumber()
+                || confidence.doubleValue() < 0 || confidence.doubleValue() > 1) {
+            throw new IllegalArgumentException("reply intent requires numeric confidence in [0, 1]");
+        }
+        optionalText(intent, "source");
+        optionalText(intent, "rawSemantic");
+    }
+
+    private static void validateSlot(String name, JsonNode slot) {
+        if (!slot.isObject()) {
+            throw new IllegalArgumentException("reply intent slot '" + name + "' must be an object");
+        }
+        JsonNode type = slot.get("type");
+        if (type == null || !type.isTextual()
+                || !Set.of("number", "enum", "string", "boolean").contains(type.asText())) {
+            throw new IllegalArgumentException("reply intent slot '" + name + "' has invalid type");
+        }
+        requireField(slot, "value");
+        JsonNode value = slot.get("value");
+        boolean validValue = switch (type.asText()) {
+            case "number" -> value.isNumber();
+            case "enum", "string" -> value.isTextual();
+            case "boolean" -> value.isBoolean();
+            default -> false;
+        };
+        if (!validValue) {
+            throw new IllegalArgumentException("reply intent slot '" + name + "' value does not match type '"
+                    + type.asText() + "'");
+        }
+        optionalText(slot, "unit");
     }
 
     private static void requireField(JsonNode payload, String field) {
         JsonNode v = payload.get(field);
         if (v == null || v.isNull()) {
             throw new IllegalArgumentException("reply message missing required field '" + field + "'");
+        }
+    }
+
+    private static void requireText(JsonNode payload, String field) {
+        JsonNode value = payload.get(field);
+        if (value == null || !value.isTextual()) {
+            throw new IllegalArgumentException("reply message requires string field '" + field + "'");
+        }
+    }
+
+    private static void requireExactText(JsonNode payload, String field, String expected) {
+        requireText(payload, field);
+        if (!expected.equals(payload.get(field).asText())) {
+            throw new IllegalArgumentException("reply message field '" + field + "' must be '" + expected + "'");
+        }
+    }
+
+    private static void optionalText(JsonNode payload, String field) {
+        JsonNode value = payload.get(field);
+        if (value != null && !value.isNull() && !value.isTextual()) {
+            throw new IllegalArgumentException("reply message optional field '" + field + "' must be a string");
         }
     }
 
