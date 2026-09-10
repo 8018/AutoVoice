@@ -43,9 +43,9 @@ private const val LOCAL_FALLBACK_MS = 10_000L
 internal object VoiceEngineFactory {
     /**
      * 生产装配：
-     *  - 本地链：`local.asr=iflytek.offline` → [IflytekOfflineCommandAsrStage]
-     *    （SDK 未配置/授权未就绪抛 NOT_CONFIGURED → Log.w 后本次降级
-     *    [FakeCommandAsrProvider]）；`iflytek.fake-cmd`（或未识别值）→ 直接 fake。
+ *  - 本地链：`local.asr=iflytek.offline` → [IflytekOfflineCommandAsrStage]；SDK 未配置或
+ *    授权未就绪时本地候选不可用，不产生模拟语义。只有显式配置
+ *    `iflytek.fake-cmd` 才启用 [FakeCommandAsrProvider]。
      *    之后 [RuleNluProvider.understand]；任何 SDK 异常 → [Intent.unknown]("vehicle")，
      *    本地链绝不抛出。
      *  - 云端链：[GatewayCloudRunner]（GatewayClient + 事件桥，决策事件透传 sink）。
@@ -129,17 +129,9 @@ internal object VoiceEngineFactory {
         }
         // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
         clockOffsetProvider.set(cloudRunner::clockOffsetMs)
-        // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）
-        // + 事件桥（T7 recordFor 通道：speakViaTts 的 launch 晚于收口，current 已 null，
-        // record 会静默丢弃；用 playUtteranceId 快照走 recordFor——轮已关闭 → /events 直传）
-        var ttsCacheEngineRef: VoiceEngine? = null
-        val ttsCache = TtsCache(
-            File(context.filesDir, "tts_cache"),
-            onEvent = { stage, level, payload ->
-                val engine = ttsCacheEngineRef ?: return@TtsCache
-                engine.recordCacheEvent(stage, level, payload)
-            },
-        )
+        // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）。
+        // 缓存事件由 SpeechOutputService 携带固定 turnId 上报，不读可变的当前轮。
+        val ttsCache = TtsCache(File(context.filesDir, "tts_cache"))
         // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
         // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
         val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
@@ -225,7 +217,6 @@ internal object VoiceEngineFactory {
         engineRef = engine
         cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
         cloudRunner.onRealtimeSpeechStarted = engine::stopPlayback
-        ttsCacheEngineRef = engine // TTS 缓存事件桥：recordFor 需要 playUtteranceId 快照
         // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
         // （telemetry 为构造参数，构造即绑定），此处无需再装配
         // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
@@ -300,19 +291,7 @@ internal object VoiceEngineFactory {
         val asr = AsrStage { _, _ -> null }
         val nlu = NluStage { segment, _ ->
             val command = try {
-                when {
-                    offlineStage != null -> try {
-                        offlineStage.recognize(segment)
-                    } catch (e: IllegalStateException) {
-                        if (e.message?.contains(IflytekOfflineCommandAsrStage.NOT_CONFIGURED_MSG) == true) {
-                            Log.w(FACTORY_TAG, "讯飞离线命令词未就绪（授权中/失败），本次降级 FakeCommandAsrProvider", e)
-                            FakeCommandAsrProvider.recognize(segment)
-                        } else {
-                            throw e
-                        }
-                    }
-                    else -> FakeCommandAsrProvider.recognize(segment) // local.asr=iflytek.fake-cmd
-                }
+                recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
             } catch (t: Throwable) {
                 Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", t)
                 null
@@ -387,4 +366,19 @@ internal object VoiceEngineFactory {
         return active != null
     }
 
+}
+
+/** Production failures remain failures; the deterministic fake is an explicit demo provider only. */
+internal fun recognizeLocalCommand(
+    configuredAsr: String,
+    segment: ByteArray,
+    offline: () -> String?,
+): String? = when (configuredAsr) {
+    "iflytek.offline" -> try {
+        offline()
+    } catch (error: IllegalStateException) {
+        if (error.message?.contains(IflytekOfflineCommandAsrStage.NOT_CONFIGURED_MSG) == true) null else throw error
+    }
+    "iflytek.fake-cmd" -> FakeCommandAsrProvider.recognize(segment)
+    else -> null
 }

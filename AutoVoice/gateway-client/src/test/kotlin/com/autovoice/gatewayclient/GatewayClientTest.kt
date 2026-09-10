@@ -392,6 +392,25 @@ class GatewayClientTest {
     }
 
     @Test
+    fun `turn commit carries candidate identities`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            client.sendTurnCommit("seg-1", "utt-1")
+            assertTrue(awaitTrue { gateway.frames.any { it.type == "turn_commit" } })
+            val payload = gateway.frames.first { it.type == "turn_commit" }.payload
+            assertEquals("seg-1", payload.get("segmentId").asString)
+            assertEquals("utt-1", payload.get("utteranceId").asString)
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `audio start carries current coordinates when available`() = runBlocking {
         val gateway = FakeGateway()
         gateway.start()

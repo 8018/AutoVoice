@@ -27,6 +27,7 @@
 | `hello` | 客户端 → 服务端 | 连接建立后的握手，声明客户端与协议版本 |
 | `audio_start` | 客户端 → 服务端 | 声明一段录音流开始（采样率/声道/编码） |
 | `audio_end` | 客户端 → 服务端 | 声明录音流结束（附时长） |
+| `turn_commit` | 客户端 → 服务端 | ASR 或有效语义确认候选采集已经成为业务轮 |
 | `cancel_turn` | 客户端 → 服务端 | 显式作废该轮输出（兼容消息；只关闭闸门，不取消候选） |
 | `chat_start` | 客户端 → 服务端 | 进入锁域后建立 Qwen Realtime 长会话 |
 | `chat_ready` | 服务端 → 客户端 | Realtime 上游已建立，可开始连续发送 PCM |
@@ -140,9 +141,9 @@
 | `durationMs` | integer | 本段录音时长（毫秒） |
 
 > **异步处理（多设备加固 M2）**：服务端收到 `audio_end` 后立即返回，识别/仲裁/回复在
-> 连接专用线程异步进行（`decision` → `reply` 时序不变，见 §5）。**每连接同一时刻最多一段
-> 话语处理中**：上一段尚未产出结果又收到新 `audio_end` → `error`（code `BUSY`，**不关闭
-> 连接**），客户端可稍后重试或仅依赖本地兜底。处理期间的 `audio_start` 照常接受（累积新段）。
+> 连接专用线程异步进行（`decision` → `reply` 时序不变，见 §5）。每连接允许一个处理中轮和
+> 一个候选等待段。新的 `audio_start` 只建立候选，不会作废旧轮；ASR 或端侧语义通过
+> `turn_commit` 确认新轮后，旧轮输出才被拦截。候选队列已满时返回 `BUSY`，连接保持开放。
 >
 > **流式 ASR 与降级**：支持流式能力的在线链路从首个二进制帧起持续送入 ASR，并可在
 > `audio_end` 之前返回独立的 `asr_turn_started`（至多一次）和 `asr_partial`；`audio_end` 只负责收口并启动 NLU/LLM。流式 ASR
@@ -155,7 +156,8 @@
 服务端合成失败走 `error`（code `TTS_FAILED`），**不关闭连接**。
 
 **端侧缓存优先（架构变更）**：客户端发 `tts_request` 前先查**本地 TTS 缓存**（key =
-播报文本，磁盘 `sha256(text).wav`）；命中直接播放**不发** `tts_request`（telemetry 记
+播报文本，磁盘保存 `sha256(text).audio` 和 `sha256(text).mime`，并兼容读取旧版
+`sha256(text).wav`）；命中直接播放**不发** `tts_request`（telemetry 记
 `tts_cache_check` → `tts_cache_hit`），未命中才发送（记 `tts_cache_miss`），收到
 `tts_response` 音频后写入缓存。服务端无缓存层，`tts_cache_*` 事件全部由客户端记录。
 
@@ -180,8 +182,7 @@
 显式作废轮次时可发送（正常端侧/云端仲裁胜出不再发送）。服务端仅在 `segmentId` 与当前处理轮一致时
 立即收敛该轮云端仲裁并释放处理槽（**拦截而非取消**：不打断在途的在线模型调用，其结果在
 仲裁器/音频门丢弃），并拦截该轮迟到的流式音频、`reply` 与 `error`；不影响同连接的下一轮。
-服务端另有同构的最新会话拦截：`audio_start` 携带新的 `utteranceId` 时，在途旧轮立即判定过期
-并按上述语义收敛（同 `utteranceId` 的 `attempt` 重发除外）。
+`audio_start` 本身不表示新业务轮成立，因此不会作废在途轮。
 
 ```json
 {
@@ -190,7 +191,13 @@
 }
 ```
 
-### 3.6 Realtime 闲聊上行
+### 3.6 turn_commit
+
+端侧 ASR 发出话语成立事件，或有效最终语义确认候选后，发送
+`turn_commit {segmentId, utteranceId}`。服务端在线 ASR 建立话语时也在内部执行相同准入。
+只有这个事件可以让新的候选轮取代旧的处理中轮；重复提交幂等。
+
+### 3.7 Realtime 闲聊上行
 
 业务链识别到“陪我聊会天”并下发 `conversation/enter_chat` 后，客户端发送
 `chat_start {sessionId}`。服务端连接 `qwen3.5-omni-plus-realtime` 并回 `chat_ready`；从此客户端

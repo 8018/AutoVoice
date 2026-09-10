@@ -89,7 +89,10 @@ class ConversationController(
         val thinking = dialogue.onSpeechCommitted(admitted.turnId)
         queue.add { onTurnAdmitted(admitted) }
         queue.add { onState(thinking) }
-        if (pendingTurnId != admitted.turnId) queue.add { onPendingVisible(false) }
+        if (pendingTurnId != null && pendingTurnId != admitted.turnId) {
+            pendingTurnId = null
+            queue.add { onPendingVisible(false) }
+        }
         if (pendingTurnId == admitted.turnId) {
             val processing = dialogue.onSemanticProcessing(admitted.turnId)
             queue.add { onState(processing) }
@@ -97,13 +100,26 @@ class ConversationController(
         true
     }
 
-    fun setPending(turnId: String, pending: Boolean) = mutate { queue ->
-        pendingTurnId = turnId.takeIf { pending }
-        val visible = pending && isVisibleLocked(turnId)
-        queue.add { onPendingVisible(visible) }
-        if (pending && dialogue.isCurrentTurn(turnId)) {
-            val processing = dialogue.onSemanticProcessing(turnId)
-            queue.add { onState(processing) }
+    fun setPending(turnId: String, pending: Boolean): Boolean = mutate { queue ->
+        if (turnId.isBlank()) return@mutate false
+        if (pending) {
+            // A pending signal may arrive after a newer turn was admitted. It must not replace the
+            // pending owner or hide the newer turn's UI state merely because it arrived later.
+            if (!isVisibleLocked(turnId)) return@mutate false
+            pendingTurnId = turnId
+            queue.add { onPendingVisible(true) }
+            if (dialogue.isCurrentTurn(turnId)) {
+                val processing = dialogue.onSemanticProcessing(turnId)
+                queue.add { onState(processing) }
+            }
+            true
+        } else {
+            // Only the owner may clear the pending indicator. A stale result from another turn is
+            // ignored rather than clearing the current turn's processing state.
+            if (pendingTurnId != turnId) return@mutate false
+            pendingTurnId = null
+            queue.add { onPendingVisible(false) }
+            true
         }
     }
 

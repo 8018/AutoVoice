@@ -21,6 +21,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    buildTypes {
+        getByName("debug") {
+            enableUnitTestCoverage = true
+        }
+    }
+
     testOptions {
         // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
         unitTests.all { it.useJUnitPlatform() }

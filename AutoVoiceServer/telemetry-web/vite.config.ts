@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -10,5 +11,13 @@ export default defineConfig({
   build: {
     outDir: "../telemetry/src/main/resources/static/telemetry",
     emptyOutDir: true,
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/testSetup.ts"],
+    clearMocks: true,
+    coverage: {
+      thresholds: { lines: 80, statements: 80, branches: 70, functions: 80 },
+    },
   },
 });

@@ -38,6 +38,7 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -66,7 +67,7 @@ import org.slf4j.LoggerFactory;
  *   <li>二进制帧 → 累积 PCM（S16LE/16kHz/单声道，协议不校验内容）；</li>
  *   <li>{@code audio_end} → 异步（本连接串行工作线程，M2 多设备加固）：快照本段上下文后立即
  *       返回，流水线处理不占 WS 消息线程——{@code decision} 事件与最终 {@code reply} 由工作线程
- *       随后下发（协议 §5 时序不变）；上一段处理中（processing）再收 audio_end → error(BUSY)；</li>
+ *       随后下发（协议 §5 时序不变）；每连接保留一个处理轮和一个候选轮；</li>
  *   <li>{@code tts_request} → 独立 TTS 链路（不依赖本轮的识别/仲裁）：合成文本 →
  *       下发 {@code tts_response}；失败 → error（code TTS_FAILED）。</li>
  * </ul>
@@ -276,6 +277,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "hello" -> onHello(session, st, castPayload(msg));
             case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
+            case "turn_commit" -> onTurnCommit(st, castPayload(msg));
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
             case "chat_start" -> onChatStart(session, st);
@@ -315,6 +317,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.onlineStream = null;
         try {
             if (stream != null) stream.cancel();
+            SegmentWork processing = st.turns.processing();
+            SegmentWork queued = st.turns.queued();
+            if (processing != null && processing.inputStream() != null) processing.inputStream().cancel();
+            if (queued != null && queued.inputStream() != null) queued.inputStream().cancel();
+            st.turns.clear();
         } catch (RuntimeException ignored) {
             // A failed upstream cancellation must not skip the other resource owners.
         } finally {
@@ -493,7 +500,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         st.audioActive = true;
         st.pcm.reset();
-        st.pendingDecisions.clear();
         String clientUtteranceId = payload.get("utteranceId") != null
                 ? String.valueOf(payload.get("utteranceId")) : null;
         st.utteranceId = clientUtteranceId != null && !clientUtteranceId.isBlank()
@@ -515,66 +521,72 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         try {
             // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
             st.onlineStream = online.openStream(st.ctx, st.utteranceId,
-                    OnlineAudioSink.NOOP, asrSink(st.session, st, st.segmentId));
+                    OnlineAudioSink.NOOP, asrSink(st.session, st, st.utteranceId, st.segmentId));
         } catch (RuntimeException error) {
             st.onlineStream = null;
             LOG.warn("streaming ASR start failed; batch fallback on audio_end", error);
         }
-        // 云端"最新会话拦截"（与端侧 isStale 同构）：处理中又来新话语（不同 utteranceId）→
-        // 立即 void 在途轮；同 utteranceId 的 attempt 重发不触发（幂等重放，protocol.md §3.2）。
-        // 不取消在途 provider 调用（拦截而非取消），其结果在仲裁器/音频门丢弃。
-        String processingUid = st.processingUtteranceId;
-        String processingSeg = st.processingSegmentId;
-        if (st.processing && processingUid != null && !st.utteranceId.equals(processingUid)) {
-            if (processingSeg != null) {
-                st.cancelledSegments.add(processingSeg); // 抑制旧段迟到下行帧
-            }
-            st.arbiter.voidTurn(processingUid, RaceArbiter.REASON_SUPERSEDED);
-        }
+        // audio_start only creates a recognition candidate. VAD alone must not supersede the
+        // currently processing business turn; ASR/semantic admission calls commitCandidate.
     }
 
     /**
      * audio_end（M2 异步化）：快照本段上下文（pcm/ctx/utteranceId/segmentId）提交到本连接
      * 串行工作线程，立即返回——WS 消息线程不被最长 safetyTimeoutMs 的处理占死。上一段处理中
-     * （processing）再收 audio_end → error(BUSY)（本段音频已丢弃，端侧可依赖本地兜底链路）。
+     * 再收 audio_end 时保留一个候选段；只有候选经 ASR/语义准入后才作废旧轮。
      */
     private void onAudioEnd(WebSocketSession session, ConnectionState st) {
         if (!st.audioActive || st.ctx == null) {
             return;
         }
         st.audioActive = false;
-        if (st.processing) {
-            LOG.warn("segment dropped: previous segment still processing (session={})", st.ctx.sessionId());
-            if (st.onlineStream != null) {
-                st.onlineStream.cancel();
-                st.onlineStream = null;
-            }
-            st.pcm.reset();
-            sendError(session, st, "BUSY", "previous segment still processing");
-            return;
-        }
-        st.processing = true;
         byte[] pcm = st.pcm.toByteArray();
         SessionContext ctx = st.ctx;
         String utteranceId = st.utteranceId;
         String segmentId = st.segmentId;
         OnlineSpeechStream onlineStream = st.onlineStream;
         st.onlineStream = null;
-        st.processingUtteranceId = utteranceId;
-        st.processingSegmentId = segmentId;
-        st.connExecutor.submit(() -> processSegment(
-                session, st, pcm, ctx, utteranceId, segmentId, onlineStream));
+        SegmentWork work = new SegmentWork(pcm, ctx, utteranceId, segmentId, onlineStream);
+        ConnectionTurnCoordinator.Offer offer = st.turns.offer(work);
+        if (offer == ConnectionTurnCoordinator.Offer.START_NOW) {
+            submitSegment(session, st, work);
+        } else if (offer == ConnectionTurnCoordinator.Offer.REJECTED) {
+            if (onlineStream != null) onlineStream.cancel();
+            sendError(session, st, "BUSY", "candidate queue is full", segmentId);
+        }
+    }
+
+    /** Client-side ASR/NLU admission for providers whose evidence is established on the device. */
+    private void onTurnCommit(ConnectionState st, Map<String, Object> payload) {
+        String segmentId = String.valueOf(payload.get("segmentId"));
+        String utteranceId = String.valueOf(payload.get("utteranceId"));
+        commitCandidate(st, utteranceId, segmentId);
+    }
+
+    private void commitCandidate(ConnectionState st, String utteranceId, String segmentId) {
+        if (utteranceId == null || utteranceId.isBlank() || segmentId == null || segmentId.isBlank()) return;
+        boolean activeCandidate = segmentId.equals(st.segmentId) && utteranceId.equals(st.utteranceId);
+        if (!activeCandidate && !st.turns.ownsSegment(segmentId)) return;
+        SegmentWork processing = st.turns.processing();
+        if (processing == null || utteranceId.equals(processing.utteranceId())) return;
+        if (processing.segmentId() != null) st.cancelledSegments.add(processing.segmentId());
+        st.arbiter.voidTurn(processing.utteranceId(), RaceArbiter.REASON_SUPERSEDED);
+    }
+
+    private void submitSegment(WebSocketSession session, ConnectionState st, SegmentWork work) {
+        st.connExecutor.submit(() -> processSegment(session, st, work));
     }
 
     private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
         String segmentId = String.valueOf(payload.get("segmentId"));
-        if (segmentId.equals(st.processingSegmentId)) {
+        SegmentWork processing = st.turns.processing();
+        if (processing != null && segmentId.equals(processing.segmentId())) {
             // 在途轮：标记拦截 + 立即 void 仲裁（拦截而非取消——不碰在途 provider 调用）
-            String cancelUtteranceId = st.processingUtteranceId;
             st.cancelledSegments.add(segmentId);
-            if (cancelUtteranceId != null) {
-                st.arbiter.voidTurn(cancelUtteranceId, RaceArbiter.REASON_CANCEL_TURN);
-            }
+            st.arbiter.voidTurn(processing.utteranceId(), RaceArbiter.REASON_CANCEL_TURN);
+        } else if (st.turns.ownsSegment(segmentId)) {
+            SegmentWork queued = st.turns.removeQueued(segmentId);
+            if (queued != null && queued.inputStream() != null) queued.inputStream().cancel();
         } else if (segmentId.equals(st.segmentId)) {
             // 累积段尚未提交：无 decide() 在途，worker 起动时 isCancelled 早退即可
             st.cancelledSegments.add(segmentId);
@@ -590,14 +602,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
      * 发送走任务线程 session.sendMessage（Spring WS 线程安全）。handleSegment 返回后本段决策事件
      * 已全部入队（arbiter 胜方恒先 sink.log 后 complete，迟到者被 CAS 拒绝），drain 无竞态。
      */
-    private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
-                                SessionContext ctx, String utteranceId, String segmentId) {
-        processSegment(session, st, pcm, ctx, utteranceId, segmentId, null);
+    private void processSegment(WebSocketSession session, ConnectionState st, SegmentWork work) {
+        processSegment(session, st, work.pcm(), work.ctx(), work.utteranceId(), work.segmentId(),
+                work.inputStream(), work);
     }
 
     private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
                                 SessionContext ctx, String utteranceId, String segmentId,
-                                OnlineSpeechStream inputStream) {
+                                OnlineSpeechStream inputStream, SegmentWork ownedWork) {
         try {
             if (pcm.length == 0) {
                 if (inputStream != null) inputStream.cancel();
@@ -622,7 +634,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (inputStream != null) {
                     try {
                         CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
-                        OnlineAsrSink fallbackAsr = asrSink(session, st, segmentId);
+                        OnlineAsrSink fallbackAsr = asrSink(session, st, utteranceId, segmentId);
                         onlineCandidate = streamed.handle((value, error) -> {
                             if (error == null) return CompletableFuture.completedFuture(value);
                             LOG.warn("streaming ASR failed; retrying once with buffered PCM", error);
@@ -635,7 +647,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     }
                 }
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
-                        streamSink(session, st, segmentId), asrSink(session, st, segmentId),
+                        streamSink(session, st, segmentId), asrSink(session, st, utteranceId, segmentId),
                         onlineCandidate);
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
@@ -644,27 +656,35 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (result == null || isCancelled(st, segmentId)) {
                 // 被 void（cancel_turn / superseded）/ 竞态中取消的轮：不缓存、不下发决策、
                 // 不回复；finally 照常释放 processing
+                drainDecisions(session, st, utteranceId, false);
                 return;
             }
             CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
             completedTurns.put(turnKey, completed);
             scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
-            DecisionEntry entry;
-            while ((entry = st.pendingDecisions.poll()) != null) {
-                send(session, "decision", MAPPER.convertValue(entry, new TypeReference<Map<String, Object>>() {
-                }));
-            }
+            drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && !isCancelled(st, segmentId)) {
                 sendReply(session, st, result, segmentId);
             }
         } finally {
             if (utteranceId != null) st.arbiter.clearVoid(utteranceId);
             if (segmentId != null) st.cancelledSegments.remove(segmentId);
-            if (segmentId != null && segmentId.equals(st.processingSegmentId)) {
-                st.processingSegmentId = null;
-                st.processingUtteranceId = null;
+            if (ownedWork != null) {
+                SegmentWork next = st.turns.complete(ownedWork);
+                if (next != null) submitSegment(session, st, next);
             }
-            st.processing = false;
+        }
+    }
+
+    /** Decision events are turn-owned; a newer audio_start must not clear or inherit another turn's log. */
+    private void drainDecisions(WebSocketSession session, ConnectionState st,
+                                String utteranceId, boolean emit) {
+        for (DecisionEntry entry : st.pendingDecisions) {
+            if (!Objects.equals(utteranceId, entry.utteranceId()) || !st.pendingDecisions.remove(entry)) continue;
+            if (emit) {
+                send(session, "decision", MAPPER.convertValue(entry,
+                        new TypeReference<Map<String, Object>>() {}));
+            }
         }
     }
 
@@ -736,18 +756,20 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     }
 
     /** ASR/PGS 旁路：不经过语义仲裁门，识别一出字就下发；仅拦截取消/过期轮。 */
-    private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st, String segmentId) {
+    private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st,
+                                  String utteranceId, String segmentId) {
         return new OnlineAsrSink() {
             private final AtomicBoolean turnEstablishedSent = new AtomicBoolean();
 
             private boolean active() {
                 return segmentId != null && (segmentId.equals(st.segmentId)
-                        || segmentId.equals(st.processingSegmentId))
+                        || st.turns.ownsSegment(segmentId))
                         && !isCancelled(st, segmentId);
             }
 
             @Override public void onTurnEstablished() {
                 if (!active() || !turnEstablishedSent.compareAndSet(false, true)) return;
+                commitCandidate(st, utteranceId, segmentId);
                 send(session, "asr_turn_started", Map.of("segmentId", segmentId));
             }
 
@@ -767,6 +789,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     }
 
     private record TurnKey(String ownerId, String utteranceId) {}
+
+    private record SegmentWork(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId,
+                               OnlineSpeechStream inputStream)
+            implements ConnectionTurnCoordinator.WorkIdentity {}
 
     private record CachedTurn(SegmentPipeline.SegmentResult result, long expiresAtMs) {}
 
@@ -982,15 +1008,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）
         String utteranceId; // 端侧 utteranceId 或自增回退（u-N），决策事件/链路插桩复用
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
-        volatile String processingUtteranceId; // 工作线程当前处理轮快照（cancel_turn 不读下一轮字段）
-        volatile String processingSegmentId;
+        final ConnectionTurnCoordinator<SegmentWork> turns = new ConnectionTurnCoordinator<>();
         final Set<String> cancelledSegments = ConcurrentHashMap.newKeySet();
         volatile RealtimeChatSession realtimeChat;
         volatile boolean chatOpening;
         volatile boolean chatRequested;
         long chatResponseSeq;
         boolean audioActive;
-        volatile boolean processing; // 本连接一段流水线处理中（audio_end 的 in-flight 守卫）
         volatile OnlineSpeechStream onlineStream;
         long segmentSeq;
     }

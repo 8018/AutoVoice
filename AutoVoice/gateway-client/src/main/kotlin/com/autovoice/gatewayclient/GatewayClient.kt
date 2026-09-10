@@ -253,6 +253,18 @@ class GatewayClient(
         )
     }
 
+    /** Confirm that a candidate capture became a business turn through ASR or semantic evidence. */
+    fun sendTurnCommit(segmentId: String, utteranceId: String) {
+        require(segmentId.isNotBlank())
+        require(utteranceId.isNotBlank())
+        sendFrame(
+            mapOf(
+                "type" to "turn_commit",
+                "payload" to mapOf("segmentId" to segmentId, "utteranceId" to utteranceId),
+            ),
+        )
+    }
+
     /**
      * 独立 TTS 播报请求（protocol.md §3.4）：设备执行 intent 后按 speakText 调用。
      * 回复经 [parseTtsResponse] 对账（同一 segmentId）；与录音段流程互不干扰。
