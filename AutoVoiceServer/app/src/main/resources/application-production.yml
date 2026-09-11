@@ -6,5 +6,6 @@ autovoice:
     # 生产必须 true,且配置非空设备表;两者都缺/任一缺失 → 启动失败
     auth-enabled: ${AUTOVOICE_GATEWAY_AUTH_ENABLED:false}
   telemetry:
-    # 遥测采集/查询边界令牌,生产必须非空
+    # 遥测采集/查询边界令牌,生产必须非空(D03a:access=设备上传,admin=管理员查询)
     access-token: ${AUTOVOICE_TELEMETRY_ACCESS_TOKEN:}
+    admin-token: ${AUTOVOICE_TELEMETRY_ADMIN_TOKEN:}
