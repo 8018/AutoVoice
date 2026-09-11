@@ -135,8 +135,8 @@ data class MockConfig(
  * JSON configuration and production assembly both call this guard.
  */
 fun DemoConfig.validateForRuntime(): DemoConfig {
-    require(mode == "full" || mode == "offline") {
-        "config: unsupported mode '$mode'; supported: full, offline"
+    require(mode == "full" || mode == "offline" || mode == "dev") {
+        "config: unsupported mode '$mode'; supported: full, offline, dev"
     }
     require(ecnr == DemoConfig.ECNR_RNNOISE || ecnr == DemoConfig.ECNR_NONE) {
         "config: unsupported ecnr '$ecnr'; supported: rnnoise, none"

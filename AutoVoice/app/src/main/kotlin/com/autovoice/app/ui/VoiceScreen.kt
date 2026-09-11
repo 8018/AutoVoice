@@ -282,6 +282,11 @@ private fun SettingsSection(
                     onClick = { onModeChange(DemoMode.DEMO_OFFLINE) },
                     label = { Text(DemoMode.DEMO_OFFLINE.label) },
                 )
+                FilterChip(
+                    selected = mode == DemoMode.DEMO_DEV,
+                    onClick = { onModeChange(DemoMode.DEMO_DEV) },
+                    label = { Text(DemoMode.DEMO_DEV.label) },
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

@@ -1,0 +1,17 @@
+[Unit]
+Description=AutoVoice TTS Server (dev)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/autovoice-dev/.env
+WorkingDirectory=/opt/autovoice-dev
+ExecStart=/usr/bin/java -jar /opt/autovoice-dev/tts-server.jar
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

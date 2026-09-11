@@ -1,6 +1,57 @@
 # AutoVoice 云端服务部署（已部署: 47.94.4.204）
 
-## 服务器侧布局
+## Dev 部署栈（同机隔离，2026-09-11 起）
+
+dev 分支工作流见 `docs/development-workflow.md`。dev 栈与生产同机但完全隔离：
+
+| 项 | 生产 | dev |
+|---|---|---|
+| 根目录 | `/opt/autovoice/` | `/opt/autovoice-dev/` |
+| systemd 服务 | autovoice-gateway / tts / skill-manager | autovoice-dev-gateway / tts / skill-manager |
+| 端口 | 8080 / 8082 / 8083 | 8090 / 8092 / 8093 |
+| .env | `/etc/autovoice/.env` | `/etc/autovoice-dev/.env` |
+| 遥测 SQLite / TTS 缓存 / Skill DB / 离线 work | 生产路径 | 全部 dev 目录独立 |
+
+离线 SDK 只读资源（libs/resource/cn_fsa.txt/.so）由 dev 的 .env 直接指向生产路径共享，
+work 目录独立。安全组需放行入方向 TCP 8090（手机测试）。
+
+### 首次初始化（服务器上，root）
+
+```bash
+# 本机：把本目录脚本与 unit 文件上传服务器（或 clone 仓库后进入 AutoVoiceServer/deploy）
+bash init-dev.sh
+vi /etc/autovoice-dev/.env          # 密钥从 /etc/autovoice/.env 复制；端口类变量已预置
+systemctl enable --now autovoice-dev-gateway autovoice-dev-tts autovoice-dev-skill-manager
+systemctl status autovoice-dev-gateway
+```
+
+### GitHub 侧配置（deploy-dev.yml）
+
+在 GitHub 仓库的 `dev` Environment 中配置（与 production 同款）：
+
+- Secret `DEV_SSH_PRIVATE_KEY`：dev 部署专用 SSH 私钥（公钥在服务器 `~/.ssh/authorized_keys`；
+  生成与安装步骤见下文"部署密钥"）
+- Secret `DEV_SSH_KNOWN_HOSTS`：服务器 known_hosts 记录
+- 可选 Variable `DEV_SSH_HOST`（默认 `47.94.4.204`）、`DEV_SSH_USER`（默认 `root`）、
+  `DEV_SSH_PORT`（默认 `22`）
+
+首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
+Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
+`deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
+
+### 部署密钥（为本机生成 + 安装到服务器）
+
+```bash
+ssh-keygen -t ed25519 -C "autovoice-dev-deploy" -f ~/.ssh/autovoice_dev_deploy -N ""
+cat ~/.ssh/autovoice_dev_deploy.pub | ssh root@47.94.4.204 \
+  "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+ssh -i ~/.ssh/autovoice_dev_deploy -o IdentitiesOnly=yes root@47.94.4.204 "echo dev-key-ok"
+ssh-keygen -F 47.94.4.204    # 取指纹行 → DEV_SSH_KNOWN_HOSTS
+gh secret set DEV_SSH_PRIVATE_KEY --env dev < ~/.ssh/autovoice_dev_deploy
+gh secret set DEV_SSH_KNOWN_HOSTS --env dev   # 交互粘贴指纹行
+```
+
+## 服务器侧布局（生产）
 
 - `/opt/autovoice/app.jar` — 可执行 jar（`./gradlew :app:bootJar` 产出）
 - `/opt/autovoice/tts-server.jar` — TTS 服务 jar（端口 8082）

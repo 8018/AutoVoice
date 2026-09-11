@@ -39,10 +39,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** demo 模式（设置区切换）：demo-full / demo-offline。Task 19 纯 UI 状态，配置装配在 Task 21。 */
+/** demo 模式（设置区切换）：demo-full / demo-offline / demo-dev。Task 19 纯 UI 状态，配置装配在 Task 21。 */
 enum class DemoMode(val label: String) {
     DEMO_FULL("demo-full"),
     DEMO_OFFLINE("demo-offline"),
+    DEMO_DEV("demo-dev"),
 }
 
 /** 车辆状态快照（StateFlow 携带不可变快照，避免直接暴露可变执行器）。 */
@@ -478,7 +479,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 配置：按模式加载 assets；缺失时用内置默认，内容非法则明确终止装配。 */
     private fun loadConfig(mode: DemoMode): DemoConfig {
-        val asset = if (mode == DemoMode.DEMO_FULL) ASSET_DEMO_FULL else ASSET_DEMO_OFFLINE
+        val asset = when (mode) {
+            DemoMode.DEMO_FULL -> ASSET_DEMO_FULL
+            DemoMode.DEMO_OFFLINE -> ASSET_DEMO_OFFLINE
+            DemoMode.DEMO_DEV -> ASSET_DEMO_DEV
+        }
         val json = runCatching {
             getApplication<Application>().assets.open(asset).bufferedReader().use { it.readText() }
         }.getOrNull()
@@ -496,6 +501,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 内置默认配置（防御兜底，Task 20 明文 + Task 21 模式化）：demo-full 云端优先；
      * demo-offline 仅本地（cloud 关闭、无网关地址）——资产缺失时模式语义仍正确。
+     * demo-dev 指向 dev 网关（8090），资产缺失时语义不变。
      */
     private fun defaultConfig(mode: DemoMode): DemoConfig {
         val full =
@@ -511,8 +517,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ),
                 mock = MockConfig(),
             )
-        return if (mode == DemoMode.DEMO_FULL) full
-        else full.copy(mode = "offline", cloud = full.cloud.copy(enabled = false, gatewayUrl = ""))
+        return when (mode) {
+            DemoMode.DEMO_FULL -> full
+            DemoMode.DEMO_OFFLINE ->
+                full.copy(mode = "offline", cloud = full.cloud.copy(enabled = false, gatewayUrl = ""))
+            DemoMode.DEMO_DEV ->
+                full.copy(mode = "dev", cloud = full.cloud.copy(gatewayUrl = "ws://47.94.4.204:8090/ws"))
+        }
     }
 
     override fun onCleared() {
@@ -530,6 +541,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 双模式配置资产（Task 21 落地；缺失时用 [defaultConfig] 兜底）。 */
         const val ASSET_DEMO_FULL = "demo-full.json"
         const val ASSET_DEMO_OFFLINE = "demo-offline.json"
+        const val ASSET_DEMO_DEV = "demo-dev.json"
 
         /** 模式持久化存储（Task 58：重启保持用户选择，防云端链静默失联）。 */
         const val PREFS_NAME = "autovoice_settings"
