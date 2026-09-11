@@ -19,7 +19,6 @@ java {
 
 dependencies {
     implementation(project(":contracts"))
-    implementation(project(":arbitration"))
     implementation(project(":session"))
     implementation(project(":tts-gateway"))
     implementation(project(":gateway"))
@@ -27,22 +26,17 @@ dependencies {
     implementation(project(":navigation-domain"))
     implementation(project(":telemetry"))
     implementation(project(":skill-mcp"))
+    implementation(project(":llm"))
+    implementation(project(":asr-gateway"))
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.okhttp)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.okhttp)
     testImplementation(libs.mockwebserver)
-    // Classic E2E fixture directly constructs DeepSeek; test classpath only，不进入 Omni Boot JAR。
-    testImplementation(project(":llm"))
-
     if (voiceBackend == "classic") {
-        implementation(project(":llm"))
-        implementation(project(":asr-gateway"))
         implementation(project(":speech-classic"))
     } else {
-        implementation(project(":llm"))
-        implementation(project(":asr-gateway"))
         implementation(project(":speech-qwen-omni"))
     }
 }

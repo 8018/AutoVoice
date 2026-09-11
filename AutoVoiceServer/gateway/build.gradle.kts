@@ -17,7 +17,6 @@ dependencies {
     api(project(":contracts"))
     implementation(project(":arbitration"))
     implementation(project(":session"))
-    implementation(project(":tts-gateway"))
     implementation(project(":offline-command"))
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.spring.boot.starter.json)

@@ -8,9 +8,6 @@ java {
 
 dependencies {
     api(project(":contracts"))
-    implementation(project(":asr-gateway"))
-    implementation(project(":llm"))
-    implementation(libs.slf4j.api)
     testImplementation(libs.junit)
     testImplementation(project(":navigation-domain"))
 }
