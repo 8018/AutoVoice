@@ -30,7 +30,13 @@ class GatewayListener(
     private val gson: Gson = Gson(),
     private val ready: CompletableDeferred<GatewayMessage>,
     private val onDisconnected: (WebSocket) -> Boolean,
+    private val onSessionContextInvalidated: () -> Unit = {},
 ) : WebSocketListener() {
+
+    /** D02b：会话级错误码——存储的 sessionId/resumeToken 已失效,须清除后全新握手。 */
+    companion object {
+        private val SESSION_LEVEL_ERRORS = setOf("SESSION_EXPIRED", "SESSION_RECOVER_DENIED")
+    }
 
     override fun onMessage(webSocket: WebSocket, text: String) {
         val msg = parseFrame(text)
@@ -42,6 +48,11 @@ class GatewayListener(
             // connect 等待方可能已超时/取消：complete 返回 false 时忽略即可
             ready.complete(emitted)
         } else if (emitted.type == "error") {
+            val code = emitted.payload["code"]?.takeIf { it.isJsonPrimitive }?.asString
+            if (code in SESSION_LEVEL_ERRORS) {
+                // 会话已被服务端判失效:清除本地会话上下文,下次连接全新握手
+                onSessionContextInvalidated()
+            }
             // 握手阶段的 error（BAD_HELLO 等）= 握手已失败，快速失败不等超时
             ready.completeExceptionally(
                 GatewayException("handshake rejected: ${emitted.payload["code"]} ${emitted.payload["message"]}"),
