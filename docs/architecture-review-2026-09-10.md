@@ -2,8 +2,8 @@
 
 ## 评估范围与结论
 
-本次核查最初基于 `main` 的 `591a35c`；第六步实施基线已推进到第五步合并提交
-`1a44d08`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
+本次核查最初基于 `main` 的 `591a35c`；第六步第二批实施基线已推进到第一批合并提交
+`58b6d5f`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
 
 本报告依据源代码、[端云轮次设计](cross-tier-turn-admission.md)和
 [覆盖率基线](test-coverage.md)修订。已证实的代码问题、潜在风险和改进建议分别标注。
@@ -12,7 +12,8 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一至第五步已合并；第六步拆分为多个独立 PR，第一批网关 IO/Realtime 职责提取已实现并通过本地验证。
+第一至第五步已合并；第六步拆分为多个独立 PR，第一批网关 IO/Realtime 职责提取已合并，
+第二批共享业务后端装配已实现并通过本地验证。
 此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
@@ -57,7 +58,7 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 | C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
 | D | 已确认并修复配置与执行脱节：VAD 参数现进入主分段门，ECNR 可选 RNNoise/旁路，provider 矩阵启动期校验；mock.executor 明确为未实现保留项。 | DemoConfig、AudioRecorder、ConfiguredVadGate、VoiceEngineFactory、android-config-capabilities.md | 第四步已合并；打断/延时聆听 VAD 保留独立门限，避免混用检测目的。 |
 | E | 已将导航候选存储、匹配和过期处理移出 contracts。 | NavigationDialog、navigation-domain、Classic/Omni 导航 Bean | contracts 仅保留端口；领域模块按逻辑 sessionId 保存候选，保留 120 秒 TTL 和 selectionId，并增加确定性容量淘汰。第五步已合并。 |
-| F | 已确认职责集中与重复，正在分批收敛。 | VoiceGatewayHandler、GatewayDownlink、RealtimeChatBridge、ClassicBackendConfig、OmniBackendConfig | 第一批已提取下行协议写入和 Realtime 会话资源所有权；后续再处理后端装配、共享业务流程和依赖清理。 |
+| F | 已确认职责集中与重复，正在分批收敛。 | VoiceGatewayHandler、GatewayDownlink、RealtimeChatBridge、BusinessBackendConfig、ClassicBackendConfig、OmniBackendConfig | 第一批下行协议/Realtime 所有权已合并；第二批已统一 ASR、业务 LLM 与导航装配，待 PR/CI。 |
 | G | 已确认覆盖率差异。 | docs/test-coverage.md | Android app 和讯飞适配器较低；重点补生命周期、协议与输出行为测试，设备验收仍独立进行。 |
 
 ### 2.3 原草稿纠正记录
@@ -214,7 +215,7 @@ sessionId 确定性淘汰。Classic 与 Omni 业务路由只依赖端口，应�
 两参数构造使用显式空实现，不再让业务适配器暗中创建状态。测试覆盖序号、名称/地址、包含关系、
 取消、过期、新旧列表标识、同逻辑会话重连、跨会话隔离、并发一次消费和确定性淘汰。
 
-### 第六步：按职责拆分网关、收敛重复（进行中：第一批已实现）
+### 第六步：按职责拆分网关、收敛重复（进行中：第一批已合并，第二批已实现）
 
 **修改范围：** 网关、后端装配、共享业务流程、未使用代码与依赖。
 
@@ -234,7 +235,13 @@ pending 形态和策略关闭；`RealtimeChatBridge` 独立拥有每连接的 Re
 事件映射与关闭。Handler 只分派 chat_start/chat_finish/二进制输入，不再保存 Realtime 的
 opening/requested/response 序号等内部状态。连接关闭和 Bean 销毁共用同一幂等释放路径；建连
 尚未完成时收到 chat_finish，迟到建立的上游会话会立即关闭且不发送 chat_ready。新增正常结束、
-建连中结束、不支持能力和既有连续音频回归测试。后端工厂收敛及未使用代码/依赖清理留到后续 PR。
+建连中结束、不支持能力和既有连续音频回归测试。
+
+**第二批实施结果：** 新增 `BusinessBackendConfig`，Classic 与 Omni 共享 Clock、阿里令牌、
+讯飞/阿里 ASR 选择、DeepSeek 业务 LLM、业务 MCP 工具合并及 NavigationDialog 装配。
+Classic 变体只负责选择 Classic speech；Omni 变体只增加隔离的 Qwen 闲聊工具、prompt、HTTP/
+Realtime provider 和 Hybrid 路由。未知 ASR/LLM 仍在同一个装配边界快速失败，并增加 provider
+矩阵测试。未使用代码与依赖清理留到后续 PR。
 
 ## 四、验证与后续项
 
