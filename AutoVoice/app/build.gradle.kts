@@ -15,6 +15,24 @@ val xfyunProps = Properties().apply {
 }
 fun xfyunProp(key: String): String = "\"" + (xfyunProps.getProperty(key, "")) + "\""
 
+// 构建环境（dev 分支工作流）：dev 分支编译的 APK 默认连 dev 网关，其余默认连生产。
+// CI 通过 AUTOVOICE_APP_ENV 显式指定（push dev → dev / push main → prod）；
+// 本地构建未指定时按当前 git 分支推断。
+fun defaultDemoMode(): String {
+    val fromEnv = System.getenv("AUTOVOICE_APP_ENV")
+    if (fromEnv == "dev") return "demo-dev"
+    if (fromEnv == "prod") return "demo-full"
+    val branch = runCatching {
+        ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD")
+            .directory(rootProject.projectDir)
+            .start()
+            .inputStream
+            .bufferedReader()
+            .use { it.readText().trim() }
+    }.getOrDefault("")
+    return if (branch == "dev") "demo-dev" else "demo-full"
+}
+
 android {
     namespace = "com.autovoice.app"
     compileSdk = 34
@@ -33,6 +51,9 @@ android {
         buildConfigField("String", "XFYUN_APPID", xfyunProp("xfyun.appid"))
         buildConfigField("String", "XFYUN_API_KEY", xfyunProp("xfyun.apiKey"))
         buildConfigField("String", "XFYUN_API_SECRET", xfyunProp("xfyun.apiSecret"))
+
+        // 首次启动默认模式：dev 分支构建 → demo-dev；其余 → demo-full（设置区仍可切换）
+        buildConfigField("String", "DEFAULT_DEMO_MODE", "\"" + defaultDemoMode() + "\"")
     }
 
     compileOptions {
