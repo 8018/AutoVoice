@@ -85,6 +85,7 @@
 | `client` | string | 客户端标识，如 `autovoice-android` |
 | `protocolVersion` | string | 协议版本，当前 `"1.1"`（v1.1：TTS 解耦——reply 不再携带音频，新增 `tts_request`/`tts_response`） |
 | `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；重连时回带最近一次 `ready` 的值以恢复 Skills/MCP 上下文；携带时服务端优先采纳，未登记的会话自动创建 |
+| `resumeToken` | string（可选，D02a） | 会话恢复凭据，由 `ready` 签发、独立于可展示的 `sessionId`。网关 `auth-enabled` 时恢复既有会话必须同时携带 `sessionId` + `resumeToken`：跨设备/凭据错误 → `error(SESSION_RECOVER_DENIED)` + 关闭；会话过期 → `error(SESSION_EXPIRED)` + 关闭（客户端清除本地会话上下文后不带 `sessionId` 重连即可新建）。凭据不写入任何日志/遥测。鉴权未启用时忽略本字段（裸连兼容路径） |
 | `deviceId` | string（可选） | 设备标识（多设备加固 M1/M5）。网关 `auth-enabled` 时**必填**（与 `authToken` 一同校验），未启用鉴权时携带亦无副作用 |
 | `authToken` | string（可选） | 设备令牌，与 `deviceId` 配对（服务器 `AUTOVOICE_GATEWAY_AUTH_DEVICES` 设备表）。鉴权失败 → `error(BAD_AUTH)` + 连接关闭（4001） |
 
@@ -234,6 +235,7 @@
     "sessionId": "demo-1",
     "language": "zh-CN",
     "protocolVersion": "1.0",
+    "resumeToken": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
     "serverTime": 1786716679554
   }
 }
@@ -244,6 +246,7 @@
 | `sessionId` | string | 会话 ID |
 | `language` | string | 识别与回复语言，如 `"zh-CN"` |
 | `protocolVersion` | string | 服务端采纳的协议版本 |
+| `resumeToken` | string（D02a） | 会话恢复凭据（独立于 sessionId）。客户端重连恢复时在 `hello` 中与 `sessionId` 一同回带；不得写入日志/遥测。旧客户端忽略该字段 |
 | `serverTime` | number（可选） | 服务端墙钟毫秒（`System.currentTimeMillis()`）。客户端可据此估算设备与服务端的时钟偏移（offset ≈ serverTime + RTT/2 − 本地时刻），用于 telemetry 事件统一换算服务器时钟；旧客户端忽略该字段 |
 
 ### 4.2 decision（决策日志事件）
@@ -414,7 +417,7 @@ partial/final 或内容自行推断。TTS 回声和识别稳定性属于 ASR/AEC
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID（已握手时） |
-| `code` | string | 机器可读错误码（`BAD_HELLO` / `BAD_AUTH`（鉴权失败，随后 4001 关闭） / `BUSY`（上一段话语处理中，不关连接） / `ASR_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
+| `code` | string | 机器可读错误码（`BAD_HELLO` / `BAD_AUTH`（鉴权失败，随后 4001 关闭） / `SESSION_RECOVER_DENIED`（跨设备或恢复凭据无效，随后关闭；D02a） / `SESSION_EXPIRED`（会话过期，随后关闭；不带 sessionId 重连即可新建；D02a） / `BUSY`（上一段话语处理中，不关连接） / `ASR_FAILED` / `LLM_FAILED` / `TTS_FAILED` / `INTERNAL`） |
 | `message` | string | 人类可读错误说明 |
 | `segmentId` | string（可选） | 回显当前话语的 `segmentId`（§3.2，`tts_request` 失败时回显其 `segmentId`）；未携带时省略。端侧据此丢弃他轮（上一轮）迟到的 `error` |
 
