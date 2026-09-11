@@ -441,7 +441,7 @@ class VoiceGatewayHandlerTest {
         assertNotNull(processingUtterance.get(), "processing 快照应已记录在途 utteranceId");
         assertFalse(futureCancelled.get(), "cancel_turn 是拦截而非取消：provider future 不被取消");
         Thread.sleep(100); // 等 void 收敛 + 工作线程收尾
-        assertNoErrorAndOnlyPreVoidPendingFor(s, "old-segment");
+        assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
     @Test
@@ -836,11 +836,11 @@ class VoiceGatewayHandlerTest {
                 .anyMatch(n -> "error".equals(n.path("type").asText())));
     }
 
-    // ---------- void（cancel_turn / superseded）：仲裁立即收敛 + processing 槽释放 ----------
+    // ---------- 会话输出撤销（cancel_turn / superseded）+ processing 槽释放 ----------
 
     @Test
     void cancelTurnReleasesProcessingImmediately() throws InterruptedException {
-        // 修复目标：cancel_turn 后仲裁立即收敛（拦截而非取消），processing 槽毫秒级释放，
+        // 修复目标：cancel_turn 后撤销输出并释放等待，processing 槽毫秒级释放，
         // 下一段 audio_end 不再 BUSY；被取消段零帧、挂起的 provider future 未被取消
         AtomicBoolean futureCancelled = new AtomicBoolean();
         CountDownLatch firstStarted = new CountDownLatch(1);
@@ -856,11 +856,11 @@ class VoiceGatewayHandlerTest {
                     byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
                 if (calls.incrementAndGet() == 1) {
                     firstStarted.countDown();
-                    return pending; // 首段挂起直到被 void
+                    return pending; // 首段模型保持挂起，连接 worker 由输出撤销信号唤醒
                 }
                 return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("第二轮"), ""));
             }
-            @Override public String id() { return "void-e2e"; }
+            @Override public String id() { return "output-revocation-e2e"; }
         };
         VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(), registry,
                 SAFETY, ASR_FAIL_WAIT);
@@ -875,7 +875,7 @@ class VoiceGatewayHandlerTest {
         long start = System.currentTimeMillis();
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"seg-1\"}}"));
-        Thread.sleep(50); // 等工作线程 void 收尾（µs 级，留调度余量）
+        Thread.sleep(50); // 等工作线程处理输出撤销信号（留调度余量）
 
         h.handleMessage(s, new TextMessage(audioStartWithUtteranceId(sid, "seg-2", "utt-2")));
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
@@ -885,7 +885,7 @@ class VoiceGatewayHandlerTest {
         assertTrue(elapsed < 800, "cancel 后下一段应立即处理（elapsed=" + elapsed + "ms），"
                 + "不得等 SAFETY=" + SAFETY + " 兜底");
         assertFalse(futureCancelled.get(), "cancel_turn 是拦截而非取消：挂起的 provider future 不被取消");
-        assertNoErrorAndOnlyPreVoidPendingFor(s, "seg-1");
+        assertNoErrorAndOnlyPreRevocationPendingFor(s, "seg-1");
         JsonNode decision = findFrame(s, "decision");
         assertEquals("utt-2", decision.get("payload").get("utteranceId").asText());
     }
@@ -926,7 +926,7 @@ class VoiceGatewayHandlerTest {
         long elapsed = System.currentTimeMillis() - start;
         assertTrue(elapsed < 800, "被取代的轮应立即让位（elapsed=" + elapsed + "ms），"
                 + "不得等 SAFETY=" + SAFETY + " 兜底");
-        assertNoErrorAndOnlyPreVoidPendingFor(s, "seg-1");
+        assertNoErrorAndOnlyPreRevocationPendingFor(s, "seg-1");
         JsonNode decision = findFrame(s, "decision");
         assertEquals("utt-2", decision.get("payload").get("utteranceId").asText());
     }
@@ -1186,7 +1186,7 @@ class VoiceGatewayHandlerTest {
         return null;
     }
 
-    /** 等待携带指定 segmentId 的 reply 帧（void 用例：不依赖消息总数，容忍前置 pending 占位）。 */
+    /** 等待携带指定 segmentId 的 reply 帧（撤销用例不依赖消息总数，容忍前置 pending）。 */
     private static JsonNode awaitReplyFor(StubSession s, String segmentId) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 5000;
         while (System.currentTimeMillis() < deadline) {
@@ -1218,19 +1218,19 @@ class VoiceGatewayHandlerTest {
     }
 
     /**
-     * void 用例通用断言：无 error 帧；被拦截段（segmentId）至多出现 void 前已下发的
+     * 输出撤销用例通用断言：无 error 帧；被拦截段至多出现撤销前已下发的
      * pending 占位（offline 空结果 + LLM 未完成的前置竞态），其余下行一律拦截。
      */
-    private static void assertNoErrorAndOnlyPreVoidPendingFor(StubSession s, String segmentId) {
+    private static void assertNoErrorAndOnlyPreRevocationPendingFor(StubSession s, String segmentId) {
         synchronized (s.sent) {
             for (WebSocketMessage<?> m : s.sent) {
                 JsonNode n = parse(m);
                 assertFalse("error".equals(n.get("type").asText()),
-                        "void 后不得出现 BUSY 等 error 帧: " + n);
+                        "输出撤销后不得出现 BUSY 等 error 帧: " + n);
                 JsonNode p = n.get("payload");
                 if (p != null && p.has("segmentId") && segmentId.equals(p.get("segmentId").asText())) {
                     assertEquals("pending", n.get("type").asText(),
-                            "被拦截段仅允许 void 前已下发的 pending 占位: " + n);
+                            "被拦截段仅允许撤销前已下发的 pending 占位: " + n);
                 }
             }
         }
