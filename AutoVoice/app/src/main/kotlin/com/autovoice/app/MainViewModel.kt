@@ -456,14 +456,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return engine
     }
 
-    /** 恢复上次选择的模式（Task 58 持久化）：prefs 缺失/损坏回退 DEMO_OFFLINE（默认语义）。 */
+    /** 恢复上次选择的模式（Task 58 持久化）：prefs 缺失/损坏回退构建环境默认值（dev 分支构建 → demo-dev，其余 → demo-full）。 */
     private fun restoreMode(): DemoMode {
         val name = runCatching {
             getApplication<Application>()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString(KEY_MODE, null)
         }.getOrNull()
-        return runCatching { DemoMode.valueOf(name ?: "") }.getOrDefault(DemoMode.DEMO_OFFLINE)
+        val buildDefault = if (BuildConfig.DEFAULT_DEMO_MODE == "demo-dev") DemoMode.DEMO_DEV else DemoMode.DEMO_FULL
+        return runCatching { DemoMode.valueOf(name ?: "") }.getOrDefault(buildDefault)
     }
 
     /** 持久化当前模式（Task 58：重启/安装后保持选择，防云端链静默失联）。 */

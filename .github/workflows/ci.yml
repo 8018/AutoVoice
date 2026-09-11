@@ -88,6 +88,9 @@ jobs:
     defaults:
       run:
         working-directory: AutoVoice
+    env:
+      # dev 分支 push 构建默认连 dev 网关(8090),其余(PR/main)默认连生产
+      AUTOVOICE_APP_ENV: ${{ github.event_name == 'push' && github.ref_name == 'dev' && 'dev' || 'prod' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
