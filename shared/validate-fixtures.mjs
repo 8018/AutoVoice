@@ -45,6 +45,7 @@ for (const name of fs.readdirSync(path.join(root, "fixtures/invalid")).filter((n
 
 validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-full.json");
 validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-offline.json");
+validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-dev.json");
 
 const actionFixture = readJson("fixtures/gateway-reply-action.json");
 validate("contracts/intent.schema.json", "fixtures/gateway-reply-action.json#payload.intent", actionFixture.payload.intent);
