@@ -45,8 +45,10 @@ codex/feature-* ──PR──▶ dev ──(发布 train PR)──▶ main ─�
 
 ## Android 连 dev
 
-设置区选择 `demo-dev` 模式(第三个选项),网关地址指向
-`ws://47.94.4.204:8090/ws`(assets/demo-dev.json)。
+构建期即绑定环境:dev 分支编译的 APK 首次启动默认 `demo-dev` 模式,连
+`ws://47.94.4.204:8090/ws`;main/PR 编译默认 `demo-full`(生产)。CI 按分支
+注入 `AUTOVOICE_APP_ENV`,本地构建按当前 git 分支推断(app/build.gradle.kts)。
+设置区仍可手动切换到 `demo-full` / `demo-offline` / `demo-dev`。
 
 dev 网关默认不启用鉴权(`AUTOVOICE_GATEWAY_AUTH_ENABLED` 默认 false),因此
 demo-dev.json 的 `authToken` 为空;若 dev 栈开启鉴权做多设备测试,本机改该
