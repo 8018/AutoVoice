@@ -19,15 +19,25 @@ public interface StreamingAsrSession {
     default CompletableFuture<String> finishWithin(long timeout, TimeUnit unit) {
         if (timeout <= 0) throw new IllegalArgumentException("timeout must be positive");
         CompletableFuture<String> source = finish();
-        CompletableFuture<String> bounded = new CompletableFuture<>();
+        AtomicBoolean terminal = new AtomicBoolean();
         AtomicBoolean released = new AtomicBoolean();
         Runnable releaseOnce = () -> {
             if (released.compareAndSet(false, true)) cancel();
         };
-        source.whenComplete((text, error) -> {
-            if (error != null) {
-                bounded.completeExceptionally(error);
+        CompletableFuture<String> bounded = new CompletableFuture<>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                if (!terminal.compareAndSet(false, true)) return false;
+                // Release the provider before cancellation becomes observable to the caller.
                 releaseOnce.run();
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        source.whenComplete((text, error) -> {
+            if (!terminal.compareAndSet(false, true)) return;
+            if (error != null) {
+                releaseOnce.run();
+                bounded.completeExceptionally(error);
             } else {
                 bounded.complete(text);
             }
@@ -36,10 +46,10 @@ public interface StreamingAsrSession {
             TimeoutException timeoutError = new TimeoutException(
                     "streaming ASR final result timed out after " + timeout + " "
                             + unit.name().toLowerCase());
-            if (bounded.completeExceptionally(timeoutError)) releaseOnce.run();
-        });
-        bounded.whenComplete((ignored, error) -> {
-            if (bounded.isCancelled()) releaseOnce.run();
+            if (!terminal.compareAndSet(false, true)) return;
+            // Cleanup is part of reaching the terminal timeout state, not an eventual side effect.
+            releaseOnce.run();
+            bounded.completeExceptionally(timeoutError);
         });
         return bounded;
     }
