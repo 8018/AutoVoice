@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  */
 @ConfigurationProperties(prefix = "autovoice.telemetry")
 public record TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays,
-                                  String accessToken) {
+                                  String accessToken, String adminToken) {
 
     @ConstructorBinding
     public TelemetryProperties {
@@ -17,9 +17,15 @@ public record TelemetryProperties(boolean enabled, String dbPath, String audioDi
         if (audioDir == null || audioDir.isBlank()) audioDir = "./telemetry-audio";
         if (retentionDays < 1) retentionDays = 7;
         accessToken = accessToken == null ? "" : accessToken;
+        adminToken = adminToken == null ? "" : adminToken;
     }
 
     public TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays) {
-        this(enabled, dbPath, audioDir, retentionDays, "");
+        this(enabled, dbPath, audioDir, retentionDays, "", "");
+    }
+
+    public TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays,
+                               String accessToken) {
+        this(enabled, dbPath, audioDir, retentionDays, accessToken, "");
     }
 }

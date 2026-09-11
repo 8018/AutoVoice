@@ -39,6 +39,9 @@ public class ProductionConfigGuard implements ApplicationRunner {
         if (telemetry.accessToken() == null || telemetry.accessToken().isBlank()) {
             missing.add("autovoice.telemetry.access-token (AUTOVOICE_TELEMETRY_ACCESS_TOKEN)");
         }
+        if (telemetry.adminToken() == null || telemetry.adminToken().isBlank()) {
+            missing.add("autovoice.telemetry.admin-token (AUTOVOICE_TELEMETRY_ADMIN_TOKEN)");
+        }
         if (!missing.isEmpty()) {
             throw new IllegalStateException(
                 "production 配置校验失败,缺失: " + String.join("; ", missing));

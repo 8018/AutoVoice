@@ -21,8 +21,8 @@ class ProductionConfigGuardTest {
         return new Gateway(authEnabled, devices, 32);
     }
 
-    private static TelemetryProperties telemetry(String accessToken) {
-        return new TelemetryProperties(true, "./telemetry.db", "./telemetry-audio", 7, accessToken);
+    private static TelemetryProperties telemetry(String accessToken, String adminToken) {
+        return new TelemetryProperties(true, "./telemetry.db", "./telemetry-audio", 7, accessToken, adminToken);
     }
 
     private static void run(Gateway gateway, TelemetryProperties telemetry) {
@@ -33,28 +33,35 @@ class ProductionConfigGuardTest {
     @Test
     void productionRequiresGatewayAuthEnabled() {
         IllegalStateException error = assertThrows(IllegalStateException.class, () ->
-            run(gateway(false, "{\"demo-1\":\"t\"}"), telemetry("secret")));
+            run(gateway(false, "{\"demo-1\":\"t\"}"), telemetry("secret", "admin-secret")));
         assertTrue(error.getMessage().contains("auth-enabled"), error.getMessage());
     }
 
     @Test
     void productionRequiresNonEmptyAuthDevices() {
         IllegalStateException error = assertThrows(IllegalStateException.class, () ->
-            run(gateway(true, "{}"), telemetry("secret")));
+            run(gateway(true, "{}"), telemetry("secret", "admin-secret")));
         assertTrue(error.getMessage().contains("auth-devices"), error.getMessage());
     }
 
     @Test
     void productionRequiresTelemetryAccessToken() {
         IllegalStateException error = assertThrows(IllegalStateException.class, () ->
-            run(gateway(true, "{\"demo-1\":\"t\"}"), telemetry("")));
+            run(gateway(true, "{\"demo-1\":\"t\"}"), telemetry("", "admin-secret")));
         assertTrue(error.getMessage().contains("access-token"), error.getMessage());
+    }
+
+    @Test
+    void productionRequiresTelemetryAdminToken() {
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+            run(gateway(true, "{\"demo-1\":\"t\"}"), telemetry("secret", "")));
+        assertTrue(error.getMessage().contains("admin-token"), error.getMessage());
     }
 
     @Test
     void productionStartsWhenAllBoundariesConfigured() {
         assertDoesNotThrow(() ->
-            run(gateway(true, "{\"demo-1\":\"t\"}"), telemetry("secret")));
+            run(gateway(true, "{\"demo-1\":\"t\"}"), telemetry("secret", "admin-secret")));
     }
 
     @Test
@@ -62,14 +69,14 @@ class ProductionConfigGuardTest {
         var production = new ApplicationContextRunner()
             .withPropertyValues("spring.profiles.active=production")
             .withBean(Gateway.class, () -> gateway(true, "{\"demo-1\":\"t\"}"))
-            .withBean(TelemetryProperties.class, () -> telemetry("secret"))
+            .withBean(TelemetryProperties.class, () -> telemetry("secret", "admin-secret"))
             .withUserConfiguration(ProductionConfigGuard.class);
         production.run(context -> assertTrue(context.containsBean("productionConfigGuard")));
 
         var demo = new ApplicationContextRunner()
             .withPropertyValues("spring.profiles.active=demo-full")
             .withBean(Gateway.class, () -> gateway(true, "{\"demo-1\":\"t\"}"))
-            .withBean(TelemetryProperties.class, () -> telemetry("secret"))
+            .withBean(TelemetryProperties.class, () -> telemetry("secret", "admin-secret"))
             .withUserConfiguration(ProductionConfigGuard.class);
         demo.run(context -> assertFalse(context.containsBean("productionConfigGuard")));
     }
