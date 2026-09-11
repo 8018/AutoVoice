@@ -43,7 +43,7 @@ public final class GatewayCodec {
             Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId", "utteranceId",
                     "latitude", "longitude", "attempt", "navigationSelectionId")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
-            Map.entry("ready", Set.of("sessionId", "language", "protocolVersion", "serverTime")),
+            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),

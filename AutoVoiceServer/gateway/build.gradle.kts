@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.spring.boot.starter.json)
     testImplementation(libs.junit)
+    testImplementation(testFixtures(project(":contracts")))
     testImplementation(libs.mockwebserver)
     testImplementation(project(":navigation-domain"))
     testImplementation(project(":speech-classic"))
