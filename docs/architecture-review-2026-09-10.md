@@ -2,8 +2,8 @@
 
 ## 评估范围与结论
 
-本次核查基于 `main` 的 `591a35c`，其中已经合并端云轮次准入修改 `ae4fd00` 和
-覆盖率门禁修改 `d3fc686`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
+本次核查最初基于 `main` 的 `591a35c`，后续实施基线已推进到协议修复合并提交
+`c62c918`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
 
 本报告依据源代码、[端云轮次设计](cross-tier-turn-admission.md)和
 [覆盖率基线](test-coverage.md)修订。已证实的代码问题、潜在风险和改进建议分别标注。
@@ -12,8 +12,8 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一步的协议一致性改动随本报告一起实现；第二至第六步尚未实施。此前已经完成的 CI 和
-覆盖率工作见文末。
+第一步已合并；第二步已在独立分支实现并通过本地服务端双构建变体验证，等待 PR/CI；
+第三至第六步尚未实施。此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
 
@@ -52,8 +52,8 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 
 | 编号 | 核查结果 | 代码依据 | 影响与处理方向 |
 | --- | --- | --- | --- |
-| A | 已确认协议约束漂移：source 在 Schema 中可选，在 Android intent 解析中必填。 | shared/contracts/intent.schema.json、gateway-messages.schema.json；GatewayClient.parseIntent/parseReply | 缺字段的合法 action 可被解析为 null。统一兼容规则并补契约测试；未证明它导致过具体线上故障。 |
-| B | 已确认云端仲裁与目标边界存在差距：仍保存单个 activeTurn，并通过 voidTurn/superseded 终止该轮仲裁输出。 | RaceArbiter、VoiceGatewayHandler.commitCandidate、ConnectionTurnCoordinator | 当前轮替代判断虽由外部触发，生命周期处理仍进入仲裁器。应移到会话协调/输出准入层，同时保证任务槽可推进。 |
+| A | 已修复协议约束漂移：source 保持可选，Android 使用明确的未知来源值；共同 fixture 约束正反例。 | shared/contracts、shared/fixtures、GatewayCodec、GatewayClient | 第一步已合并；后续新增协议字段仍需同步契约测试。 |
+| B | 已拆除云端仲裁器中的单一 activeTurn 和 voidTurn；会话层改用逐轮输出许可证处理 cancel/superseded。 | RaceArbiter、TurnOutputPermit、VoiceGatewayHandler、SegmentPipeline | 第二步已实现待合并；旧候选不取消且可继续仲裁，连接 worker 只停止等待其输出。 |
 | C | 已确认接口隐患：默认流式转批式方法无超时等待；讯飞覆写方法已有超时。 | StreamingAsrProvider.transcribe、IflytekIatAsrProvider.transcribe、Classic/Hybrid.openStream | 不能断言当前讯飞必然永久堵塞。需分别检查默认桥接、直接流式 finish、异常关闭和资源释放。 |
 | D | 已确认部分配置与执行脱节：VAD 参数被解析，录音器创建分段器时使用默认参数。 | DemoConfig.fromJson、AudioRecorder、VadSegmenter | 修改配置可能无效果。逐字段追踪消费者；ecnr/mock 等项继续核查，不笼统断言全部无效。 |
 | E | 已确认导航领域逻辑混入 contracts。 | NavigationDialogState；Classic/Omni 导航 Bean | 包含候选存储、匹配及过期处理，应移出契约模块。已有 sessionId 隔离、120 秒 TTL 和 selectionId 校验。满 1000 条时先清过期项，再淘汰未明确排序的条目，策略可改进。 |
@@ -87,7 +87,7 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 步骤 6 可拆多个 PR。每个 PR 记录实际行为变化、兼容影响和验证结果；失败时先修复或
 回退该步提交，不继续叠加后续重构。以下记录实施计划和验收标准，标题标注当前进度。
 
-### 第一步：统一协议与兼容性测试（已实现，待合并）
+### 第一步：统一协议与兼容性测试（已完成）
 
 **修改范围：** shared/contracts、shared/fixtures、GatewayCodec、GatewayClient 和相关测试。
 
@@ -109,7 +109,7 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 错误字段类型 fixture。所有 gateway fixture 由 Java codec 解码，消息类型枚举与 Schema 对拍，
 Kotlin 客户端直接消费相同的正反例。
 
-### 第二步：收敛会话、仲裁和输出准入边界
+### 第二步：收敛会话、仲裁和输出准入边界（已实现，待合并）
 
 **修改范围：** 端侧仲裁/状态机对照测试，服务端 RaceArbiter、ConnectionTurnCoordinator、
 VoiceGatewayHandler 的结果接收和下行准入。
@@ -131,6 +131,13 @@ A 不能覆盖 B 的 pending、语音或缓存；同轮第二份语义被拦截�
 
 **示例：** A 导航尚未完成，用户用有效语音建立 B 天气请求，A 晚到的导航不能拉起地图。
 若只是 VAD 检测到噪声，A 仍应正常输出。
+
+**实施结果：** `RaceArbiter` 不再保存连接级当前轮，也不处理 cancel/superseded；每次
+`decide` 的赢家状态只属于该次调用。网关为每个语音段创建 `TurnOutputPermit`，有效新轮或
+显式 cancel 只撤销旧许可证，并用撤销信号让串行 worker 停止等待；ASR、离线 NLU、LLM、
+工具与仲裁 Future 均不因此取消。pending、ASR、流式文本/音频、最终回复、决策和缓存重放
+统一检查同一许可证；撤销记录在 safety 窗口后有界清理。新增并发旧轮晚到、撤销幂等、
+不取消候选和缓冲音频不泄漏测试；Classic/Omni 服务端全量测试与 bootJar 已通过。
 
 ### 第三步：补齐流式 ASR 生命周期和观测
 

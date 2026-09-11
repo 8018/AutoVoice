@@ -44,9 +44,9 @@ import java.util.function.Consumer;
  *   <li>LLM 超时/异常由 RaceArbiter safety 兜底（reason {@code safety_timeout}）。</li>
  * </ul>
  *
- * <p>本方法绝不向上抛异常：任何阶段的失败都在内部收敛为可播报的 {@link SegmentResult}；
- * 被 void 的轮（cancel_turn / superseded，见 {@link RaceArbiter#voidTurn}）返回 {@code null}
- * （无结果，调用方丢弃——不产回复、不缓存）。</p>
+ * <p>本方法绝不向上抛异常：任何阶段的失败都在内部收敛为可播报的 {@link SegmentResult}。
+ * 会话层可传入“停止等待”信号来提前释放连接工作槽；该信号只拒绝下行并返回 {@code null}，
+ * 不改变本轮仲裁状态，也不取消任何候选。</p>
  */
 public final class SegmentPipeline {
 
@@ -133,6 +133,19 @@ public final class SegmentPipeline {
                                        String segmentId, OnlineAudioSink downstreamAudio,
                                        OnlineAsrSink downstreamAsr,
                                        CompletableFuture<OnlineSpeechResult> streamingOnline) {
+        return handleSegment(pcm, ctx, utteranceId, segmentId, downstreamAudio, downstreamAsr,
+                streamingOnline, null);
+    }
+
+    /**
+     * 带会话层停止等待信号的版本。信号胜出时只关闭本轮输出门并让调用线程返回；候选和
+     * {@link RaceArbiter} 继续自然完成，因此新轮次推进与候选生命周期互不耦合。
+     */
+    public SegmentResult handleSegment(byte[] pcm, SessionContext ctx, String utteranceId,
+                                       String segmentId, OnlineAudioSink downstreamAudio,
+                                       OnlineAsrSink downstreamAsr,
+                                       CompletableFuture<OnlineSpeechResult> streamingOnline,
+                                       CompletableFuture<?> stopWaiting) {
         // 同一份音频并发进入云端离线候选和编译时选中的在线候选。这里不做串行路由：
         // RaceArbiter 只拦截输出，空调离线命中时也不取消在线候选。
         CompletableFuture<Optional<OfflineCommandHit>> offlineF = offline.recognize(pcm, ctx, utteranceId);
@@ -150,15 +163,20 @@ public final class SegmentPipeline {
         }
         CompletableFuture<Reply> replyF = onlineF.thenApply(OnlineSpeechResult::reply);
         try {
-            ArbiterDecision decision = arbiter
-                    .decide(offlineF.thenApply(o -> o.orElse(null)), replyF, ctx, utteranceId, segmentId)
-                    .join();
+            CompletableFuture<ArbiterDecision> decisionFuture = arbiter.decide(
+                    offlineF.thenApply(o -> o.orElse(null)), replyF, ctx, utteranceId, segmentId);
+            if (stopWaiting != null) {
+                CompletableFuture.anyOf(decisionFuture, stopWaiting).join();
+                if (stopWaiting.isDone()) {
+                    // 会话层已撤销本轮输出资格。仲裁和候选继续自然完成；这里只释放等待者。
+                    // CloudAudioGate.reject 同时保证此前缓冲的 S2S 音频不会越过旧轮边界。
+                    audioGate.reject();
+                    return null;
+                }
+            }
+            ArbiterDecision decision = decisionFuture.join();
             String reason = decision.reason();
-            if (RaceArbiter.REASON_CANCEL_TURN.equals(reason)
-                    || RaceArbiter.REASON_SUPERSEDED.equals(reason)) {
-                // 被 void 的轮（端侧已裁决 / 已被新话语取代）：无结果——清空音频门缓冲
-                // （不通知下游 onError）、不取消在线候选（拦截而非取消，其输出被门丢弃），
-                // 返回 null 由调用方丢弃。
+            if (stopWaiting != null && stopWaiting.isDone()) {
                 audioGate.reject();
                 return null;
             }
