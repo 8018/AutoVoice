@@ -170,13 +170,22 @@ class MultiDeviceGatewayTest {
         assertTrue(stages.containsAll(Set.of("utterance_start", "local_asr", "device_arbiter",
                 "execute", "tts_play_request", "tts_play_end")),
                 "端侧事件应汇合, 实际 stages: " + stages);
-        // 服务端插桩在采纳的 utteranceId 下实际记录的 stage：cloud_asr + B3 拆分后的
+        // 服务端插桩在采纳的 utteranceId 下实际记录的 stage：cloud_asr 生命周期 + B3 拆分后的
         // cloud_arbiter_received(llm) + cloud_arbiter_won(llm, priority, llm_reply)
         // （ASR 文本非命令词 → 离线不命中；llm 为 @MockBean 自身不产生事件）。
         assertTrue(stages.containsAll(Set.of("cloud_asr", "cloud_arbiter_received", "cloud_arbiter_won")),
                 "服务端插桩事件应汇合, 实际 stages: " + stages);
-        // 汇合总数精确断言（T9 硬化）：6 端侧事件 + cloud_asr + received(llm) + won(llm) = 9
-        assertEquals(9, events.size(), "汇合事件数应为 9, 实际 events: " + events);
+        Set<String> asrLifecycle = events.stream()
+                .map(e -> (Map<?, ?>) e)
+                .filter(e -> "cloud_asr".equals(e.get("stage")))
+                .map(e -> (Map<?, ?>) e.get("payload"))
+                .map(payload -> String.valueOf(payload.get("event")))
+                .filter(event -> !"null".equals(event))
+                .collect(Collectors.toSet());
+        assertTrue(asrLifecycle.containsAll(Set.of("fallback", "first_result", "final_result")),
+                "ASR 模式、首字和终字生命周期应汇合, 实际: " + asrLifecycle);
+        // 6 端侧 + fallback/first/final + 兼容 cloud_asr 摘要 + received/won = 12。
+        assertEquals(12, events.size(), "汇合事件数应为 12, 实际 events: " + events);
     }
 
     /** 一条设备连接的封装：hello → ready → speak（audio_start/PCM/audio_end）→ awaitReply。 */

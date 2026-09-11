@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -212,6 +213,30 @@ class IflytekIatAsrProviderTest {
         assertEquals(2, receivedFrames.size());
         checkFrame(receivedFrames.get(0), 0, pcm, 0);
         checkFrame(receivedFrames.get(1), 2, pcm, IflytekIatAsrProvider.FRAME_BYTES);
+    }
+
+    @Test
+    void repeatedFinishSendsExactlyOneTerminalFrame() throws Exception {
+        List<String> receivedFrames = new CopyOnWriteArrayList<>();
+        server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
+            @Override public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
+                receivedFrames.add(message);
+                ws.send(resultFrame(2, "完成"));
+            }
+        }));
+        IflytekIatAsrProvider provider = new IflytekIatAsrProvider(client, APP_ID, API_KEY, API_SECRET,
+                server.url("/v2/iat").toString(), Clock.systemUTC());
+        StreamingAsrSession session = provider.start(ctx("repeat-finish"), (text, isFinal) -> { });
+        session.append(new byte[]{1, 2});
+
+        CompletableFuture<String> first = session.finish();
+        CompletableFuture<String> second = session.finish();
+
+        assertEquals("完成", first.get(2, TimeUnit.SECONDS));
+        assertEquals("完成", second.get(2, TimeUnit.SECONDS));
+        Thread.sleep(50);
+        assertEquals(1, receivedFrames.size());
+        assertEquals(2, frameStatus(receivedFrames.get(0)));
     }
 
     private static void checkFrame(String frameJson, int expectedStatus, byte[] pcm, int offset) throws Exception {

@@ -2,8 +2,8 @@
 
 ## 评估范围与结论
 
-本次核查最初基于 `main` 的 `591a35c`，后续实施基线已推进到协议修复合并提交
-`c62c918`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
+本次核查最初基于 `main` 的 `591a35c`，后续实施基线已推进到会话/仲裁边界修复合并提交
+`6ea3e79`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
 
 本报告依据源代码、[端云轮次设计](cross-tier-turn-admission.md)和
 [覆盖率基线](test-coverage.md)修订。已证实的代码问题、潜在风险和改进建议分别标注。
@@ -12,8 +12,8 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一步已合并；第二步已在独立分支实现并通过本地服务端双构建变体验证，等待 PR/CI；
-第三至第六步尚未实施。此前已经完成的 CI 和覆盖率工作见文末。
+第一、二步已合并；第三步已在独立分支实现并通过相关模块测试，等待全量验证与 PR/CI；
+第四至第六步尚未实施。此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
 
@@ -53,8 +53,8 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 | 编号 | 核查结果 | 代码依据 | 影响与处理方向 |
 | --- | --- | --- | --- |
 | A | 已修复协议约束漂移：source 保持可选，Android 使用明确的未知来源值；共同 fixture 约束正反例。 | shared/contracts、shared/fixtures、GatewayCodec、GatewayClient | 第一步已合并；后续新增协议字段仍需同步契约测试。 |
-| B | 已拆除云端仲裁器中的单一 activeTurn 和 voidTurn；会话层改用逐轮输出许可证处理 cancel/superseded。 | RaceArbiter、TurnOutputPermit、VoiceGatewayHandler、SegmentPipeline | 第二步已实现待合并；旧候选不取消且可继续仲裁，连接 worker 只停止等待其输出。 |
-| C | 已确认接口隐患：默认流式转批式方法无超时等待；讯飞覆写方法已有超时。 | StreamingAsrProvider.transcribe、IflytekIatAsrProvider.transcribe、Classic/Hybrid.openStream | 不能断言当前讯飞必然永久堵塞。需分别检查默认桥接、直接流式 finish、异常关闭和资源释放。 |
+| B | 已拆除云端仲裁器中的单一 activeTurn 和 voidTurn；会话层改用逐轮输出许可证处理 cancel/superseded。 | RaceArbiter、TurnOutputPermit、VoiceGatewayHandler、SegmentPipeline | 第二步已合并；旧候选不取消且可继续仲裁，连接 worker 只停止等待其输出。 |
+| C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已实现待合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
 | D | 已确认部分配置与执行脱节：VAD 参数被解析，录音器创建分段器时使用默认参数。 | DemoConfig.fromJson、AudioRecorder、VadSegmenter | 修改配置可能无效果。逐字段追踪消费者；ecnr/mock 等项继续核查，不笼统断言全部无效。 |
 | E | 已确认导航领域逻辑混入 contracts。 | NavigationDialogState；Classic/Omni 导航 Bean | 包含候选存储、匹配及过期处理，应移出契约模块。已有 sessionId 隔离、120 秒 TTL 和 selectionId 校验。满 1000 条时先清过期项，再淘汰未明确排序的条目，策略可改进。 |
 | F | 已确认职责集中与重复。 | VoiceGatewayHandler、ClassicBackendConfig、OmniBackendConfig、Classic/Hybrid provider | 网关承担多类 IO 与编排；两个后端重复装配和业务处理。按职责提取，不以类长或模块名作为错误证据。 |
@@ -109,7 +109,7 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 错误字段类型 fixture。所有 gateway fixture 由 Java codec 解码，消息类型枚举与 Schema 对拍，
 Kotlin 客户端直接消费相同的正反例。
 
-### 第二步：收敛会话、仲裁和输出准入边界（已实现，待合并）
+### 第二步：收敛会话、仲裁和输出准入边界（已完成）
 
 **修改范围：** 端侧仲裁/状态机对照测试，服务端 RaceArbiter、ConnectionTurnCoordinator、
 VoiceGatewayHandler 的结果接收和下行准入。
@@ -139,7 +139,7 @@ A 不能覆盖 B 的 pending、语音或缓存；同轮第二份语义被拦截�
 统一检查同一许可证；撤销记录在 safety 窗口后有界清理。新增并发旧轮晚到、撤销幂等、
 不取消候选和缓冲音频不泄漏测试；Classic/Omni 服务端全量测试与 bootJar 已通过。
 
-### 第三步：补齐流式 ASR 生命周期和观测
+### 第三步：补齐流式 ASR 生命周期和观测（已实现，待合并）
 
 **修改范围：** StreamingAsrProvider/Session、讯飞实现、Classic/Hybrid 桥接、网关清理逻辑。
 
@@ -157,6 +157,13 @@ A 不能覆盖 B 的 pending、语音或缓存；同轮第二份语义被拦截�
 
 **示例：** ASR 只给 partial 就断开，该请求明确失败或进入既定兜底；恢复后下一轮识别
 不需要杀进程。真实 SDK 和网络故障另做设备验证。
+
+**实施结果：** `StreamingAsrSession.finishWithin` 提供统一的最终结果截止时间，计时从
+`finish` 开始；超时、源 Future 异常和调用方取消均幂等释放会话。默认批式桥接和
+Classic/Omni 业务流统一使用 provider 声明的截止时间。讯飞会话重复 `finish` 只发送一个
+status=2 尾帧，失败立即清空待发缓冲，cancel 幂等。网关按请求记录 streaming/
+batch_fallback 模式、降级原因、首个识别结果延迟、最终结果延迟、finish 后延迟和超时，
+ASR 错误仍旁路语义仲裁。相关 contracts、讯飞、Classic、Omni 和 gateway 测试已通过。
 
 ### 第四步：让配置与实际能力一致
 

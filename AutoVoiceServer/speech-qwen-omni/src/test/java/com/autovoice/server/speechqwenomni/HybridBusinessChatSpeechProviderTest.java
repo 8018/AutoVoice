@@ -9,6 +9,8 @@ import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
@@ -19,10 +21,12 @@ import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class HybridBusinessChatSpeechProviderTest {
 
@@ -63,6 +67,38 @@ class HybridBusinessChatSpeechProviderTest {
         assertEquals("business:导航去机场", turn(provider, "u4").reply().text());
         assertEquals(2, chatCalls.get());
         assertEquals(1, llmCalls.get());
+    }
+
+    @Test
+    void businessStreamingFinishUsesAsrDeadline() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        StreamingAsrProvider asr = new StreamingAsrProvider() {
+            @Override public StreamingAsrSession start(SessionContext context, OnlineAsrSink sink) {
+                return new StreamingAsrSession() {
+                    @Override public void append(byte[] pcm16k) { }
+                    @Override public CompletableFuture<String> finish() { return new CompletableFuture<>(); }
+                    @Override public void cancel() { cancelled.set(true); }
+                };
+            }
+            @Override public long finishTimeoutMs() { return 30; }
+        };
+        OnlineSpeechProvider unusedChat = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext context, String utteranceId) {
+                return CompletableFuture.completedFuture(
+                        new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public String id() { return "unused"; }
+        };
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                asr, (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText("unused")),
+                unusedChat, new NavigationDialogState());
+
+        var stream = provider.openStream(CTX, "u-timeout", OnlineAudioSink.NOOP, OnlineAsrSink.NOOP);
+
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> stream.finish().get(1, TimeUnit.SECONDS));
+        assertTrue(cancelled.get());
     }
 
     private static OnlineSpeechResult turn(HybridBusinessChatSpeechProvider provider, String id)
