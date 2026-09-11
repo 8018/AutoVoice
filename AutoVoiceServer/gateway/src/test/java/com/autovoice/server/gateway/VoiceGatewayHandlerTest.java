@@ -15,6 +15,7 @@ import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.StreamingAsrProvider;
 import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.testing.TestClock;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
@@ -53,6 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -807,6 +809,80 @@ class VoiceGatewayHandlerTest {
         assertNull(s.closeStatus);
     }
 
+    // ---------- D02a：会话所有权与恢复凭据 ----------
+
+    @Test
+    void authEnabledOtherDeviceCannotResumeSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta", "device-b", "tb"), 32);
+        StubSession a = open(h);
+        h.handleMessage(a, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(a.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        StubSession b = open(h);
+        h.handleMessage(b, new TextMessage(helloWithRecovery("device-b", "tb", sid, token)));
+
+        JsonNode error = parse(b.sent.get(0));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("SESSION_RECOVER_DENIED", error.get("payload").get("code").asText());
+        assertNotNull(b.closeStatus, "跨设备恢复应关闭连接");
+    }
+
+    @Test
+    void authEnabledExpiredSessionIsRejected() {
+        TestClock clock = new TestClock(0);
+        SessionRegistry clockRegistry = new SessionRegistry(clock, 60_000);
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), ttsOk(), noopOffline(),
+                clockRegistry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, NoopTelemetryRecorder.INSTANCE);
+        StubSession a = open(h);
+        h.handleMessage(a, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(a.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        clock.advance(61_000);
+        StubSession b = open(h);
+        h.handleMessage(b, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode error = parse(b.sent.get(0));
+        assertEquals("SESSION_EXPIRED", error.get("payload").get("code").asText());
+        assertNotNull(b.closeStatus);
+    }
+
+    @Test
+    void authEnabledOwnerWithTokenResumesOwnSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        StubSession reconnected = open(h);
+        h.handleMessage(reconnected, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode resumed = parse(reconnected.sent.get(0));
+        assertEquals("ready", resumed.get("type").asText());
+        assertEquals(sid, resumed.get("payload").get("sessionId").asText());
+        assertEquals(token, resumed.get("payload").get("resumeToken").asText());
+        assertNull(reconnected.closeStatus);
+    }
+
+    @Test
+    void authEnabledUnknownSessionIdStartsOwnedSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithRecovery("device-a", "ta", "no-such-session", "whatever")));
+
+        JsonNode ready = parse(s.sent.get(0));
+        assertEquals("ready", ready.get("type").asText());
+        assertNotEquals("no-such-session", ready.get("payload").get("sessionId").asText());
+        assertFalse(ready.get("payload").get("resumeToken").asText().isBlank());
+    }
+
     @Test
     void connectionLimitRejectsAdditionalConnection() {
         VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 1);
@@ -1199,6 +1275,16 @@ class VoiceGatewayHandlerTest {
     private static String helloWithSessionId(String sessionId) {
         return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\","
                 + "\"protocolVersion\":\"1.1\",\"sessionId\":\"" + sessionId + "\"}}";
+    }
+
+    /** D02a：带设备凭据 + 会话恢复字段的 hello。 */
+    private static String helloWithRecovery(String deviceId, String authToken,
+                                            String sessionId, String resumeToken) {
+        String token = resumeToken == null ? "" : resumeToken;
+        return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\","
+                + "\"protocolVersion\":\"1.1\",\"deviceId\":\"" + deviceId + "\","
+                + "\"authToken\":\"" + authToken + "\",\"sessionId\":\"" + sessionId + "\","
+                + "\"resumeToken\":\"" + token + "\"}}";
     }
 
     private static String audioStart(String sessionId) {

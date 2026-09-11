@@ -337,16 +337,47 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             LOG.info("authenticated device {} session {}", deviceId, session.getId());
         }
         if (st.ctx == null) {
-            String sessionId = String.valueOf(payload.get("sessionId"));
-            SessionContext ctx = registry.get(sessionId);
-            if (ctx == null) {
-                ctx = registry.create(DEFAULT_LANGUAGE);
+            Object sessionIdRaw = payload.get("sessionId");
+            String sessionId = sessionIdRaw == null ? null : String.valueOf(sessionIdRaw);
+            if (authEnabled && sessionId != null && !sessionId.isBlank()) {
+                // D02a：鉴权开启时按所有者 + 恢复凭据恢复会话,恢复凭据不写日志
+                String resumeToken = payload.get("resumeToken") != null
+                        ? String.valueOf(payload.get("resumeToken")) : null;
+                SessionRegistry.ResumeResult result = registry.resume(sessionId, st.deviceId, resumeToken);
+                switch (result) {
+                    case OK -> st.ctx = registry.get(sessionId);
+                    case NOT_FOUND -> st.ctx = registry.create(DEFAULT_LANGUAGE, st.deviceId);
+                    case EXPIRED -> {
+                        LOG.warn("session expired for deviceId={}", st.deviceId);
+                        downlink.sendError(session, st.ctx, "SESSION_EXPIRED",
+                                "session expired; reconnect without sessionId to start a new session",
+                                st.segmentId);
+                        downlink.closePolicy(session, "session expired");
+                        return;
+                    }
+                    case OWNER_MISMATCH, BAD_CREDENTIAL -> {
+                        LOG.warn("session recovery denied for deviceId={}", st.deviceId);
+                        downlink.sendError(session, st.ctx, "SESSION_RECOVER_DENIED",
+                                "session ownership or recovery credential invalid", st.segmentId);
+                        downlink.closePolicy(session, "session recovery denied");
+                        return;
+                    }
+                }
+            } else {
+                // 兼容路径:鉴权关闭(demo/本地)时按 sessionId 直接恢复,行为与历史一致
+                SessionContext ctx = registry.get(sessionId == null ? "" : sessionId);
+                if (ctx == null) {
+                    ctx = authEnabled
+                            ? registry.create(DEFAULT_LANGUAGE, st.deviceId)
+                            : registry.create(DEFAULT_LANGUAGE);
+                }
+                st.ctx = ctx;
             }
-            st.ctx = ctx;
         }
         Map<String, Object> ready = new LinkedHashMap<>();
         ready.put("sessionId", st.ctx.sessionId());
         ready.put("language", st.ctx.language());
+        ready.put("resumeToken", st.ctx.resumeToken());
         ready.put("protocolVersion", PROTOCOL_VERSION);
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());

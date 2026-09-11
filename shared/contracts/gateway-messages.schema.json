@@ -22,6 +22,7 @@
             "client": { "type": "string" },
             "protocolVersion": { "type": "string" },
             "sessionId": { "type": "string" },
+            "resumeToken": { "type": "string", "description": "会话恢复凭据（D02a）：auth-enabled 时恢复既有会话必须携带；凭据由 ready 下发，独立于 sessionId" },
             "deviceId": { "type": "string", "description": "设备标识（多设备加固 M5）：网关 auth-enabled 时必填，与 authToken 配对" },
             "authToken": { "type": "string", "description": "设备令牌（M5）：与服务器 AUTOVOICE_GATEWAY_AUTH_DEVICES 设备表匹配" }
           }
@@ -126,10 +127,10 @@
         "type": { "const": "ready" },
         "payload": {
           "type": "object",
-          "required": ["segmentId", "text", "isFinal"],
           "properties": {
             "sessionId": { "type": "string" },
             "language": { "type": "string" },
+            "resumeToken": { "type": "string", "description": "会话恢复凭据（D02a）：客户端重连恢复时在 hello 中回传" },
             "protocolVersion": { "type": "string" },
             "serverTime": { "type": "integer", "description": "服务端墙钟毫秒，客户端估算时钟偏移用（可选）" }
           }
