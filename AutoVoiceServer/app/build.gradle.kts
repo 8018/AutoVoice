@@ -24,6 +24,7 @@ dependencies {
     implementation(project(":tts-gateway"))
     implementation(project(":gateway"))
     implementation(project(":offline-command"))
+    implementation(project(":navigation-domain"))
     implementation(project(":telemetry"))
     implementation(project(":skill-mcp"))
     implementation(libs.spring.boot.starter.web)

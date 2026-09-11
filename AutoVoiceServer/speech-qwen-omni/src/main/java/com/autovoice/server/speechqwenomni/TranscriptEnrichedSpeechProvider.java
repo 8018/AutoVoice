@@ -2,7 +2,7 @@ package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -45,14 +45,14 @@ public final class TranscriptEnrichedSpeechProvider implements OnlineSpeechProvi
 
     private final OnlineSpeechProvider speech;
     private final AsrProvider asr;
-    private final NavigationDialogState navigationDialog;
+    private final NavigationDialog navigationDialog;
 
     public TranscriptEnrichedSpeechProvider(OnlineSpeechProvider speech, AsrProvider asr) {
-        this(speech, asr, new NavigationDialogState());
+        this(speech, asr, NavigationDialog.NONE);
     }
 
     public TranscriptEnrichedSpeechProvider(OnlineSpeechProvider speech, AsrProvider asr,
-                                            NavigationDialogState navigationDialog) {
+                                            NavigationDialog navigationDialog) {
         this.speech = speech;
         this.asr = asr;
         this.navigationDialog = navigationDialog;

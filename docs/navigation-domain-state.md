@@ -15,10 +15,11 @@ Session 不处理 ASR、NLU 或仲裁，不判断当前语音轮；VoiceEngine �
 
 候选生命周期独立于已交接行程：用户可以在先前行程上再次搜索、取消搜索而保留交接记录。
 每次列表更新分配 candidateVersion，超时必须匹配版本，防止旧定时器清除新候选。
-过期关闭本地候选展示，服务端 NavigationDialogState 仍负责自己的候选 TTL。
+过期关闭本地候选展示，服务端 navigation-domain 的 NavigationDialogService 仍负责自己的候选 TTL。
 跨端新增服务端生成的 selectionId / candidateId：手机每轮开始快照当前列表 ID 并随音频发送，
 服务端匹配后返回原始候选 ID，手机在执行前再次核对 ID、名称和坐标。空列表显式发送空 ID。
-重连创建新服务端会话时不恢复旧候选，要求重新搜索。详细滚动升级兼容策略见 shared/protocol.md。
+传输重连若恢复同一逻辑 sessionId，服务端仍可使用 TTL 内的候选；创建新的逻辑会话时不继承
+旧候选，要求重新搜索。详细滚动升级兼容策略见 shared/protocol.md。
 
 收到已确认的 navigate 后，执行器先校验终点及有序途经点，再清理候选并打开高德。
 OPENING / ACCEPTED / FAILED 只表示外部应用交接状态；不使用 NAVIGATING 或 ARRIVED

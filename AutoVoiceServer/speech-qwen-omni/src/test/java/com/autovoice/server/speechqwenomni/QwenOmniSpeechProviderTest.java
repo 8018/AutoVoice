@@ -7,7 +7,7 @@ import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.SessionContext;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.navigation.NavigationDialogService;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SlotValue;
 import okhttp3.OkHttpClient;
@@ -283,7 +283,7 @@ class QwenOmniSpeechProviderTest {
 
     @Test
     void pendingNavigationSelectionSuppressesOmniOutputWithoutCancellingIt() throws Exception {
-        NavigationDialogState dialog = new NavigationDialogState();
+        NavigationDialogService dialog = new NavigationDialogService();
         Intent choose = Intent.of("1.0", "navigation", "choose_destination", Map.of(
                 "candidates", SlotValue.stringValue("""
                         [{"poiname":"东店","lat":30.1,"lon":120.1,"address":"中山路1号"},

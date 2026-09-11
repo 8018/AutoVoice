@@ -5,7 +5,7 @@ import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.ToolProvider;
@@ -14,6 +14,7 @@ import com.autovoice.server.skillmcp.McpToolExecutor;
 import com.autovoice.server.skillmcp.SystemPromptStore;
 import com.autovoice.server.skillmcp.ChatSystemPromptStore;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.navigation.NavigationDialogService;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.speechqwenomni.HybridBusinessChatSpeechProvider;
 import com.autovoice.server.speechqwenomni.QwenOmniSpeechProvider;
@@ -30,8 +31,8 @@ import java.util.List;
 public class OmniBackendConfig {
 
     @Bean
-    public NavigationDialogState navigationDialogState() {
-        return new NavigationDialogState();
+    public NavigationDialog navigationDialog() {
+        return new NavigationDialogService();
     }
 
     @Bean
@@ -87,7 +88,7 @@ public class OmniBackendConfig {
                                                      AppConfig.AutovoiceProperties props,
                                                      McpSkillRegistry registry,
                                                      ChatSystemPromptStore chatPromptStore,
-                                                     NavigationDialogState navigationDialog) {
+                                                     NavigationDialog navigationDialog) {
         ToolProvider chatTools = () -> {
             List<FunctionTool> out = new ArrayList<>();
             out.add(QwenOmniSpeechProvider.exitChatTool());

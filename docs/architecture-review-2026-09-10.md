@@ -2,8 +2,8 @@
 
 ## 评估范围与结论
 
-本次核查最初基于 `main` 的 `591a35c`，后续实施基线已推进到会话/仲裁边界修复合并提交
-`6ea3e79`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
+本次核查最初基于 `main` 的 `591a35c`；第五步实施基线已推进到第四步合并提交
+`58b7c22`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
 
 本报告依据源代码、[端云轮次设计](cross-tier-turn-admission.md)和
 [覆盖率基线](test-coverage.md)修订。已证实的代码问题、潜在风险和改进建议分别标注。
@@ -12,7 +12,7 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一至第三步已合并；第四步已在独立分支实现并通过本地验证，等待 PR/CI；第五、六步尚未实施。
+第一至第四步已合并；第五步已在独立分支实现并通过本地验证，等待 PR/CI；第六步尚未实施。
 此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
@@ -55,8 +55,8 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 | A | 已修复协议约束漂移：source 保持可选，Android 使用明确的未知来源值；共同 fixture 约束正反例。 | shared/contracts、shared/fixtures、GatewayCodec、GatewayClient | 第一步已合并；后续新增协议字段仍需同步契约测试。 |
 | B | 已拆除云端仲裁器中的单一 activeTurn 和 voidTurn；会话层改用逐轮输出许可证处理 cancel/superseded。 | RaceArbiter、TurnOutputPermit、VoiceGatewayHandler、SegmentPipeline | 第二步已合并；旧候选不取消且可继续仲裁，连接 worker 只停止等待其输出。 |
 | C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
-| D | 已确认并修复配置与执行脱节：VAD 参数现进入主分段门，ECNR 可选 RNNoise/旁路，provider 矩阵启动期校验；mock.executor 明确为未实现保留项。 | DemoConfig、AudioRecorder、ConfiguredVadGate、VoiceEngineFactory、android-config-capabilities.md | 第四步已实现待合并；打断/延时聆听 VAD 保留独立门限，避免混用检测目的。 |
-| E | 已确认导航领域逻辑混入 contracts。 | NavigationDialogState；Classic/Omni 导航 Bean | 包含候选存储、匹配及过期处理，应移出契约模块。已有 sessionId 隔离、120 秒 TTL 和 selectionId 校验。满 1000 条时先清过期项，再淘汰未明确排序的条目，策略可改进。 |
+| D | 已确认并修复配置与执行脱节：VAD 参数现进入主分段门，ECNR 可选 RNNoise/旁路，provider 矩阵启动期校验；mock.executor 明确为未实现保留项。 | DemoConfig、AudioRecorder、ConfiguredVadGate、VoiceEngineFactory、android-config-capabilities.md | 第四步已合并；打断/延时聆听 VAD 保留独立门限，避免混用检测目的。 |
+| E | 已将导航候选存储、匹配和过期处理移出 contracts。 | NavigationDialog、navigation-domain、Classic/Omni 导航 Bean | contracts 仅保留端口；领域模块按逻辑 sessionId 保存候选，保留 120 秒 TTL 和 selectionId，并增加确定性容量淘汰。第五步已实现待合并。 |
 | F | 已确认职责集中与重复。 | VoiceGatewayHandler、ClassicBackendConfig、OmniBackendConfig、Classic/Hybrid provider | 网关承担多类 IO 与编排；两个后端重复装配和业务处理。按职责提取，不以类长或模块名作为错误证据。 |
 | G | 已确认覆盖率差异。 | docs/test-coverage.md | Android app 和讯飞适配器较低；重点补生命周期、协议与输出行为测试，设备验收仍独立进行。 |
 
@@ -165,7 +165,7 @@ status=2 尾帧，失败立即清空待发缓冲，cancel 幂等。网关按请�
 batch_fallback 模式、降级原因、首个识别结果延迟、最终结果延迟、finish 后延迟和超时，
 ASR 错误仍旁路语义仲裁。相关 contracts、讯飞、Classic、Omni 和 gateway 测试已通过。
 
-### 第四步：让配置与实际能力一致（已实现，待合并）
+### 第四步：让配置与实际能力一致（已完成）
 
 **修改范围：** 配置 Schema、DemoConfig、VoiceEngineFactory、AudioRecorder、VAD 分段器。
 
@@ -188,9 +188,9 @@ RNNoise 兼容行为。ASR/NLU/ECNR 未知 provider、非法 VAD、无效云端�
 Demo 命令。Android 全量单测、lint、Debug 构建和共享 Schema fixture 已通过；既有
 ConversationController 测试继续约束 VAD 不建立业务轮。
 
-### 第五步：迁移导航领域逻辑，保留逻辑会话恢复
+### 第五步：迁移导航领域逻辑，保留逻辑会话恢复（已实现，待合并）
 
-**修改范围：** NavigationDialogState、服务端 session、Classic/Hybrid 业务路由及装配。
+**修改范围：** NavigationDialog/NavigationDialogService、服务端 session、Classic/Hybrid 业务路由及装配。
 
 1. 候选匹配与导航规则移到导航领域包/模块，contracts 保留必要接口和值对象。
    以消费者和依赖方向确定位置，不立即大拆所有 contracts。
@@ -206,6 +206,13 @@ ConversationController 测试继续约束 VAD 不建立业务轮。
 
 **示例：** 显示成都机场列表后短暂断网，恢复同一有效会话并说“天府机场”，仍选中当前列表
 对应项；超过 TTL 明确提示重搜，不使用过期坐标。
+
+**实施结果：** contracts 删除具体的 `NavigationDialogState`，只保留 `NavigationDialog` 端口和
+共享的 resolve → model → remember 流程。新 `navigation-domain` 模块将无状态文本匹配、
+带 TTL/容量策略的逻辑会话存储、Reply/Intent 适配拆开；容量满时按过期时间、创建时间、
+sessionId 确定性淘汰。Classic 与 Omni 业务路由只依赖端口，应用装配注入领域实现；默认
+两参数构造使用显式空实现，不再让业务适配器暗中创建状态。测试覆盖序号、名称/地址、包含关系、
+取消、过期、新旧列表标识、同逻辑会话重连、跨会话隔离、并发一次消费和确定性淘汰。
 
 ### 第六步：按职责拆分网关、收敛重复
 

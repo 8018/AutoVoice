@@ -14,6 +14,7 @@ dependencies {
     implementation(libs.slf4j.api)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
+    testImplementation(project(":navigation-domain"))
 }
 
 tasks.test {

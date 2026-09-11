@@ -2,7 +2,7 @@ package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.navigation.NavigationDialogService;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -92,7 +92,7 @@ class HybridBusinessChatSpeechProviderTest {
         };
         HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
                 asr, (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText("unused")),
-                unusedChat, new NavigationDialogState());
+                unusedChat, new NavigationDialogService());
 
         var stream = provider.openStream(CTX, "u-timeout", OnlineAudioSink.NOOP, OnlineAsrSink.NOOP);
 
@@ -129,6 +129,6 @@ class HybridBusinessChatSpeechProviderTest {
             }
             @Override public String id() { return "chat"; }
         };
-        return new HybridBusinessChatSpeechProvider(asr, llm, chat, new NavigationDialogState());
+        return new HybridBusinessChatSpeechProvider(asr, llm, chat, new NavigationDialogService());
     }
 }

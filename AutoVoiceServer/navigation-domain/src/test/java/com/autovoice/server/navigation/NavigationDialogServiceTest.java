@@ -1,0 +1,234 @@
+package com.autovoice.server.navigation;
+
+import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.Reply;
+import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.SlotValue;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class NavigationDialogServiceTest {
+    private static final SessionContext CTX = new SessionContext("session-1", "zh-CN", Map.of());
+    private static final String CANDIDATES = """
+            [{"poiname":"万达广场（东店）","lat":30.1,"lon":120.1,"address":"中山路1号"},
+             {"poiname":"万达广场（西店）","lat":30.2,"lon":120.2,"address":"人民路8号"}]
+            """;
+
+    @Test
+    void sharedAirportScenarioResolvesOrdinalAndNameToSameCoordinates() throws Exception {
+        var json = new ObjectMapper();
+        try (var input = getClass().getResourceAsStream("/navigation-selection-scenario.json")) {
+            assertNotNull(input);
+            var scenario = json.readTree(input);
+            var expected = scenario.path("candidates").get(1);
+            for (var answer : scenario.path("answers")) {
+                var dialog = dialog();
+                var offered = dialog.remember(CTX,
+                        chooseReply("机场", scenario.path("candidates").toString()));
+                var id = offered.intent().slots().get("selectionId").value();
+                var result = dialog.resolve(
+                        CTX.withAttr("navigationSelectionId", id), answer.asText()).orElseThrow();
+                assertEquals(expected.path("poiname").asText(),
+                        result.intent().slots().get("poiname").value());
+                assertEquals(expected.path("lat").asDouble(),
+                        result.intent().slots().get("lat").value());
+                assertEquals(expected.path("lon").asDouble(),
+                        result.intent().slots().get("lon").value());
+                var shown = json.readTree(
+                        (String) offered.intent().slots().get("candidates").value());
+                assertEquals(shown.get(1).path("candidateId").asText(),
+                        result.intent().slots().get("candidateId").value());
+            }
+        }
+    }
+
+    @Test
+    void resolvesOrdinalAndClassifierStyleWithoutCallingModelAgain() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        Reply second = dialog.resolve(CTX, "选第二个").orElseThrow();
+        assertEquals("万达广场（西店）", second.intent().slots().get("poiname").value());
+        assertFalse(dialog.hasPending(CTX));
+
+        dialog.remember(CTX, chooseReply());
+        Reply first = dialog.resolve(CTX, "一个。").orElseThrow();
+        assertEquals("万达广场（东店）", first.intent().slots().get("poiname").value());
+    }
+
+    @Test
+    void resolvesUniqueAddressAndKeepsUnrelatedSpeechAvailable() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        assertTrue(dialog.resolve(CTX, "打开空调").isEmpty());
+        assertTrue(dialog.hasPending(CTX));
+        Reply reply = dialog.resolve(CTX, "人民路八号那个").orElseThrow();
+        assertEquals("万达广场（西店）", reply.intent().slots().get("poiname").value());
+    }
+
+    @Test
+    void rejectsOutOfRangeAndSupportsCancel() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        assertEquals("没有第3个，请重新选择", dialog.resolve(CTX, "第三个").orElseThrow().text());
+        assertTrue(dialog.hasPending(CTX));
+        Reply cancel = dialog.resolve(CTX, "算了").orElseThrow();
+        assertEquals("cancel_navigation", cancel.intent().intent());
+        assertEquals("已取消导航", cancel.speakText());
+        assertFalse(dialog.hasPending(CTX));
+    }
+
+    @Test
+    void newNavigationRequestClearsOldDialogAndFallsThroughForFreshSearch() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        assertTrue(dialog.resolve(CTX, "导航去万达广场").isEmpty());
+        assertFalse(dialog.hasPending(CTX));
+    }
+
+    @Test
+    void exactNameWinsOverLongerNamesContainingIt() {
+        var dialog = dialog();
+        String airports = """
+                [{"poiname":"成都双流国际机场-T1航站楼","lat":30.57,"lon":103.95},
+                 {"poiname":"成都双流国际机场-T2航站楼","lat":30.58,"lon":103.96},
+                 {"poiname":"成都双流国际机场","lat":30.57,"lon":103.95}]
+                """;
+        dialog.remember(CTX, chooseReply("机场", airports));
+        Reply reply = dialog.resolve(CTX, "成都双流国际机场。").orElseThrow();
+        assertEquals("成都双流国际机场", reply.intent().slots().get("poiname").value());
+    }
+
+    @Test
+    void replacementRejectsStaleListAndSelectedCandidateCanOnlyBeConsumedOnce() {
+        var dialog = dialog();
+        Reply first = dialog.remember(CTX, chooseReply());
+        String firstId = (String) first.intent().slots().get("selectionId").value();
+        Reply second = dialog.remember(CTX, chooseReply());
+        String secondId = (String) second.intent().slots().get("selectionId").value();
+        assertNotEquals(firstId, secondId);
+        assertEquals("text", dialog.resolve(
+                CTX.withAttr("navigationSelectionId", firstId), "第一个").orElseThrow().kind());
+        assertTrue(dialog.hasPending(CTX));
+        Reply selected = dialog.resolve(
+                CTX.withAttr("navigationSelectionId", secondId), "第一个").orElseThrow();
+        assertEquals("navigate", selected.intent().intent());
+        assertEquals(secondId, selected.intent().slots().get("selectionId").value());
+        assertFalse(((String) selected.intent().slots().get("candidateId").value()).isBlank());
+        assertEquals("text", dialog.resolve(
+                CTX.withAttr("navigationSelectionId", secondId), "第一个").orElseThrow().kind());
+    }
+
+    @Test
+    void reconnectWithSameLogicalSessionKeepsListButAnotherSessionCannotUseIt() {
+        var dialog = dialog();
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        SessionContext reconnected = new SessionContext(
+                "session-1", "zh-CN", Map.of("navigationSelectionId", id, "connectionId", "new"));
+        assertEquals("navigate", dialog.resolve(reconnected, "第二个").orElseThrow().intent().intent());
+
+        offer = dialog.remember(CTX, chooseReply());
+        id = (String) offer.intent().slots().get("selectionId").value();
+        SessionContext other = new SessionContext(
+                "session-2", "zh-CN", Map.of("navigationSelectionId", id));
+        assertEquals("text", dialog.resolve(other, "第一个").orElseThrow().kind());
+        assertTrue(dialog.hasPending(CTX));
+    }
+
+    @Test
+    void modernDismissedListCannotNavigateButLegacyClientWithoutFieldStillCan() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        assertEquals("text", dialog.resolve(
+                CTX.withAttr("navigationSelectionId", ""), "第一个").orElseThrow().kind());
+        assertTrue(dialog.hasPending(CTX));
+        assertEquals("navigate", dialog.resolve(CTX, "第一个").orElseThrow().intent().intent());
+    }
+
+    @Test
+    void expiredChoiceIsRemovedAndModernOrdinalGetsRecoveryMessage() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-27T00:00:00Z"));
+        var dialog = new NavigationDialogService(clock, 1_000);
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        clock.advanceMillis(1_001);
+        assertFalse(dialog.hasPending(CTX));
+        Reply expired = dialog.resolve(
+                CTX.withAttr("navigationSelectionId", id), "第一个").orElseThrow();
+        assertEquals("地点选择已失效，请重新搜索", expired.text());
+    }
+
+    @Test
+    void concurrentSelectionAtomicallyProducesOnlyOneNavigateAction() throws Exception {
+        var dialog = dialog();
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        SessionContext selected = CTX.withAttr("navigationSelectionId", id);
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> {
+                start.await();
+                return dialog.resolve(selected, "第一个").orElseThrow();
+            });
+            var second = executor.submit(() -> {
+                start.await();
+                return dialog.resolve(selected, "第一个").orElseThrow();
+            });
+            start.countDown();
+            Reply a = first.get(2, TimeUnit.SECONDS);
+            Reply b = second.get(2, TimeUnit.SECONDS);
+            long actions = java.util.stream.Stream.of(a, b)
+                    .filter(reply -> "action".equals(reply.kind()))
+                    .filter(reply -> "navigate".equals(reply.intent().intent()))
+                    .count();
+            assertEquals(1, actions);
+        }
+    }
+
+    @Test
+    void invalidCandidatePayloadReturnsSafeTextAndStoresNothing() {
+        var dialog = dialog();
+        Reply reply = dialog.remember(CTX,
+                chooseReply("bad", "[{\"poiname\":\"x\",\"lat\":91,\"lon\":120}]"));
+        assertEquals("地点结果无效，请重新搜索", reply.text());
+        assertFalse(dialog.hasPending(CTX));
+    }
+
+    private static NavigationDialogService dialog() {
+        return new NavigationDialogService(
+                Clock.fixed(Instant.parse("2026-08-27T00:00:00Z"), ZoneOffset.UTC), 120_000);
+    }
+
+    private static Reply chooseReply() {
+        return chooseReply("万达广场", CANDIDATES);
+    }
+
+    private static Reply chooseReply(String query, String candidates) {
+        Intent intent = Intent.of("1.0", "navigation", "choose_destination", Map.of(
+                "query", SlotValue.stringValue(query),
+                "candidates", SlotValue.stringValue(candidates)
+        ), 1.0, "test", null);
+        return Reply.ofAction(intent, "请选择");
+    }
+
+    private static final class MutableClock extends Clock {
+        private Instant instant;
+
+        private MutableClock(Instant instant) { this.instant = instant; }
+        private void advanceMillis(long millis) { instant = instant.plusMillis(millis); }
+        @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(ZoneId zone) { return this; }
+        @Override public Instant instant() { return instant; }
+    }
+}

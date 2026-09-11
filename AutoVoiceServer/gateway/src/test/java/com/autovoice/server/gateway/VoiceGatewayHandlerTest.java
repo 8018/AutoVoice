@@ -18,6 +18,7 @@ import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
+import com.autovoice.server.navigation.NavigationDialogService;
 import com.autovoice.server.session.SessionRegistry;
 import com.autovoice.server.speechclassic.ClassicOnlineSpeechProvider;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -977,7 +978,7 @@ class VoiceGatewayHandlerTest {
                 [{"poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471},
                  {"poiname":"成都天府国际机场","lat":30.312,"lon":104.441}]
                 """;
-        var handler = newHandler((pcm, ctx) -> {
+        var handler = new VoiceGatewayHandler(new ClassicOnlineSpeechProvider((pcm, ctx) -> {
             if (transcript.get().equals("第二个")) {
                 assertNull(ctx.attrs().get("latitude"), "no fix in second request must clear prior latitude");
                 assertNull(ctx.attrs().get("longitude"));
@@ -989,7 +990,7 @@ class VoiceGatewayHandlerTest {
             return CompletableFuture.completedFuture(Reply.ofAction(Intent.of("1.0", "navigation",
                     "choose_destination", Map.of("candidates", com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
                     1.0, "test", null), "请选择"));
-        }, ttsOk());
+        }, new NavigationDialogService()), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
         try {
             var socket = open(handler);
             String sid = handshake(handler, socket);

@@ -5,5 +5,6 @@ include(":contracts", ":arbitration", ":session", ":llm", ":asr-gateway", ":tts-
 include(":skill-mcp")
 include(":skill-manager")
 include(":agent-loop")
+include(":navigation-domain")
 include(":speech-classic")
 include(":speech-qwen-omni")
