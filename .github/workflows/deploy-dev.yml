@@ -1,4 +1,4 @@
-name: Deploy production
+name: Deploy dev
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       voice_backend:
         description: Online speech backend compiled into gateway
         required: true
-        default: classic
+        default: omni
         type: choice
         options:
           - classic
@@ -14,10 +14,10 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [dev]
 
 concurrency:
-  group: deploy-production
+  group: deploy-dev
   cancel-in-progress: false
 
 permissions:
@@ -25,26 +25,26 @@ permissions:
 
 jobs:
   deploy:
-    name: Build and deploy
+    name: Build and deploy dev stack
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      vars.AUTO_DEPLOY_PRODUCTION == 'true')
+      github.event.workflow_run.head_branch == 'dev' &&
+      vars.AUTO_DEPLOY_DEV == 'true')
     runs-on: ubuntu-latest
-    environment: production
+    environment: dev
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-      DEPLOY_HOST: ${{ vars.PROD_SSH_HOST || '47.94.4.204' }}
-      DEPLOY_USER: ${{ vars.PROD_SSH_USER || 'root' }}
-      DEPLOY_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
-      VOICE_BACKEND: ${{ github.event_name == 'workflow_dispatch' && inputs.voice_backend || vars.VOICE_BACKEND || 'classic' }}
+      DEPLOY_HOST: ${{ vars.DEV_SSH_HOST || '47.94.4.204' }}
+      DEPLOY_USER: ${{ vars.DEV_SSH_USER || 'root' }}
+      DEPLOY_PORT: ${{ vars.DEV_SSH_PORT || '22' }}
+      VOICE_BACKEND: ${{ github.event_name == 'workflow_dispatch' && inputs.voice_backend || vars.VOICE_BACKEND || 'omni' }}
 
     steps:
-      - name: Require main for manual deployments
-        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+      - name: Require dev for manual deployments
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/dev'
         run: |
-          echo "::error::Production can only be deployed manually from main."
+          echo "::error::Dev stack can only be deployed manually from dev."
           exit 1
 
       - uses: actions/checkout@v7
@@ -79,11 +79,11 @@ jobs:
 
       - name: Configure SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+          SSH_PRIVATE_KEY: ${{ secrets.DEV_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEV_SSH_KNOWN_HOSTS }}
         run: |
           if [[ -z "$SSH_PRIVATE_KEY" || -z "$SSH_KNOWN_HOSTS" ]]; then
-            echo "::error::Configure PROD_SSH_PRIVATE_KEY and PROD_SSH_KNOWN_HOSTS in the production environment."
+            echo "::error::Configure DEV_SSH_PRIVATE_KEY and DEV_SSH_KNOWN_HOSTS in the dev environment."
             exit 1
           fi
           install -d -m 700 "$RUNNER_TEMP/autovoice-ssh"
@@ -111,7 +111,7 @@ jobs:
             -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
           )
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
-          STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
+          STAGING_DIR="/opt/autovoice-dev/incoming/$DEPLOY_SHA"
 
           ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
           scp "${SCP_ARGS[@]}" \
@@ -133,18 +133,18 @@ jobs:
             -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
           )
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
-          STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
+          STAGING_DIR="/opt/autovoice-dev/incoming/$DEPLOY_SHA"
           ssh "${SSH_ARGS[@]}" "$TARGET" \
-            "bash '$STAGING_DIR/deploy-release.sh' 'prod' '$DEPLOY_SHA' '$STAGING_DIR'"
+            "bash '$STAGING_DIR/deploy-release.sh' 'dev' '$DEPLOY_SHA' '$STAGING_DIR'"
 
       - name: Deployment summary
         if: success()
         run: |
           {
-            echo "## Production deployed"
+            echo "## Dev stack deployed"
             echo
             echo "- Commit: \`$DEPLOY_SHA\`"
             echo "- Host: \`$DEPLOY_HOST\`"
             echo "- Voice backend: \`$VOICE_BACKEND\`"
-            echo "- Services: gateway, TTS, skill manager"
+            echo "- Services: dev gateway, dev TTS, dev skill manager (8090/8092/8093)"
           } >> "$GITHUB_STEP_SUMMARY"

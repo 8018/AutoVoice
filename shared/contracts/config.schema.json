@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["mode", "cloud", "local"],
   "properties": {
-    "mode": { "type": "string", "enum": ["full", "offline"] },
+    "mode": { "type": "string", "enum": ["full", "offline", "dev"] },
     "vad": {
       "type": "object",
       "description": "主录音分段使用的 Silero VAD 门控参数；不用于播报打断或延时聆听检测。",

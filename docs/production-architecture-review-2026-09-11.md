@@ -205,7 +205,7 @@ cookie 安全属性、CSRF 防护及登录限流。工具密钥采用受控秘�
 **已确认：** `.github/workflows/deploy.yml` 的自动路径等待 main CI 成功并使用对应 SHA；
 有 known_hosts 校验、production environment 和部署回滚脚本，这是已有基础。
 手动路径不验证该 SHA 的 CI 成功；部署重新构建 JAR，而非直接提升已验证产物。
-`deploy-production.sh` 的健康判据是 systemd active 加 TCP 端口，回滚主要恢复 JAR，不涵盖数据库
+`deploy-release.sh` 的健康判据是 systemd active 加 TCP 端口，回滚主要恢复 JAR，不涵盖数据库
 和配置版本。gateway service 模板没有指定低权限 User，并运行 demo-full profile。
 
 **场景：** 进程监听成功但模型鉴权/工具装配不可用，仍报告部署成功；代码回退后不兼容新数据库；
@@ -305,7 +305,7 @@ R11 的测试与指标必须随每阶段建设，不是最后统一补课。R8 �
 - 管理/数据：`AutoVoiceServer/telemetry/.../TelemetryAuthInterceptor.java`、`TelemetryService.java`、
   `AutoVoiceServer/skill-manager/.../AdminController.java`、`AdminAuthInterceptor.java`、`SqliteSkillStore.java`。
 - 客户端/交付：`AutoVoice/app/src/main/AndroidManifest.xml`、`AutoVoice/app/build.gradle.kts`、
-  `.github/workflows/ci.yml`、`.github/workflows/deploy.yml`、`AutoVoiceServer/deploy/deploy-production.sh`、
+  `.github/workflows/ci.yml`、`.github/workflows/deploy.yml`、`AutoVoiceServer/deploy/deploy-release.sh`、
   `AutoVoiceServer/deploy/autovoice-gateway.service`。
 
 其中 `...` 表示该模块 `src/main/java/com/autovoice/server/<包名>/`，可按类名唯一检索。

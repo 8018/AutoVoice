@@ -20,10 +20,11 @@ autovoice:
     asr-fail-wait-ms: 2000   # ASR 失败后等离线结果窗口（asr_failed_fallback 前）
     pool-size: ${AUTOVOICE_OFFLINE_POOL_SIZE:2}   # 引擎池大小（M3，多设备加固）：N worker 各一独立引擎，会话级 sticky，池满快速失败降级
     sdk:
-      lib-path: /opt/autovoice/iflytek-offline/libautovoice_offline_esr.so
-      resource-dir: /opt/autovoice/iflytek-offline/resource
-      work-dir: /opt/autovoice/iflytek-offline/work
-      fsa-path: /opt/autovoice/iflytek-offline/cn_fsa.txt
+      # 路径可用环境变量覆盖：dev 栈共享只读资源、独立 work 目录
+      lib-path: ${AUTOVOICE_OFFLINE_LIB_PATH:/opt/autovoice/iflytek-offline/libautovoice_offline_esr.so}
+      resource-dir: ${AUTOVOICE_OFFLINE_RESOURCE_DIR:/opt/autovoice/iflytek-offline/resource}
+      work-dir: ${AUTOVOICE_OFFLINE_WORK_DIR:/opt/autovoice/iflytek-offline/work}
+      fsa-path: ${AUTOVOICE_OFFLINE_FSA_PATH:/opt/autovoice/iflytek-offline/cn_fsa.txt}
       license-file: ${AUTOVOICE_OFFLINE_LICENSE_FILE:}   # 空 → 联网激活（authType=0）
   tts:
     # M4 独立服务：网关转发到 tts-server /tts（AUTOVOICE_TTS_REMOTE_URL 可覆盖）。

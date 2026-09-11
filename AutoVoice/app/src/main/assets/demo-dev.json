@@ -1,0 +1,27 @@
+{
+  "mode": "dev",
+  "vad": {
+    "threshold": 0.5,
+    "minSpeechMs": 64,
+    "minSilenceMs": 960
+  },
+  "ecnr": "rnnoise",
+  "local": {
+    "asr": "iflytek.offline",
+    "nlu": "rule.nlu"
+  },
+  "cloud": {
+    "enabled": true,
+    "gatewayUrl": "ws://47.94.4.204:8090/ws",
+    "waitMs": 3000,
+    "deviceId": "demo-1",
+    "authToken": "",
+    "telemetry": {
+      "enabled": true,
+      "url": ""
+    }
+  },
+  "mock": {
+    "executor": false
+  }
+}
