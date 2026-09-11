@@ -52,9 +52,10 @@ class GatewayClientTest {
         return GatewayMessage(root.get("type").asString, root.getAsJsonObject("payload"))
     }
 
-    private fun readyFrame(sessionId: String, serverTime: Long? = null): String {
+    private fun readyFrame(sessionId: String, serverTime: Long? = null, resumeToken: String? = null): String {
         val st = serverTime?.let { ""","serverTime":$it""" } ?: ""
-        return """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"$st}}"""
+        val rt = resumeToken?.let { ""","resumeToken":"$it"""" } ?: ""
+        return """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"$st$rt}}"""
     }
 
     private fun decisionFrame() =
@@ -80,6 +81,14 @@ class GatewayClientTest {
         /** 时钟同步测试：非 null 时 ready 帧携带该 serverTime（服务器墙钟毫秒）。 */
         var readyServerTime: Long? = null
 
+        /** D02b：非 null 时 ready 帧携带该 resumeToken（会话恢复凭据）。 */
+        var readyResumeToken: String? = null
+
+        /** 服务端主动推送下行文本帧（error 等）。 */
+        fun sendText(text: String) {
+            assertTrue(latestSocket?.send(text) == true, "下行帧应发送成功")
+        }
+
         fun upgrade(): MockResponse =
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
@@ -90,7 +99,7 @@ class GatewayClientTest {
                     val msg = parse(text)
                     frames.add(msg)
                     when (msg.type) {
-                        "hello" -> webSocket.send(readyFrame("srv-sess-1", readyServerTime))
+                        "hello" -> webSocket.send(readyFrame("srv-sess-1", readyServerTime, readyResumeToken))
                         "audio_end" -> onAudioEnd(webSocket, msg)
                         else -> Unit
                     }
@@ -155,6 +164,61 @@ class GatewayClientTest {
                 gateway.frames.filter { it.type == "hello" }[1].payload.get("sessionId").asString,
                 "重连应回带服务端此前签发的 sessionId",
             )
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `reconnect hello echoes resumeToken from ready`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.readyResumeToken = "srv-resume-1"
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            assertEquals(GatewayConnectionState.READY, client.connectionState.value)
+
+            gateway.latestSocket!!.close(1012, "service restart")
+            assertTrue(awaitTrue { client.connectionState.value == GatewayConnectionState.DISCONNECTED })
+            client.connect()
+
+            assertTrue(awaitTrue { gateway.frames.count { it.type == "hello" } == 2 })
+            val secondHello = gateway.frames.filter { it.type == "hello" }[1].payload
+            assertEquals("srv-sess-1", secondHello.get("sessionId").asString)
+            assertEquals("srv-resume-1", secondHello.get("resumeToken").asString,
+                "重连 hello 应回带 ready 签发的恢复凭据")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `session level error clears stored session before next connect`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.readyResumeToken = "srv-resume-1"
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            assertEquals("srv-sess-1", client.currentSessionId())
+
+            gateway.sendText("""{"type":"error","payload":{"code":"SESSION_EXPIRED","message":"expired"}}""")
+            assertTrue(awaitTrue { client.currentSessionId() == null },
+                "会话级错误应清除存储的 sessionId/resumeToken")
+
+            client.disconnect()
+            client.connect()
+            assertTrue(awaitTrue { gateway.frames.count { it.type == "hello" } == 2 })
+            val secondHello = gateway.frames.filter { it.type == "hello" }[1].payload
+            assertFalse(secondHello.has("sessionId"), "清除后重连应全新握手")
+            assertFalse(secondHello.has("resumeToken"))
         } finally {
             gateway.closeAll(client, okHttp)
         }
