@@ -24,6 +24,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -102,6 +103,7 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
         stage.set(transcript);
         transcript.whenComplete((text, asrError) -> {
             if (asrError != null) {
+                asrSink.onError(asrError);
                 out.completeExceptionally(asrError);
                 return;
             }
@@ -141,7 +143,8 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                 session.append(chunk);
             }
             @Override public CompletableFuture<OnlineSpeechResult> finish() {
-                return session.finish().thenCompose(text -> {
+                return session.finishWithin(streaming.finishTimeoutMs(), TimeUnit.MILLISECONDS)
+                        .thenCompose(text -> {
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new IllegalStateException("ASR returned blank text"));
                     }

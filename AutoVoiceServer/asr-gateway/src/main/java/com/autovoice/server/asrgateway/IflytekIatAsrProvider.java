@@ -1,7 +1,6 @@
 package com.autovoice.server.asrgateway;
 
 import com.autovoice.server.contracts.AsrException;
-import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.StreamingAsrProvider;
@@ -30,8 +29,6 @@ import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * 讯飞在线语音听写（中英识别大模型 API，spark_zh_iat）适配器，同步执行。
@@ -98,21 +95,8 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
     }
 
     @Override
-    public String transcribe(byte[] pcm16k, SessionContext ctx) {
-        StreamingAsrSession session = start(ctx, OnlineAsrSink.NOOP);
-        session.append(pcm16k);
-        try {
-            return session.finish().get(timeoutMs, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            session.cancel();
-            throw new AsrException("iflytek iat timed out after " + timeoutMs + "ms", e);
-        } catch (Exception e) {
-            session.cancel();
-            if (e.getCause() instanceof AsrException asr) {
-                throw asr;
-            }
-            throw new AsrException("iflytek iat failed: " + e.getMessage(), e);
-        }
+    public long finishTimeoutMs() {
+        return timeoutMs;
     }
 
     @Override
@@ -171,6 +155,8 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
         private WebSocket socket;
         private boolean opened;
         private boolean finishing;
+        private boolean terminalFrameSent;
+        private boolean cancelled;
         private boolean firstFrame = true;
         private boolean turnEstablished;
         private int fallbackSequence;
@@ -178,6 +164,9 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
         IatSession(OnlineAsrSink sink) {
             this.result = new CompletableFuture<>();
             this.sink = sink;
+            this.result.whenComplete((text, error) -> {
+                if (error != null) this.sink.onError(error);
+            });
             this.socket = client.newWebSocket(
                     new Request.Builder().url(buildSignedUrl()).build(), this);
         }
@@ -185,8 +174,7 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
         @Override
         public synchronized void onOpen(@NotNull WebSocket ws, @NotNull Response response) {
             if (response.code() != 101 && !response.isSuccessful()) {
-                result.completeExceptionally(
-                        new AsrException("iflytek iat handshake failed: HTTP " + response.code()));
+                fail(new AsrException("iflytek iat handshake failed: HTTP " + response.code()));
                 ws.close(1000, "bad handshake");
                 return;
             }
@@ -211,6 +199,8 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
         }
 
         @Override public synchronized void cancel() {
+            if (cancelled) return;
+            cancelled = true;
             finishing = true;
             queued.clear();
             if (socket != null) socket.cancel();
@@ -221,12 +211,13 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
             if (!opened || result.isDone()) return;
             try {
                 while (queued.size() > 1) sendNext(false);
-                if (finishing) {
+                if (finishing && !terminalFrameSent) {
                     byte[] last = queued.isEmpty() ? new byte[0] : queued.removeFirst();
                     send(last, 2);
+                    terminalFrameSent = true;
                 }
             } catch (RuntimeException e) {
-                result.completeExceptionally(new AsrException("iflytek iat frame send failed", e));
+                fail(new AsrException("iflytek iat frame send failed", e));
                 socket.cancel();
             }
         }
@@ -248,13 +239,13 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
             try {
                 root = MAPPER.readTree(message);
             } catch (Exception e) {
-                result.completeExceptionally(new AsrException("iflytek iat response is not valid json: " + message, e));
+                fail(new AsrException("iflytek iat response is not valid json: " + message, e));
                 ws.close(1000, "bad json");
                 return;
             }
             int code = root.path("code").asInt();
             if (code != 0) {
-                result.completeExceptionally(new AsrException(
+                fail(new AsrException(
                         "iflytek iat code=" + code + ": " + root.path("message").asText("(no message)")));
                 ws.close(1000, "error " + code);
                 return;
@@ -296,13 +287,19 @@ public final class IflytekIatAsrProvider implements StreamingAsrProvider {
 
         @Override
         public void onFailure(@NotNull WebSocket ws, @NotNull Throwable t, Response response) {
-            result.completeExceptionally(new AsrException("iflytek iat websocket failed: " + t.getMessage(), t));
+            fail(new AsrException("iflytek iat websocket failed: " + t.getMessage(), t));
         }
 
         @Override
         public void onClosed(@NotNull WebSocket ws, int code, @NotNull String reason) {
             // 服务端先关且未给终帧：结果不完整
-            result.completeExceptionally(new AsrException("iflytek iat closed before final result: " + reason));
+            fail(new AsrException("iflytek iat closed before final result: " + reason));
+        }
+
+        private synchronized void fail(AsrException error) {
+            finishing = true;
+            queued.clear();
+            result.completeExceptionally(error);
         }
     }
 

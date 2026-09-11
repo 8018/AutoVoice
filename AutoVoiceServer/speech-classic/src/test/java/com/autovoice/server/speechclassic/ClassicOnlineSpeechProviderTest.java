@@ -8,6 +8,8 @@ import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SlotValue;
+import com.autovoice.server.contracts.StreamingAsrProvider;
+import com.autovoice.server.contracts.StreamingAsrSession;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -65,5 +67,29 @@ class ClassicOnlineSpeechProviderTest {
         assertEquals("navigate", result.reply().intent().intent());
         assertEquals("西店", result.reply().intent().slots().get("poiname").value());
         assertEquals("选第二个", result.asrText());
+    }
+
+    @Test
+    void streamingFinishUsesProviderDeadlineAndReleasesSession() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        StreamingAsrProvider asr = new StreamingAsrProvider() {
+            @Override public StreamingAsrSession start(SessionContext context, OnlineAsrSink sink) {
+                return new StreamingAsrSession() {
+                    @Override public void append(byte[] pcm16k) { }
+                    @Override public CompletableFuture<String> finish() { return new CompletableFuture<>(); }
+                    @Override public void cancel() { cancelled.set(true); }
+                };
+            }
+            @Override public long finishTimeoutMs() { return 30; }
+        };
+        ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
+                asr, (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText("unused")));
+
+        var stream = provider.openStream(new SessionContext("s1", "zh-CN", Map.of()),
+                "u-timeout", OnlineAudioSink.NOOP, OnlineAsrSink.NOOP);
+
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> stream.finish().get(1, TimeUnit.SECONDS));
+        assertTrue(cancelled.get());
     }
 }

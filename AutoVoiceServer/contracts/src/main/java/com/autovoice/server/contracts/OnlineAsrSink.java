@@ -16,4 +16,7 @@ public interface OnlineAsrSink {
      * 同一 ASR 会话最多发送一次。
      */
     default void onTurnEstablished() {}
+
+    /** ASR lifecycle failure; independent from semantic arbitration and safe to ignore by default. */
+    default void onError(Throwable error) {}
 }

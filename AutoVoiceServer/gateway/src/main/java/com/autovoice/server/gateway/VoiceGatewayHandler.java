@@ -509,6 +509,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
         st.activePermit = new TurnOutputPermit(st.utteranceId, st.segmentId);
         st.outputPermits.putIfAbsent(st.utteranceId, st.activePermit);
+        st.activeAsrTrace = new AsrTurnTrace(recorder, st.utteranceId, online.id());
         // Snapshot before opening ASR: the streaming provider must see this turn's displayed list.
         st.ctx = st.ctx.withAttr("navigationSelectionId", payload.get("navigationSelectionId") instanceof String id ? id : null);
         // Position belongs to this audio request. Absence must clear a previous fix.
@@ -525,9 +526,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
             st.onlineStream = online.openStream(st.ctx, st.utteranceId,
                     OnlineAudioSink.NOOP,
-                    asrSink(st.session, st, st.utteranceId, st.segmentId, st.activePermit));
+                    asrSink(st.session, st, st.utteranceId, st.segmentId,
+                            st.activePermit, st.activeAsrTrace));
+            if (st.onlineStream == null) {
+                st.activeAsrTrace.useBatch("streaming_unsupported", null);
+            }
         } catch (RuntimeException error) {
             st.onlineStream = null;
+            st.activeAsrTrace.useBatch("streaming_start_failed", error);
             LOG.warn("streaming ASR start failed; batch fallback on audio_end", error);
         }
         // audio_start only creates a recognition candidate. VAD alone must not supersede the
@@ -550,8 +556,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         String segmentId = st.segmentId;
         OnlineSpeechStream onlineStream = st.onlineStream;
         TurnOutputPermit outputPermit = st.activePermit;
+        AsrTurnTrace asrTrace = st.activeAsrTrace;
+        asrTrace.markFinish();
         st.onlineStream = null;
-        SegmentWork work = new SegmentWork(pcm, ctx, utteranceId, segmentId, onlineStream, outputPermit);
+        SegmentWork work = new SegmentWork(
+                pcm, ctx, utteranceId, segmentId, onlineStream, outputPermit, asrTrace);
         ConnectionTurnCoordinator.Offer offer = st.turns.offer(work);
         if (offer == ConnectionTurnCoordinator.Offer.START_NOW) {
             submitSegment(session, st, work);
@@ -660,9 +669,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     try {
                         CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
                         OnlineAsrSink fallbackAsr = asrSink(
-                                session, st, utteranceId, segmentId, ownedWork.outputPermit());
+                                session, st, utteranceId, segmentId,
+                                ownedWork.outputPermit(), ownedWork.asrTrace());
                         onlineCandidate = streamed.handle((value, error) -> {
                             if (error == null) return CompletableFuture.completedFuture(value);
+                            ownedWork.asrTrace().onFailure(error);
+                            ownedWork.asrTrace().useBatch("streaming_finish_failed", error);
                             LOG.warn("streaming ASR failed; retrying once with buffered PCM", error);
                             return online.process(pcm, ctx, utteranceId,
                                     OnlineAudioSink.NOOP, fallbackAsr);
@@ -674,7 +686,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 }
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
                         streamSink(session, st, segmentId, ownedWork.outputPermit()),
-                        asrSink(session, st, utteranceId, segmentId, ownedWork.outputPermit()),
+                        asrSink(session, st, utteranceId, segmentId,
+                                ownedWork.outputPermit(), ownedWork.asrTrace()),
                         onlineCandidate, ownedWork.outputPermit().revoked());
             } catch (RuntimeException e) {
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
@@ -795,7 +808,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** ASR/PGS 旁路：不经过语义仲裁门，识别一出字就下发；仅拦截取消/过期轮。 */
     private OnlineAsrSink asrSink(WebSocketSession session, ConnectionState st,
                                   String utteranceId, String segmentId,
-                                  TurnOutputPermit outputPermit) {
+                                  TurnOutputPermit outputPermit, AsrTurnTrace asrTrace) {
         return new OnlineAsrSink() {
             private final AtomicBoolean turnEstablishedSent = new AtomicBoolean();
 
@@ -812,6 +825,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             }
 
             @Override public void onResult(String text, boolean isFinal) {
+                asrTrace.onResult(text, isFinal);
                 if (!active() || text == null || text.isBlank()) return;
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("segmentId", segmentId);
@@ -819,13 +833,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("isFinal", isFinal);
                 send(session, "asr_partial", payload);
             }
+
+            @Override public void onError(Throwable error) {
+                asrTrace.onFailure(error);
+            }
         };
     }
 
     private record TurnKey(String ownerId, String utteranceId) {}
 
     private record SegmentWork(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId,
-                               OnlineSpeechStream inputStream, TurnOutputPermit outputPermit)
+                               OnlineSpeechStream inputStream, TurnOutputPermit outputPermit,
+                               AsrTurnTrace asrTrace)
             implements ConnectionTurnCoordinator.WorkIdentity {}
 
     private record CachedTurn(SegmentPipeline.SegmentResult result, long expiresAtMs) {}
@@ -1049,6 +1068,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         String utteranceId; // 端侧 utteranceId 或自增回退（u-N），决策事件/链路插桩复用
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
         volatile TurnOutputPermit activePermit;
+        volatile AsrTurnTrace activeAsrTrace;
         final ConnectionTurnCoordinator<SegmentWork> turns = new ConnectionTurnCoordinator<>();
         volatile RealtimeChatSession realtimeChat;
         volatile boolean chatOpening;

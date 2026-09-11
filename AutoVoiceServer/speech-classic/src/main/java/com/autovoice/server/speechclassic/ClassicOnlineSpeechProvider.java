@@ -16,6 +16,7 @@ import com.autovoice.server.contracts.StreamingAsrSession;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 /** 现有在线链路适配器：PCM → ASR → DeepSeek；不改变原有请求和工具循环。 */
 public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
@@ -55,6 +56,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
             asrSink.onTurnEstablished();
             asrSink.onResult(text, true);
         } catch (Exception e) {
+            asrSink.onError(e);
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);
         }
@@ -71,7 +73,8 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
         return new OnlineSpeechStream() {
             @Override public void append(byte[] pcm16k) { session.append(pcm16k); }
             @Override public CompletableFuture<OnlineSpeechResult> finish() {
-                return session.finish().thenCompose(text -> {
+                return session.finishWithin(streaming.finishTimeoutMs(), TimeUnit.MILLISECONDS)
+                        .thenCompose(text -> {
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new AsrException("ASR returned blank text"));
                     }
