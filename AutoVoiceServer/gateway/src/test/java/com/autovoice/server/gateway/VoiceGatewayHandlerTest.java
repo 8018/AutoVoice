@@ -186,6 +186,99 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void chatFinishClosesActiveRealtimeSessionWithoutSpuriousError() throws Exception {
+        AtomicBoolean closed = new AtomicBoolean();
+        class RealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { closed.set(true); }
+                };
+            }
+            @Override public String id() { return "realtime-close-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new RealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+        awaitType(socket, "chat_ready");
+        socket.sent.clear();
+
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+
+        assertTrue(closed.get());
+        assertFalse(socket.sent.stream().map(VoiceGatewayHandlerTest::parse)
+                .anyMatch(message -> "error".equals(message.path("type").asText())));
+        handler.close();
+    }
+
+    @Test
+    void chatFinishWhileOpeningClosesLateSessionWithoutSendingReady() throws Exception {
+        CountDownLatch opening = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        class SlowRealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                opening.countDown();
+                try {
+                    assertTrue(release.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { closed.countDown(); }
+                };
+            }
+            @Override public String id() { return "realtime-opening-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new SlowRealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        socket.sent.clear();
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+        assertTrue(opening.await(1, TimeUnit.SECONDS));
+
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+        release.countDown();
+
+        assertTrue(closed.await(1, TimeUnit.SECONDS));
+        assertFalse(socket.sent.stream().map(VoiceGatewayHandlerTest::parse)
+                .anyMatch(message -> "chat_ready".equals(message.path("type").asText())));
+        handler.close();
+    }
+
+    @Test
+    void chatStartReportsUnsupportedProvider() throws Exception {
+        VoiceGatewayHandler handler = newHandler(asr("x"), llm("unused"), ttsOk());
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        socket.sent.clear();
+
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\"}}"));
+
+        JsonNode error = awaitType(socket, "error");
+        assertEquals("CHAT_UNSUPPORTED", error.path("payload").path("code").asText());
+        handler.close();
+    }
+
+    @Test
     void fullSegmentAccumulatesPcmAndEmitsDecisionBeforeActionReply() throws InterruptedException {
         byte[][] asrReceived = new byte[1][];
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {

@@ -12,8 +12,6 @@ import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.RealtimeChatProvider;
-import com.autovoice.server.contracts.RealtimeChatSession;
-import com.autovoice.server.contracts.RealtimeChatSink;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.TtsProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
@@ -31,7 +29,6 @@ import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -86,8 +83,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
     private static final long DEFAULT_OFFLINE_GRACE_MS = 1500;
-    /** pending 占位消息文案（B5：LLM 处理中，protocol.md §4.8）。 */
-    private static final String PENDING_TEXT = "正在处理，请稍候";
     private static final int DEFAULT_MAX_CONNECTIONS = 32;
     /** 单段最多 60 秒 PCM（16kHz / 16bit / mono），防止连接持续推帧耗尽堆内存。 */
     private static final int DEFAULT_MAX_AUDIO_BYTES = 60 * 16_000 * 2;
@@ -95,9 +90,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
     private static final long TURN_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(2);
     private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    /** 接入策略违规（鉴权失败 / 连接数超限）统一关闭码（protocol.md §8）。 */
-    private static final CloseStatus POLICY_CLOSE = new CloseStatus(4001, "policy violation");
 
     private static final Logger LOG = LoggerFactory.getLogger(VoiceGatewayHandler.class);
 
@@ -108,6 +100,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
+    private final GatewayDownlink downlink = new GatewayDownlink();
 
     /** 接入网关（M1）：authEnabled=false → 裸连兼容（本地）；否则 hello 须携带合法 deviceId+authToken。 */
     private final boolean authEnabled;
@@ -209,7 +202,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (admitted > maxConnections) {
             activeConnections.decrementAndGet();
             LOG.warn("connection limit reached ({}), rejecting {}", maxConnections, session.getId());
-            closeQuietly(session, "connection limit reached");
+            downlink.closePolicy(session, "connection limit reached");
             return;
         }
         ConnectionState previous = connections.putIfAbsent(session, new ConnectionState(session));
@@ -222,33 +215,22 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
         ConnectionState st = connections.get(session);
         if (st == null) {
-            closeQuietly(session, "connection not admitted");
+            downlink.closePolicy(session, "connection not admitted");
             return;
         }
         if (message instanceof BinaryMessage bm) {
-            RealtimeChatSession realtime = st.realtimeChat;
-            if (realtime != null) {
-                ByteBuffer buf = bm.getPayload();
-                byte[] bytes = new byte[buf.remaining()];
-                buf.get(bytes);
-                try {
-                    realtime.appendAudio(bytes);
-                } catch (RuntimeException error) {
-                    sendError(session, st, "CHAT_STREAM_FAILED", error.getMessage());
-                }
-                return;
-            }
+            ByteBuffer buf = bm.getPayload();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.get(bytes);
+            if (st.realtimeChat.appendIfActive(bytes)) return;
             if (st.audioActive) {
-                ByteBuffer buf = bm.getPayload();
-                if ((long) st.pcm.size() + buf.remaining() > maxAudioBytes) {
+                if ((long) st.pcm.size() + bytes.length > maxAudioBytes) {
                     st.audioActive = false;
                     st.pcm.reset();
-                    sendError(session, st, "AUDIO_TOO_LARGE",
-                            "audio segment exceeds " + maxAudioBytes + " bytes");
+                    downlink.sendError(session, st.ctx, "AUDIO_TOO_LARGE",
+                            "audio segment exceeds " + maxAudioBytes + " bytes", st.segmentId);
                     return;
                 }
-                byte[] bytes = new byte[buf.remaining()];
-                buf.get(bytes);
                 st.pcm.writeBytes(bytes);
                 OnlineSpeechStream stream = st.onlineStream;
                 if (stream != null) {
@@ -269,7 +251,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         try {
             msg = GatewayCodec.decode(tm.getPayload());
         } catch (IllegalArgumentException e) {
-            sendError(session, st, errorCodeOf(tm.getPayload()), "invalid message: " + e.getMessage());
+            downlink.sendError(session, st.ctx, errorCodeOf(tm.getPayload()),
+                    "invalid message: " + e.getMessage(), st.segmentId);
             return;
         }
         switch ((String) msg.get("type")) {
@@ -279,11 +262,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
-            case "chat_start" -> onChatStart(session, st);
-            case "chat_finish" -> {
-                st.chatRequested = false;
-                closeRealtimeChat(st);
-            }
+            case "chat_start" -> st.realtimeChat.start();
+            case "chat_finish" -> st.realtimeChat.finish();
             default -> {
                 // ready/decision/reply/error/bye/tts_response 为服务端消息，客户端不应发送，忽略
             }
@@ -311,7 +291,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     /** Both transport teardown and bean destruction own the same upstream resources. */
     private void releaseConnection(ConnectionState st) {
-        st.chatRequested = false;
         st.outputPermits.values().forEach(
                 permit -> permit.revoke(TurnOutputPermit.RevocationReason.CONNECTION_CLOSED));
         OnlineSpeechStream stream = st.onlineStream;
@@ -326,130 +305,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         } catch (RuntimeException ignored) {
             // A failed upstream cancellation must not skip the other resource owners.
         } finally {
-            closeRealtimeChat(st);
+            st.realtimeChat.close();
             st.connExecutor.shutdownNow();
         }
-    }
-
-    /** 建立本连接独占的 Qwen Realtime 会话；成功回 chat_ready 后客户端才开始连续推 PCM。 */
-    private void onChatStart(WebSocketSession session, ConnectionState st) {
-        if (st.ctx == null) return;
-        st.chatRequested = true;
-        if (st.realtimeChat != null || st.chatOpening) return;
-        if (!(online instanceof RealtimeChatProvider provider)) {
-            sendError(session, st, "CHAT_UNSUPPORTED", "realtime chat provider is unavailable");
-            return;
-        }
-        st.chatOpening = true;
-        st.connExecutor.submit(() -> {
-            try {
-                RealtimeChatSession realtime = provider.openRealtimeChat(st.ctx, realtimeSink(session, st));
-                if (!st.chatRequested) {
-                    realtime.close();
-                    return;
-                }
-                st.realtimeChat = realtime;
-                send(session, "chat_ready", Map.of("sessionId", st.ctx.sessionId()));
-            } catch (RuntimeException error) {
-                sendError(session, st, "CHAT_CONNECT_FAILED", error.getMessage());
-            } finally {
-                st.chatOpening = false;
-            }
-        });
-    }
-
-    private void closeRealtimeChat(ConnectionState st) {
-        RealtimeChatSession realtime = st.realtimeChat;
-        st.realtimeChat = null;
-        if (realtime != null) {
-            try { realtime.close(); } catch (RuntimeException ignored) { }
-        }
-    }
-
-    private RealtimeChatSink realtimeSink(WebSocketSession session, ConnectionState st) {
-        return new RealtimeChatSink() {
-            private String responseSegment;
-            private boolean responseStarted;
-
-            private String responseSegment() {
-                if (responseSegment == null) responseSegment = "chat-" + ++st.chatResponseSeq;
-                return responseSegment;
-            }
-
-            @Override public void onUserSpeechStarted() {
-                responseSegment = null;
-                responseStarted = false;
-                send(session, "chat_speech_started", Map.of("sessionId", st.ctx.sessionId()));
-            }
-
-            @Override public void onUserTranscript(String text, boolean isFinal) {
-                if (text == null || text.isBlank()) return;
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("text", text);
-                payload.put("isFinal", isFinal);
-                payload.put("chat", true);
-                send(session, "asr_partial", payload);
-            }
-
-            @Override public void onStart(int sampleRate, int channels, String encoding) {
-                responseStarted = true;
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("segmentId", responseSegment());
-                payload.put("mime", "audio/pcm");
-                payload.put("sampleRate", sampleRate);
-                payload.put("channels", channels);
-                payload.put("encoding", encoding);
-                payload.put("chat", true);
-                send(session, "audio_reply_start", payload);
-            }
-
-            @Override public void onChunk(byte[] pcm) {
-                if (pcm != null && pcm.length > 0) sendBinary(session, pcm);
-            }
-
-            @Override public void onReplyText(String text, boolean isFinal) {
-                if (text == null || text.isBlank()) return;
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("segmentId", responseSegment());
-                payload.put("text", text);
-                payload.put("isFinal", isFinal);
-                payload.put("chat", true);
-                send(session, "reply_partial", payload);
-            }
-
-            @Override public void onComplete(String text, Intent intent, String asrText) {
-                // Function-only 的 exit_chat 没有 audio.delta；仍发一个空流，让端侧统一从
-                // audio_reply_end 消费控制 intent，而不引入另一套意图消息。
-                if (!responseStarted) onStart(24_000, 1, "pcm_s16le");
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("segmentId", responseSegment());
-                payload.put("chat", true);
-                if (text != null && !text.isBlank()) payload.put("speakText", text);
-                if (intent != null) payload.put("intent", intent);
-                send(session, "audio_reply_end", payload);
-                responseSegment = null;
-                responseStarted = false;
-                if (intent != null && "conversation".equals(intent.domain())
-                        && "exit_chat".equals(intent.intent())) {
-                    closeRealtimeChat(st);
-                }
-            }
-
-            @Override public void onError(Throwable error) {
-                sendError(session, st, "CHAT_STREAM_FAILED",
-                        error == null ? "realtime chat failed" : String.valueOf(error.getMessage()));
-            }
-
-            @Override public void onSessionClosed(Throwable error) {
-                // 主动 chat_finish 会先清空 st.realtimeChat，不能误报；只有上游自行断开才
-                // 通知客户端触发同一锁域内的自动重连。
-                if (st.realtimeChat != null) {
-                    st.realtimeChat = null;
-                    if (error != null) onError(error);
-                    else sendError(session, st, "CHAT_STREAM_CLOSED", "realtime chat closed");
-                }
-            }
-        };
     }
 
     @Override
@@ -470,8 +328,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     || !MessageDigest.isEqual(authToken.getBytes(StandardCharsets.UTF_8),
                                               expected.getBytes(StandardCharsets.UTF_8))) {
                 LOG.warn("auth failed for deviceId={} session={}", deviceId, session.getId());
-                sendError(session, st, "BAD_AUTH", "invalid device credentials");
-                closeQuietly(session, "bad auth");
+                downlink.sendError(session, st.ctx,
+                        "BAD_AUTH", "invalid device credentials", st.segmentId);
+                downlink.closePolicy(session, "bad auth");
                 return;
             }
             st.deviceId = deviceId;
@@ -491,7 +350,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         ready.put("protocolVersion", PROTOCOL_VERSION);
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());
-        send(session, "ready", ready);
+        downlink.send(session, "ready", ready);
     }
 
     /** audio_start：未握手不处理；开始累积，记录 utteranceId（优先采纳端侧值，缺失回退自增）与可选 segmentId（reply/error 原样回显）。 */
@@ -568,7 +427,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             outputPermit.revoke(TurnOutputPermit.RevocationReason.CANCELLED);
             schedulePermitCleanup(st, outputPermit);
             if (onlineStream != null) onlineStream.cancel();
-            sendError(session, st, "BUSY", "candidate queue is full", segmentId);
+            downlink.sendError(session, st.ctx, "BUSY", "candidate queue is full", segmentId);
         }
     }
 
@@ -657,7 +516,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (inputStream != null) inputStream.cancel();
                 // 流式首发的重放改成单帧 reply；结果携带完整音频，端侧仍走统一播放器。
                 if (ownedWork.outputPermit().allowsOutput()) {
-                    sendReply(session, st, cached.result(), segmentId);
+                    downlink.sendReply(session, cached.result(), segmentId);
                 }
                 return;
             }
@@ -703,7 +562,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
             drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && ownedWork.outputPermit().allowsOutput()) {
-                sendReply(session, st, result, segmentId);
+                downlink.sendReply(session, result, segmentId);
             }
         } finally {
             if (ownedWork != null) schedulePermitCleanup(st, ownedWork.outputPermit());
@@ -720,7 +579,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         for (DecisionEntry entry : st.pendingDecisions) {
             if (!Objects.equals(utteranceId, entry.utteranceId()) || !st.pendingDecisions.remove(entry)) continue;
             if (emit) {
-                send(session, "decision", MAPPER.convertValue(entry,
+                downlink.send(session, "decision", MAPPER.convertValue(entry,
                         new TypeReference<Map<String, Object>>() {}));
             }
         }
@@ -755,12 +614,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("sampleRate", sampleRate);
                 payload.put("channels", channels);
                 payload.put("encoding", encoding);
-                send(session, "audio_reply_start", payload);
+                downlink.send(session, "audio_reply_start", payload);
             }
 
             @Override
             public void onChunk(byte[] pcm) {
-                if (allowed() && pcm.length > 0) sendBinary(session, pcm);
+                if (allowed() && pcm.length > 0) downlink.sendBinary(session, pcm);
             }
 
             @Override
@@ -770,7 +629,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("segmentId", segmentId);
                 payload.put("text", text);
                 payload.put("isFinal", isFinal);
-                send(session, "reply_partial", payload);
+                downlink.send(session, "reply_partial", payload);
             }
 
             @Override
@@ -786,7 +645,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (speakText != null && !speakText.isBlank()) payload.put("speakText", speakText);
                 if (intent != null) payload.put("intent", intent);
                 if (asrText != null && !asrText.isBlank()) payload.put("asrText", asrText);
-                send(session, "audio_reply_end", payload);
+                downlink.send(session, "audio_reply_end", payload);
             }
 
             @Override
@@ -799,7 +658,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 LOG.warn("online stream aborted: session={} segment={} elapsedMs={} errorType={} message={}",
                         st.ctx == null ? "" : st.ctx.sessionId(), segmentId, elapsedMs,
                         errorType, errorMessage, error);
-                sendError(session, st, "ONLINE_STREAM_ABORTED",
+                downlink.sendError(session, st.ctx, "ONLINE_STREAM_ABORTED",
                         errorMessage, segmentId);
             }
         };
@@ -821,7 +680,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             @Override public void onTurnEstablished() {
                 if (!active() || !turnEstablishedSent.compareAndSet(false, true)) return;
                 commitCandidate(st, utteranceId, segmentId);
-                send(session, "asr_turn_started", Map.of("segmentId", segmentId));
+                downlink.send(session, "asr_turn_started", Map.of("segmentId", segmentId));
             }
 
             @Override public void onResult(String text, boolean isFinal) {
@@ -831,7 +690,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("segmentId", segmentId);
                 payload.put("text", text);
                 payload.put("isFinal", isFinal);
-                send(session, "asr_partial", payload);
+                downlink.send(session, "asr_partial", payload);
             }
 
             @Override public void onError(Throwable error) {
@@ -850,86 +709,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private record CachedTurn(SegmentPipeline.SegmentResult result, long expiresAtMs) {}
 
     /**
-     * 下行收敛（协议 v1.1）：S2S → kind=audio；其他 intent 非空 → kind=action
-     * （intent + speakText）；纯文本 → kind=text 且 <b>text 与 speakText 同带</b>
-     * （端侧 parseReply 对 kind=text 强读 text 字段，text 缺失会丢回复）。
-     * asrText（Task 61：识别文本，端侧云端胜出时写进识别区）非空时附带。
-     * segmentId 用快照（工作线程回显本段的值，此时 st.segmentId 可能已被下一段覆盖）。
-     */
-    private void sendReply(WebSocketSession session, ConnectionState st, SegmentPipeline.SegmentResult result,
-                           String segmentId) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        if (result.asrText() != null && !result.asrText().isBlank()) {
-            payload.put("asrText", result.asrText());
-        }
-        if (result.audio() != null) {
-            payload.put("kind", "audio");
-            payload.put("mime", result.mime());
-            payload.put("dataBase64", java.util.Base64.getEncoder().encodeToString(result.audio()));
-            if (result.speakText() != null && !result.speakText().isBlank()) {
-                payload.put("speakText", result.speakText());
-            }
-            if (result.intent() != null) {
-                payload.put("intent", result.intent());
-            }
-        } else if (result.intent() != null) {
-            payload.put("kind", "action");
-            payload.put("intent", result.intent());
-            if (result.speakText() != null) {
-                payload.put("speakText", result.speakText());
-            }
-        } else {
-            payload.put("kind", "text");
-            if (result.text() != null) {
-                payload.put("text", result.text());
-            }
-            if (result.speakText() != null) {
-                payload.put("speakText", result.speakText());
-            }
-        }
-        if (segmentId != null) {
-            payload.put("segmentId", segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
-        }
-        send(session, "reply", payload);
-    }
-
-    /**
-     * pending 占位消息下发（B5，protocol.md §4.8）：LLM 处理中时随 PENDING 事件由
-     * offline 回调线程触发。send 在连接关闭时抛 IllegalStateException——try/catch 包裹，
-     * 不污染 offline 回调线程（连接拆除路径有 removeConnection 兜底，此处仅告警）。
-     */
-    private void sendPending(WebSocketSession session, String segmentId) {
-        try {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            if (segmentId != null) {
-                payload.put("segmentId", segmentId); // 回显 audio_start 的 segmentId（端侧按话语对账）
-            }
-            payload.put("text", PENDING_TEXT);
-            send(session, "pending", payload);
-        } catch (RuntimeException e) {
-            LOG.warn("pending downlink failed (session closing?): {}", e.getMessage());
-        }
-    }
-
-    private void sendError(WebSocketSession session, ConnectionState st, String code, String message) {
-        sendError(session, st, code, message, st.segmentId);
-    }
-
-    private void sendError(WebSocketSession session, ConnectionState st, String code, String message,
-                           String segmentId) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        if (st.ctx != null) {
-            payload.put("sessionId", st.ctx.sessionId());
-        }
-        if (segmentId != null) {
-            payload.put("segmentId", segmentId); // 回显本请求的 segmentId，供端侧对账
-        }
-        payload.put("code", code);
-        payload.put("message", message);
-        send(session, "error", payload);
-    }
-
-    /**
      * tts_request：独立 TTS 链路（与识别/仲裁解耦，协议 v1.1 §4.5）——要求已握手；
      * 同步合成文本 → 下发 {@code tts_response}{mime, dataBase64, text, segmentId}；
      * 合成失败 → error(TTS_FAILED)，不关连接（与音频链路错误语义一致）。
@@ -945,7 +724,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         try {
             ttsExecutor.execute(() -> synthesizeAndSend(session, st, text, ttsSegmentId, utteranceId));
         } catch (RejectedExecutionException e) {
-            sendError(session, st, "TTS_BUSY", "tts queue is full", ttsSegmentId);
+            downlink.sendError(session, st.ctx, "TTS_BUSY", "tts queue is full", ttsSegmentId);
         }
     }
 
@@ -963,43 +742,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (ttsSegmentId != null) {
                 out.put("segmentId", ttsSegmentId);
             }
-            send(session, "tts_response", out);
+            downlink.send(session, "tts_response", out);
         } catch (Exception e) {
-            sendError(session, st, "TTS_FAILED", "tts failed: " + e.getMessage(), ttsSegmentId);
-        }
-    }
-
-    private static void send(WebSocketSession session, String type, Map<String, Object> payload) {
-        try {
-            // Spring 的原始 WebSocketSession 不保证并发 send 安全；以 session 为锁统一串行下行。
-            synchronized (session) {
-                if (session.isOpen()) {
-                    session.sendMessage(new TextMessage(GatewayCodec.encode(type, payload)));
-                }
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to send " + type + " message", e);
-        }
-    }
-
-    private static void sendBinary(WebSocketSession session, byte[] bytes) {
-        try {
-            synchronized (session) {
-                if (session.isOpen()) session.sendMessage(new BinaryMessage(bytes));
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to send audio chunk", e);
-        }
-    }
-
-    /** 接入策略关闭（4001）：send 已抛错时也尽力关；close 失败仅记日志不抛。 */
-    private static void closeQuietly(WebSocketSession session, String reason) {
-        try {
-            if (session.isOpen()) {
-                session.close(new CloseStatus(POLICY_CLOSE.getCode(), reason));
-            }
-        } catch (IOException e) {
-            LOG.warn("failed to close {}: {}", session.getId(), e.getMessage());
+            downlink.sendError(session, st.ctx, "TTS_FAILED",
+                    "tts failed: " + e.getMessage(), ttsSegmentId);
         }
     }
 
@@ -1031,6 +777,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
         ConnectionState(WebSocketSession session) {
             this.session = session;
+            RealtimeChatProvider chatProvider = online instanceof RealtimeChatProvider provider
+                    ? provider : null;
+            realtimeChat = new RealtimeChatBridge(session, chatProvider, connExecutor, downlink,
+                    () -> ctx, () -> segmentId);
             // B3：仲裁过程事件（received/won/lost）经 eventSink 映射为 telemetry 插桩；
             // 迟到事件在 decide() 返回后仍可能触发（宽限期任务），utteranceId 随事件绑定正确轮次。
             // B5：PENDING 事件 → 额外下发 pending 占位消息（segmentId 用事件携带的快照，
@@ -1042,7 +792,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                         TurnOutputPermit permit = outputPermits.get(uid);
                         if (event.kind() == CloudArbiterEvent.Kind.PENDING
                                 && (permit == null || permit.allowsOutput())) {
-                            VoiceGatewayHandler.this.sendPending(session, event.segmentId());
+                            downlink.sendPending(session, event.segmentId());
                         }
                     });
             pipeline = new SegmentPipeline(online, arbiter, offline, asrFailWaitMs, sink, recorder);
@@ -1070,10 +820,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         volatile TurnOutputPermit activePermit;
         volatile AsrTurnTrace activeAsrTrace;
         final ConnectionTurnCoordinator<SegmentWork> turns = new ConnectionTurnCoordinator<>();
-        volatile RealtimeChatSession realtimeChat;
-        volatile boolean chatOpening;
-        volatile boolean chatRequested;
-        long chatResponseSeq;
+        final RealtimeChatBridge realtimeChat;
         boolean audioActive;
         volatile OnlineSpeechStream onlineStream;
         long segmentSeq;
