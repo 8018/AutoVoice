@@ -27,6 +27,7 @@ internal class ResponseDispatcher(
         if (reply.asrText.isNotBlank()) onRecognized(reply.asrText)
         when (reply) {
             is AudioReply -> {
+                if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
                 output.play(turnId, reply)
                 reply.intent?.takeIf { isCurrentTurn(turnId) }?.let { applyAndNotify(turnId, it) }
             }
@@ -35,9 +36,13 @@ internal class ResponseDispatcher(
                 if (end.asrText.isNotBlank()) onRecognized(end.asrText)
                 end.intent?.let { applyAndNotify(turnId, it) }
             }
-            is TextReply -> output.speak(turnId, reply.text)
+            is TextReply -> {
+                if (reply.text.isNotBlank()) onReplyText(reply.text)
+                output.speak(turnId, reply.text)
+            }
             is ActionReply -> {
                 if (isCurrentTurn(turnId)) applyAndNotify(turnId, reply.intent)
+                if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
                 output.speak(turnId, reply.speakText)
             }
         }
