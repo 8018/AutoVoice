@@ -202,6 +202,26 @@ internal class RecordingCoordinator(
         updateState { it.copy(permissionRequired = true) }
     }
 
+    /**
+     * Pauses the shared microphone before replacing capture configuration. The caller rebuilds the
+     * engine immediately afterwards and [onDialogueState] rearms the appropriate idle listener.
+     */
+    fun reconfigureCapture(configure: () -> Unit) {
+        require(!recording && !chatLocked) { "capture cannot be reconfigured while recording" }
+        wakeSetupJob?.cancel()
+        wakeSetupJob = null
+        pauseWakeObservation()
+        capture.stopMonitoring()
+        configure()
+        updateState {
+            it.copy(
+                vadUnavailable = !capture.vadAvailable,
+                wakeListening = false,
+                openMicBargeInAvailable = false,
+            )
+        }
+    }
+
     fun onBackground() {
         foreground = false
         stopFollowUpListening(resetDialogue = true)

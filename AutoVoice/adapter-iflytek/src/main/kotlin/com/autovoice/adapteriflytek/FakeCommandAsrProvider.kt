@@ -3,7 +3,7 @@ package com.autovoice.adapteriflytek
 /**
  * 模拟命令词识别：与真实 [IflytekOfflineCommandAsrStage] 同一边界
  * （`recognize(pcm: ByteArray): String?` → 命令词文本）。
- * 配置 `local.asr=iflytek.fake-cmd` 时使用（见 app 端 demo-full.json），
+ * 仅在配置显式选择 `local.asr=iflytek.fake-cmd` 时使用，
  * 用于无 SDK 授权/无真机时的本地链路演示。
  */
 object FakeCommandAsrProvider {

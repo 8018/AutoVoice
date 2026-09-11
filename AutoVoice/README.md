@@ -6,6 +6,7 @@ ASR → 规则 NLU）与云端链路（WS 网关 → 云端传统 NLU/LLM）**�
 
 - 设计：`docs/specs/2026-08-08-autovoice-demo-design.md`
 - **验收手册（真机四剧本 + 前置条件 + 常见问题）：`docs/runbook.md`**
+- Android 配置字段与实际能力：[配置能力清单](../docs/android-config-capabilities.md)
 - Headless 自动化验收记录：仓库根 `ACCEPTANCE.md`
 
 ## 项目结构

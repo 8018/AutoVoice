@@ -2,7 +2,6 @@ package com.autovoice.app.audio
 
 import android.content.Context
 import android.util.Log
-import org.json.JSONObject
 
 /**
  * 测试音频源（Task 58 云端联调）：以预置语音代替麦克风输入。
@@ -12,7 +11,7 @@ import org.json.JSONObject
  * 完全复用——除"麦克风采集"外的整条端云链路（端侧 VAD → WS 上传 → 云端 ASR/LLM/TTS →
  * 端侧播报）都可验证，且无需 RECORD_AUDIO 权限。
  *
- * 资源缺失/解析失败 → [fromDemoConfig] 返回 null（AudioRecorder 降级麦克风，静默不报错）。
+ * 资源缺失 → [fromConfig] 返回 null（AudioRecorder 降级麦克风并记录日志）。
  */
 class TestAudioSource internal constructor(
     private val pcm: ByteArray,
@@ -49,26 +48,22 @@ class TestAudioSource internal constructor(
 
     companion object {
         /**
-         * 从 demo-full.json 读取 testAudio 字段并加载 asset；
-         * 字段缺失/资产缺失/解析失败 → null（麦克风）。
+         * 加载已由 [com.autovoice.voicecore.DemoConfig] 解析出的 testAudio asset；
+         * 字段缺失或资产缺失 → null（麦克风）。
          */
-        fun fromDemoConfig(context: Context): TestAudioSource? {
-            val name = runCatching {
-                val json = context.assets.open(DEMO_FULL_ASSET).bufferedReader().use { it.readText() }
-                JSONObject(json).optString("testAudio", "")
-            }.getOrElse {
-                Log.w(TAG, "读取 $DEMO_FULL_ASSET 失败，测试音频源不可用（降级麦克风）", it)
-                return null
-            }
-            if (name.isBlank()) return null
+        fun fromConfig(context: Context, name: String?): TestAudioSource? {
+            if (name.isNullOrBlank()) return null
             val pcm = runCatching { context.assets.open(name).use { it.readBytes() } }.getOrElse {
                 Log.w(TAG, "测试音频资产 $name 缺失，降级麦克风", it)
+                return null
+            }
+            if (pcm.isEmpty()) {
+                Log.w(TAG, "测试音频资产 $name 为空，降级麦克风")
                 return null
             }
             return TestAudioSource(pcm)
         }
 
         private const val TAG = "TestAudioSource"
-        private const val DEMO_FULL_ASSET = "demo-full.json"
     }
 }

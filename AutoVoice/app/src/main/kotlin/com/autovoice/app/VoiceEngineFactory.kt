@@ -23,6 +23,7 @@ import com.autovoice.voicecore.arbiter.PendingSignalRegistry
 import com.autovoice.voicecore.dialog.AdmissionEvidence
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
+import com.autovoice.voicecore.validateForRuntime
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -73,6 +74,7 @@ internal object VoiceEngineFactory {
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
     ): VoiceEngine {
+        cfg.validateForRuntime()
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
         // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
         val clockOffsetProvider = AtomicReference<() -> Long>({ 0L })
@@ -245,12 +247,12 @@ internal object VoiceEngineFactory {
         }
 
     /**
-     * 本地链装配：命令词 ASR（真实/降级 fake）→ 规则 NLU；绝不抛出。
+     * 本地链装配：显式选择真实或 fake 命令词 ASR → 规则 NLU；处理过程绝不抛出。
      *
      * Task 34 接线：`local.asr=iflytek.offline` 时构造真实 [IflytekOfflineCommandAsrStage]
      * 并在引擎后台协程里 [IflytekOfflineCommandAsrStage.init]（首次联网授权 + 引擎初始化 +
      * 命令词加载）。init 阻塞最长 20s（授权超时），放后台不卡装配；就绪前 recognize 抛
-     * NOT_CONFIGURED → 本次降级 [FakeCommandAsrProvider]（runbook §5.1），授权完成后自动
+     * NOT_CONFIGURED → 本次按本地候选未命中处理，授权完成后自动
      * 切换真实引擎，无需重启。
      */
     private fun buildLocalChain(
@@ -280,8 +282,8 @@ internal object VoiceEngineFactory {
                     offlineStage.init(context)
                     Log.i(FACTORY_TAG, "讯飞离线命令词初始化完成（授权通过）")
                 } catch (t: Throwable) {
-                    // 授权失败/资源缺失等：本次及后续识别保持 fake 降级（§5.1 预期内）
-                    Log.w(FACTORY_TAG, "讯飞离线命令词初始化失败，保持 FakeCommandAsrProvider 降级", t)
+                    // 授权失败/资源缺失等：真实候选保持不可用，不得暗中产生 fake 命令。
+                    Log.w(FACTORY_TAG, "讯飞离线命令词初始化失败，本地真实候选保持不可用", t)
                 }
             }
         }
@@ -289,16 +291,19 @@ internal object VoiceEngineFactory {
         // ASR 提前上屏。demo-full 的独立 ASR 来自云端 asr_partial；后续接入本地 PGS
         // 时只需替换本 stage，仲裁与 NLU 均无需改动。
         val asr = AsrStage { _, _ -> null }
-        val nlu = NluStage { segment, _ ->
-            val command = try {
-                recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
-            } catch (t: Throwable) {
-                Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", t)
-                null
+        val nlu = when (cfg.local.nlu) {
+            DemoConfig.LOCAL_NLU_RULE -> NluStage { segment, _ ->
+                val command = try {
+                    recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
+                } catch (t: Throwable) {
+                    Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", t)
+                    null
+                }
+                val intent = RuleNluProvider.understand(command.orEmpty())
+                // 2C 的文本属于 NLU 候选：不提前显示，只有该候选胜出时才覆盖识别框。
+                NluResult(intent = intent, recognizedText = command)
             }
-            val intent = RuleNluProvider.understand(command.orEmpty())
-            // 2C 的文本属于 NLU 候选：不提前显示，只有该候选胜出时才覆盖识别框。
-            NluResult(intent = intent, recognizedText = command)
+            else -> error("unsupported local.nlu '${cfg.local.nlu}'")
         }
         return object : LocalChainRunner {
             override suspend fun run(segment: ByteArray): NluResult = run(segment, "")
@@ -374,11 +379,11 @@ internal fun recognizeLocalCommand(
     segment: ByteArray,
     offline: () -> String?,
 ): String? = when (configuredAsr) {
-    "iflytek.offline" -> try {
+    DemoConfig.LOCAL_ASR_IFLYTEK -> try {
         offline()
     } catch (error: IllegalStateException) {
         if (error.message?.contains(IflytekOfflineCommandAsrStage.NOT_CONFIGURED_MSG) == true) null else throw error
     }
-    "iflytek.fake-cmd" -> FakeCommandAsrProvider.recognize(segment)
-    else -> null
+    DemoConfig.LOCAL_ASR_FAKE -> FakeCommandAsrProvider.recognize(segment)
+    else -> throw IllegalArgumentException("unsupported local.asr '$configuredAsr'")
 }
