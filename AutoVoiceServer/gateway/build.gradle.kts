@@ -23,6 +23,7 @@ dependencies {
     implementation(libs.spring.boot.starter.json)
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
+    testImplementation(project(":navigation-domain"))
     testImplementation(project(":speech-classic"))
 }
 

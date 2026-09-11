@@ -2,7 +2,7 @@ package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -18,7 +18,6 @@ import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.Intent;
 
 import java.util.Locale;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,20 +50,20 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     private final LlmProvider businessLlm;
     private final OnlineSpeechProvider chatSpeech;
     private final QwenOmniRealtimeChatProvider realtimeChat;
-    private final NavigationDialogState navigationDialog;
+    private final NavigationDialog navigationDialog;
     private final Set<String> chatSessions = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, CompletableFuture<OnlineSpeechResult>> active =
             new ConcurrentHashMap<>();
 
     public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
                                             OnlineSpeechProvider chatSpeech,
-                                            NavigationDialogState navigationDialog) {
+                                            NavigationDialog navigationDialog) {
         this(asr, businessLlm, chatSpeech, navigationDialog, null);
     }
 
     public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
                                             OnlineSpeechProvider chatSpeech,
-                                            NavigationDialogState navigationDialog,
+                                            NavigationDialog navigationDialog,
                                             QwenOmniRealtimeChatProvider realtimeChat) {
         this.asr = asr;
         this.businessLlm = businessLlm;
@@ -182,13 +181,9 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
             return CompletableFuture.completedFuture(new OnlineSpeechResult(
                     Reply.ofAction(enterChatIntent(), ENTER_CHAT_REPLY), transcript));
         }
-        Optional<Reply> deterministic = navigationDialog.resolve(context, transcript);
-        CompletableFuture<Reply> reply = deterministic
-                .map(CompletableFuture::completedFuture)
-                .orElseGet(() -> businessLlm.chat(transcript, context, utteranceId));
-        return reply.thenApply(value -> {
-            return new OnlineSpeechResult(navigationDialog.remember(context, value), transcript);
-        });
+        return navigationDialog.complete(context, transcript,
+                        () -> businessLlm.chat(transcript, context, utteranceId))
+                .thenApply(reply -> new OnlineSpeechResult(reply, transcript));
     }
 
     private CompletableFuture<OnlineSpeechResult> processChat(

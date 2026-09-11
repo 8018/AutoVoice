@@ -6,11 +6,12 @@ import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.LlmProvider;
-import com.autovoice.server.contracts.NavigationDialogState;
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.ToolProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
+import com.autovoice.server.navigation.NavigationDialogService;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
 import com.autovoice.server.skillmcp.McpToolExecutor;
 import com.autovoice.server.skillmcp.SystemPromptStore;
@@ -70,13 +71,13 @@ public class ClassicBackendConfig {
     }
 
     @Bean
-    public NavigationDialogState navigationDialogState() {
-        return new NavigationDialogState();
+    public NavigationDialog navigationDialog() {
+        return new NavigationDialogService();
     }
 
     @Bean
     public OnlineSpeechProvider onlineSpeechProvider(AsrProvider asr, LlmProvider llm,
-                                                     NavigationDialogState navigationDialog) {
+                                                     NavigationDialog navigationDialog) {
         return new ClassicOnlineSpeechProvider(asr, llm, navigationDialog);
     }
 }

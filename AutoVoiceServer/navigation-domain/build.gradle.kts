@@ -8,12 +8,11 @@ java {
 
 dependencies {
     api(project(":contracts"))
-    implementation(project(":asr-gateway"))
-    implementation(project(":llm"))
-    implementation(libs.slf4j.api)
+    implementation(libs.jackson.databind)
     testImplementation(libs.junit)
-    testImplementation(project(":navigation-domain"))
 }
+
+sourceSets.test { resources.srcDir("../../shared/fixtures") }
 
 tasks.test {
     useJUnitPlatform()
