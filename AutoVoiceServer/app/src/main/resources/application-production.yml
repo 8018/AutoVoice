@@ -1,0 +1,10 @@
+# 生产 profile:身份与管理边界必须显式配置,由 ProductionConfigGuard 在启动期 fail-closed
+# 校验(缺失即拒绝启动)。演示/本地开发显式使用 demo-full profile,不启用本校验。
+# 部署启用方式:--spring.profiles.active=production(替换 demo-full)。
+autovoice:
+  gateway:
+    # 生产必须 true,且配置非空设备表;两者都缺/任一缺失 → 启动失败
+    auth-enabled: ${AUTOVOICE_GATEWAY_AUTH_ENABLED:false}
+  telemetry:
+    # 遥测采集/查询边界令牌,生产必须非空
+    access-token: ${AUTOVOICE_TELEMETRY_ACCESS_TOKEN:}
