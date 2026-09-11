@@ -1,5 +1,6 @@
 package com.autovoice.server.app;
 
+import com.autovoice.server.agentloop.AgentExecutionRuntime;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.LlmProvider;
@@ -23,13 +24,14 @@ import java.util.List;
 @Configuration
 public class OmniBackendConfig {
 
-    @Bean
+    @Bean(destroyMethod = "close")
     public OnlineSpeechProvider onlineSpeechProvider(OkHttpClient client, AsrProvider asr,
                                                      LlmProvider businessLlm,
                                                      AppConfig.AutovoiceProperties props,
                                                      McpSkillRegistry registry,
                                                      ChatSystemPromptStore chatPromptStore,
-                                                     NavigationDialog navigationDialog) {
+                                                     NavigationDialog navigationDialog,
+                                                     AgentExecutionRuntime agentRuntime) {
         ToolProvider chatTools = () -> {
             List<FunctionTool> tools = new ArrayList<>();
             tools.add(QwenOmniSpeechProvider.exitChatTool());
@@ -45,7 +47,7 @@ public class OmniBackendConfig {
                     String configured = chatPromptStore.get();
                     return configured == null || configured.isBlank()
                             ? QwenOmniSpeechProvider.DEFAULT_CHAT_SYSTEM_PROMPT : configured;
-                });
+                }, agentRuntime);
         QwenOmniRealtimeChatProvider realtime = new QwenOmniRealtimeChatProvider(
                 client, props.secrets().dashscopeApiKey(), props.secrets().dashscopeWorkspaceId(),
                 QwenOmniRealtimeChatProvider.DEFAULT_MODEL,

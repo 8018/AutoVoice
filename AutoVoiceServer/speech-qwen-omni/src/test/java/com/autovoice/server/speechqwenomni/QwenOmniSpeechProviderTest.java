@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class QwenOmniSpeechProviderTest {
 
@@ -37,6 +38,18 @@ class QwenOmniSpeechProviderTest {
     @AfterEach
     void close() throws Exception {
         server.close();
+    }
+
+    @Test
+    void closeRejectsNewRequestsAndIsIdempotent() {
+        QwenOmniSpeechProvider provider = provider((name, args) -> "unused");
+
+        provider.close();
+        provider.close();
+
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> provider.process(new byte[]{1}, context(), "after-close")
+                        .get(1, TimeUnit.SECONDS));
     }
 
     @Test

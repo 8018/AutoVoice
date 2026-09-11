@@ -9,6 +9,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 讯飞离线命令词识别（Linux x86-64 原生 SDK + JNI 桥，S6 的 {@code native/autovoice_offline_esr.cpp}）。
@@ -28,7 +29,7 @@ import java.util.concurrent.TimeUnit;
  * <p>凭据语义（S6 部署）：联网激活（authType=0）使用讯飞 appId/apiKey/apiSecret（与在线听写同一套
  * 环境变量，不入库不打印）；licenseFile 非空时走 license 离线授权（authType=1）。</p>
  */
-public final class NativeOfflineCommandProvider implements OfflineCommandProvider {
+public final class NativeOfflineCommandProvider implements OfflineCommandProvider, AutoCloseable {
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(NativeOfflineCommandProvider.class);
     private static final Charset GBK = Charset.forName("GBK");
@@ -52,6 +53,7 @@ public final class NativeOfflineCommandProvider implements OfflineCommandProvide
 
     private volatile long handle; // 0 = 未初始化（nativeInit 返回的引擎句柄）
     private volatile boolean initFailed;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
      * @param libPath      JNI 桥 .so 绝对路径（S6 的 libautovoice_offline_esr.so）
@@ -77,43 +79,57 @@ public final class NativeOfflineCommandProvider implements OfflineCommandProvide
 
     @Override
     public CompletableFuture<Optional<String>> recognize(byte[] pcm16k, SessionContext ctx) {
+        if (closed.get()) return CompletableFuture.completedFuture(Optional.empty());
         CompletableFuture<Optional<String>> out = new CompletableFuture<>();
-        engine.execute(() -> {
-            long h;
-            try {
-                h = ensureInitialized();
-            } catch (Throwable t) {
-                LOG.error("offline engine init failed: {}", String.valueOf(t.getMessage()));
-                out.complete(Optional.empty());
-                return;
-            }
-            if (h == 0) {
-                out.complete(Optional.empty());
-                return;
-            }
-            try {
-                byte[] raw = nativeRecognize(h, pcm16k);
-                if (raw == null || raw.length == 0) {
-                    LOG.info("Offline no result");
+        try {
+            engine.execute(() -> {
+                long h;
+                try {
+                    h = ensureInitialized();
+                } catch (Throwable t) {
+                    LOG.error("offline engine init failed: {}", String.valueOf(t.getMessage()));
                     out.complete(Optional.empty());
                     return;
                 }
-                String text = new String(raw, GBK).trim();
-                if (text.isEmpty()) {
-                    LOG.info("Offline no result (blank)");
+                if (h == 0) {
                     out.complete(Optional.empty());
                     return;
                 }
-                LOG.info("Offline ASR ok: \"{}\"", text);
-                out.complete(Optional.of(text));
-            } catch (Throwable t) {
-                LOG.error("Offline ASR failed: {}", String.valueOf(t.getMessage()));
-                out.complete(Optional.empty()); // 失败 → 空结果（等同未命中），绝不崩服务
-            }
-        });
+                try {
+                    byte[] raw = nativeRecognize(h, pcm16k);
+                    if (raw == null || raw.length == 0) {
+                        LOG.info("Offline no result");
+                        out.complete(Optional.empty());
+                        return;
+                    }
+                    String text = new String(raw, GBK).trim();
+                    if (text.isEmpty()) {
+                        LOG.info("Offline no result (blank)");
+                        out.complete(Optional.empty());
+                        return;
+                    }
+                    LOG.info("Offline ASR ok: \"{}\"", text);
+                    out.complete(Optional.of(text));
+                } catch (Throwable t) {
+                    LOG.error("Offline ASR failed: {}", String.valueOf(t.getMessage()));
+                    out.complete(Optional.empty()); // 失败 → 空结果（等同未命中），绝不崩服务
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
         // 30s 调用超时兜底：native 卡死时 future 按时完成空结果，调用方不被阻塞
         out.orTimeout(RECOGNIZE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         return out.handle((r, e) -> e != null ? Optional.<String>empty() : r);
+    }
+
+    /**
+     * Release this adapter's serial worker. The native engine is process-global and deliberately
+     * remains loaded until process exit; one pooled adapter must not uninitialize other workers.
+     */
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) engine.shutdownNow();
     }
 
     /**

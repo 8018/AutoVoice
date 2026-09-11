@@ -4,18 +4,14 @@ import java.util.concurrent.*;
 
 /** A monotonic, request-owned deadline. Queueing time is part of the budget. */
 public final class ExecutionBudget {
-    private static final ThreadPoolExecutor WORKERS = new ThreadPoolExecutor(16, 16, 0,
-            TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64), task -> {
-                Thread thread = new Thread(task, "agent-budget");
-                thread.setDaemon(true);
-                return thread;
-            }, new ThreadPoolExecutor.AbortPolicy());
     private final long started = System.nanoTime();
     private final long durationNanos;
+    private final ThreadPoolExecutor workers;
 
-    public ExecutionBudget(long durationMs) {
+    public ExecutionBudget(long durationMs, AgentExecutionRuntime runtime) {
         if (durationMs <= 0) throw new IllegalArgumentException("execution budget must be positive");
         durationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
+        workers = java.util.Objects.requireNonNull(runtime, "runtime").budgets();
     }
 
     public long remainingNanos() throws TimeoutException {
@@ -36,14 +32,14 @@ public final class ExecutionBudget {
 
     public <T> T run(Callable<T> action, Runnable cancel) throws Exception {
         check();
-        Future<T> future = WORKERS.submit(() -> { check(); return action.call(); });
+        Future<T> future = workers.submit(() -> { check(); return action.call(); });
         try {
             T result = await(future);
             check();
             return result;
         } catch (TimeoutException | InterruptedException error) {
             future.cancel(true);
-            WORKERS.remove((Runnable) future);
+            workers.remove((Runnable) future);
             try { cancel.run(); } catch (RuntimeException ignored) { }
             throw error;
         } catch (ExecutionException error) {

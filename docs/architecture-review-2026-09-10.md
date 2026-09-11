@@ -2,8 +2,8 @@
 
 ## 评估范围与结论
 
-本次核查最初基于 `main` 的 `591a35c`；第六步第三批实施基线已推进到第二批合并提交
-`d527194`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
+本次核查最初基于 `main` 的 `591a35c`；第六步第四批实施基线已推进到第三批合并提交
+`30319a7`。下文路径相对于仓库根目录，以符号名定位代码，避免行号过时。
 
 本报告依据源代码、[端云轮次设计](cross-tier-turn-admission.md)和
 [覆盖率基线](test-coverage.md)修订。已证实的代码问题、潜在风险和改进建议分别标注。
@@ -12,8 +12,8 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一至第五步已合并；第六步拆分为多个独立 PR，前两批网关职责和共享业务装配已合并，
-第三批死代码/依赖清理已实现并通过本地验证。
+第一至第五步已合并；第六步拆分为四个独立 PR，前三批网关职责、共享业务装配和
+死代码/依赖清理已合并，第四批资源生命周期治理已实现并通过本地验证。
 此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
@@ -58,7 +58,7 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 | C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
 | D | 已确认并修复配置与执行脱节：VAD 参数现进入主分段门，ECNR 可选 RNNoise/旁路，provider 矩阵启动期校验；mock.executor 明确为未实现保留项。 | DemoConfig、AudioRecorder、ConfiguredVadGate、VoiceEngineFactory、android-config-capabilities.md | 第四步已合并；打断/延时聆听 VAD 保留独立门限，避免混用检测目的。 |
 | E | 已将导航候选存储、匹配和过期处理移出 contracts。 | NavigationDialog、navigation-domain、Classic/Omni 导航 Bean | contracts 仅保留端口；领域模块按逻辑 sessionId 保存候选，保留 120 秒 TTL 和 selectionId，并增加确定性容量淘汰。第五步已合并。 |
-| F | 已确认职责集中与重复，正在分批收敛。 | VoiceGatewayHandler、GatewayDownlink、RealtimeChatBridge、BusinessBackendConfig、ClassicBackendConfig、OmniBackendConfig | 前两批已合并；第三批删除未装配旁路和零引用占位，并收紧模块依赖，待 PR/CI。 |
+| F | 已分四批收敛网关职责、装配重复、死代码和资源生命周期。 | VoiceGatewayHandler、GatewayDownlink、RealtimeChatBridge、BusinessBackendConfig、AgentExecutionRuntime | 前三批已合并；第四批已实现并通过本地测试，待 PR/CI。 |
 | G | 已确认覆盖率差异。 | docs/test-coverage.md | Android app 和讯飞适配器较低；重点补生命周期、协议与输出行为测试，设备验收仍独立进行。 |
 
 ### 2.3 原草稿纠正记录
@@ -215,7 +215,7 @@ sessionId 确定性淘汰。Classic 与 Omni 业务路由只依赖端口，应�
 两参数构造使用显式空实现，不再让业务适配器暗中创建状态。测试覆盖序号、名称/地址、包含关系、
 取消、过期、新旧列表标识、同逻辑会话重连、跨会话隔离、并发一次消费和确定性淘汰。
 
-### 第六步：按职责拆分网关、收敛重复（进行中：前两批已合并，第三批已实现）
+### 第六步：按职责拆分网关、收敛重复（第四批已实现，待 PR/CI）
 
 **修改范围：** 网关、后端装配、共享业务流程、未使用代码与依赖。
 
@@ -250,6 +250,23 @@ Classic/Hybrid、NavigationDialog 和网关回归约束。删除 Java 侧未消�
 asr-gateway、llm、slf4j；gateway 删除未使用的 tts-gateway 边，app 将两个变体都需要的
 asr-gateway/llm 改为公共依赖并删除重复声明。Gradle 运行时依赖图和两个构建变体均需继续验证。
 
+**第四批实施结果：** 新增应用级 `AgentExecutionRuntime`，由 Spring 单例统一拥有 Agent Loop
+截止任务和并行只读工具的两个有界线程池；DeepSeek 与 Qwen 只借用该资源，请求级
+`AgentLoop`/`RequestToolExecutor` 不再隐藏静态线程。Hybrid 路由器拥有并关闭自己的 ASR
+线程池及组合的 Qwen HTTP provider；Qwen 关闭时取消在途请求并停止私有 worker。模型、路由、
+工具执行线程数和队列均有明确上限，过载时请求明确失败，不再无限排队或扩线程。
+
+Telemetry Service 在 Spring 关闭时先停止接收、排空已排队写入、清除 SSE listener，再停止
+单写线程；其写队列有界，满载时仅丢弃 best-effort 遥测并记录告警。OfflineCommandService
+级联关闭引擎池和各 Native worker 的 Java 串行线程；讯飞 native 引擎是进程级单例，单个
+worker 不擅自卸载共享能力，随进程退出释放。闲聊域缓存从“容量满后全量 clear”改为按准入序号
+确定性淘汰最旧逻辑会话，避免一个新会话让其余 1000 个会话同时退域。
+
+资源关闭顺序由依赖方向决定：Gateway/Omni Router 停止产生新任务 → LLM/Qwen 私有请求池
+停止 → AgentExecutionRuntime 共享池停止；TelemetryController 先停止 SSE sender，随后
+TelemetryService 排空写队列；OfflineCommandService 关闭池内 worker。仲裁落败和新轮成立仍然
+只拦截输出，不触发上述关闭；这些关闭只发生在 Bean/连接/请求自身生命周期结束时。
+
 ## 四、验证与后续项
 
 每步运行相关行为测试和协议 fixture，提交前通过项目 CI 要求的测试、lint、构建和覆盖率门禁。
@@ -274,7 +291,7 @@ d3fc686 已补齐 Android app/adapter 单测覆盖率报告、两个 Web 交互�
 
 | 范围 | 已记录行覆盖率 | CI 最低值 |
 | --- | ---: | ---: |
-| 服务端 JVM 加权合计 | 81.68% | 75% |
+| 服务端 JVM 加权合计 | 82.08% | 75% |
 | Android voice-core + gateway-client | 89.29% | 70% |
 | Android app | 28.64% | 25% |
 | Android adapter-local | 76.22% | 70% |
@@ -282,6 +299,7 @@ d3fc686 已补齐 Android app/adapter 单测覆盖率报告、两个 Web 交互�
 | Telemetry Web | 93.28% | 80% |
 | Skill Manager Web | 63.29% | 60% |
 
-本次修订未重跑覆盖率或重新统计行数。原草稿的总行数、测试数量和混合 JVM 覆盖率缺少
-可复现的范围说明，不再作为本报告结论依据。后续应记录提交、文件范围、SDK/生成代码排除规则、
-测试变体和报告来源；设备测试与 JVM 单测分别列示。
+第四批在 Classic 全量测试后用 `shared/verify-jacoco-coverage.mjs` 聚合 17 份 JaCoCo 报告，得到
+4041/4923 行（82.08%）；Omni 也按 CI 命令完成全模块测试与 bootJar。原草稿的总行数、测试数量
+和混合 JVM 覆盖率缺少可复现的范围说明，不再作为本报告结论依据。后续统计应继续记录提交、
+文件范围、SDK/生成代码排除规则、测试变体和报告来源；设备测试与 JVM 单测分别列示。

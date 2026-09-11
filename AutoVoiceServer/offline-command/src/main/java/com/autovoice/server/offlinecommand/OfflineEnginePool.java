@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +27,7 @@ import org.slf4j.LoggerFactory;
  * 不感知池的存在）。C++ 侧当前以全局互斥兜底串行识别（见 autovoice_offline_esr.cpp），
  * 服务器实测确认会话级隔离后可去锁并行。
  */
-public final class OfflineEnginePool implements OfflineCommandProvider {
+public final class OfflineEnginePool implements OfflineCommandProvider, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(OfflineEnginePool.class);
 
@@ -34,6 +35,7 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
     private final Semaphore permits;
     /** 链路事件记录器（Task 4 插桩：offline_pool；telemetry 禁用时是 Noop）。 */
     private final TelemetryRecorder recorder;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
      * @param recorder 链路事件记录器（Task 4 起）。池降级事件按调用方透传的 utteranceId 记录
@@ -57,6 +59,7 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
     @Override
     public CompletableFuture<Optional<String>> recognize(byte[] pcm16k, SessionContext ctx,
                                                          String utteranceId) {
+        if (closed.get()) return CompletableFuture.completedFuture(Optional.empty());
         if (!permits.tryAcquire()) {
             LOG.info("offline engine busy, skip (pool={}, session={})", workers.size(), ctx.sessionId());
             recorder.record(utteranceId, TelemetryStages.OFFLINE_POOL, "warn",
@@ -96,5 +99,19 @@ public final class OfflineEnginePool implements OfflineCommandProvider {
             }
             return result == null ? Optional.<String>empty() : result;
         });
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        for (OfflineCommandProvider worker : workers) {
+            if (worker instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception error) {
+                    LOG.warn("offline engine worker close failed: {}", String.valueOf(error.getMessage()));
+                }
+            }
+        }
     }
 }

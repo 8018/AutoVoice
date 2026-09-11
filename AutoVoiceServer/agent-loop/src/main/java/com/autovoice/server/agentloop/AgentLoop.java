@@ -43,15 +43,18 @@ public final class AgentLoop<M, R> {
     private final Policy policy;
     private final RequestToolExecutor tools;
     private final Adapter<M, R> adapter;
+    private final AgentExecutionRuntime runtime;
 
-    public AgentLoop(Policy policy, RequestToolExecutor tools, Adapter<M, R> adapter) {
+    public AgentLoop(Policy policy, RequestToolExecutor tools, Adapter<M, R> adapter,
+                     AgentExecutionRuntime runtime) {
         this.policy = policy;
         this.tools = tools;
         this.adapter = adapter;
+        this.runtime = runtime;
     }
 
     public R run() throws Exception {
-        ExecutionBudget budget = new ExecutionBudget(policy.executionBudgetMs());
+        ExecutionBudget budget = new ExecutionBudget(policy.executionBudgetMs(), runtime);
         return budget.run(() -> runWithinBudget(budget), adapter::cancelExecution);
     }
 

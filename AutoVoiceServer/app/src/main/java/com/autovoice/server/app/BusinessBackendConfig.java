@@ -1,5 +1,6 @@
 package com.autovoice.server.app;
 
+import com.autovoice.server.agentloop.AgentExecutionRuntime;
 import com.autovoice.server.asrgateway.AliyunAsrProvider;
 import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
@@ -27,6 +28,11 @@ import java.util.List;
 public class BusinessBackendConfig {
 
     @Bean
+    public AgentExecutionRuntime agentExecutionRuntime() {
+        return new AgentExecutionRuntime();
+    }
+
+    @Bean
     public Clock businessClock() {
         return Clock.systemUTC();
     }
@@ -52,12 +58,13 @@ public class BusinessBackendConfig {
         };
     }
 
-    @Bean
+    @Bean(destroyMethod = "close")
     public LlmProvider businessLlmProvider(OkHttpClient client,
                                            AppConfig.AutovoiceProperties props,
                                            TelemetryRecorder recorder,
                                            McpSkillRegistry registry,
-                                           SystemPromptStore promptStore) {
+                                           SystemPromptStore promptStore,
+                                           AgentExecutionRuntime agentRuntime) {
         if (!"deepseek".equals(props.providers().llm())) {
             throw new IllegalArgumentException(
                     "unknown providers.llm: " + props.providers().llm() + " (deepseek)");
@@ -70,7 +77,7 @@ public class BusinessBackendConfig {
         return new DeepSeekLlmProvider(client, props.secrets().deepseekApiKey(),
                 DeepSeekLlmProvider.DEFAULT_ENDPOINT, recorder, businessTools,
                 DeepSeekLlmProvider.DEFAULT_TOOL_LOOP_BUDGET_MS,
-                new McpToolExecutor(registry::callTool), promptStore::get);
+                new McpToolExecutor(registry::callTool), promptStore::get, agentRuntime);
     }
 
     @Bean

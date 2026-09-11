@@ -136,4 +136,19 @@ class TelemetryServiceTest {
         assertNull(svc.queryRound("utt-old"));
         assertFalse(Files.exists(tmp.resolve("audio/utt-old.wav")));
     }
+
+    @Test
+    void closeDrainsQueuedWritesAndRejectsFurtherQueries() {
+        TelemetryService svc = newService();
+        svc.record("utt-close", TelemetryStages.UTTERANCE_START, "info", Map.of());
+
+        svc.close();
+        svc.close();
+
+        TelemetryService reopened = newService();
+        assertNotNull(reopened.queryRound("utt-close"));
+        reopened.close();
+        assertThrows(IllegalStateException.class, () -> svc.queryRound("utt-close"));
+        assertThrows(IllegalStateException.class, () -> svc.saveAudio("late", new byte[2]));
+    }
 }

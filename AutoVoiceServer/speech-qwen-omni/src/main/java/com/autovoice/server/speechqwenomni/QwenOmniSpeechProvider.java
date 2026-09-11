@@ -1,6 +1,7 @@
 package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.agentloop.AgentLoop;
+import com.autovoice.server.agentloop.AgentExecutionRuntime;
 import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
 import com.autovoice.server.agentloop.NavigationCandidateReplies;
@@ -47,10 +48,12 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -60,7 +63,7 @@ import java.util.function.Supplier;
  * qwen3.5-omni-plus HTTP/SSE 在线候选。输入为完整 16k PCM；输出一边累积为兼容用
  * 24k WAV，一边通过 OnlineAudioSink 增量发送 24k/mono/s16le PCM。
  */
-public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
+public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(QwenOmniSpeechProvider.class);
 
@@ -102,17 +105,38 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     private final ToolProvider tools;
     private final ToolExecutor toolExecutor;
     private final Supplier<String> systemPrompt;
-    private final ExecutorService workers = Executors.newFixedThreadPool(4, r -> {
-        Thread thread = new Thread(r, "qwen-omni-" + WORKER.incrementAndGet());
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final AgentExecutionRuntime agentRuntime;
+    private final boolean ownsAgentRuntime;
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private final ExecutorService workers = new ThreadPoolExecutor(
+            4, 4, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64), r -> {
+                Thread thread = new Thread(r, "qwen-omni-" + WORKER.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
     private final ConcurrentMap<String, CompletableFuture<OnlineSpeechResult>> active =
             new ConcurrentHashMap<>();
 
     public QwenOmniSpeechProvider(OkHttpClient client, String apiKey, String endpoint,
                                   String model, String voice, ToolProvider tools,
                                   ToolExecutor toolExecutor, Supplier<String> systemPrompt) {
+        this(client, apiKey, endpoint, model, voice, tools, toolExecutor, systemPrompt,
+                new AgentExecutionRuntime(), true);
+    }
+
+    /** Application assembly path: the injected runtime is process-owned and shared across providers. */
+    public QwenOmniSpeechProvider(OkHttpClient client, String apiKey, String endpoint,
+                                  String model, String voice, ToolProvider tools,
+                                  ToolExecutor toolExecutor, Supplier<String> systemPrompt,
+                                  AgentExecutionRuntime agentRuntime) {
+        this(client, apiKey, endpoint, model, voice, tools, toolExecutor, systemPrompt,
+                agentRuntime, false);
+    }
+
+    private QwenOmniSpeechProvider(OkHttpClient client, String apiKey, String endpoint,
+                                   String model, String voice, ToolProvider tools,
+                                   ToolExecutor toolExecutor, Supplier<String> systemPrompt,
+                                   AgentExecutionRuntime agentRuntime, boolean ownsAgentRuntime) {
         // SSE 可能在模型推理或工具调用期间长时间没有字节。OkHttp 默认 10s read timeout
         // 会把健康流误判为中断；模型/工具循环自身预算到期时取消当前 Call，与仲裁拦截独立。
         this.client = Objects.requireNonNull(client, "client").newBuilder()
@@ -126,6 +150,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
         this.tools = tools == null ? QwenOmniSpeechProvider::defaultTools : tools;
         this.toolExecutor = toolExecutor;
         this.systemPrompt = systemPrompt;
+        this.agentRuntime = Objects.requireNonNull(agentRuntime, "agentRuntime");
+        this.ownsAgentRuntime = ownsAgentRuntime;
     }
 
     public static List<FunctionTool> defaultTools() {
@@ -145,6 +171,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
     @Override
     public CompletableFuture<OnlineSpeechResult> process(
             byte[] pcm16k, SessionContext context, String utteranceId, OnlineAudioSink audioSink) {
+        if (closed.get()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("qwen omni provider is closed"));
+        }
         if (apiKey.isBlank()) {
             throw new IllegalStateException("QWEN_OMNI_API_KEY/DASHSCOPE_API_KEY is empty");
         }
@@ -161,14 +190,18 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                 return super.cancel(mayInterruptIfRunning);
             }
         };
-        task.set(workers.submit(() -> {
-            try {
-                out.complete(runConversation(pcm16k, context, activeCall, sink));
-            } catch (Throwable error) {
-                if (!out.isCancelled()) sink.onError(error);
-                if (!out.isCancelled()) out.completeExceptionally(error);
-            }
-        }));
+        try {
+            task.set(workers.submit(() -> {
+                try {
+                    out.complete(runConversation(pcm16k, context, activeCall, sink));
+                } catch (Throwable error) {
+                    if (!out.isCancelled()) sink.onError(error);
+                    if (!out.isCancelled()) out.completeExceptionally(error);
+                }
+            }));
+        } catch (java.util.concurrent.RejectedExecutionException error) {
+            out.completeExceptionally(new IllegalStateException("qwen omni workers overloaded", error));
+        }
         if (utteranceId != null && !utteranceId.isBlank()) {
             active.put(utteranceId, out);
             out.whenComplete((ignored, error) -> active.remove(utteranceId, out));
@@ -234,7 +267,8 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                     Math.max(1, System.currentTimeMillis() - started));
             return result;
         }, (call, error) -> "工具执行失败：" + error.getMessage(),
-                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot));
+                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot),
+                agentRuntime);
 
         AgentLoop<StreamResult, OnlineSpeechResult> loop = new AgentLoop<>(
                 new AgentLoop.Policy(MAX_ROUNDS, Long.MAX_VALUE, false, 45_000), requestTools,
@@ -324,7 +358,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
                         audioSink.onReplyText(TOOL_LOOP_FALLBACK_TEXT, true);
                         return new OnlineSpeechResult(Reply.ofText(TOOL_LOOP_FALLBACK_TEXT), "");
                     }
-                });
+                }, agentRuntime);
         try {
             return loop.run();
         } catch (IOException e) {
@@ -559,6 +593,16 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider {
             sink.onStart(24_000, 1, "pcm_s16le");
             streamStarted = true;
         }
+    }
+
+    /** Provider lifecycle only: cancel in-flight HTTP work and stop its private request workers. */
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        active.values().forEach(future -> future.cancel(true));
+        active.clear();
+        workers.shutdownNow();
+        if (ownsAgentRuntime) agentRuntime.close();
     }
 
     private String executeTool(ToolCall call) {

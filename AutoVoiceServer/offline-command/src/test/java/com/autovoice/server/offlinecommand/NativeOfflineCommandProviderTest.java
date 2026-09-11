@@ -47,6 +47,16 @@ class NativeOfflineCommandProviderTest {
         assertEquals(Optional.empty(), await(p.recognize(new byte[0], ctx())));
     }
 
+    @Test
+    void closeStopsAcceptingRecognitionWithoutLoadingNativeLibrary() {
+        NativeOfflineCommandProvider p = provider("/definitely/missing/autovoice_offline_esr.so");
+
+        p.close();
+        p.close();
+
+        assertTrue(await(p.recognize(new byte[320], ctx())).isEmpty());
+    }
+
     private static NativeOfflineCommandProvider provider(String libPath) {
         return new NativeOfflineCommandProvider(libPath, "/work", "/resource",
                 "/cn_fsa.txt", "", "appId", "key", "secret");
