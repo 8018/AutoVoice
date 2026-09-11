@@ -1,5 +1,6 @@
 package com.autovoice.server.app;
 
+import com.autovoice.server.agentloop.AgentExecutionRuntime;
 import com.autovoice.server.asrgateway.AliyunAsrProvider;
 import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
@@ -7,6 +8,7 @@ import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 
 import java.time.Clock;
 
@@ -16,6 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class BusinessBackendConfigTest {
     private final BusinessBackendConfig config = new BusinessBackendConfig();
     private final OkHttpClient client = new OkHttpClient();
+    private final AgentExecutionRuntime agentRuntime = new AgentExecutionRuntime();
+
+    @AfterEach void closeRuntime() { agentRuntime.close(); }
 
     @Test
     void createsConfiguredAsrForEitherBuildVariant() {
@@ -28,7 +33,7 @@ class BusinessBackendConfigTest {
         assertThrows(IllegalArgumentException.class, () -> asr("other"));
         assertThrows(IllegalArgumentException.class, () -> config.businessLlmProvider(
                 client, properties("other", "iflytek"), NoopTelemetryRecorder.INSTANCE,
-                null, null));
+                null, null, agentRuntime));
     }
 
     private AsrProvider asr(String provider) {

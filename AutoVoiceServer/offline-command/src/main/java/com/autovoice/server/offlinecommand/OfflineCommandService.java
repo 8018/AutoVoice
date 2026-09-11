@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 离线命令链编排：Provider（原生识别）→ RuleNlu（规则映射）→ 命中结果。
@@ -20,11 +21,12 @@ import java.util.concurrent.CompletableFuture;
  *   <li>{@code Offline no result} —— 识别空/失败/unknown，离线链未命中。</li>
  * </ul>
  */
-public final class OfflineCommandService {
+public final class OfflineCommandService implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(OfflineCommandService.class);
 
     private final OfflineCommandProvider provider;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public OfflineCommandService(OfflineCommandProvider provider) {
         this.provider = provider;
@@ -43,6 +45,7 @@ public final class OfflineCommandService {
      */
     public CompletableFuture<Optional<OfflineCommandHit>> recognize(byte[] pcm16k, SessionContext ctx,
                                                                     String utteranceId) {
+        if (closed.get()) return CompletableFuture.completedFuture(Optional.empty());
         CompletableFuture<Optional<String>> raw;
         try {
             raw = provider.recognize(pcm16k, ctx, utteranceId);
@@ -75,5 +78,17 @@ public final class OfflineCommandService {
             return Optional.empty();
         }
         return Optional.of(new OfflineCommandHit(trimmed, intent));
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        if (provider instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception error) {
+                LOG.warn("offline command provider close failed: {}", String.valueOf(error.getMessage()));
+            }
+        }
     }
 }

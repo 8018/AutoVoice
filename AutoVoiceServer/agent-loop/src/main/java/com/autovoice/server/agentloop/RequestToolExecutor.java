@@ -14,13 +14,6 @@ import java.util.concurrent.Future;
  * assistant's tool-call order.
  */
 public final class RequestToolExecutor {
-    private static final java.util.concurrent.ThreadPoolExecutor READS = new java.util.concurrent.ThreadPoolExecutor(
-            16, 16, 0, java.util.concurrent.TimeUnit.MILLISECONDS,
-            new java.util.concurrent.ArrayBlockingQueue<>(64), task -> {
-                Thread thread = new Thread(task, "agent-tool-read");
-                thread.setDaemon(true);
-                return thread;
-            }, new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     @FunctionalInterface
     public interface Invoker {
         String invoke(AgentToolCall call) throws Exception;
@@ -34,17 +27,21 @@ public final class RequestToolExecutor {
     private final Invoker invoker;
     private final ErrorFormatter errors;
     private final ToolExecutionPolicy policy;
+    private final java.util.concurrent.ThreadPoolExecutor reads;
     private final ConcurrentMap<String, CompletableFuture<AgentToolResult>> cache =
             new ConcurrentHashMap<>();
 
-    public RequestToolExecutor(Invoker invoker, ErrorFormatter errors) {
-        this(invoker, errors, ToolExecutionPolicy.conservative());
+    public RequestToolExecutor(Invoker invoker, ErrorFormatter errors,
+                               AgentExecutionRuntime runtime) {
+        this(invoker, errors, ToolExecutionPolicy.conservative(), runtime);
     }
 
-    public RequestToolExecutor(Invoker invoker, ErrorFormatter errors, ToolExecutionPolicy policy) {
+    public RequestToolExecutor(Invoker invoker, ErrorFormatter errors, ToolExecutionPolicy policy,
+                               AgentExecutionRuntime runtime) {
         this.invoker = invoker;
         this.errors = errors;
         this.policy = policy;
+        this.reads = java.util.Objects.requireNonNull(runtime, "runtime").toolReads();
     }
 
     public List<AgentToolResult> execute(List<AgentToolCall> calls) {
@@ -77,7 +74,7 @@ public final class RequestToolExecutor {
         }
         List<Future<AgentToolResult>> futures = new ArrayList<>();
         try {
-            for (AgentToolCall call : calls) futures.add(READS.submit(() -> runAndCache(call, budget)));
+            for (AgentToolCall call : calls) futures.add(reads.submit(() -> runAndCache(call, budget)));
             for (int i = 0; i < futures.size(); i++) {
                 try {
                     target.add(budget == null ? futures.get(i).get() : budget.await(futures.get(i)));
@@ -93,7 +90,7 @@ public final class RequestToolExecutor {
             }
         } finally {
             futures.forEach(future -> future.cancel(true));
-            READS.purge();
+            reads.purge();
             calls.clear();
         }
     }

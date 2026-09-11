@@ -18,31 +18,37 @@ import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.Intent;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 混合在线链路：ASR 先决定会话域；默认业务域走文本 LLM，只有明确口令进入后才把
  * 原始音频交给 Qwen S2S 闲聊。两个模型不共享 prompt、Skill 或工具执行权限。
  */
-public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvider, RealtimeChatProvider {
+public final class HybridBusinessChatSpeechProvider
+        implements OnlineSpeechProvider, RealtimeChatProvider, AutoCloseable {
 
     public static final String ENTER_CHAT_PHRASE = "陪我聊会天";
     public static final String ENTER_CHAT_REPLY = "好呀，想聊什么？";
     public static final String EXIT_CHAT_REPLY = "好的，已退出闲聊";
     private static final int MAX_CHAT_SESSIONS = 1_000;
     private static final AtomicInteger WORKER = new AtomicInteger();
-    private static final ExecutorService ASR_WORKERS = Executors.newCachedThreadPool(r -> {
-        Thread thread = new Thread(r, "hybrid-route-asr-" + WORKER.incrementAndGet());
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ExecutorService asrWorkers = new ThreadPoolExecutor(
+            8, 8, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64), r -> {
+                Thread thread = new Thread(r, "hybrid-route-asr-" + WORKER.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
     private static final Set<String> EXIT_PHRASES = Set.of(
             "退出闲聊", "结束闲聊", "不聊了", "先不聊了", "停止聊天", "结束聊天");
 
@@ -51,7 +57,10 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     private final OnlineSpeechProvider chatSpeech;
     private final QwenOmniRealtimeChatProvider realtimeChat;
     private final NavigationDialog navigationDialog;
-    private final Set<String> chatSessions = ConcurrentHashMap.newKeySet();
+    /** Active chat domains, ordered by admission sequence for deterministic bounded eviction. */
+    private final ConcurrentHashMap<String, Long> chatSessions = new ConcurrentHashMap<>();
+    private final AtomicLong chatSequence = new AtomicLong();
+    private final AtomicBoolean closed = new AtomicBoolean();
     private final ConcurrentHashMap<String, CompletableFuture<OnlineSpeechResult>> active =
             new ConcurrentHashMap<>();
 
@@ -83,6 +92,9 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                                                           String utteranceId,
                                                           OnlineAudioSink audioSink,
                                                           OnlineAsrSink asrSink) {
+        if (closed.get()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("hybrid provider is closed"));
+        }
         if (isChatting(context)) {
             return track(utteranceId, processChat(pcm16k, context, utteranceId, audioSink, null));
         }
@@ -95,10 +107,16 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                 return super.cancel(mayInterruptIfRunning);
             }
         };
-        CompletableFuture<String> transcript = CompletableFuture.supplyAsync(() -> {
-            String text = asr.transcribe(pcm16k, context);
-            return text == null ? "" : text.trim();
-        }, ASR_WORKERS);
+        CompletableFuture<String> transcript;
+        try {
+            transcript = CompletableFuture.supplyAsync(() -> {
+                String text = asr.transcribe(pcm16k, context);
+                return text == null ? "" : text.trim();
+            }, asrWorkers);
+        } catch (java.util.concurrent.RejectedExecutionException error) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("hybrid ASR workers overloaded", error));
+        }
         stage.set(transcript);
         transcript.whenComplete((text, asrError) -> {
             if (asrError != null) {
@@ -130,6 +148,7 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     @Override
     public OnlineSpeechStream openStream(SessionContext context, String utteranceId,
                                          OnlineAudioSink audioSink, OnlineAsrSink asrSink) {
+        if (closed.get()) throw new IllegalStateException("hybrid provider is closed");
         if (isChatting(context) || !(asr instanceof StreamingAsrProvider streaming)) {
             return null;
         }
@@ -169,13 +188,12 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
                                                          OnlineAudioSink audioSink) {
         String key = context == null || context.sessionId() == null ? "" : context.sessionId();
         String normalized = normalize(transcript);
-        if (isExit(normalized) && chatSessions.remove(key)) {
+        if (isExit(normalized) && chatSessions.remove(key) != null) {
             return CompletableFuture.completedFuture(
                     new OnlineSpeechResult(Reply.ofText(EXIT_CHAT_REPLY), transcript));
         }
         if (isEnter(normalized)) {
-            if (chatSessions.size() >= MAX_CHAT_SESSIONS) chatSessions.clear();
-            chatSessions.add(key);
+            enterChatSession(key);
             // 入口只切域，不再调用普通 qwen3.5-omni-plus HTTP 模型。客户端收到控制意图后
             // 立即建立 qwen3.5-omni-plus-realtime 长会话，后续音频全走该连接。
             return CompletableFuture.completedFuture(new OnlineSpeechResult(
@@ -257,7 +275,17 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
     }
 
     boolean isChatting(SessionContext context) {
-        return chatSessions.contains(sessionKey(context));
+        return chatSessions.containsKey(sessionKey(context));
+    }
+
+    private synchronized void enterChatSession(String key) {
+        if (!chatSessions.containsKey(key) && chatSessions.size() >= MAX_CHAT_SESSIONS) {
+            chatSessions.entrySet().stream()
+                    .min(java.util.Comparator.comparingLong(Map.Entry<String, Long>::getValue)
+                            .thenComparing(Map.Entry::getKey))
+                    .ifPresent(entry -> chatSessions.remove(entry.getKey(), entry.getValue()));
+        }
+        chatSessions.put(key, chatSequence.incrementAndGet());
     }
 
     @Override
@@ -298,5 +326,21 @@ public final class HybridBusinessChatSpeechProvider implements OnlineSpeechProvi
         CompletableFuture<OnlineSpeechResult> future = active.remove(utteranceId);
         if (future != null) future.cancel(true);
         chatSpeech.cancel(utteranceId);
+    }
+
+    /** Application-owned router closes its private ASR workers and the composed Qwen HTTP provider. */
+    @Override public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        active.values().forEach(future -> future.cancel(true));
+        active.clear();
+        chatSessions.clear();
+        asrWorkers.shutdownNow();
+        if (chatSpeech instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception error) {
+                throw new IllegalStateException("failed to close chat speech provider", error);
+            }
+        }
     }
 }

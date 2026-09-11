@@ -19,6 +19,7 @@ java {
 
 dependencies {
     implementation(project(":contracts"))
+    implementation(project(":agent-loop"))
     implementation(project(":session"))
     implementation(project(":tts-gateway"))
     implementation(project(":gateway"))

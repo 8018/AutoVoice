@@ -26,7 +26,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -41,7 +45,7 @@ import java.util.function.LongSupplier;
 @Component
 @ConditionalOnProperty(prefix = "autovoice.telemetry", name = "enabled",
         havingValue = "true", matchIfMissing = true)
-public class TelemetryService implements TelemetryRecorder {
+public class TelemetryService implements TelemetryRecorder, AutoCloseable {
 
     /** 端侧轮次事件包（POST /api/telemetry/round body；聚合列由 service 从 events 推导）。 */
     public record DeviceRoundPayload(String utteranceId, String sessionId, String deviceId,
@@ -54,14 +58,16 @@ public class TelemetryService implements TelemetryRecorder {
     private final TelemetryProperties props;
     private final LongSupplier clock;
     private final SqliteTelemetryStore store;
-    private final ExecutorService writer = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "telemetry-writer");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ExecutorService writer = new ThreadPoolExecutor(
+            1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(4_096), r -> {
+                Thread t = new Thread(r, "telemetry-writer");
+                t.setDaemon(true);
+                return t;
+            }, new ThreadPoolExecutor.AbortPolicy());
     /** 已见 utteranceId（防并发下 record 重复建 round 骨架）。 */
     private final Set<String> knownRounds = ConcurrentHashMap.newKeySet();
     private final List<Consumer<RoundSummary>> listeners = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     /** Spring 装配入口（两个构造器必须显式标记 @Autowired，否则容器无法选择）。 */
     @Autowired
@@ -107,6 +113,7 @@ public class TelemetryService implements TelemetryRecorder {
 
     /** 端侧事件包：upsert 聚合行 + 逐条插事件 + SSE 推摘要。 */
     public void recordDeviceRound(DeviceRoundPayload p) {
+        ensureOpen();
         if (p == null || p.utteranceId() == null || p.utteranceId().isBlank()) {
             throw new IllegalArgumentException("utteranceId is required");
         }
@@ -143,6 +150,7 @@ public class TelemetryService implements TelemetryRecorder {
      * readAudio 原样 resolve）。
      */
     public void saveAudio(String utteranceId, byte[] pcm) {
+        ensureOpen();
         String safe = safeFileName(utteranceId);
         byte[] wav = new byte[44 + pcm.length];
         System.arraycopy(wavHeader(pcm.length), 0, wav, 0, 44);
@@ -228,16 +236,22 @@ public class TelemetryService implements TelemetryRecorder {
     // ---------- 内部 ----------
 
     private void submit(Runnable task) {
-        writer.execute(() -> {
-            try {
-                task.run();
-            } catch (Throwable t) {
-                LOG.warn("telemetry write failed: {}", String.valueOf(t.getMessage()));
-            }
-        });
+        if (closed.get()) return;
+        try {
+            writer.execute(() -> {
+                try {
+                    task.run();
+                } catch (Throwable t) {
+                    LOG.warn("telemetry write failed: {}", String.valueOf(t.getMessage()));
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            LOG.warn("telemetry queue full or closing; dropped one best-effort event");
+        }
     }
 
     private <T> T syncQuery(Callable<T> task) {
+        ensureOpen();
         try {
             return writer.submit(task).get();
         } catch (InterruptedException e) {
@@ -249,7 +263,13 @@ public class TelemetryService implements TelemetryRecorder {
                 throw re;
             }
             throw new IllegalStateException("telemetry query failed", cause);
+        } catch (RejectedExecutionException e) {
+            throw new IllegalStateException("telemetry service is overloaded or closed", e);
         }
+    }
+
+    private void ensureOpen() {
+        if (closed.get()) throw new IllegalStateException("telemetry service is closed");
     }
 
     private static void putIfNotNull(Map<String, Object> f, String key, Object value) {
@@ -361,5 +381,19 @@ public class TelemetryService implements TelemetryRecorder {
         b.put("data".getBytes(StandardCharsets.US_ASCII));
         b.putInt(dataSize);
         return b.array();
+    }
+
+    /** Stop accepting writes, drain queued records, then detach all SSE listeners. */
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        listeners.clear();
+        writer.shutdown();
+        try {
+            if (!writer.awaitTermination(5, TimeUnit.SECONDS)) writer.shutdownNow();
+        } catch (InterruptedException error) {
+            writer.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

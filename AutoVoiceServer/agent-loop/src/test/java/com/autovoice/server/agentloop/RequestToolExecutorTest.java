@@ -1,6 +1,7 @@
 package com.autovoice.server.agentloop;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -11,13 +12,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RequestToolExecutorTest {
+    private final AgentExecutionRuntime runtime = new AgentExecutionRuntime();
+
+    @AfterEach void closeRuntime() { runtime.close(); }
+
     @Test
     void operationInvalidatesEarlierReadCacheAndIsNeverDeduplicated() {
         AtomicInteger reads = new AtomicInteger(), writes = new AtomicInteger();
         var executor = new RequestToolExecutor(call -> {
             if (call.name().equals("maps_geo")) return "" + reads.incrementAndGet();
             writes.incrementAndGet(); return "ok";
-        }, (call, error) -> "error", queries());
+        }, (call, error) -> "error", queries(), runtime);
         var query = new AgentToolCall("1", "maps_geo", "{}");
         var operation = new AgentToolCall("2", "set_destination", "{}");
         executor.execute(List.of(query, operation, query, operation));
@@ -28,7 +33,8 @@ class RequestToolExecutorTest {
     void unknownGetNamedToolIsNotCachedOrParallelized() {
         AtomicInteger calls = new AtomicInteger();
         var tool = new AgentToolCall("1", "get_or_create_route", "{}");
-        var executor = new RequestToolExecutor(call -> "" + calls.incrementAndGet(), (call, error) -> "error");
+        var executor = new RequestToolExecutor(call -> "" + calls.incrementAndGet(),
+                (call, error) -> "error", runtime);
         assertTrue(!ToolExecutionPolicy.conservative().isParallelRead(tool));
         assertEquals("1", executor.execute(List.of(tool)).getFirst().content());
         assertEquals("2", executor.execute(List.of(tool)).getFirst().content());
@@ -40,7 +46,7 @@ class RequestToolExecutorTest {
         var executor = new RequestToolExecutor(call -> {
             if (calls.incrementAndGet() == 1) throw new IllegalStateException("temporary failure");
             return "ok";
-        }, (call, error) -> "error", queries());
+        }, (call, error) -> "error", queries(), runtime);
         var tool = new AgentToolCall("1", "maps_geo", "{}");
         assertTrue(executor.execute(List.of(tool)).getFirst().error());
         assertEquals("ok", executor.execute(List.of(tool)).getFirst().content());
@@ -51,7 +57,8 @@ class RequestToolExecutorTest {
     @Test
     void canonicalArgumentsReuseObjectsButNeverReorderWaypoints() {
         AtomicInteger calls = new AtomicInteger();
-        var executor = new RequestToolExecutor(call -> "" + calls.incrementAndGet(), (call, error) -> "error", queries());
+        var executor = new RequestToolExecutor(call -> "" + calls.incrementAndGet(),
+                (call, error) -> "error", queries(), runtime);
         var first = new AgentToolCall("1", "maps_geo", "{\"city\":\"成都\",\"route\":[1,2],\"options\":{\"b\":2,\"a\":1}}");
         var reordered = new AgentToolCall("2", "maps_geo", "{\"options\":{\"a\":1,\"b\":2},\"route\":[1,2],\"city\":\"成都\"}");
         executor.execute(List.of(first));
@@ -86,7 +93,7 @@ class RequestToolExecutorTest {
             entered.countDown();
             assertTrue(release.await(2, TimeUnit.SECONDS));
             return call.name();
-        }, (call, error) -> error.getMessage(), queries());
+        }, (call, error) -> error.getMessage(), queries(), runtime);
 
         Thread unlock = new Thread(() -> {
             try {
@@ -110,7 +117,7 @@ class RequestToolExecutorTest {
         RequestToolExecutor executor = new RequestToolExecutor(call -> {
             calls.incrementAndGet();
             return "ok";
-        }, (call, error) -> error.getMessage(), queries());
+        }, (call, error) -> error.getMessage(), queries(), runtime);
         AgentToolCall first = new AgentToolCall("1", "maps_geo", "{\"address\":\"A\"}");
         AgentToolCall second = new AgentToolCall("2", "maps_geo", "{\"address\":\"A\"}");
 
@@ -125,7 +132,7 @@ class RequestToolExecutorTest {
         RequestToolExecutor executor = new RequestToolExecutor(call -> {
             order.append(call.id());
             return "ok";
-        }, (call, error) -> error.getMessage(), call -> call.name().startsWith("get_"));
+        }, (call, error) -> error.getMessage(), call -> call.name().startsWith("get_"), runtime);
 
         executor.execute(List.of(
                 new AgentToolCall("1", "get_a", "{}"),

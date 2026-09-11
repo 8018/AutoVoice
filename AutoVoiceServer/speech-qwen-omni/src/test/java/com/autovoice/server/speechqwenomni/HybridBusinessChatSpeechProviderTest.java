@@ -101,6 +101,57 @@ class HybridBusinessChatSpeechProviderTest {
         assertTrue(cancelled.get());
     }
 
+    @Test
+    void closeCascadesToOwnedChatProviderAndRejectsNewWork() {
+        AtomicInteger closes = new AtomicInteger();
+        class CloseableChat implements OnlineSpeechProvider, AutoCloseable {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext context, String utteranceId) {
+                return CompletableFuture.completedFuture(
+                        new OnlineSpeechResult(Reply.ofText("chat"), ""));
+            }
+            @Override public String id() { return "chat"; }
+            @Override public void close() { closes.incrementAndGet(); }
+        }
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> "hello", (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text)),
+                new CloseableChat(), new NavigationDialogService());
+
+        provider.close();
+        provider.close();
+
+        assertEquals(1, closes.get());
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> provider.process(new byte[]{1}, CTX, "after-close")
+                        .get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void chatSessionCapacityEvictsOnlyOldestSession() throws Exception {
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> HybridBusinessChatSpeechProvider.ENTER_CHAT_PHRASE,
+                (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text)),
+                new OnlineSpeechProvider() {
+                    @Override public CompletableFuture<OnlineSpeechResult> process(
+                            byte[] pcm, SessionContext context, String utteranceId) {
+                        return CompletableFuture.completedFuture(
+                                new OnlineSpeechResult(Reply.ofText("chat"), ""));
+                    }
+                    @Override public String id() { return "chat"; }
+                }, new NavigationDialogService());
+        SessionContext first = new SessionContext("session-0000", "zh-CN", Map.of());
+        SessionContext last = null;
+        for (int i = 0; i <= 1_000; i++) {
+            last = new SessionContext("session-" + String.format("%04d", i), "zh-CN", Map.of());
+            provider.process(new byte[]{1}, last, "u-" + i).get(2, TimeUnit.SECONDS);
+        }
+
+        assertFalse(provider.isChatting(first));
+        assertTrue(provider.isChatting(last));
+        assertTrue(provider.isChatting(new SessionContext("session-0001", "zh-CN", Map.of())));
+        provider.close();
+    }
+
     private static OnlineSpeechResult turn(HybridBusinessChatSpeechProvider provider, String id)
             throws Exception {
         return provider.process(new byte[]{1}, CTX, id).get(2, TimeUnit.SECONDS);

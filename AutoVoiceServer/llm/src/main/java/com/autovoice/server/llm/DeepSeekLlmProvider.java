@@ -1,6 +1,7 @@
 package com.autovoice.server.llm;
 
 import com.autovoice.server.agentloop.AgentLoop;
+import com.autovoice.server.agentloop.AgentExecutionRuntime;
 import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
 import com.autovoice.server.agentloop.NavigationCandidateReplies;
@@ -143,6 +144,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     private final Supplier<String> systemPrompt;
     /** 阻塞 HTTP/MCP 工具循环使用专用有界池，避免占用 JVM common pool。 */
     private final ExecutorService executorService;
+    private final AgentExecutionRuntime agentRuntime;
+    private final boolean ownsAgentRuntime;
 
     /**
      * 默认工具集：car_control 车控 skill + navigate 导航 skill。
@@ -163,7 +166,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint,
                                TelemetryRecorder recorder) {
         this(client, apiKey, endpoint, recorder, DeepSeekLlmProvider::defaultTools,
-                DEFAULT_TOOL_LOOP_BUDGET_MS, null, null);
+                DEFAULT_TOOL_LOOP_BUDGET_MS, null, null, new AgentExecutionRuntime(), true);
     }
 
     /**
@@ -179,6 +182,23 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint, TelemetryRecorder recorder,
                                ToolProvider tools, long toolLoopBudgetMs, ToolExecutor executor,
                                Supplier<String> systemPrompt) {
+        this(client, apiKey, endpoint, recorder, tools, toolLoopBudgetMs, executor, systemPrompt,
+                new AgentExecutionRuntime(), true);
+    }
+
+    /** Application assembly path: the injected runtime is process-owned and shared across providers. */
+    public DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint, TelemetryRecorder recorder,
+                               ToolProvider tools, long toolLoopBudgetMs, ToolExecutor executor,
+                               Supplier<String> systemPrompt, AgentExecutionRuntime agentRuntime) {
+        this(client, apiKey, endpoint, recorder, tools, toolLoopBudgetMs, executor, systemPrompt,
+                agentRuntime, false);
+    }
+
+    private DeepSeekLlmProvider(OkHttpClient client, String apiKey, String endpoint,
+                                TelemetryRecorder recorder, ToolProvider tools,
+                                long toolLoopBudgetMs, ToolExecutor executor,
+                                Supplier<String> systemPrompt, AgentExecutionRuntime agentRuntime,
+                                boolean ownsAgentRuntime) {
         // 派生 callTimeout 10s，不改动调用方传入的 client
         this.client = client.newBuilder().callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS).build();
         this.apiKey = apiKey;
@@ -188,6 +208,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         this.toolLoopBudgetMs = Math.max(0, toolLoopBudgetMs);
         this.executor = executor;
         this.systemPrompt = systemPrompt;
+        this.agentRuntime = java.util.Objects.requireNonNull(agentRuntime, "agentRuntime");
+        this.ownsAgentRuntime = ownsAgentRuntime;
         this.executorService = new ThreadPoolExecutor(
                 DEFAULT_WORKERS, DEFAULT_WORKERS, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
@@ -274,7 +296,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         RequestToolExecutor requestTools = new RequestToolExecutor(
                 call -> runTool(call.name(), call.argumentsJson()),
                 (call, error) -> "工具执行失败：" + error.getMessage(),
-                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot));
+                com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot),
+                agentRuntime);
         AgentLoop<JsonNode, Reply> loop = new AgentLoop<>(
                 new AgentLoop.Policy(MAX_LLM_ROUNDS, toolLoopBudgetMs, true), requestTools,
                 new AgentLoop.Adapter<>() {
@@ -325,7 +348,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                     public Reply exhausted(JsonNode lastMessage) {
                         throw new LlmException("deepseek llm tool loop ended without terminal result");
                     }
-                });
+                }, agentRuntime);
         try {
             return loop.run();
         } catch (LlmException | IOException e) {
@@ -496,6 +519,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     @Override
     public void close() {
         executorService.shutdownNow();
+        if (ownsAgentRuntime) agentRuntime.close();
     }
 
     /** system 消息（OpenAI 兼容）；prompt 未配置（null/空白）回退内置默认。 */

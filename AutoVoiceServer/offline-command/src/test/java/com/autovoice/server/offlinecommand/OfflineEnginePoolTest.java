@@ -146,4 +146,23 @@ class OfflineEnginePoolTest {
         release.countDown(); // 放行慢识别，避免泄漏 common pool 任务
         pool.recognize(new byte[16], ctx("session-one")).join();
     }
+
+    @Test
+    void closeCascadesToOwnedWorkers() {
+        AtomicInteger closes = new AtomicInteger();
+        class CloseableWorker implements OfflineCommandProvider, AutoCloseable {
+            @Override public CompletableFuture<Optional<String>> recognize(byte[] pcm, SessionContext ctx) {
+                return CompletableFuture.completedFuture(Optional.empty());
+            }
+            @Override public void close() { closes.incrementAndGet(); }
+        }
+        OfflineEnginePool pool = new OfflineEnginePool(
+                List.of(new CloseableWorker(), new CloseableWorker()), (utt, e) -> { });
+
+        pool.close();
+        pool.close();
+
+        assertEquals(2, closes.get());
+        assertTrue(pool.recognize(new byte[16], ctx("after-close")).join().isEmpty());
+    }
 }
