@@ -30,30 +30,26 @@ Headless 侧的自动化验证记录见仓库根 `ACCEPTANCE.md`。
 > `AUTOVOICE_OFFLINE_ENABLED=true` 等。默认关（`offline.enabled=false`），Mac 本地
 > 跑纯云端链路（LLM 兜底），行为与改造前一致。
 
-### 1.2 讯飞离线命令词体验版账号（可选增强，凭据需接线）
+### 1.2 讯飞离线命令词体验版账号（可选增强）
 
-> **现状**：本构建离线命令词 ASR 为 fake（凭据未接线）——`VoiceEngine.buildLocalChain`
-> 以空凭据构造 `IflytekOfflineCommandAsrStage`（`appId=""`/`apiKey=""`/`apiSecret=""`），
-> SDK 抛 `NOT_CONFIGURED` 即降级 fake（Log.w 后回退 fake-cmd），未走真实 SDK。
-> 拿到体验版授权后需在 `buildLocalChain` 接线 appId/apiKey/apiSecret（一行改动，
-> stage 已注入就绪）→ 届时改 `local.asr="iflytek.offline"` + 推送模型即生效。
+> **现状**：两份 Demo 配置都显式选择 `local.asr=iflytek.offline`。凭据由
+> `AutoVoice/local.properties` 注入 `BuildConfig`；SDK、凭据、授权或资源缺失时，真实本地
+> 候选按未命中处理，不会自动伪造命令。无 SDK 演示必须显式改成
+> `local.asr=iflytek.fake-cmd`。
 
-demo 默认 `local.asr=iflytek.fake-cmd`（内置 fake 命令词识别，离线可演示）；
-若已申请到**讯飞开放平台「离线命令词」体验版授权**（3 台设备 / 35 天有效期）：
+若已申请到**讯飞开放平台「离线命令词」体验版授权**：
 
 1. 将讯飞 SDK 归档（`AIKit.aar` + `resource/` 离线资源）放入
    `AutoVoice/adapter-iflytek/libs/`（本地文件不入库，见 `.gitignore`；缺失时
-   用 fake-cmd 默认链路即可，不影响其余验收）。
-2. 接线凭据（一行改动）：`VoiceEngine.buildLocalChain` 中
-   `IflytekOfflineCommandAsrStage(appId = "", apiKey = "", apiSecret = "")`
-   填入体验版 appid / apiKey / apiSecret。
-3. 改配置：编辑 `AutoVoice/app/src/main/assets/demo-full.json`，
-   把 `local.asr` 从 `"iflytek.fake-cmd"` 改为 `"iflytek.offline"`。
+   用显式 `iflytek.fake-cmd` 链路演示，不影响云端验收）。
+2. 在 `AutoVoice/local.properties` 配置 `xfyun.appid`、`xfyun.apiKey`、
+   `xfyun.apiSecret`，重新构建 APK。
+3. 确认对应配置资产的 `local.asr` 为 `"iflytek.offline"`。
 4. 把离线资源推送到手机：`adb push <SDK>/resource/CNENESR /sdcard/iflytek/`
    （引擎读取目录硬编码为 `/sdcard/iflytek/`，含 `e75f07b62_*.bin` 模型与 `fsa/cn_fsa.txt`）。
 
-未接线时切 `iflytek.offline` 会看到「讯飞离线命令词 SDK 未配置」降级提示（预期内，
-见 §5.1），链路自动回退 fake-cmd，功能不中断。
+未接线时切 `iflytek.offline` 会看到「讯飞离线命令词 SDK 未配置」提示（预期内，
+见 §5.1），该轮本地候选未命中，云端链路仍可继续。
 
 #### 1.2.1 离线唤醒（IVW）
 
@@ -380,9 +376,9 @@ cd AutoVoice
 ### 5.1 「讯飞离线命令词 SDK 未配置」降级提示
 
 `local.asr=iflytek.offline` 但 AIKit.aar / 授权 / 离线资源任一未就绪时，日志出现
-`讯飞离线命令词 SDK 未配置...`（`NOT_CONFIGURED_MSG`），链路自动降级到
-`FakeCommandAsrProvider`（fake-cmd）继续演示——**属预期行为**；demo 默认配置
-（`iflytek.fake-cmd`）不会出现该提示。解决：按 §1.2 补齐 SDK 与授权，或保持默认配置。
+`讯飞离线命令词 SDK 未配置...`（`NOT_CONFIGURED_MSG`），真实本地候选按未命中处理，
+不会自动回退 `FakeCommandAsrProvider`。解决：按 §1.2 补齐 SDK 与授权；若只是无 SDK
+演示，则显式配置 `local.asr=iflytek.fake-cmd`。
 
 ### 5.2 `cloud_unreachable` 判定
 

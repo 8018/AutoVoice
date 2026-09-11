@@ -1,5 +1,6 @@
 package com.autovoice.adapterlocal.vad
 
+import com.autovoice.voicecore.VadConfig
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -40,5 +41,27 @@ class VoiceActivityGateTest {
         assertEquals(null, g.feed(0.9f), "reset 后热帧计数清零，首帧不触发")
         assertEquals(VadEvent.SpeechStart, g.feed(0.9f), "reset 后新一轮语音应重新触发 SpeechStart")
         assertEquals(false, g.feed(0.1f) == VadEvent.SpeechEnd, "新一轮不应立即收到上一轮的 SpeechEnd")
+    }
+
+    @Test
+    fun `configured silence duration changes segmentation end timing`() {
+        val fast = VadConfig(minSpeechMs = 32, minSilenceMs = 32).createSegmentationGate()
+        val slow = VadConfig(minSpeechMs = 32, minSilenceMs = 96).createSegmentationGate()
+        assertEquals(VadEvent.SpeechStart, fast.feed(0.9f))
+        assertEquals(VadEvent.SpeechStart, slow.feed(0.9f))
+
+        assertEquals(VadEvent.SpeechEnd, fast.feed(0.1f), "32ms 配置应在一帧静音后结束")
+        assertNull(slow.feed(0.1f), "96ms 配置不应在一帧静音后结束")
+        assertNull(slow.feed(0.1f))
+        assertEquals(VadEvent.SpeechEnd, slow.feed(0.1f), "96ms 配置应在三帧静音后结束")
+    }
+
+    @Test
+    fun `configured threshold changes speech start decision`() {
+        val permissive = VadConfig(threshold = 0.4, minSpeechMs = 32).createSegmentationGate()
+        val strict = VadConfig(threshold = 0.8, minSpeechMs = 32).createSegmentationGate()
+
+        assertEquals(VadEvent.SpeechStart, permissive.feed(0.6f))
+        assertNull(strict.feed(0.6f))
     }
 }

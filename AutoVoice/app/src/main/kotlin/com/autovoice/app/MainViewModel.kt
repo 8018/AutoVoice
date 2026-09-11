@@ -133,7 +133,7 @@ data class UiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 录音器（Task 19 由 UI 驱动；Task 50 按住录音：VAD 云端段 + RNNoise 降噪整段）。 */
-    private val recorder = AudioRecorder(getApplication())
+    private lateinit var recorder: AudioRecorder
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -202,8 +202,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 否则每次重启回 DEMO_OFFLINE（cloud.enabled=false），云端链关闭，表现为
         // "重启后云端失联"（每轮 cloud_unreachable、服务器零流量）。
         val mode = restoreMode()
+        val config = loadConfig(mode)
         _uiState.update { it.copy(mode = mode) }
-        engine = buildEngine(loadConfig(mode))
+        recorder = AudioRecorder(
+            context = getApplication(),
+            testAudioAsset = config.testAudio,
+            vadConfig = config.vad,
+            ecnr = config.ecnr,
+        )
+        engine = buildEngine(config)
         recordingCoordinator = buildRecordingCoordinator()
     }
 
@@ -277,10 +284,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
+        val config = loadConfig(mode)
         if (recordingCoordinator.isChatLocked) setChatMode(false)
         else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
-        engine = buildEngine(loadConfig(mode))
+        recordingCoordinator.reconfigureCapture {
+            recorder.configureAudioProcessing(config.vad, config.ecnr, config.testAudio)
+        }
+        engine = buildEngine(config)
         recordingCoordinator.onDialogueState(
             engine.conversation.snapshot.value,
             _uiState.value.navigationCandidates.isNotEmpty(),
@@ -465,18 +476,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 配置：按模式加载 assets 资产（demo-full.json / demo-offline.json），缺失或解析失败用内置默认。 */
+    /** 配置：按模式加载 assets；缺失时用内置默认，内容非法则明确终止装配。 */
     private fun loadConfig(mode: DemoMode): DemoConfig {
         val asset = if (mode == DemoMode.DEMO_FULL) ASSET_DEMO_FULL else ASSET_DEMO_OFFLINE
         val json = runCatching {
             getApplication<Application>().assets.open(asset).bufferedReader().use { it.readText() }
         }.getOrNull()
-        if (json != null) {
-            runCatching { DemoConfig.fromJson(json) }.onSuccess { return it }.onFailure {
-                Log.w(TAG, "$asset 解析失败，使用内置默认配置", it)
-            }
+        if (json == null) {
+            Log.w(TAG, "$asset 缺失，使用内置默认配置")
+            return defaultConfig(mode)
         }
-        return defaultConfig(mode)
+        return try {
+            DemoConfig.fromJson(json)
+        } catch (error: Throwable) {
+            throw IllegalStateException("$asset 配置无效，拒绝装配: ${error.message}", error)
+        }
     }
 
     /**

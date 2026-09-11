@@ -9,19 +9,29 @@
     "mode": { "type": "string", "enum": ["full", "offline"] },
     "vad": {
       "type": "object",
+      "description": "主录音分段使用的 Silero VAD 门控参数；不用于播报打断或延时聆听检测。",
       "properties": {
         "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
-        "minSpeechMs": { "type": "integer", "minimum": 0 },
-        "minSilenceMs": { "type": "integer", "minimum": 0 }
+        "minSpeechMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "minSilenceMs": { "type": "integer", "minimum": 1, "maximum": 60000 }
       }
     },
-    "ecnr": { "type": "string" },
+    "ecnr": {
+      "type": "string",
+      "enum": ["rnnoise", "none"],
+      "default": "rnnoise",
+      "description": "本地整段音频的降噪处理；省略时兼容为 rnnoise。"
+    },
     "local": {
       "type": "object",
       "required": ["asr", "nlu"],
       "properties": {
-        "asr": { "type": "string" },
-        "nlu": { "type": "string" }
+        "asr": {
+          "type": "string",
+          "enum": ["iflytek.offline", "iflytek.fake-cmd"],
+          "description": "iflytek.fake-cmd 仅用于显式 Demo；真实 SDK 不可用时 iflytek.offline 按未命中处理。"
+        },
+        "nlu": { "type": "string", "const": "rule.nlu" }
       }
     },
     "cloud": {
@@ -29,15 +39,32 @@
       "required": ["enabled", "waitMs", "gatewayUrl"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "waitMs": { "type": "integer", "minimum": 0 },
-        "gatewayUrl": { "type": "string" }
+        "waitMs": { "type": "integer", "minimum": 1 },
+        "gatewayUrl": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "authToken": { "type": "string" },
+        "telemetry": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "url": { "type": "string" }
+          }
+        }
       }
     },
     "mock": {
       "type": "object",
       "properties": {
-        "executor": { "type": "boolean" }
+        "executor": {
+          "const": false,
+          "description": "保留字段；当前车辆执行器本身就是 Demo Mock，true 尚未实现并会在启动时拒绝。"
+        }
       }
+    },
+    "testAudio": {
+      "type": "string",
+      "minLength": 1,
+      "description": "可选的 16kHz mono PCM16 asset，仅用于确定性 Demo/设备联调；未配置时使用麦克风。"
     }
   }
 }

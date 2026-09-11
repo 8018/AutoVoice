@@ -12,8 +12,8 @@
 架构分层总体可继续沿用。近期优先处理协议一致性、会话与仲裁职责边界、流式任务生命周期
 和配置生效问题；随后移动导航业务逻辑、拆分网关和收敛重复代码，不进行整体重写。
 
-第一、二步已合并；第三步已在独立分支实现并通过相关模块测试，等待全量验证与 PR/CI；
-第四至第六步尚未实施。此前已经完成的 CI 和覆盖率工作见文末。
+第一至第三步已合并；第四步已在独立分支实现并通过本地验证，等待 PR/CI；第五、六步尚未实施。
+此前已经完成的 CI 和覆盖率工作见文末。
 
 ## 一、必须保留的设计约束
 
@@ -54,8 +54,8 @@ Android 由 app 装配 voice-core、gateway-client 和厂商/本地适配器。
 | --- | --- | --- | --- |
 | A | 已修复协议约束漂移：source 保持可选，Android 使用明确的未知来源值；共同 fixture 约束正反例。 | shared/contracts、shared/fixtures、GatewayCodec、GatewayClient | 第一步已合并；后续新增协议字段仍需同步契约测试。 |
 | B | 已拆除云端仲裁器中的单一 activeTurn 和 voidTurn；会话层改用逐轮输出许可证处理 cancel/superseded。 | RaceArbiter、TurnOutputPermit、VoiceGatewayHandler、SegmentPipeline | 第二步已合并；旧候选不取消且可继续仲裁，连接 worker 只停止等待其输出。 |
-| C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已实现待合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
-| D | 已确认部分配置与执行脱节：VAD 参数被解析，录音器创建分段器时使用默认参数。 | DemoConfig.fromJson、AudioRecorder、VadSegmenter | 修改配置可能无效果。逐字段追踪消费者；ecnr/mock 等项继续核查，不笼统断言全部无效。 |
+| C | 已为默认桥接、讯飞及 Classic/Hybrid 直接流式 finish 增加统一截止时间和异常释放。 | StreamingAsrProvider/Session、IflytekIatAsrProvider、Classic/Hybrid provider、AsrTurnTrace | 第三步已合并；截止时间从 finish 开始，另记录模式、降级、首字/终字延迟和超时。 |
+| D | 已确认并修复配置与执行脱节：VAD 参数现进入主分段门，ECNR 可选 RNNoise/旁路，provider 矩阵启动期校验；mock.executor 明确为未实现保留项。 | DemoConfig、AudioRecorder、ConfiguredVadGate、VoiceEngineFactory、android-config-capabilities.md | 第四步已实现待合并；打断/延时聆听 VAD 保留独立门限，避免混用检测目的。 |
 | E | 已确认导航领域逻辑混入 contracts。 | NavigationDialogState；Classic/Omni 导航 Bean | 包含候选存储、匹配及过期处理，应移出契约模块。已有 sessionId 隔离、120 秒 TTL 和 selectionId 校验。满 1000 条时先清过期项，再淘汰未明确排序的条目，策略可改进。 |
 | F | 已确认职责集中与重复。 | VoiceGatewayHandler、ClassicBackendConfig、OmniBackendConfig、Classic/Hybrid provider | 网关承担多类 IO 与编排；两个后端重复装配和业务处理。按职责提取，不以类长或模块名作为错误证据。 |
 | G | 已确认覆盖率差异。 | docs/test-coverage.md | Android app 和讯飞适配器较低；重点补生命周期、协议与输出行为测试，设备验收仍独立进行。 |
@@ -139,7 +139,7 @@ A 不能覆盖 B 的 pending、语音或缓存；同轮第二份语义被拦截�
 统一检查同一许可证；撤销记录在 safety 窗口后有界清理。新增并发旧轮晚到、撤销幂等、
 不取消候选和缓冲音频不泄漏测试；Classic/Omni 服务端全量测试与 bootJar 已通过。
 
-### 第三步：补齐流式 ASR 生命周期和观测（已实现，待合并）
+### 第三步：补齐流式 ASR 生命周期和观测（已完成）
 
 **修改范围：** StreamingAsrProvider/Session、讯飞实现、Classic/Hybrid 桥接、网关清理逻辑。
 
@@ -165,7 +165,7 @@ status=2 尾帧，失败立即清空待发缓冲，cancel 幂等。网关按请�
 batch_fallback 模式、降级原因、首个识别结果延迟、最终结果延迟、finish 后延迟和超时，
 ASR 错误仍旁路语义仲裁。相关 contracts、讯飞、Classic、Omni 和 gateway 测试已通过。
 
-### 第四步：让配置与实际能力一致
+### 第四步：让配置与实际能力一致（已实现，待合并）
 
 **修改范围：** 配置 Schema、DemoConfig、VoiceEngineFactory、AudioRecorder、VAD 分段器。
 
@@ -178,6 +178,15 @@ ASR 错误仍旁路语义仲裁。相关 contracts、讯飞、Classic、Omni 和
 
 **验收：** 静音参数确实改变音频结束判定；非法值能定位；VAD start 仍不停止 TTS 或建立
 新业务轮；默认配置行为兼容。
+
+**实施结果：** 新增字段到默认值、装配点和消费者的完整清单。主录音的 threshold、
+minSpeechMs、minSilenceMs 进入实际 Silero 门控，模式切换先暂停共享麦克风再安全替换配置；
+打断和延时聆听仍使用独立门限。ECNR 支持 `rnnoise` 和显式 `none` 旁路；省略字段保持
+RNNoise 兼容行为。ASR/NLU/ECNR 未知 provider、非法 VAD、无效云端参数及未实现的
+`mock.executor=true` 在装配前给出字段级错误。测试音频也改由同一 DemoConfig 解析，不再
+固定旁路读取 demo-full。生产讯飞能力不可用继续按未命中处理，只有显式 fake-cmd 才产生
+Demo 命令。Android 全量单测、lint、Debug 构建和共享 Schema fixture 已通过；既有
+ConversationController 测试继续约束 VAD 不建立业务轮。
 
 ### 第五步：迁移导航领域逻辑，保留逻辑会话恢复
 

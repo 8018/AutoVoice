@@ -105,6 +105,31 @@ class RecordingCoordinatorTest {
         assertFalse(coordinator.isRecording)
     }
 
+    @Test fun `capture configuration pauses monitoring and reports new capability before rearm`() = runTest {
+        val capture = FakeCapture()
+        val wake = FakeWakeWord()
+        val pipeline = FakePipeline()
+        val states = mutableListOf<RecordingLifecycleSnapshot>()
+        val coordinator = coordinator(capture, wake, pipeline) { states += it }
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+        assertTrue(capture.monitoring)
+        assertTrue(wake.armed)
+
+        coordinator.reconfigureCapture {
+            assertFalse("配置替换前必须先释放共享麦克风", capture.monitoring)
+            capture.vadAvailable = false
+        }
+
+        assertFalse(wake.armed)
+        assertTrue(states.last().vadUnavailable)
+        coordinator.onDialogueState(DialogueSnapshot(), hasNavigationCandidates = false)
+        runCurrent()
+        assertTrue(capture.monitoring)
+        assertTrue(wake.armed)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.coordinator(
         capture: FakeCapture,
         wake: FakeWakeWord,
@@ -134,7 +159,7 @@ class RecordingCoordinatorTest {
         override val pcmBlocks = pcm
         override val rawPcmBlocks = raw
         override val vadEvents = vad
-        override val vadAvailable = true
+        override var vadAvailable = true
         override var openMicBargeInAvailable = true
         var startResult = true
         var segments = emptyList<ByteArray>()

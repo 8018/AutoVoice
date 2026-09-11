@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test
 
 /**
  * 测试音频源纯逻辑（Task 58）：循环切块、块尾无缝回绕续读。
- * 不触碰 Android（不构造 [TestAudioSource.fromDemoConfig]，只测 [TestAudioSource.nextBlock]）。
+ * 不触碰 Android（不构造 [TestAudioSource.fromConfig]，只测 [TestAudioSource.nextBlock]）。
  */
 class TestAudioSourceTest {
 

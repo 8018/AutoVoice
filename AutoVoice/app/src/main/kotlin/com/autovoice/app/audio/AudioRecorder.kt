@@ -13,7 +13,10 @@ import com.autovoice.adapterlocal.vad.SileroVad
 import com.autovoice.adapterlocal.vad.VadEvent
 import com.autovoice.adapterlocal.vad.VadSegmenter
 import com.autovoice.adapterlocal.vad.VoiceActivityGate
+import com.autovoice.adapterlocal.vad.createSegmentationGate
 import com.autovoice.app.RecordingCapture
+import com.autovoice.voicecore.DemoConfig
+import com.autovoice.voicecore.VadConfig
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
@@ -104,18 +107,31 @@ internal fun first480Frame(samples: ShortArray): ShortArray {
  * [start] 返回 false 并静默降级（Log.w，不抛到 UI）。
  */
 class AudioRecorder(
-    context: Context,
+    private val context: Context,
     /** 测试音频源（demo-full.json 声明 testAudio 时自动启用）；null = 麦克风。 */
-    private val testAudioSource: TestAudioSource? = TestAudioSource.fromDemoConfig(context),
-    private val vadSegmenter: VadSegmenter? = try {
-        VadSegmenter(SileroVad(context, SILERO_VAD_ASSET))
-    } catch (t: Throwable) {
-        Log.w(TAG, "Silero VAD 模型加载失败，VAD 不可用（语音检测失效）", t)
-        null
-    },
+    testAudioAsset: String? = null,
+    testAudioSource: TestAudioSource? = TestAudioSource.fromConfig(context, testAudioAsset),
+    vadConfig: VadConfig = VadConfig(),
+    ecnr: String = DemoConfig.ECNR_RNNOISE,
+    vadSegmenter: VadSegmenter? = createVadSegmenter(context, vadConfig),
     private val denoiser: RnnoiseProcessor = RnnoiseProcessor(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : RecordingCapture {
+
+    @Volatile
+    private var testAudioSource: TestAudioSource? = testAudioSource
+
+    @Volatile
+    private var activeTestAudioAsset: String? = testAudioAsset
+
+    @Volatile
+    private var vadSegmenter: VadSegmenter? = vadSegmenter
+
+    @Volatile
+    private var activeVadConfig: VadConfig = vadConfig
+
+    @Volatile
+    private var ecnrProvider: String = requireSupportedEcnr(ecnr)
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
     private val bargeInVad: SileroVad? = try {
@@ -153,6 +169,38 @@ class AudioRecorder(
 
     /** VAD 是否可用（模型加载成功）。 */
     override val vadAvailable: Boolean get() = vadSegmenter != null
+
+    /**
+     * Applies mode-specific capture settings after an engine mode switch. Barge-in/follow-up VAD
+     * deliberately keeps its own thresholds because it serves a different detection purpose.
+     */
+    @Synchronized
+    fun configureAudioProcessing(vad: VadConfig, ecnr: String, testAudioAsset: String? = null) {
+        require(!turnActive) { "audio processing cannot be reconfigured during an active turn" }
+        require(!monitoringRequested) { "audio processing cannot be reconfigured while monitoring" }
+        val provider = requireSupportedEcnr(ecnr)
+        if (testAudioAsset != activeTestAudioAsset) {
+            testAudioSource = TestAudioSource.fromConfig(context, testAudioAsset)
+            activeTestAudioAsset = testAudioAsset
+        }
+        if (vad != activeVadConfig) {
+            val replacement = createVadSegmenter(context, vad)
+            val previous = synchronized(turnProcessingLock) {
+                val old = vadSegmenter
+                vadSegmenter = replacement
+                activeVadConfig = vad
+                old
+            }
+            runCatching { previous?.close() }
+        }
+        ecnrProvider = provider
+        Log.i(
+            TAG,
+            "audio config applied: vad.threshold=${vad.threshold} " +
+                "vad.minSpeechMs=${vad.minSpeechMs} vad.minSilenceMs=${vad.minSilenceMs} " +
+                "ecnr=$provider testAudio=${testAudioAsset ?: "microphone"}",
+        )
+    }
 
     @Volatile
     private var record: AudioRecord? = null
@@ -414,7 +462,8 @@ class AudioRecorder(
 
     private fun processTurnBlock(block: ByteArray) {
         vadSegmenter?.feed(block)?.let { _vadEvents.tryEmit(it) }
-        val denoised = denoiser.process(first480Frame(pcm16BytesToShorts(block)))
+        val frame = first480Frame(pcm16BytesToShorts(block))
+        val denoised = if (ecnrProvider == DemoConfig.ECNR_RNNOISE) denoiser.process(frame) else frame
         _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
     }
 
@@ -506,15 +555,32 @@ class AudioRecorder(
     private companion object {
         const val TAG = "AudioRecorder"
 
-        /** Silero VAD v5 模型资产（adapter-local assets，随 APK 打包）。 */
-        const val SILERO_VAD_ASSET = "silero_vad.onnx"
-
         /** SharedFlow 缓冲（块：不阻塞读取循环）。 */
         const val BUFFER_CAPACITY = 16
 
         /** 保留触发前约 384ms PCM，包含 VAD 确认窗口和少量话首。 */
         const val BARGE_IN_PRE_ROLL_BLOCKS = 12
     }
+}
+
+/** Silero VAD v5 model asset (packaged from adapter-local). */
+private const val SILERO_VAD_ASSET = "silero_vad.onnx"
+
+private fun createVadSegmenter(context: Context, config: VadConfig): VadSegmenter? = try {
+    VadSegmenter(
+        vad = SileroVad(context, SILERO_VAD_ASSET),
+        gate = config.createSegmentationGate(),
+    )
+} catch (error: Throwable) {
+    Log.w("AudioRecorder", "Silero VAD 模型加载失败，VAD 不可用（语音检测失效）", error)
+    null
+}
+
+private fun requireSupportedEcnr(provider: String): String {
+    require(provider == DemoConfig.ECNR_RNNOISE || provider == DemoConfig.ECNR_NONE) {
+        "unsupported ECNR provider '$provider'; supported: rnnoise, none"
+    }
+    return provider
 }
 
 /**
