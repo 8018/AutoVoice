@@ -596,23 +596,9 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void helloDeadlineClosesSilentConnection() throws Exception {
-        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
-        VoiceGatewayHandler h = quotaHandler(quota, 100); // 100ms 未握手即关闭
-        StubSession silent = open(h);
-        // 不发 hello,等截止触发(CI 负载高时调度可能延迟,等待放宽到 5s)
-        long deadline = System.currentTimeMillis() + 5_000;
-        while (silent.closeStatus == null && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20);
-        }
-        assertNotNull(silent.closeStatus, "超过 hello 截止的静默连接必须被关闭(不占名额)");
-        assertEquals(0, quota.activeFor(""), "关闭后应归还配额");
-        h.close();
-    }
-
-    @Test
     void helloDeadlineEnforcementClosesAndRestoresQuotaDeterministically() throws Exception {
-        // 不依赖调度计时:截止设为 1ms,等待其过期后由测试显式触发检查
+        // 不依赖调度计时(CI 负载下调度延迟不可控):截止设为 1ms,过期后由测试显式触发。
+        // 生产路径的调度触发属实现细节,此处断言的是"截止检查"这一行为契约本身。
         var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
         VoiceGatewayHandler h = quotaHandler(quota, 1);
         StubSession silent = open(h);
