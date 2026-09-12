@@ -17,9 +17,46 @@ class ServiceReadinessTest {
     private final TestClock clock = new TestClock(0);
     private final ServiceReadiness readiness = new ServiceReadiness(clock, 5_000);
 
+    // ---------- D16 修复:必需组件缺失/未就绪不得 UP ----------
+
     @Test
-    void newlyStartedServiceIsReadyWithNoComponents() {
-        assertTrue(readiness.isReady(), "无关键组件时服务视为就绪");
+    void readyOnlyWhenAllRequiredComponentsAreReady() {
+        readiness.registerCritical("config");
+        readiness.registerCritical("gateway");
+        assertFalse(readiness.isReady(), "任一必需组件未就绪 → 不就绪");
+
+        readiness.markReady("config");
+        assertFalse(readiness.isReady(), "gateway 仍未就绪 → 不就绪");
+
+        readiness.markReady("gateway");
+        assertTrue(readiness.isReady(), "全部必需组件就绪 → UP");
+    }
+
+    @Test
+    void requiredComponentInitializationFailureBlocksReadiness() {
+        readiness.registerCritical("config");
+        readiness.registerCritical("gateway");
+        readiness.markReady("gateway");
+        readiness.markFailed("config", "invalid production config");
+
+        assertFalse(readiness.isReady(), "必需组件初始化失败 → 不得 UP(false 不能误报部署成功)");
+    }
+
+    @Test
+    void duplicateRegistrationAndMarkAreIdempotent() {
+        readiness.registerCritical("gateway");
+        readiness.registerCritical("gateway"); // 幂等
+        readiness.markReady("gateway");
+        readiness.markReady("gateway");
+        assertTrue(readiness.isReady());
+        assertEquals(1, readiness.componentCount());
+    }
+
+    @Test
+    void missingRequiredComponentDeclarationIsNotReady() {
+        // D16 验收发现的缺陷:未声明必需组件时曾恒为 UP(接线缺陷被静默解释成"就绪")
+        assertFalse(readiness.isReady(),
+                "未声明任何必需组件 = 接线缺陷 → 必须不就绪(fail-closed)");
         assertTrue(readiness.isLive(), "存活与就绪独立:存活只看进程");
     }
 
@@ -37,6 +74,8 @@ class ServiceReadinessTest {
 
     @Test
     void degradableComponentFailureDoesNotRemoveService() {
+        readiness.registerCritical("gateway");
+        readiness.markReady("gateway");
         readiness.registerDegradable("skill-registry");
         readiness.markFailed("skill-registry", "platform unreachable");
         assertTrue(readiness.isReady(), "可降级依赖失败不得摘除整体业务");
@@ -44,6 +83,8 @@ class ServiceReadinessTest {
 
     @Test
     void drainingStopsAdmissionAndWaitsForInflight() {
+        readiness.registerCritical("gateway");
+        readiness.markReady("gateway");
         readiness.beginDraining();
         assertFalse(readiness.acceptsNewWork(), "排空期间停止接入");
         assertFalse(readiness.isReady(), "排空期间不就绪(负载均衡应摘除)");
@@ -55,6 +96,8 @@ class ServiceReadinessTest {
 
     @Test
     void drainingTimesOutAfterDeadline() {
+        readiness.registerCritical("gateway");
+        readiness.markReady("gateway");
         readiness.beginDraining();
         readiness.onWorkStarted(); // 在途任务不结束
         assertFalse(readiness.drainComplete(), "有在途工作且未超时:排空未完成");

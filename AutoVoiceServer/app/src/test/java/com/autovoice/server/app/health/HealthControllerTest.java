@@ -26,15 +26,32 @@ class HealthControllerTest {
     }
 
     @Test
-    void readyEndpointUpWithoutCriticalComponents() {
+    void readyEndpointUpWhenRequiredComponentsReady() {
+        readiness.registerCritical("config");
+        readiness.registerCritical("gateway");
+        readiness.markReady("config");
+        readiness.markReady("gateway");
+
         ResponseEntity<Map<String, Object>> response = controller.ready();
         assertEquals(200, response.getStatusCode().value());
         assertEquals("UP", response.getBody().get("status"));
         assertEquals(false, response.getBody().get("draining"));
+        assertTrue(response.getBody().get("components").toString().contains("config=READY"),
+                "就绪正文应报告组件状态,便于排障");
+    }
+
+    @Test
+    void readyEndpointDownWhenNoRequiredComponentsDeclared() {
+        // D16 修复:未声明必需组件 = 接线缺陷 → 不得 UP
+        ResponseEntity<Map<String, Object>> response = controller.ready();
+        assertEquals(503, response.getStatusCode().value());
+        assertEquals("DOWN", response.getBody().get("status"));
     }
 
     @Test
     void readyEndpointUnavailableWhileDraining() {
+        readiness.registerCritical("gateway");
+        readiness.markReady("gateway");
         readiness.beginDraining();
         ResponseEntity<Map<String, Object>> response = controller.ready();
         assertEquals(503, response.getStatusCode().value());
