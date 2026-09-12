@@ -169,3 +169,17 @@ journalctl -u autovoice-gateway -f   # 实时日志
 - 服务器: JDK 21（`dnf install java-21-openjdk-headless`），`demo-full` profile 下
   启动（unit 已带 `--spring.profiles.active=demo-full`）
 - 阿里云安全组放行入方向 TCP 8080（手机 `ws://<公网IP>:8080/ws`）
+
+## HTTPS/WSS 接入（D03c，生产上线前置）
+
+生产接入必须 TLS。两种方式二选一，域名/证书由运维确认后配置：
+
+1. **反向代理终结 TLS（推荐）**：nginx 等终结 TLS，`wss://域名/ws` 转发到
+   `ws://127.0.0.1:8080/ws`（网关注入默认端口，安全组不再需要对外放行明文端口）。
+2. **网关注直连 TLS**：`.env` 置 `AUTOVOICE_SSL_ENABLED=true` +
+   `AUTOVOICE_SSL_KEYSTORE` / `AUTOVOICE_SSL_KEYSTORE_PASSWORD`（PKCS12），
+   客户端连 `wss://域名:端口/ws`。
+
+客户端配合：Android release 构建禁用明文流量（debug 构建保留局域网明文例外），
+生产地址必须 `wss://`（见 docs/development-workflow.md）。域名、证书与设备凭据
+发放方式确认前不切换线上接入方式。

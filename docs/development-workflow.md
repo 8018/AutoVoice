@@ -53,3 +53,11 @@ codex/feature-* ──PR──▶ dev ──(发布 train PR)──▶ main ─�
 dev 网关默认不启用鉴权(`AUTOVOICE_GATEWAY_AUTH_ENABLED` 默认 false),因此
 demo-dev.json 的 `authToken` 为空;若 dev 栈开启鉴权做多设备测试,本机改该
 字段即可(勿提交真实 token)。
+
+## TLS 与明文策略(D03c)
+
+- Android **debug 构建**保留明文流量例外(局域网/dev 栈 `ws://` 联调);
+  **release 构建禁用非必要明文**,生产网关地址必须 `wss://`。
+- 服务端生产 TLS 两种方式:反向代理终结(推荐)或网关直连(application-production.yml
+  的 `server.ssl.*` 占位),见 `AutoVoiceServer/deploy/README.md`。
+- CI 校验 release 合并 manifest 必须 `usesCleartextTraffic="false"`。
