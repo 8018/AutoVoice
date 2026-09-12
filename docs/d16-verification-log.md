@@ -41,10 +41,26 @@
 | `/health/live` | `200` | `404`(生产仍为旧 jar,符合预期——新代码需 train 合并 main) |
 | `/health/ready` | `200` `{"status":"UP","draining":false,"inFlight":0,"components":""}` | `404` |
 
-**发现(缺陷,待修复)**:`components` 为空——`ServiceReadiness` 已实现关键/可降级组件登记与
-就绪判定,但**尚未有组件调用登记**,因此当前就绪判定恒为 UP(无关键组件即视为就绪)。
-这违背 D12 的验收意图("坏配置/坏依赖初始化不能误报发布成功")。
-**处置**:记录为发现,待本轮验收收尾后统一修复(不在验收阶段扩大改动范围)。
+**发现(缺陷,已修复并复验)**:`components` 为空——`ServiceReadiness` 已实现但**无组件登记**,
+就绪判定恒为 UP,违背 D12 意图("坏配置/坏依赖不能误报部署成功")。
+
+**修复(PR #100)**:`isReady()` 改为三条件——未排空 + **已声明至少一个必需组件** + 全部必需组件
+READY;未声明任何必需组件视为接线缺陷 → 返回 false(fail-closed)。`AppConfig.readinessInitializer`
+在启动完成后声明必需组件 `config`/`gateway` 并置 READY,登记可降级组件
+`skill-registry`/`tts`/`offline-engine`。
+
+**复验(2026-09-12 22:4x,部署 `a41ac8f8`,即 dev HEAD)**:
+
+```
+ready: {"status":"UP","draining":false,"inFlight":0,
+        "components":"config=READY, gateway=READY, tts=PENDING, skill-registry=PENDING, offline-engine=PENDING"}
+```
+
+- ✅ 必需组件 `config`/`gateway` 明确 READY,`components` 不再为空;
+- 观察:可降级组件显示 `PENDING` 语义含糊(易被误读为"未接线")→ 已追加修正为
+  "装配完成即 READY"(可降级失败仍不阻断整体就绪)。
+
+**结论:发现已在本阶段关闭**;按用户顺序,下一步可安排 A2(排空)验收。
 
 ### A3 部署判据(只读)**2026-09-12**
 
