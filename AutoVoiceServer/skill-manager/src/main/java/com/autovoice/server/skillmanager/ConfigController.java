@@ -19,11 +19,11 @@ import java.util.Map;
 public class ConfigController {
 
     private final ConfigService service;
-    private final String adminToken;
+    private final AdminSessionStore sessions;
 
-    public ConfigController(ConfigService service, SkillProperties props) {
+    public ConfigController(ConfigService service, SkillProperties props, AdminSessionStore sessions) {
         this.service = service;
-        this.adminToken = props.adminToken();
+        this.sessions = sessions;
     }
 
     @GetMapping("/system-prompt")
@@ -66,6 +66,16 @@ public class ConfigController {
     public record PromptRequest(String value) {}
 
     private boolean hasAdminCookie(HttpServletRequest request) {
-        return AdminAuthInterceptor.matchesAdminCookie(adminToken, request.getCookies());
+        jakarta.servlet.http.Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
+            return false;
+        }
+        for (jakarta.servlet.http.Cookie cookie : cookies) {
+            if (AdminController.COOKIE_NAME.equals(cookie.getName())
+                    && cookie.getValue() != null && !cookie.getValue().isBlank()) {
+                return sessions.validate(cookie.getValue());
+            }
+        }
+        return false;
     }
 }
