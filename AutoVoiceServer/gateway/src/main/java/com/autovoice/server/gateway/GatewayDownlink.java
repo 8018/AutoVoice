@@ -66,7 +66,13 @@ final class GatewayDownlink {
             if (result.speakText() != null) payload.put("speakText", result.speakText());
         }
         if (segmentId != null) payload.put("segmentId", segmentId);
-        if (result.actionId() != null) payload.put("actionId", result.actionId());
+        if (result.actionId() != null) {
+            payload.put("actionId", result.actionId());
+            // D14c:随回复下发支持窗口截止时刻(客户端据此明确拒绝过期动作)
+            if (result.actionExpiresAtMs() > 0) {
+                payload.put("actionExpiresAtMs", result.actionExpiresAtMs());
+            }
+        }
         send(session, "reply", payload);
     }
 

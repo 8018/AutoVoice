@@ -51,7 +51,7 @@ public final class GatewayCodec {
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),
             Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat")),
             Map.entry("pending", Set.of("segmentId", "text")),
-            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText", "actionId")),
+            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText", "actionId", "actionExpiresAtMs")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
             Map.entry("bye", Set.of("sessionId", "reason")),
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),

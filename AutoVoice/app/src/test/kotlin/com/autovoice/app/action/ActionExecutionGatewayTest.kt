@@ -72,6 +72,34 @@ class ActionExecutionGatewayTest {
     }
 
     @Test
+    fun expiredActionIsRejectedEvenWhenLedgerHasNoRecord() {
+        // D14c:超过支持窗口的请求明确拒绝——不因账本查不到就当新动作执行
+        val ledger = FakeLedger()
+        val gateway = ActionExecutionGateway(ledger)
+        val calls = AtomicInteger()
+        val past = System.currentTimeMillis() - 1_000
+
+        assertFalse(gateway.execute("a-expired", "旧动作", actionExpiresAtMs = past) {
+            calls.incrementAndGet(); true
+        })
+        assertEquals(0, calls.get(), "过期动作不得执行")
+        assertEquals(null, ledger.stateOf("a-expired"), "过期动作不得写入账本")
+    }
+
+    @Test
+    fun actionWithinWindowStillExecutes() {
+        val ledger = FakeLedger()
+        val gateway = ActionExecutionGateway(ledger)
+        val calls = AtomicInteger()
+        val future = System.currentTimeMillis() + 60_000
+
+        assertTrue(gateway.execute("a-fresh", "新动作", actionExpiresAtMs = future) {
+            calls.incrementAndGet(); true
+        })
+        assertEquals(1, calls.get())
+    }
+
+    @Test
     fun crashRecoveryConvergesExecutingToUnknown() {
         val ledger = FakeLedger()
         val gateway = ActionExecutionGateway(ledger)

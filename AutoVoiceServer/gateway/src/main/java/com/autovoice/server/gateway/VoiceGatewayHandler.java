@@ -743,11 +743,22 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (result.intent() != null && result.actionId() == null) {
                 // D07a:输出准入通过后签发稳定动作身份并落盘;缓存重放复用同一 actionId
                 String actionId = UUID.randomUUID().toString();
-                actionLedger.recordDispatch(new com.autovoice.server.contracts.ActionPlan(
-                        actionId, ctx.sessionId(), utteranceId,
-                        result.intent().domain(), result.intent().intent(),
-                        "utterance=" + utteranceId, System.currentTimeMillis()));
-                result = result.withActionId(actionId);
+                long nowMs = System.currentTimeMillis();
+                try {
+                    actionLedger.recordDispatch(new com.autovoice.server.contracts.ActionPlan(
+                            actionId, ctx.sessionId(), utteranceId,
+                            result.intent().domain(), result.intent().intent(),
+                            "utterance=" + utteranceId, nowMs,
+                            nowMs + com.autovoice.server.contracts.ActionPlan.DEFAULT_SUPPORT_WINDOW_MS));
+                    result = result.withActionId(actionId,
+                            nowMs + com.autovoice.server.contracts.ActionPlan.DEFAULT_SUPPORT_WINDOW_MS);
+                } catch (RuntimeException error) {
+                    // D14c(约束 2):执行前的账本/审计写入失败 → **拒绝该动作**(降级为不带
+                    // actionId 的回复,客户端因此不会执行);播报文本仍照常下发,用户不感知丢失。
+                    LOG.error("action ledger write failed; refusing action for utterance {}",
+                            utteranceId, error);
+                    result = result.withoutAction();
+                }
             }
             CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
             completedTurns.put(turnKey, completed);

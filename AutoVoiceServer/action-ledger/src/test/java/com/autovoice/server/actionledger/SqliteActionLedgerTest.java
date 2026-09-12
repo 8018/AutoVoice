@@ -39,6 +39,37 @@ class SqliteActionLedgerTest {
     }
 
     @Test
+    void auditRecordsIssuanceIndependentlyOfLatestState() throws Exception {
+        Path db = dir.resolve("ledger-audit.db");
+        try (SqliteActionLedger ledger = new SqliteActionLedger(db.toString())) {
+            ActionPlan plan = plan("audit-1");
+            ledger.recordDispatch(plan);
+            ledger.recordDispatch(plan); // 重复签发不重复审计(幂等)
+
+            assertEquals(1, ledger.auditCount("audit-1"),
+                    "签发事件应独立留档,重复签发不重复记录");
+        }
+    }
+
+    @Test
+    void supportWindowIsPersistedAndQueryable() throws Exception {
+        Path db = dir.resolve("ledger-window.db");
+        long now = 1_000_000L;
+        var clock = new com.autovoice.server.contracts.testing.TestClock(now);
+        try (SqliteActionLedger ledger = new SqliteActionLedger(db.toString(), clock)) {
+            ActionPlan plan = new ActionPlan("win-1", "s", "u", "navigation", "navigate",
+                    "summary", now, now + 60_000);
+            ledger.recordDispatch(plan);
+
+            ActionPlan loaded = ledger.findByActionId("win-1").orElseThrow();
+            assertEquals(now + 60_000, loaded.expiresAtMs(), "支持窗口必须落盘(重启后仍可判定)");
+            assertTrue(loaded.withinSupportWindow(now + 59_999));
+            assertFalse(loaded.withinSupportWindow(now + 60_001),
+                    "超过支持窗口的请求必须可被判定为过期(不得当新动作执行)");
+        }
+    }
+
+    @Test
     void separateLedgerFileFromTelemetry() {
         // 独立业务库:调用方指定独立路径,不复用遥测库文件
         Path db = dir.resolve("action-business.db");

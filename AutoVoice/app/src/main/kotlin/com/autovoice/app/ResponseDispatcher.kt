@@ -39,7 +39,7 @@ internal class ResponseDispatcher(
                 if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
                 output.play(turnId, reply)
                 reply.intent?.takeIf { isCurrentTurn(turnId) }
-                    ?.let { applyAndNotify(turnId, it, reply.actionId) }
+                    ?.let { applyAndNotify(turnId, it, reply.actionId, reply.actionExpiresAtMs) }
             }
             is StreamingAudioReply -> output.playStream(turnId, reply) { end ->
                 if (end.speakText.isNotBlank()) onReplyText(end.speakText)
@@ -51,7 +51,9 @@ internal class ResponseDispatcher(
                 output.speak(turnId, reply.text)
             }
             is ActionReply -> {
-                if (isCurrentTurn(turnId)) applyAndNotify(turnId, reply.intent, reply.actionId)
+                if (isCurrentTurn(turnId)) {
+                    applyAndNotify(turnId, reply.intent, reply.actionId, reply.actionExpiresAtMs)
+                }
                 if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
                 output.speak(turnId, reply.speakText)
             }
@@ -96,7 +98,12 @@ internal class ResponseDispatcher(
         }
     }
 
-    private fun applyAndNotify(turnId: String, intent: Intent, actionId: String) {
+    private fun applyAndNotify(
+        turnId: String,
+        intent: Intent,
+        actionId: String,
+        actionExpiresAtMs: Long = 0L,
+    ) {
         if (intent.domain == "conversation") {
             // 会话控制不属于副作用动作,不走执行网关
             val applied = when (intent.intent) {
@@ -109,7 +116,7 @@ internal class ResponseDispatcher(
         }
         // D07b:副作用动作(导航/车控)经执行网关做最终准入与原子抢占;
         // 幂等命中不重复执行;真实车控当前无执行器(保持关闭)
-        val applied = actionGateway.execute(actionId, intent.intent) {
+        val applied = actionGateway.execute(actionId, intent.intent, actionExpiresAtMs) {
             if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
                 navigation?.execute(intent)
             } else {
