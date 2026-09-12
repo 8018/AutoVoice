@@ -135,7 +135,7 @@ jobs:
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
           STAGING_DIR="/opt/autovoice-dev/incoming/$DEPLOY_SHA"
           ssh "${SSH_ARGS[@]}" "$TARGET" \
-            "bash '$STAGING_DIR/deploy-release.sh' 'dev' '$DEPLOY_SHA' '$STAGING_DIR'"
+            "VOICE_BACKEND='$VOICE_BACKEND' bash '$STAGING_DIR/deploy-release.sh' 'dev' '$DEPLOY_SHA' '$STAGING_DIR'"
 
       - name: Deployment summary
         if: success()
