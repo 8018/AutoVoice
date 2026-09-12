@@ -540,6 +540,33 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D10b:TTS 文本长度上限 ----------
+
+    @Test
+    void oversizedTtsRequestIsRejectedWithoutSynthesis() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger synthCalls = new java.util.concurrent.atomic.AtomicInteger();
+        TtsProvider counting = (text, ctx) -> {
+            synthCalls.incrementAndGet();
+            return Reply.ofAudio("audio/wav", new byte[]{1, 2, 3});
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), counting, noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        String longText = "字".repeat(501);
+
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"tts_request\",\"payload\":{\"sessionId\":\"" + sid
+                        + "\",\"text\":\"" + longText + "\"}}"));
+
+        JsonNode error = awaitType(s, "error");
+        assertEquals("TTS_TEXT_TOO_LONG", error.path("payload").path("code").asText());
+        Thread.sleep(100); // 给潜在的合成任务一点时间(不应发生)
+        assertEquals(0, synthCalls.get(), "超长文本不得进入合成");
+        h.close();
+    }
+
     // ---------- D10a:接入配额与 hello 截止 ----------
 
     private VoiceGatewayHandler quotaHandler(
