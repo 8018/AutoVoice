@@ -358,6 +358,7 @@ class GatewayClient(
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     intent = parseIntent(payload.get("intent")),
                     asrText = asrText,
+                    actionId = payload.get("actionId")?.stringOrNull() ?: "",
                 )
             }
             "action" -> {
@@ -366,6 +367,7 @@ class GatewayClient(
                     intent = intent,
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     asrText = asrText,
+                    actionId = payload.get("actionId")?.stringOrNull() ?: "",
                 )
             }
             else -> null
