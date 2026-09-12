@@ -1195,7 +1195,11 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
-        assertFalse(s.sent.stream().map(VoiceGatewayHandlerTest::parse)
+        List<WebSocketMessage<?>> snapshot;
+        synchronized (s.sent) {
+            snapshot = new ArrayList<>(s.sent); // 流式遍历必须持锁快照,避免与工作线程下行并发 CME
+        }
+        assertFalse(snapshot.stream().map(VoiceGatewayHandlerTest::parse)
                 .anyMatch(n -> "error".equals(n.path("type").asText())),
                 "同 utteranceId 重发进入候选队列，不应返回 BUSY");
         Thread.sleep(SAFETY + 200); // 等 SAFETY 兜底收敛在途轮，避免 worker 泄漏到其他测试
