@@ -70,6 +70,13 @@ android {
     buildTypes {
         getByName("debug") {
             enableUnitTestCoverage = true
+            // D03c:debug 保留明文 ws:// 例外(局域网/dev 栈联调)
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+        }
+        getByName("release") {
+            isMinifyEnabled = false
+            // D03c:发布构建禁用非必要明文,生产走 wss://
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
         }
     }
 

@@ -104,6 +104,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
       - run: ./gradlew test lint :app:assembleDebug androidUnitTestCoverage -PuseIflytekStub=true
+      - name: Verify release build disables cleartext traffic
+        run: |
+          ./gradlew :app:processReleaseMainManifest -PuseIflytekStub=true
+          MERGED=$(find app/build/intermediates/merged_manifest -path "*release*" -name "AndroidManifest.xml" | head -1)
+          test -n "$MERGED" || { echo "::error::merged release manifest not found"; exit 1; }
+          grep -q 'usesCleartextTraffic="false"' "$MERGED" || { echo "::error::release manifest must disable cleartext traffic"; exit 1; }
       - name: Enforce Android line coverage baselines
         run: |
           node ../shared/verify-jacoco-coverage.mjs 70 \
