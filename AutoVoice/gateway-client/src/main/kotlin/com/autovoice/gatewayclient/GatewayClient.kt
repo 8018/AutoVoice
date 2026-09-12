@@ -185,6 +185,19 @@ class GatewayClient(
      *                    onAudioStart 优先采纳端侧值（遥测按话语汇合）。非空才发送。
      * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
+    /** D05b 导航候选采用确认(selectionId 非空=采用;空=撤销,幂等)。 */
+    fun sendNavigationSelectionStart(sessionId: String, selectionId: String) {
+        sendFrame(
+            mapOf(
+                "type" to "navigation_selection_start",
+                "payload" to mapOf(
+                    "sessionId" to sessionId,
+                    "selectionId" to selectionId,
+                ),
+            ),
+        )
+    }
+
     fun sendAudioStart(
         sessionId: String,
         segmentId: String? = null,

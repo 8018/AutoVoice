@@ -117,6 +117,25 @@ public final class NavigationDialogService implements NavigationDialog {
     }
 
     @Override
+    public void adopt(SessionContext context, String selectionId) {
+        String sessionId = logicalSessionId(context);
+        if (sessionId == null) return;
+        Optional<PendingNavigationSelection> current = store.find(sessionId);
+        if (current.isEmpty()) return;
+        PendingNavigationSelection selection = current.get();
+        boolean adopted;
+        if (selectionId == null || selectionId.isBlank()) {
+            adopted = false; // 客户端关闭/未显示列表:撤销采用
+        } else if (!selection.selectionId().equals(selectionId)) {
+            return; // 过期的采用确认(列表已被更新):忽略
+        } else {
+            adopted = true;
+        }
+        if (selection.adopted() == adopted) return; // 幂等
+        store.put(sessionId, selection.withAdopted(adopted));
+    }
+
+    @Override
     public boolean hasPending(SessionContext context) {
         String sessionId = logicalSessionId(context);
         return sessionId != null && store.find(sessionId).isPresent();
@@ -128,6 +147,13 @@ public final class NavigationDialogService implements NavigationDialog {
         String sessionId = logicalSessionId(context);
         Optional<PendingNavigationSelection> current = sessionId == null
                 ? Optional.empty() : store.find(sessionId);
+        // D05b:现代客户端(audio_start 携带 navigationSelectionId)且列表未被采用 →
+        // 不激活;序号回答给"已失效"提示,地址/名称类交给模型兜底
+        if (current.isPresent() && hasModernSelectionId(context) && !current.get().adopted()) {
+            return policy.isOrdinalAnswer(transcript)
+                    ? Optional.of(Reply.ofText("地点选择已失效，请重新搜索"))
+                    : Optional.empty();
+        }
         if (current.isEmpty()) {
             if (hasModernSelectionId(context) && policy.isOrdinalAnswer(transcript)) {
                 return Optional.of(Reply.ofText("地点选择已失效，请重新搜索"));

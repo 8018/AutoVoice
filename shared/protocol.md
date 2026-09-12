@@ -99,6 +99,27 @@
 - **连接上限**（`max-connections`，默认 32）：超限新连接直接 `close(4001)`（不注册、不发 `error`）。
 - 未开启鉴权时，老 hello（无凭据字段）行为不变。
 
+### 3.1b navigation_selection_start(D05b)
+
+客户端会话层对导航候选列表的**采用确认**:会话层决定采用(展示并参与后续语音选择)
+云端候选时发送非空 `selectionId`;列表关闭、过期或端侧胜出未采用时发送空 `selectionId`
+撤销。重复发送幂等;不携带本消息的旧客户端默认已采用(兼容)。
+
+```json
+{
+  "type": "navigation_selection_start",
+  "payload": { "sessionId": "demo-1", "selectionId": "selection-airports" }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `sessionId` | string | 会话 ID |
+| `selectionId` | string | 非空=采用该列表;空=撤销(未显示/已关闭) |
+
+服务端语义:未采用的列表在"现代客户端"(audio_start 携带 `navigationSelectionId` 字段)
+的语音选择中不激活——序号回答返回"地点选择已失效,请重新搜索",地址/名称类交给模型兜底。
+
 ### 3.2 audio_start
 
 一段录音流开始前声明流参数。业务域客户端在 VAD `SpeechStart` 时立即发出该帧（包含约
