@@ -68,6 +68,8 @@ class VoiceEngine(
     cfg: DemoConfig,
     arbiter: OnDeviceRaceArbiter,
     sink: DecisionSink,
+    /** D05b:导航候选采用确认上行(由工厂装配到云端连接)。 */
+    var navigationAdoptionSender: (String) -> Unit = {},
     /**
      * 链路数据上报客户端（T6）：生产装配由 [VoiceEngineFactory.create] 注入（telemetry 未配置 → enabled=false
      * 的全 no-op 实例）；JVM 测试不传时用默认 disabled 实例，行为不变。

@@ -232,6 +232,10 @@ internal object VoiceEngineFactory {
         cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
         // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
         cloudRunner.onReadySessionId = telemetry::onSessionId
+        // D05b:采用确认上行绑定到云端连接
+        engine.navigationAdoptionSender = { selectionId ->
+            cloudRunner.sendNavigationSelectionStart(selectionId)
+        }
         return engine
     }
 

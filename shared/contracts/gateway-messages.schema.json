@@ -7,10 +7,23 @@
   "required": ["type", "payload"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "navigation_selection_start", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
+    {
+      "title": "navigation_selection_start (client -> server, D05b)",
+      "properties": {
+        "type": { "const": "navigation_selection_start" },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "selectionId": { "type": "string", "description": "非空=客户端会话层采用了该候选列表;空=撤销(列表关闭/未显示)" }
+          }
+        }
+      }
+    },
     {
       "title": "hello (client -> server)",
       "properties": {

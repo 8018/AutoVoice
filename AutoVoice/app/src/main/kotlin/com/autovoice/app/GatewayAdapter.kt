@@ -86,6 +86,13 @@ internal class GatewayCloudRunner(
         { onRealtimeStreamFailed() },
     )
 
+    /** D05b:采用确认上行;ready 前忽略。 */
+    fun sendNavigationSelectionStart(selectionId: String) {
+        val sid = sessionId
+        if (!readyReceived || sid.isBlank()) return
+        client.sendNavigationSelectionStart(sid, selectionId)
+    }
+
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
 
     private val pendingReplyText = ConcurrentHashMap<String, ReplyTextSnapshot>()

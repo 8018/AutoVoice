@@ -573,6 +573,45 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        var transcript = new java.util.concurrent.atomic.AtomicReference<>("导航去机场");
+        AsrProvider switchAsr = (pcm, ctx) -> transcript.get();
+        LlmProvider chooseLlm = (t, ctx) -> CompletableFuture.completedFuture(chooseCandidatesReply());
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(switchAsr, chooseLlm, dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode offer = awaitType(s, "reply");
+        String selectionId = offer.path("payload").path("intent").path("slots")
+                .path("selectionId").path("value").asText();
+
+        // 撤销:客户端关闭列表 → 二轮序号不再激活
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"\"}}"));
+        // 重新采用
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
+        // 采用后,带 navigationSelectionId 的二轮语音能选中
+        synchronized (s.sent) { s.sent.clear(); }
+        transcript.set("第一个");
+        h.handleMessage(s, new TextMessage(audioStart(sid, "select")
+                .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
+        assertEquals("navigate", selected.path("intent").asText());
+    }
+
+    @Test
     void revokedTurnDoesNotCommitNavigationCandidates() throws InterruptedException {
         com.autovoice.server.navigation.NavigationDialogService dialog =
                 new com.autovoice.server.navigation.NavigationDialogService();

@@ -284,6 +284,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "audio_end" -> onAudioEnd(session, st);
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
+            case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
             case "chat_start" -> st.realtimeChat.start();
             case "chat_finish" -> st.realtimeChat.finish();
@@ -483,6 +484,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (onlineStream != null) onlineStream.cancel();
             downlink.sendError(session, st.ctx, "BUSY", "candidate queue is full", segmentId);
         }
+    }
+
+    /** D05b 采用确认:客户端会话层采用(selectionId 非空)或撤销(空)候选列表。 */
+    private void onNavigationSelectionStart(ConnectionState st, Map<String, Object> payload) {
+        if (st.ctx == null) return; // 未握手不处理
+        String selectionId = payload.get("selectionId") instanceof String id ? id : null;
+        navigationDialog.adopt(st.ctx, selectionId == null ? "" : selectionId);
     }
 
     /** Client-side ASR/NLU admission for providers whose evidence is established on the device. */

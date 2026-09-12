@@ -225,6 +225,29 @@ class GatewayClientTest {
     }
 
     @Test
+    fun `navigation selection start sends adoption frame`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            client.connect()
+            assertEquals(GatewayConnectionState.READY, client.connectionState.value)
+            client.sendNavigationSelectionStart("srv-sess-1", "selection-1")
+            client.sendNavigationSelectionStart("srv-sess-1", "") // 撤销
+            assertTrue(awaitTrue { gateway.frames.count { it.type == "navigation_selection_start" } == 2 })
+            val adopt = gateway.frames.filter { it.type == "navigation_selection_start" }[0].payload
+            assertEquals("srv-sess-1", adopt.get("sessionId").asString)
+            assertEquals("selection-1", adopt.get("selectionId").asString)
+            val dismiss = gateway.frames.filter { it.type == "navigation_selection_start" }[1].payload
+            assertEquals("", dismiss.get("selectionId").asString)
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `hello ready audio segment round trip with decision then action reply`() = runBlocking {
         val gateway = FakeGateway()
         gateway.start()

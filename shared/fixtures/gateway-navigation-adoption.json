@@ -1,0 +1,7 @@
+{
+  "type": "navigation_selection_start",
+  "payload": {
+    "sessionId": "navigation-regression",
+    "selectionId": "selection-airports"
+  }
+}

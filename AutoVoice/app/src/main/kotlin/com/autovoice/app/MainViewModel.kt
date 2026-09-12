@@ -173,6 +173,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val navigationSession = NavigationSession { snapshot ->
         _uiState.update { it.copy(navigation = snapshot) }
+        // D05b:会话层采用决定 → 上行确认(selectionId 空 = 撤销;服务端幂等)
+        if (::engine.isInitialized) {
+            engine.navigationAdoptionSender(snapshot.selectionId ?: "")
+        }
     }
     private val navigationExecutor by lazy {
         NavigationExecutor(session = navigationSession, onCandidates = { candidates ->
