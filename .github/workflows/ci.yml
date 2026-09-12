@@ -58,6 +58,12 @@ jobs:
       - run: ./gradlew ${{ matrix.test_args }} -PvoiceBackend=${{ matrix.backend }}
       - name: Enforce aggregate server line coverage
         run: node ../shared/verify-jacoco-coverage.mjs 75 .
+      - name: Record build artifact digest
+        # D13:记录 CI 产物摘要(部署提升同一产物时可比对),不改变既有门禁
+        run: |
+          sha256sum app/build/libs/app.jar > app.jar.sha256
+          echo "=== app.jar digest ==="
+          cat app.jar.sha256
       - name: Verify selected speech backend is exclusive
         shell: bash
         run: |
@@ -72,7 +78,7 @@ jobs:
             # ASR routes each turn to the business LLM or explicit S2S chat domain.
             jar tf "$JAR" | grep -q 'BOOT-INF/lib/asr-gateway.jar'
           fi
-      - name: Upload server reports
+      - name: Upload server reports and digest
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -81,6 +87,7 @@ jobs:
             AutoVoiceServer/**/build/test-results/test/*.xml
             AutoVoiceServer/**/build/reports/tests/test/**
             AutoVoiceServer/**/build/reports/jacoco/test/**
+            AutoVoiceServer/app.jar.sha256
 
   android-gradle:
     name: Android tests, lint and build

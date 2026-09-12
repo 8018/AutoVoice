@@ -1,0 +1,59 @@
+# D12b 加固版 gateway systemd 模板（**可选**，需管理员在服务器上启用并调整文件属主）。
+#
+# 与现有 autovoice-gateway.service 的差异：
+#   1. 以低权限专用用户运行（不再以 root 运行 Java 进程）；
+#   2. 文件系统与能力收敛（NoNewPrivileges/ProtectSystem/ProtectHome/PrivateTmp）；
+#   3. 资源上限（内存/文件描述符/任务数），避免单实例耗尽主机；
+#   4. 就绪判据用 /health/ready（D12a 端点），部署脚本已支持。
+#
+# 启用步骤（服务器侧，需 root；未执行前不影响现有部署）：
+#   1. useradd --system --no-create-home --shell /sbin/nologin autovoice
+#   2. chown -R autovoice:autovoice /opt/autovoice
+#      （离线 SDK 目录与 tts-cache 同样需要可读/可写权限）
+#   3. 密钥文件保持 root:autovoice 0640（EnvironmentFile 由 systemd 以 root 读取）
+#      chgrp autovoice /etc/autovoice/.env && chmod 0640 /etc/autovoice/.env
+#   4. install -m 0644 autovoice-gateway-hardened.service /etc/systemd/system/autovoice-gateway.service
+#      systemctl daemon-reload && systemctl restart autovoice-gateway
+#   5. 验证：systemctl status autovoice-gateway（User 应为 autovoice）；
+#      curl -fsS http://127.0.0.1:8080/health/ready
+#
+# 注意：若离线命令词链路（JNI + 原生 SDK）在低权限下需要额外目录权限，
+# 先按 deploy/README.md 的排障步骤确认，再决定是否放宽对应 ReadWritePaths。
+
+[Unit]
+Description=AutoVoice Gateway Server (demo-full, hardened)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autovoice
+Group=autovoice
+EnvironmentFile=/etc/autovoice/.env
+WorkingDirectory=/opt/autovoice
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=70 -jar /opt/autovoice/app.jar --spring.profiles.active=demo-full
+Restart=on-failure
+RestartSec=5
+
+# --- 权限与文件系统加固 ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# 仅允许写入运行期需要的目录（离线 SDK work 目录、TTS 缓存、遥测库）
+ReadWritePaths=/opt/autovoice/iflytek-offline/work /opt/autovoice/tts-cache /opt/autovoice/telemetry /opt/autovoice/action-ledger.db
+
+# --- 资源上限 ---
+MemoryMax=2G
+MemoryHigh=1536M
+LimitNOFILE=65535
+TasksMax=512
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
