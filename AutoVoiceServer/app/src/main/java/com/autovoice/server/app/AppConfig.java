@@ -131,7 +131,13 @@ public class AppConfig {
          * 无 String→Map 转换器（ConverterNotFoundException），故组件按字符串接收、由
          * {@link #authDevicesMap()} 解析；max-connections 默认 32，超限新连接 close(4001)。
          */
-        public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
+        public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes,
+                              int maxConnectionsPerDevice, long helloDeadlineMs) {
+
+            /** 兼容构造(历史配置/测试):每设备 4 连接、hello 截止 10s。 */
+            public Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
+                this(authEnabled, authDevices, maxConnections, maxAudioBytes, 4, 10_000);
+            }
 
             private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -140,6 +146,8 @@ public class AppConfig {
                 authDevices = authDevices == null || authDevices.isBlank() ? "{}" : authDevices;
                 maxConnections = maxConnections < 1 ? 32 : maxConnections;
                 maxAudioBytes = maxAudioBytes < 1 ? 1_920_000 : maxAudioBytes;
+                maxConnectionsPerDevice = maxConnectionsPerDevice < 1 ? 4 : maxConnectionsPerDevice;
+                helloDeadlineMs = helloDeadlineMs < 1 ? 10_000 : helloDeadlineMs;
             }
 
             public Gateway(boolean authEnabled, String authDevices, int maxConnections) {
@@ -325,7 +333,9 @@ public class AppConfig {
         return new VoiceGatewayHandler(online, tts, offline, registry,
                 safetyTimeoutMs, props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
-                g.maxAudioBytes(), recorder, navigationDialog, actionLedger);
+                g.maxAudioBytes(), recorder, navigationDialog, actionLedger,
+                new com.autovoice.server.contracts.ConnectionQuota(g.maxConnectionsPerDevice()),
+                g.helloDeadlineMs());
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);

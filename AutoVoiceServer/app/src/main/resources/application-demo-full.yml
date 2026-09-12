@@ -11,6 +11,8 @@ autovoice:
     # 未配置时绑定 null → record 默认空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
     max-audio-bytes: ${AUTOVOICE_GATEWAY_MAX_AUDIO_BYTES:1920000} # 单段 60s PCM 上限
+    max-connections-per-device: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS_PER_DEVICE:4} # D10a 每设备连接配额
+    hello-deadline-ms: ${AUTOVOICE_GATEWAY_HELLO_DEADLINE_MS:10000} # D10a 握手截止
   arbitration:
     safety-timeout-ms: 6500
     offline-grace-ms: 1500   # LLM 到达后等离线命令结果的宽限期（offline_won 竞速）

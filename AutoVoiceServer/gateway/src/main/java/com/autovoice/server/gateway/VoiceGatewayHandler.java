@@ -87,6 +87,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static final int DEFAULT_MAX_CONNECTIONS = 32;
     /** 单段最多 60 秒 PCM（16kHz / 16bit / mono），防止连接持续推帧耗尽堆内存。 */
     private static final int DEFAULT_MAX_AUDIO_BYTES = 60 * 16_000 * 2;
+    /** D10a:每设备并发连接上限(未认证连接按空主体独立计数)。 */
+    static final int DEFAULT_PER_DEVICE_CONNECTIONS = 4;
+    /** D10a:重建连接后完成握手的期限;超时关闭,避免只占名额不握手。 */
+    static final long DEFAULT_HELLO_DEADLINE_MS = 10_000;
     private static final int DEFAULT_TTS_WORKERS = 4;
     private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
     private static final long TURN_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(2);
@@ -113,6 +117,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final Map<String, String> authDevices;
     /** 并发连接上限（含所有设备），超限新连接直接 close(4001) 不登记。 */
     private final int maxConnections;
+    /** D10a 每设备并发连接配额(未认证连接按空主体单独计数)。 */
+    private final com.autovoice.server.contracts.ConnectionQuota connectionQuota;
+    /** D10a hello 截止:连接建立后该期限内未完成握手即关闭(防止只占名额不握手)。 */
+    private final long helloDeadlineMs;
     /** 单段 PCM 累积上限。 */
     private final int maxAudioBytes;
     /** 原子连接配额；size()+put 不是原子操作，不能作为并发接入守卫。 */
@@ -210,6 +218,26 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                int maxAudioBytes, TelemetryRecorder recorder,
                                com.autovoice.server.contracts.NavigationDialog navigationDialog,
                                com.autovoice.server.contracts.ActionLedger actionLedger) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                navigationDialog, actionLedger,
+                new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS),
+                DEFAULT_HELLO_DEADLINE_MS);
+    }
+
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
+                               com.autovoice.server.contracts.ActionLedger actionLedger,
+                               com.autovoice.server.contracts.ConnectionQuota connectionQuota,
+                               long helloDeadlineMs) {
+        this.connectionQuota = connectionQuota == null
+                ? new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS)
+                : connectionQuota;
+        this.helloDeadlineMs = helloDeadlineMs < 1 ? DEFAULT_HELLO_DEADLINE_MS : helloDeadlineMs;
         this.online = online;
         this.tts = tts;
         this.offline = offline;
@@ -245,10 +273,35 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             downlink.closePolicy(session, "connection limit reached");
             return;
         }
-        ConnectionState previous = connections.putIfAbsent(session, new ConnectionState(session));
+        // D10a:未认证连接的配额按空主体计;握手认证后迁移到设备主体(见 onHello)
+        if (!connectionQuota.tryAcquire("")) {
+            activeConnections.decrementAndGet();
+            LOG.warn("per-subject connection quota reached, rejecting {}", session.getId());
+            downlink.closePolicy(session, "connection quota reached");
+            return;
+        }
+        ConnectionState state = new ConnectionState(session);
+        state.quotaSubject = "";
+        state.helloDeadlineAtMs = System.currentTimeMillis() + helloDeadlineMs;
+        ConnectionState previous = connections.putIfAbsent(session, state);
         if (previous != null) {
             activeConnections.decrementAndGet();
+            connectionQuota.release("");
+            return;
         }
+        // hello 截止:期限内未完成握手 → 关闭,避免只占接入名额
+        scheduler.schedule(() -> enforceHelloDeadline(session), helloDeadlineMs, TimeUnit.MILLISECONDS);
+    }
+
+    /** D10a:握手截止检查(幂等:已握手/已关闭时 no-op)。 */
+    private void enforceHelloDeadline(WebSocketSession session) {
+        ConnectionState st = connections.get(session);
+        if (st == null) return;
+        if (st.ctx != null) return; // 已握手
+        if (System.currentTimeMillis() < st.helloDeadlineAtMs) return; // 期限被延长(不应发生,防御)
+        LOG.info("hello deadline exceeded, closing {}", session.getId());
+        downlink.closePolicy(session, "hello deadline exceeded");
+        removeConnection(session);
     }
 
     @Override
@@ -327,6 +380,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (st != null) {
             releaseConnection(st);
             activeConnections.decrementAndGet();
+            connectionQuota.release(st.quotaSubject == null ? "" : st.quotaSubject);
         }
     }
 
@@ -375,6 +429,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 return;
             }
             st.deviceId = deviceId;
+            // D10a:按设备主体重新配额(失败即拒绝:同一设备连接数超限)
+            if (!connectionQuota.tryAcquire(deviceId)) {
+                LOG.warn("per-device connection quota reached, rejecting device {}", deviceId);
+                downlink.sendError(session, st.ctx, "TOO_MANY_CONNECTIONS",
+                        "too many connections for this device", st.segmentId);
+                downlink.closePolicy(session, "per-device quota reached");
+                return;
+            }
+            connectionQuota.release(st.quotaSubject == null ? "" : st.quotaSubject);
+            st.quotaSubject = deviceId;
             LOG.info("authenticated device {} session {}", deviceId, session.getId());
         }
         if (st.ctx == null) {
@@ -864,6 +928,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final class ConnectionState {
         /** 本连接 WS 会话（B5：pending 占位消息经此下发，eventSink 异步回调需要）。 */
         final WebSocketSession session;
+
+        /** D10a:当前占用配额的主体(未握手为空串,握手认证后迁移到设备标识)。 */
+        volatile String quotaSubject = "";
+        /** D10a:hello 截止的绝对时刻。 */
+        volatile long helloDeadlineAtMs;
 
         ConnectionState(WebSocketSession session) {
             this.session = session;
