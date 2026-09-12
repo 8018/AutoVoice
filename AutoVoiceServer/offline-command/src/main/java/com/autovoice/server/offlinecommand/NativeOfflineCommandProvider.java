@@ -44,12 +44,21 @@ public final class NativeOfflineCommandProvider implements OfflineCommandProvide
     private final String apiKey;
     private final String apiSecret;
 
-    /** 单线程串行：SDK 引擎非线程安全，所有 native 调用排队执行。 */
-    private final ExecutorService engine = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "offline-engine");
-        t.setDaemon(true);
-        return t;
-    });
+    /**
+     * D08b 有界串行执行器:SDK 引擎非线程安全,所有 native 调用串行执行;队列有界,
+     * 满时拒绝而不是无限堆积(D08a 的池级监督超时与健康门在此之上再做降级)。
+     */
+    private static final int ENGINE_QUEUE_CAPACITY = 4;
+
+    private final ExecutorService engine = new java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 0, TimeUnit.MILLISECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(ENGINE_QUEUE_CAPACITY),
+            r -> {
+                Thread t = new Thread(r, "offline-engine");
+                t.setDaemon(true);
+                return t;
+            },
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
 
     private volatile long handle; // 0 = 未初始化（nativeInit 返回的引擎句柄）
     private volatile boolean initFailed;
@@ -115,7 +124,9 @@ public final class NativeOfflineCommandProvider implements OfflineCommandProvide
                     out.complete(Optional.empty()); // 失败 → 空结果（等同未命中），绝不崩服务
                 }
             });
-        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            // D08b:队列有界,满时明确拒绝(等同未命中),不无限堆积任务
+            LOG.warn("offline engine queue full, skip recognize (capacity={})", ENGINE_QUEUE_CAPACITY);
             return CompletableFuture.completedFuture(Optional.empty());
         }
         // 30s 调用超时兜底：native 卡死时 future 按时完成空结果，调用方不被阻塞

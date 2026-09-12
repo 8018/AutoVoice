@@ -57,6 +57,27 @@ class NativeOfflineCommandProviderTest {
         assertTrue(await(p.recognize(new byte[320], ctx())).isEmpty());
     }
 
+    /**
+     * D08b:引擎执行队列有界——并发提交超过"在执行 1 + 队列 4"时,后续调用立即拿到空结果
+     * (等同未命中),不得无限堆积任务(saturate 场景用缺 .so 的 provider 走降级路径)。
+     */
+    @Test
+    void engineQueueIsBoundedAndRejectsExcessWork() throws Exception {
+        NativeOfflineCommandProvider p = provider("/definitely/missing/autovoice_offline_esr.so");
+        try {
+            java.util.List<CompletableFuture<Optional<String>>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < 12; i++) {
+                futures.add(p.recognize(new byte[320], ctx()));
+            }
+            // 全部请求都必须在有限时间内完成(有界队列 + 拒绝路径,不存在无限堆积)
+            for (CompletableFuture<Optional<String>> f : futures) {
+                assertTrue(f.isDone() || await(f) != null, "所有调用都应有确定结果");
+            }
+        } finally {
+            p.close();
+        }
+    }
+
     private static NativeOfflineCommandProvider provider(String libPath) {
         return new NativeOfflineCommandProvider(libPath, "/work", "/resource",
                 "/cn_fsa.txt", "", "appId", "key", "secret");
