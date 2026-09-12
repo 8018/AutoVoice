@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -38,16 +39,47 @@ public final class OfflineEnginePool implements OfflineCommandProvider, AutoClos
     private final AtomicBoolean closed = new AtomicBoolean();
 
     /**
+     * D08a 每 worker 一个许可 + 健康状态:许可绑定实际执行生命周期——调用方超时只终结
+     * 返回 Future,执行未结束则不归还许可;连续失败达到阈值熔断该 worker,冷却后半开探测。
+     * 这样"引擎卡死"表现为该 worker 明确不可用,而不是把任务继续排进同一个死引擎。
+     */
+    private final List<Semaphore> workerPermits;
+    private final List<EngineHealth> workerHealth;
+
+    /** D08a 参数:连续失败阈值与熔断冷却时长(毫秒)。 */
+    static final int FAILURE_THRESHOLD = 3;
+    static final long COOLDOWN_MS = 60_000;
+    static final long DEFAULT_ENGINE_TIMEOUT_MS = 30_000;
+
+    private final long engineTimeoutMs;
+
+    /**
      * @param recorder 链路事件记录器（Task 4 起）。池降级事件按调用方透传的 utteranceId 记录
      *                 （时间线"离线池"阶段依赖此贯通）。
      */
     public OfflineEnginePool(List<OfflineCommandProvider> workers, TelemetryRecorder recorder) {
+        this(workers, recorder, DEFAULT_ENGINE_TIMEOUT_MS);
+    }
+
+    /**
+     * @param engineTimeoutMs D08a 引擎监督超时:worker 在该期限内未返回即视为该引擎失败
+     *                        (调用方拿到空结果,不阻塞;连续失败触发熔断)
+     */
+    public OfflineEnginePool(List<OfflineCommandProvider> workers, TelemetryRecorder recorder,
+                             long engineTimeoutMs) {
+        this.engineTimeoutMs = Math.max(1, engineTimeoutMs);
         if (workers == null || workers.isEmpty()) {
             throw new IllegalArgumentException("offline engine pool requires at least one worker");
         }
         this.workers = List.copyOf(workers);
         this.permits = new Semaphore(workers.size());
         this.recorder = recorder;
+        this.workerPermits = new java.util.ArrayList<>(workers.size());
+        this.workerHealth = new java.util.ArrayList<>(workers.size());
+        for (int i = 0; i < workers.size(); i++) {
+            workerPermits.add(new Semaphore(1));
+            workerHealth.add(new EngineHealth(FAILURE_THRESHOLD, COOLDOWN_MS, System::currentTimeMillis));
+        }
     }
 
     @Override
@@ -66,9 +98,9 @@ public final class OfflineEnginePool implements OfflineCommandProvider, AutoClos
                     Map.of("reason", "busy", "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
-        OfflineCommandProvider worker;
+        int index;
         try {
-            worker = workers.get(Math.floorMod(ctx.sessionId().hashCode(), workers.size()));
+            index = Math.floorMod(ctx.sessionId().hashCode(), workers.size());
         } catch (RuntimeException e) {
             permits.release();
             LOG.warn("offline engine pool routing failed, skip: {}", String.valueOf(e.getMessage()));
@@ -77,26 +109,45 @@ public final class OfflineEnginePool implements OfflineCommandProvider, AutoClos
                             "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
+        // D08a:该 worker 的许可绑定执行生命周期;熔断中或执行未结束 → 明确降级
+        if (!workerHealth.get(index).tryAcquire() || !workerPermits.get(index).tryAcquire()) {
+            permits.release();
+            LOG.info("offline engine worker {} unavailable, degrade (health={})",
+                    index, workerHealth.get(index).consecutiveFailures());
+            recorder.record(utteranceId, TelemetryStages.OFFLINE_POOL, "warn",
+                    Map.of("reason", "engine_unavailable", "worker", index,
+                            "consecutiveFailures", workerHealth.get(index).consecutiveFailures()));
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
+        OfflineCommandProvider worker = workers.get(index);
         CompletableFuture<Optional<String>> future;
         try {
             future = worker.recognize(pcm16k, ctx, utteranceId);
         } catch (RuntimeException e) {
             permits.release();
+            workerPermits.get(index).release();
+            workerHealth.get(index).onFailure();
             LOG.warn("offline engine worker rejected recognize, skip: {}", String.valueOf(e.getMessage()));
             recorder.record(utteranceId, TelemetryStages.OFFLINE_POOL, "warn",
                     Map.of("reason", "worker_rejected", "error", String.valueOf(e.getMessage()),
                             "poolSize", workers.size()));
             return CompletableFuture.completedFuture(Optional.empty());
         }
-        return future.handle((result, err) -> {
+        return future.orTimeout(engineTimeoutMs, TimeUnit.MILLISECONDS).handle((result, err) -> {
             permits.release();
             if (err != null) {
-                LOG.warn("offline engine worker failed, skip: {}", String.valueOf(err.getMessage()));
+                // D08a:异常(含 native 超时兜底)记为该 worker 的失败;连续失败触发熔断
+                workerHealth.get(index).onFailure();
+                workerPermits.get(index).release();
+                LOG.warn("offline engine worker {} failed, skip: {}", index, String.valueOf(err.getMessage()));
                 recorder.record(utteranceId, TelemetryStages.OFFLINE_POOL, "warn",
                         Map.of("reason", "worker_failed", "error", String.valueOf(err.getMessage()),
-                                "poolSize", workers.size()));
+                                "worker", index,
+                                "consecutiveFailures", workerHealth.get(index).consecutiveFailures()));
                 return Optional.<String>empty();
             }
+            workerHealth.get(index).onSuccess();
+            workerPermits.get(index).release();
             return result == null ? Optional.<String>empty() : result;
         });
     }

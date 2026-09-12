@@ -74,12 +74,14 @@ class OfflineEnginePoolTest {
         AtomicInteger calls = new AtomicInteger();
         OfflineEnginePool pool = new OfflineEnginePool(List.of(
                 fake("a", calls, release), fake("b", calls, release)), (utt, e) -> { });
-        // 与 sticky 无关：两个 worker 各被占住（permits 同步获取，先于 worker 异步执行）
-        CompletableFuture<Optional<String>> f1 = pool.recognize(new byte[16], ctx("session-one"));
-        CompletableFuture<Optional<String>> f2 = pool.recognize(new byte[16], ctx("session-two"));
+        // D08a:每 worker 单在途——用分别映射到两个 worker 的会话占满池
+        String sessionA = findSessionMappingTo(0, "occupy-a-");
+        String sessionB = findSessionMappingTo(1, "occupy-b-");
+        CompletableFuture<Optional<String>> f1 = pool.recognize(new byte[16], ctx(sessionA));
+        CompletableFuture<Optional<String>> f2 = pool.recognize(new byte[16], ctx(sessionB));
 
         // 第 3 个并发识别：池满 → 立即空结果（快速失败，不排队不阻塞）
-        CompletableFuture<Optional<String>> f3 = pool.recognize(new byte[16], ctx("session-three"));
+        CompletableFuture<Optional<String>> f3 = pool.recognize(new byte[16], ctx(sessionA));
         assertTrue(f3.isDone(), "池满应同步返回已完成的空结果");
         assertEquals(Optional.empty(), f3.join());
 
@@ -108,7 +110,7 @@ class OfflineEnginePoolTest {
         CompletableFuture<Optional<String>> f1 = pool.recognize(new byte[16], ctx(badSession));
         assertEquals(Optional.empty(), f1.join(), "worker 异常 → 空结果（不崩、不抛）");
         assertFalse(f1.isCompletedExceptionally(), "池应吞掉异常，返回已完成空结果");
-        assertFalse(pool.recognize(new byte[16], ctx("session-two")).join().isEmpty(),
+        assertFalse(pool.recognize(new byte[16], ctx(findSessionMappingTo(1, "ok-"))).join().isEmpty(),
                 "异常 worker 释放许可后池仍可服务其他会话");
     }
 
@@ -131,9 +133,11 @@ class OfflineEnginePoolTest {
         OfflineEnginePool pool = new OfflineEnginePool(List.of(
                 fake("a", calls, release), fake("b", calls, release)), recorder);
 
-        pool.recognize(new byte[16], ctx("session-one"));
-        pool.recognize(new byte[16], ctx("session-two"));
-        CompletableFuture<Optional<String>> f3 = pool.recognize(new byte[16], ctx("session-three"));
+        String sessionA = findSessionMappingTo(0, "occupy-a-");
+        String sessionB = findSessionMappingTo(1, "occupy-b-");
+        pool.recognize(new byte[16], ctx(sessionA));
+        pool.recognize(new byte[16], ctx(sessionB));
+        CompletableFuture<Optional<String>> f3 = pool.recognize(new byte[16], ctx(sessionA));
         assertEquals(Optional.empty(), f3.join());
 
         TelemetryEvent busy = events.stream()
