@@ -323,6 +323,31 @@ public class AppConfig {
                 System::currentTimeMillis, props.gateway().drainTimeoutMs());
     }
 
+    /**
+     * D12a/D16:就绪接线——应用启动完成时声明必需组件并置为 READY。
+     *
+     * <p>必需组件(缺失/未就绪即不接流量):`config`(配置装配成功;生产 profile 已由
+     * {@link ProductionConfigGuard} fail-closed 校验)、`gateway`(WS 处理器装配完成)。
+     * 可降级组件(`skill-registry`/`tts`/`offline-engine`)只登记不阻断——单个可选依赖
+     * 失败不摘除整体业务。</p>
+     *
+     * <p>该 runner 在装配全部成功后才执行;故应用起不来的情况根本不会标记就绪
+     * (不会误报"坏配置部署成功")。</p>
+     */
+    @Bean
+    public org.springframework.boot.ApplicationRunner readinessInitializer(
+            com.autovoice.server.app.health.ServiceReadiness readiness) {
+        return args -> {
+            readiness.registerCritical("config");
+            readiness.registerCritical("gateway");
+            readiness.registerDegradable("skill-registry");
+            readiness.registerDegradable("tts");
+            readiness.registerDegradable("offline-engine");
+            readiness.markReady("config");
+            readiness.markReady("gateway");
+        };
+    }
+
     @Bean
     public com.autovoice.server.app.health.HealthController healthController(
             com.autovoice.server.app.health.ServiceReadiness readiness) {

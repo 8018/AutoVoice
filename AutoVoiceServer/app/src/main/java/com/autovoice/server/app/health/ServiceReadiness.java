@@ -34,7 +34,13 @@ public final class ServiceReadiness {
         this.drainTimeoutMs = Math.max(1, drainTimeoutMs);
     }
 
-    /** 登记关键组件(未就绪前服务不就绪)。 */
+    /**
+     * 声明**必需**组件(PENDING 起步):该组件未 READY 前服务不就绪。
+     *
+     * <p>必须显式声明必需组件——装配方未声明任何必需组件视为接线缺陷,
+     * {@link #isReady()} 一律返回 false(fail-closed),避免"忘了接线"被
+     * 静默解释成"永远就绪"(D16 验收发现的实际缺陷)。</p>
+     */
     public void registerCritical(String name) {
         critical.putIfAbsent(name, State.PENDING);
     }
@@ -65,10 +71,21 @@ public final class ServiceReadiness {
         return true;
     }
 
-    /** 就绪:未排空,且全部关键组件 READY。 */
+    /**
+     * 就绪判定(三个条件全部满足才 UP):
+     * <ol>
+     *   <li>未处于排空;</li>
+     *   <li>**已声明至少一个必需组件**(未声明 = 接线缺陷 → 不就绪);</li>
+     *   <li>全部必需组件为 READY(任一未就绪/失败 → 不就绪)。</li>
+     * </ol>
+     * 可降级组件不参与该判定:单个可选依赖失败不摘除整体业务。
+     */
     public boolean isReady() {
         if (draining) {
             return false;
+        }
+        if (critical.isEmpty()) {
+            return false; // 接线缺陷:未声明任何必需组件
         }
         return critical.values().stream().allMatch(state -> state == State.READY);
     }
