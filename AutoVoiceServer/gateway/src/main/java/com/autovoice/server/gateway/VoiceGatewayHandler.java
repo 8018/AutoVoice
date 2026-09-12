@@ -132,6 +132,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final java.util.concurrent.atomic.AtomicInteger inFlightTurns = new java.util.concurrent.atomic.AtomicInteger();
     private volatile long drainStartedAtMs;
     private final long drainTimeoutMs;
+    /** D10b:每连接下行字节预算(可配置,便于测试与按容量调优)。 */
+    private final long downlinkBudgetBytes;
     /** 单段 PCM 累积上限。 */
     private final int maxAudioBytes;
     /** 原子连接配额；size()+put 不是原子操作，不能作为并发接入守卫。 */
@@ -245,6 +247,24 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                com.autovoice.server.contracts.ActionLedger actionLedger,
                                com.autovoice.server.contracts.ConnectionQuota connectionQuota,
                                long helloDeadlineMs, long drainTimeoutMs) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                navigationDialog, actionLedger, connectionQuota, helloDeadlineMs, drainTimeoutMs,
+                DEFAULT_DOWNLINK_BUDGET_BYTES);
+    }
+
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
+                               com.autovoice.server.contracts.ActionLedger actionLedger,
+                               com.autovoice.server.contracts.ConnectionQuota connectionQuota,
+                               long helloDeadlineMs, long drainTimeoutMs,
+                               long downlinkBudgetBytes) {
+        this.downlinkBudgetBytes = downlinkBudgetBytes < 1
+                ? DEFAULT_DOWNLINK_BUDGET_BYTES : downlinkBudgetBytes;
         this.drainTimeoutMs = drainTimeoutMs < 1 ? DEFAULT_DRAIN_TIMEOUT_MS : drainTimeoutMs;
         this.connectionQuota = connectionQuota == null
                 ? new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS)
@@ -1013,7 +1033,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         /** D10a:hello 截止的绝对时刻。 */
         volatile long helloDeadlineAtMs;
         /** D10b:本连接下行预算(慢客户端保护)。 */
-        final DownlinkBudget downlinkBudget = new DownlinkBudget(DEFAULT_DOWNLINK_BUDGET_BYTES);
+        final DownlinkBudget downlinkBudget = new DownlinkBudget(downlinkBudgetBytes);
 
         ConnectionState(WebSocketSession session) {
             this.session = session;

@@ -540,6 +540,37 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D10b 补充:下行预算耗尽 ----------
+
+    @Test
+    void downlinkBudgetExhaustionReportsExplicitError() throws Exception {
+        // D16a 盘点补测:下行预算耗尽必须明确失败(DOWNLINK_OVERLOADED),不静默丢弃
+        java.util.concurrent.atomic.AtomicInteger synthCalls = new java.util.concurrent.atomic.AtomicInteger();
+        TtsProvider bigAudio = (text, ctx) -> {
+            synthCalls.incrementAndGet();
+            return Reply.ofAudio("audio/wav", new byte[1024]); // 音频大于测试预算
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), bigAudio, noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                com.autovoice.server.contracts.ActionLedger.NONE,
+                new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000,
+                128); // 预算 128 字节 < 音频 1024 字节
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"tts_request\",\"payload\":{\"sessionId\":\"" + sid
+                        + "\",\"text\":\"你好\"}}"));
+
+        JsonNode error = awaitType(s, "error");
+        assertEquals("DOWNLINK_OVERLOADED", error.path("payload").path("code").asText(),
+                "超出下行预算应明确报错,而不是静默丢弃片段");
+        assertEquals(1, synthCalls.get(), "合成已发生(预算是发送侧保护)");
+        h.close();
+    }
+
     // ---------- D15a:明确恢复结果 ----------
 
     @Test
