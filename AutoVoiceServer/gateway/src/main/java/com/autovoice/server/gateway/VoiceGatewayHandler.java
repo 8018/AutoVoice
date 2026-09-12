@@ -91,6 +91,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     static final int DEFAULT_PER_DEVICE_CONNECTIONS = 4;
     /** D10a:重建连接后完成握手的期限;超时关闭,避免只占名额不握手。 */
     static final long DEFAULT_HELLO_DEADLINE_MS = 10_000;
+    /** D12a:排空期限——停止接入后等待在途工作的上限(超时按期限结束)。 */
+    static final long DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
     /** D10b:每连接下行字节预算(未完成发送的累计上限),防慢客户端无界堆积。 */
     static final long DEFAULT_DOWNLINK_BUDGET_BYTES = 4L * 1024 * 1024;
     /** D10b:TTS 请求文本长度上限(字符),防超长文本占用合成与下行。 */
@@ -125,6 +127,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final com.autovoice.server.contracts.ConnectionQuota connectionQuota;
     /** D10a hello 截止:连接建立后该期限内未完成握手即关闭(防止只占名额不握手)。 */
     private final long helloDeadlineMs;
+    /** D12a 排空闸门:排空期间拒绝新连接;在途工作计数用于排空判定。 */
+    private volatile boolean draining;
+    private final java.util.concurrent.atomic.AtomicInteger inFlightTurns = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long drainStartedAtMs;
+    private final long drainTimeoutMs;
     /** 单段 PCM 累积上限。 */
     private final int maxAudioBytes;
     /** 原子连接配额；size()+put 不是原子操作，不能作为并发接入守卫。 */
@@ -226,7 +233,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
                 navigationDialog, actionLedger,
                 new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS),
-                DEFAULT_HELLO_DEADLINE_MS);
+                DEFAULT_HELLO_DEADLINE_MS, DEFAULT_DRAIN_TIMEOUT_MS);
     }
 
     public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
@@ -237,7 +244,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                com.autovoice.server.contracts.NavigationDialog navigationDialog,
                                com.autovoice.server.contracts.ActionLedger actionLedger,
                                com.autovoice.server.contracts.ConnectionQuota connectionQuota,
-                               long helloDeadlineMs) {
+                               long helloDeadlineMs, long drainTimeoutMs) {
+        this.drainTimeoutMs = drainTimeoutMs < 1 ? DEFAULT_DRAIN_TIMEOUT_MS : drainTimeoutMs;
         this.connectionQuota = connectionQuota == null
                 ? new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS)
                 : connectionQuota;
@@ -270,6 +278,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (draining) {
+            // D12a:排空期间不再接入新连接(负载均衡应已按 /health/ready 摘除本实例)
+            LOG.info("connection rejected while draining: {}", session.getId());
+            downlink.closePolicy(session, "server draining");
+            return;
+        }
         int admitted = activeConnections.incrementAndGet();
         if (admitted > maxConnections) {
             activeConnections.decrementAndGet();
@@ -295,6 +309,24 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         // hello 截止:期限内未完成握手 → 关闭,避免只占接入名额
         scheduler.schedule(() -> enforceHelloDeadline(session), helloDeadlineMs, TimeUnit.MILLISECONDS);
+    }
+
+    /** D12a:进入排空——停止接入新连接,等待在途轮次结束(有期限)。 */
+    public void beginDraining() {
+        draining = true;
+        drainStartedAtMs = System.currentTimeMillis();
+        LOG.info("gateway draining: {} in-flight turns", inFlightTurns.get());
+    }
+
+    /** D12a:排空是否完成(无在途,或超过排空期限)。 */
+    public boolean drainComplete() {
+        if (!draining) {
+            return false;
+        }
+        if (inFlightTurns.get() == 0) {
+            return true;
+        }
+        return System.currentTimeMillis() - drainStartedAtMs >= drainTimeoutMs;
     }
 
     /** D10a:握手截止检查(幂等:已握手/已关闭时 no-op);包私有便于确定性测试。 */
@@ -652,11 +684,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private void processSegment(WebSocketSession session, ConnectionState st, byte[] pcm,
                                 SessionContext ctx, String utteranceId, String segmentId,
                                 OnlineSpeechStream inputStream, SegmentWork ownedWork) {
+        boolean inFlightStarted = false; // D12a:排空计数标志(与 increment 配对递减)
         try {
             if (pcm.length == 0) {
                 if (inputStream != null) inputStream.cancel();
                 return;
             }
+            inFlightTurns.incrementAndGet(); // D12a:在途轮次计数(排空判定)
+            inFlightStarted = true;
             TurnKey turnKey = new TurnKey(st.deviceId != null ? st.deviceId : ctx.sessionId(), utteranceId);
             CachedTurn cached = completedTurns.get(turnKey);
             if (cached != null && cached.expiresAtMs() > System.currentTimeMillis()) {
@@ -723,6 +758,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 downlink.sendReply(session, result, segmentId);
             }
         } finally {
+            if (inFlightStarted) {
+                inFlightTurns.updateAndGet(current -> Math.max(0, current - 1));
+            }
             if (ownedWork != null) schedulePermitCleanup(st, ownedWork.outputPermit());
             if (ownedWork != null) {
                 SegmentWork next = st.turns.complete(ownedWork);

@@ -132,11 +132,12 @@ public class AppConfig {
          * {@link #authDevicesMap()} 解析；max-connections 默认 32，超限新连接 close(4001)。
          */
         public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes,
-                              int maxConnectionsPerDevice, long helloDeadlineMs) {
+                              int maxConnectionsPerDevice, long helloDeadlineMs,
+                              long drainTimeoutMs) {
 
-            /** 兼容构造(历史配置/测试):每设备 4 连接、hello 截止 10s。 */
+            /** 兼容构造(历史配置/测试):每设备 4 连接、hello 截止 10s、排空期限 30s。 */
             public Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
-                this(authEnabled, authDevices, maxConnections, maxAudioBytes, 4, 10_000);
+                this(authEnabled, authDevices, maxConnections, maxAudioBytes, 4, 10_000, 30_000);
             }
 
             private static final ObjectMapper JSON = new ObjectMapper();
@@ -148,6 +149,7 @@ public class AppConfig {
                 maxAudioBytes = maxAudioBytes < 1 ? 1_920_000 : maxAudioBytes;
                 maxConnectionsPerDevice = maxConnectionsPerDevice < 1 ? 4 : maxConnectionsPerDevice;
                 helloDeadlineMs = helloDeadlineMs < 1 ? 10_000 : helloDeadlineMs;
+                drainTimeoutMs = drainTimeoutMs < 1 ? 30_000 : drainTimeoutMs;
             }
 
             public Gateway(boolean authEnabled, String authDevices, int maxConnections) {
@@ -313,6 +315,20 @@ public class AppConfig {
      * 网关 WS 处理器：仲裁参数（safety / offline 宽限期）、ASR 失败等离线窗口与接入策略
      * （鉴权/连接上限，M1）均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
      */
+    /** D12a:服务就绪与排空状态(健康探针只读内存状态,不触网)。 */
+    @Bean
+    public com.autovoice.server.app.health.ServiceReadiness serviceReadiness(
+            AutovoiceProperties props) {
+        return new com.autovoice.server.app.health.ServiceReadiness(
+                System::currentTimeMillis, props.gateway().drainTimeoutMs());
+    }
+
+    @Bean
+    public com.autovoice.server.app.health.HealthController healthController(
+            com.autovoice.server.app.health.ServiceReadiness readiness) {
+        return new com.autovoice.server.app.health.HealthController(readiness);
+    }
+
     /** D07a:独立 SQLite 业务账本(与遥测库分离)。 */
     @Bean
     public com.autovoice.server.actionledger.SqliteActionLedger actionLedger(AutovoiceProperties props) {
@@ -335,7 +351,7 @@ public class AppConfig {
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
                 g.maxAudioBytes(), recorder, navigationDialog, actionLedger,
                 new com.autovoice.server.contracts.ConnectionQuota(g.maxConnectionsPerDevice()),
-                g.helloDeadlineMs());
+                g.helloDeadlineMs(), g.drainTimeoutMs());
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);
