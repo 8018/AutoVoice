@@ -540,6 +540,71 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D15a:明确恢复结果 ----------
+
+    @Test
+    void freshHandshakeReportsNewSessionState() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        JsonNode ready = parse(s.sent.get(0));
+        assertEquals("new", ready.path("payload").path("sessionState").asText(),
+                "无 sessionId 的首次握手应明确报告 new");
+        assertFalse(ready.path("payload").path("navigationCandidatesValid").asBoolean(true),
+                "新会话没有有效候选");
+        h.close();
+    }
+
+    @Test
+    void resumedSessionReportsResumedState() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.path("payload").path("sessionId").asText();
+        String token = ready.path("payload").path("resumeToken").asText();
+
+        StubSession second = open(h);
+        h.handleMessage(second, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode resumed = parse(second.sent.get(0));
+        assertEquals("resumed", resumed.path("payload").path("sessionState").asText(),
+                "合法恢复应明确报告 resumed");
+        assertEquals(sid, resumed.path("payload").path("sessionId").asText());
+        h.close();
+    }
+
+    @Test
+    void expiredSessionReportsResetInsteadOfClosing() {
+        TestClock clock = new TestClock(0);
+        SessionRegistry clockRegistry = new SessionRegistry(clock, 60_000);
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), ttsOk(), noopOffline(),
+                clockRegistry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                com.autovoice.server.contracts.ActionLedger.NONE,
+                new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.path("payload").path("sessionId").asText();
+        String token = ready.path("payload").path("resumeToken").asText();
+
+        clock.advance(61_000);
+        StubSession after = open(h);
+        h.handleMessage(after, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode reset = parse(after.sent.get(0));
+        assertEquals("ready", reset.path("type").asText(), "过期会话应给 ready(而非直接关闭)");
+        assertEquals("reset", reset.path("payload").path("sessionState").asText(),
+                "过期会话应明确报告 reset,由客户端据此清理本地状态");
+        assertNotEquals(sid, reset.path("payload").path("sessionId").asText(),
+                "reset 应下发新会话 ID");
+        h.close();
+    }
+
     // ---------- D14c:签发失败降级 + 支持窗口 ----------
 
     @Test
@@ -1143,7 +1208,9 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void authEnabledExpiredSessionIsRejected() {
+    void authEnabledExpiredSessionReportsReset() {
+        // D15a 语义更新:过期会话改为明确返回 reset(ready + sessionState=reset),
+        // 客户端据此清理本地状态并接着用新会话,不再需要断线重连
         TestClock clock = new TestClock(0);
         SessionRegistry clockRegistry = new SessionRegistry(clock, 60_000);
         VoiceGatewayHandler h = new VoiceGatewayHandler(
@@ -1160,9 +1227,10 @@ class VoiceGatewayHandlerTest {
         StubSession b = open(h);
         h.handleMessage(b, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
 
-        JsonNode error = parse(b.sent.get(0));
-        assertEquals("SESSION_EXPIRED", error.get("payload").get("code").asText());
-        assertNotNull(b.closeStatus);
+        JsonNode reset = parse(b.sent.get(0));
+        assertEquals("ready", reset.get("type").asText());
+        assertEquals("reset", reset.get("payload").get("sessionState").asText());
+        assertNull(b.closeStatus, "reset 不应关闭连接");
     }
 
     @Test

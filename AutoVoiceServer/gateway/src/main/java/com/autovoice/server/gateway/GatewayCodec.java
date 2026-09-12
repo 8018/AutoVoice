@@ -45,7 +45,7 @@ public final class GatewayCodec {
                     "latitude", "longitude", "attempt", "navigationSelectionId")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
             Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId")),
-            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime")),
+            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),

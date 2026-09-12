@@ -217,6 +217,13 @@ internal class GatewayCloudRunner(
     @Volatile
     var onReadySessionId: (String) -> Unit = {}
 
+    /**
+     * D15b:服务端明确的恢复结果与候选有效性。
+     * sessionState: new / resumed / reset(缺省视为 new,兼容旧服务端)。
+     * 客户端**只在 reset 或候选无效时**清理待选列表——正常恢复保留列表。
+     */
+    var onSessionRecovery: (state: String, candidatesValid: Boolean) -> Unit = { _, _ -> }
+
     @Volatile
     var onConnectionEvent: (String, String, Map<String, Any?>) -> Unit = { _, _, _ -> }
 
@@ -252,6 +259,8 @@ internal class GatewayCloudRunner(
         sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
             ?: throw GatewayException("ready 事件缺少 sessionId")
         readyReceived = true
+        val recovery = SessionRecovery.parse(ready.payload)
+        onSessionRecovery(recovery.state, recovery.navigationCandidatesValid)
         onReadySessionId(sessionId)
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
     }

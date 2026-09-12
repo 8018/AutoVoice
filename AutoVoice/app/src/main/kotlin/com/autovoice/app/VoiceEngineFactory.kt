@@ -237,6 +237,13 @@ internal object VoiceEngineFactory {
         cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
         // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
         cloudRunner.onReadySessionId = telemetry::onSessionId
+        // D15b:仅当服务端明确 reset(会话重建)或候选已失效时清理待选列表;
+        // 正常恢复(resumed 且候选有效)保留列表。清理的是待选列表,不影响已启动的导航。
+        cloudRunner.onSessionRecovery = { state, candidatesValid ->
+            if (SessionRecovery(state, candidatesValid).shouldClearCandidates) {
+                navigation?.session?.cancelSelection()
+            }
+        }
         // D05b:采用确认上行绑定到云端连接
         engine.navigationAdoptionSender = { selectionId ->
             cloudRunner.sendNavigationSelectionStart(selectionId)

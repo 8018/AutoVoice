@@ -268,6 +268,8 @@
 | `sessionId` | string | 会话 ID |
 | `language` | string | 识别与回复语言，如 `"zh-CN"` |
 | `protocolVersion` | string | 服务端采纳的协议版本 |
+| `sessionState` | string（D15a） | 服务端明确的恢复结果：`new`（新建会话）/ `resumed`（既有会话已恢复）/ `reset`（原会话已过期/失效，服务端已重建）。客户端据此决定是否清理本地状态：仅 `reset` 或候选失效时清待选列表，正常恢复保留 |
+| `navigationCandidatesValid` | boolean（D15a） | 该会话当前是否有有效候选列表；客户端在 `resumed` 且此值为 true 时保留列表 |
 | `resumeToken` | string（D02a） | 会话恢复凭据（独立于 sessionId）。客户端重连恢复时在 `hello` 中与 `sessionId` 一同回带；不得写入日志/遥测。旧客户端忽略该字段 |
 | `serverTime` | number（可选） | 服务端墙钟毫秒（`System.currentTimeMillis()`）。客户端可据此估算设备与服务端的时钟偏移（offset ≈ serverTime + RTT/2 − 本地时刻），用于 telemetry 事件统一换算服务器时钟；旧客户端忽略该字段 |
 

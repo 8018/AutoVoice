@@ -477,6 +477,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             st.quotaSubject = deviceId;
             LOG.info("authenticated device {} session {}", deviceId, session.getId());
         }
+        String sessionState = "new"; // D15a:new | resumed | reset
         if (st.ctx == null) {
             Object sessionIdRaw = payload.get("sessionId");
             String sessionId = sessionIdRaw == null ? null : String.valueOf(sessionIdRaw);
@@ -486,15 +487,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                         ? String.valueOf(payload.get("resumeToken")) : null;
                 SessionRegistry.ResumeResult result = registry.resume(sessionId, st.deviceId, resumeToken);
                 switch (result) {
-                    case OK -> st.ctx = registry.get(sessionId);
+                    case OK -> {
+                        st.ctx = registry.get(sessionId);
+                        sessionState = "resumed";
+                    }
                     case NOT_FOUND -> st.ctx = registry.create(DEFAULT_LANGUAGE, st.deviceId);
                     case EXPIRED -> {
-                        LOG.warn("session expired for deviceId={}", st.deviceId);
-                        downlink.sendError(session, st.ctx, "SESSION_EXPIRED",
-                                "session expired; reconnect without sessionId to start a new session",
-                                st.segmentId);
-                        downlink.closePolicy(session, "session expired");
-                        return;
+                        // D15a:过期会话明确报告 reset(而非直接关闭)——客户端据此清理本地
+                        // 状态(会话/候选列表),避免界面继续显示服务端已不认识的列表
+                        LOG.warn("session expired for deviceId={}; issuing reset", st.deviceId);
+                        st.ctx = registry.create(DEFAULT_LANGUAGE, st.deviceId);
+                        sessionState = "reset";
                     }
                     case OWNER_MISMATCH, BAD_CREDENTIAL -> {
                         LOG.warn("session recovery denied for deviceId={}", st.deviceId);
@@ -511,6 +514,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     ctx = authEnabled
                             ? registry.create(DEFAULT_LANGUAGE, st.deviceId)
                             : registry.create(DEFAULT_LANGUAGE);
+                } else if (sessionId != null && !sessionId.isBlank()) {
+                    sessionState = "resumed";
                 }
                 st.ctx = ctx;
             }
@@ -519,6 +524,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         ready.put("sessionId", st.ctx.sessionId());
         ready.put("language", st.ctx.language());
         ready.put("resumeToken", st.ctx.resumeToken());
+        // D15a:明确恢复结果(new/resumed/reset)与候选列表有效性——客户端据此决定
+        // 是否清理待选列表;正常恢复且候选有效时应保留列表
+        ready.put("sessionState", sessionState);
+        ready.put("navigationCandidatesValid", navigationDialog.hasPending(st.ctx));
         ready.put("protocolVersion", PROTOCOL_VERSION);
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());
