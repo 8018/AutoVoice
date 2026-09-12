@@ -161,6 +161,7 @@ public final class McpSkillRegistry implements AutoCloseable {
                 chatPrompt != null ? chatPrompt : previous.chatSystemPrompt(),
                 System.currentTimeMillis());
         snapshot = candidate; // 原子发布:此后新请求看到完整新版本
+        retireWhenIdle(previous, next);
         // prompt store 只在确有新值时写入:拉取失败(null)保留旧值(既有语义)
         if (prompt != null && !prompt.equals(previous.systemPrompt())) {
             promptStore.set(prompt);
@@ -170,14 +171,39 @@ public final class McpSkillRegistry implements AutoCloseable {
             chatPromptStore.set(chatPrompt);
             LOG.info("chat system prompt updated ({} chars)", chatPrompt.length());
         }
-        Map<String, McpToolSession> old = previous.sessions();
-        for (McpToolSession s : old.values()) {
-            if (!next.containsValue(s)) {
-                s.close();
-            }
-        }
         LOG.info("skill registry refreshed: v{} {} sessions ({} tools)",
                 candidate.version(), next.size(), candidate.toolCount());
+    }
+
+    /**
+     * D11b:旧快照连接延迟退役——有活跃租约时等最后一个租约释放后关闭;
+     * 无租约(常见路径)时立即关闭,与历史行为一致。
+     */
+    private void retireWhenIdle(RegistrySnapshot previous, Map<String, McpToolSession> next) {
+        Runnable retire = () -> {
+            for (McpToolSession session : previous.sessions().values()) {
+                if (!next.containsValue(session)) {
+                    session.close();
+                }
+            }
+        };
+        if (previous.isIdle()) {
+            retire.run();
+            return;
+        }
+        // 有请求正在使用旧版本:等租约释放(轮询间隔 50ms,退役最多延迟到请求结束)
+        scheduler.schedule(() -> {
+            if (previous.isIdle()) {
+                retire.run();
+            } else {
+                retireWhenIdle(previous, next);
+            }
+        }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /** D11b:为当前版本取租约(请求开始时调用,结束时 close)。 */
+    public AutoCloseable lease() {
+        return snapshot.acquire();
     }
 
     /** 注入 LLM 的工具列表（经注入策略，含分级）。 */

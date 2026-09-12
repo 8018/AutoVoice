@@ -203,8 +203,19 @@ public final class McpToolSession implements AutoCloseable {
         return text;
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean closed =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** 会话是否已关闭(退役可观测;D11b 延迟退役验证用)。 */
+    public boolean isClosed() {
+        return closed.get();
+    }
+
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return; // 幂等:重复关闭不重复触碰客户端
+        }
         try {
             client.close();
         } catch (RuntimeException ignored) {
