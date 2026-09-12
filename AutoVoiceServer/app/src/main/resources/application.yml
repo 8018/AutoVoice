@@ -21,6 +21,8 @@ autovoice:
     # 未配置/空 → 空表
     max-connections: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS:32}   # 并发连接上限，超限 close(4001)
     max-audio-bytes: ${AUTOVOICE_GATEWAY_MAX_AUDIO_BYTES:1920000} # 单段 60s PCM 上限（16k/16bit/mono）
+    max-connections-per-device: ${AUTOVOICE_GATEWAY_MAX_CONNECTIONS_PER_DEVICE:4} # D10a 每设备并发连接配额
+    hello-deadline-ms: ${AUTOVOICE_GATEWAY_HELLO_DEADLINE_MS:10000} # D10a 握手截止：超时关闭未 hello 的连接
   arbitration:
     # 15000：多目的地导航（先去A再去B）LLM 5-7 轮工具循环实测 7-14s，需放宽 hard 上限；
     # 空调/单目的地轮不受影响（秒级收敛，safety 只兜 LLM 卡死/超长）。

@@ -540,6 +540,61 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D10a:接入配额与 hello 截止 ----------
+
+    private VoiceGatewayHandler quotaHandler(
+            com.autovoice.server.contracts.ConnectionQuota quota, long helloDeadlineMs) {
+        return new VoiceGatewayHandler(new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")),
+                ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                com.autovoice.server.contracts.ActionLedger.NONE, quota, helloDeadlineMs);
+    }
+
+    @Test
+    void perDeviceQuotaRejectsExcessConnections() {
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(1);
+        VoiceGatewayHandler h = quotaHandler(quota, 10_000);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        assertEquals("ready", parse(first.sent.get(0)).get("type").asText());
+
+        StubSession second = open(h);
+        h.handleMessage(second, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        JsonNode error = parse(second.sent.get(0));
+        assertEquals("TOO_MANY_CONNECTIONS", error.path("payload").path("code").asText());
+        assertNotNull(second.closeStatus, "超配额的设备连接应被关闭");
+        h.close();
+    }
+
+    @Test
+    void helloDeadlineClosesSilentConnection() throws Exception {
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
+        VoiceGatewayHandler h = quotaHandler(quota, 100); // 100ms 未握手即关闭
+        StubSession silent = open(h);
+        // 不发 hello,等截止触发
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (silent.closeStatus == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20);
+        }
+        assertNotNull(silent.closeStatus, "超过 hello 截止的静默连接必须被关闭(不占名额)");
+        assertEquals(0, quota.activeFor(""), "关闭后应归还配额");
+        h.close();
+    }
+
+    @Test
+    void handshakeWithinDeadlineIsNotClosed() throws Exception {
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
+        VoiceGatewayHandler h = quotaHandler(quota, 300);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("device-a", "ta")));
+        Thread.sleep(400); // 超过截止窗口
+        assertNull(s.closeStatus, "已完成握手的连接不受 hello 截止影响");
+        assertEquals(1, quota.activeFor("device-a"), "配额应记在设备主体上");
+        h.close();
+    }
+
     // ---------- D05a:导航候选在输出准入后提交 ----------
 
     private static com.autovoice.server.contracts.Reply chooseCandidatesReply() {
