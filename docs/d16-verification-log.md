@@ -11,10 +11,26 @@
 | 0.2 dev 栈部署最新代码 | 2026-09-12 | 手动触发成功;jar 时间 9/12 21:16 | ✅ 手动路径 |
 | 0.3 健康端点 | 2026-09-12 | dev 栈 `live=200` / `ready=200`(此前 404 = 旧 jar) | ✅ |
 | 0.4 部署元数据与摘要 | 2026-09-12 | `metadata.txt` + `checksums.sha256` 存在;运行中 `app.jar` 摘要 `fbd94a92…` 与记录**一致** | ✅ |
-| 0.5 metadata 记录后端变体 | 2026-09-12 | 此前记 `unknown`(变量未透传);workflow 已修 | ✅ 已修(待下次部署验证) |
-| 0.6 **自动部署证据链** | — | **待验证**:需一次"dev 合并 → CI 成功 → 自动部署真实执行 → 运行 SHA/摘要一致" | ⏳ |
+| 0.5 metadata 记录后端变体 | 2026-09-12 | 仍记 `unknown`——见**发现 3**:workflow 修复需合并 main 才生效 | ⏳ 修复已提交 dev,待发布 |
+| 0.6 **自动部署证据链** | 2026-09-12 | ✅ **已验证**:PR #98 合并 → dev CI 成功 → `workflow_run` 自动部署 **success**(此前所有自动运行均为 `skipped`)→ 服务器 `release_sha=55ecbb5f…` 与 `metadata.txt` 一致 → 运行中 `app.jar` 摘要 `b8796e97…` 与 `checksums.sha256` **一致** | ✅ |
 
-> 手动触发成功**只**验证了手动路径;自动路径需单独取证(见 0.6)。
+> 手动触发成功**只**验证了手动路径;0.6 已补齐自动路径的端到端证据。
+
+### 发现 3(运维约束,重要)
+
+**`workflow_run` 触发的 workflow 使用默认分支(main)上的 workflow 定义。**
+
+实测:run `34696636545` 的 `head_branch=main`;main 上的 `deploy-dev.yml` 尚无本次 `VOICE_BACKEND`
+透传修复,因此 metadata 仍记 `unknown`。
+
+后果与要求:
+
+- **workflow 逻辑修复必须经 train 合并 main 才对自动部署生效**;只在 dev 上改 workflow
+  无法验证自动路径;
+- 变量层级修复(`AUTO_DEPLOY_DEV` 移到仓库级)属 GitHub 配置而非 workflow 文件,**立即生效**
+  ——这正是 0.6 能通过的原因;
+- 用户指示:`voice_backend` 修复**保留待发布**,不为让工作流生效而把未验收的 dev 提前合进 main;
+  必要时单独提工作流修复 PR。
 
 ## A. 服务器侧
 
