@@ -101,6 +101,32 @@ class HybridBusinessChatSpeechProviderTest {
         assertTrue(cancelled.get());
     }
 
+    // ---------- D06c:sink 同步异常必须让轮次进入终态 ----------
+
+    @Test
+    void sinkSynchronousFailureStillTerminatesTurn() {
+        com.autovoice.server.contracts.OnlineAsrSink throwing =
+                new com.autovoice.server.contracts.OnlineAsrSink() {
+                    @Override public void onTurnEstablished() {
+                        throw new IllegalStateException("sink exploded");
+                    }
+                    @Override public void onResult(String text, boolean isFinal) { }
+                };
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> "hello",
+                (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText(text)),
+                unusedChat(), new NavigationDialogService());
+
+        java.util.concurrent.CompletionException error =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> provider.process(new byte[]{1}, CTX, "u-sink",
+                                OnlineAudioSink.NOOP, throwing).join());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                error.getCause() instanceof IllegalStateException);
+        org.junit.jupiter.api.Assertions.assertEquals("sink exploded", error.getCause().getMessage());
+    }
+
     @Test
     void closeCascadesToOwnedChatProviderAndRejectsNewWork() {
         AtomicInteger closes = new AtomicInteger();
@@ -150,6 +176,18 @@ class HybridBusinessChatSpeechProviderTest {
         assertTrue(provider.isChatting(last));
         assertTrue(provider.isChatting(new SessionContext("session-0001", "zh-CN", Map.of())));
         provider.close();
+    }
+
+    /** D06c 测试:恒定未使用的闲聊后端。 */
+    private static OnlineSpeechProvider unusedChat() {
+        return new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext context, String utteranceId) {
+                return CompletableFuture.completedFuture(
+                        new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public String id() { return "unused"; }
+        };
     }
 
     private static OnlineSpeechResult turn(HybridBusinessChatSpeechProvider provider, String id)
