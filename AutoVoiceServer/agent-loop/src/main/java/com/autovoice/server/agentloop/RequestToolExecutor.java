@@ -28,6 +28,7 @@ public final class RequestToolExecutor {
     private final ErrorFormatter errors;
     private final ToolExecutionPolicy policy;
     private final boolean enforceReadOnly;
+    private final AgentExecutionRuntime runtime;
     private final java.util.concurrent.ThreadPoolExecutor reads;
     private final ConcurrentMap<String, CompletableFuture<AgentToolResult>> cache =
             new ConcurrentHashMap<>();
@@ -53,7 +54,8 @@ public final class RequestToolExecutor {
         this.errors = errors;
         this.policy = policy;
         this.enforceReadOnly = enforceReadOnly;
-        this.reads = java.util.Objects.requireNonNull(runtime, "runtime").toolReads();
+        this.runtime = java.util.Objects.requireNonNull(runtime, "runtime");
+        this.reads = runtime.toolReads();
     }
 
     public List<AgentToolResult> execute(List<AgentToolCall> calls) {
@@ -96,7 +98,9 @@ public final class RequestToolExecutor {
         }
         List<Future<AgentToolResult>> futures = new ArrayList<>();
         try {
-            for (AgentToolCall call : calls) futures.add(reads.submit(() -> runAndCache(call, budget)));
+            for (AgentToolCall call : calls) {
+                futures.add(runtime.submitToolRead(() -> runAndCache(call, budget)));
+            }
             for (int i = 0; i < futures.size(); i++) {
                 try {
                     target.add(budget == null ? futures.get(i).get() : budget.await(futures.get(i)));

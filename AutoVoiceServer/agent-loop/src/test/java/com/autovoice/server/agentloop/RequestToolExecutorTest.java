@@ -133,6 +133,20 @@ class RequestToolExecutorTest {
         assertTrue(ToolExecutionPolicy.declared(ToolSchemaCompactor.compact(List.of(definition))).cacheSuccess(call));
         assertTrue(!ToolExecutionPolicy.declared(List.of(definition, definition)).cacheSuccess(call));
     }
+    @Test
+    void closedRuntimeFailsPendingReadsInsteadOfHanging() {
+        runtime.close();
+        var executor = new RequestToolExecutor(call -> "ok",
+                (call, error) -> error.getMessage(), queries(), runtime);
+        // 两个并行读取走线程池 flush 路径(单调用为直通捷径)
+        var results = executor.execute(List.of(
+                new AgentToolCall("1", "maps_geo", "{\"q\":\"A\"}"),
+                new AgentToolCall("2", "maps_geo", "{\"q\":\"B\"}")));
+        assertTrue(results.stream().allMatch(AgentToolResult::error),
+                "运行期已关闭的读取必须明确失败");
+        assertTrue(results.get(0).content().contains("closed"), results.get(0).content());
+    }
+
     private static ToolExecutionPolicy queries() {
         return ToolExecutionPolicy.declared(List.of(
                 new com.autovoice.server.contracts.FunctionTool("maps_text_search", "", "{}",

@@ -39,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -144,6 +145,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     private final Supplier<String> systemPrompt;
     /** 阻塞 HTTP/MCP 工具循环使用专用有界池，避免占用 JVM common pool。 */
     private final ExecutorService executorService;
+    /** D06b:在途 chat 请求登记;close 排空给出确定性终态。 */
+    private final java.util.Set<CompletableFuture<Reply>> pending = ConcurrentHashMap.newKeySet();
     private final AgentExecutionRuntime agentRuntime;
     private final boolean ownsAgentRuntime;
 
@@ -229,6 +232,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     @Override
     public CompletableFuture<Reply> chat(String text, SessionContext ctx, String utteranceId) {
         CompletableFuture<Reply> result = new CompletableFuture<>();
+        pending.add(result);
+        result.whenComplete((reply, error) -> pending.remove(result));
         AtomicReference<Call> activeCall = new AtomicReference<>();
         AtomicReference<Future<?>> workerRef = new AtomicReference<>();
         Runnable task = () -> {
@@ -518,6 +523,12 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
 
     @Override
     public void close() {
+        // D06b:排队/在途请求确定性终态——等待方不因队列被丢弃而挂起
+        for (CompletableFuture<Reply> future : pending) {
+            future.completeExceptionally(
+                    new IllegalStateException("deepseek llm provider closed"));
+        }
+        pending.clear();
         executorService.shutdownNow();
         if (ownsAgentRuntime) agentRuntime.close();
     }
