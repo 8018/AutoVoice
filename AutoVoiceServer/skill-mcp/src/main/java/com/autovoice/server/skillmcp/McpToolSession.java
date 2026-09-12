@@ -30,6 +30,11 @@ import java.util.stream.Collectors;
 public final class McpToolSession implements AutoCloseable {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(McpToolSession.class);
+    /** D14a:秘密引用解析(环境变量/文件;不访问网络)。 */
+    private static final com.autovoice.server.contracts.secret.SecretResolver SECRET_RESOLVER =
+            new com.autovoice.server.contracts.secret.SecretResolver(System::getenv);
 
     private final SkillConfig config;
     private final McpSyncClient client;
@@ -57,7 +62,18 @@ public final class McpToolSession implements AutoCloseable {
             }
             if (!config.authHeader().isBlank()) {
                 String header = config.authHeader();
-                String value = config.authValue();
+                // D14a:authValue 是**秘密引用**(env:NAME / file:/path);解析失败必须让连接失败,
+                // 不得静默退化为"无凭据连接"(那会以未认证身份访问下游)
+                var secret = SECRET_RESOLVER.resolve(config.authValue());
+                if (secret.failed()) {
+                    throw new IOException("skill " + config.id() + " credential unresolved: "
+                            + secret.reason());
+                }
+                if (secret.legacyInline()) {
+                    LOG.warn("skill {} uses inline credential; migrate to env:/file: reference",
+                            config.id());
+                }
+                String value = secret.value();
                 // 认证头必须每请求注入（httpRequestCustomizer），不能用已弃用的 customizeRequest()
                 // 2.0.0 的自定义器签名为 customize(builder, method, endpoint, body, context)，比计划多一个 context 参数
                 tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, String body,

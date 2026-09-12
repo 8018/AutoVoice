@@ -206,3 +206,19 @@ journalctl -u autovoice-gateway -f   # 实时日志
   按 D13 恢复流程处理（不要盲目回退代码）。
 
 > 以上判据与模板的**实际效果需在服务器上验收**（本地无法验证 systemd/权限行为）。
+
+## MCP 凭据用秘密引用（D14a）
+
+平台侧 `authValue` 现在应填**引用**而非明文：
+
+| 形式 | 含义 | 示例 |
+| --- | --- | --- |
+| `env:NAME` | 由部署方注入的环境变量（推荐） | `env:AMAP_MCP_KEY` |
+| `file:/path` | 受控文件内容（建议 0600，属主为服务账号） | `file:/etc/autovoice/secrets/amap.key` |
+| 空 | 该 Skill 无需认证头 | —— |
+
+- **解析失败会让该 Skill 连接失败**（日志含引用名，不含秘密值），不会静默退化为
+  "无凭据连接"——那会以未认证身份访问下游。
+- 历史明文值仍可读，但网关会记录 `uses inline credential; migrate to env:/file: reference`
+  提示；生产建议尽快迁移。
+- 环境变量在 `/etc/autovoice/.env` 中配置（该文件不入库）。
