@@ -120,24 +120,29 @@ public final class HybridBusinessChatSpeechProvider
         }
         stage.set(transcript);
         transcript.whenComplete((text, asrError) -> {
-            if (asrError != null) {
-                asrSink.onError(asrError);
-                out.completeExceptionally(asrError);
-                return;
+            // D06c:sink/route 同步异常必须让 out 进入终态,不得泄入无人消费的回调 Future
+            try {
+                if (asrError != null) {
+                    asrSink.onError(asrError);
+                    out.completeExceptionally(asrError);
+                    return;
+                }
+                if (text.isBlank()) {
+                    out.completeExceptionally(new IllegalStateException("ASR returned blank text"));
+                    return;
+                }
+                asrSink.onTurnEstablished();
+                asrSink.onResult(text, true);
+                CompletableFuture<OnlineSpeechResult> routed = route(
+                        pcm16k, context, utteranceId, text, audioSink);
+                stage.set(routed);
+                routed.whenComplete((result, error) -> {
+                    if (error != null) out.completeExceptionally(error);
+                    else out.complete(result);
+                });
+            } catch (Throwable syncError) {
+                out.completeExceptionally(syncError);
             }
-            if (text.isBlank()) {
-                out.completeExceptionally(new IllegalStateException("ASR returned blank text"));
-                return;
-            }
-            asrSink.onTurnEstablished();
-            asrSink.onResult(text, true);
-            CompletableFuture<OnlineSpeechResult> routed = route(
-                    pcm16k, context, utteranceId, text, audioSink);
-            stage.set(routed);
-            routed.whenComplete((result, error) -> {
-                if (error != null) out.completeExceptionally(error);
-                else out.complete(result);
-            });
         });
         if (utteranceId != null && !utteranceId.isBlank()) {
             active.put(requestKey(context, utteranceId), out);
