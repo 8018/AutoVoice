@@ -205,6 +205,60 @@ class NavigationDialogServiceTest {
         assertFalse(dialog.hasPending(CTX));
     }
 
+    // ---------- D05a:prepare/commit 分离 ----------
+
+    @Test
+    void prepareEnrichesButDoesNotWriteSharedState() {
+        var dialog = dialog();
+        Reply prepared = dialog.prepare(CTX, chooseReply());
+        assertTrue(prepared.intent().slots().containsKey("selectionId"));
+        assertFalse(dialog.hasPending(CTX), "prepare 不得写入共享候选状态");
+    }
+
+    @Test
+    void commitWritesPreparedCandidatesAndKeepsSameIds() throws Exception {
+        var dialog = dialog();
+        Reply prepared = dialog.prepare(CTX, chooseReply());
+        dialog.commit(CTX, prepared);
+        assertTrue(dialog.hasPending(CTX), "commit 后候选应生效");
+        // 选择解析必须与客户端所见列表(已下发回复)使用同一 candidateId/selectionId
+        var id = prepared.intent().slots().get("selectionId").value();
+        Reply selected = dialog.resolve(CTX.withAttr("navigationSelectionId", id), "第一个")
+                .orElseThrow();
+        var shown = new ObjectMapper().readTree(
+                (String) prepared.intent().slots().get("candidates").value());
+        assertEquals(shown.get(0).path("candidateId").asText(),
+                selected.intent().slots().get("candidateId").value());
+    }
+
+    @Test
+    void commitIsIdempotentForSamePreparedReply() {
+        var dialog = dialog();
+        Reply prepared = dialog.prepare(CTX, chooseReply());
+        dialog.commit(CTX, prepared);
+        dialog.commit(CTX, prepared);
+        assertTrue(dialog.hasPending(CTX));
+        var id = prepared.intent().slots().get("selectionId").value();
+        assertTrue(dialog.resolve(CTX.withAttr("navigationSelectionId", id), "第一个").isPresent(),
+                "重复提交不得破坏候选可用性");
+    }
+
+    @Test
+    void commitIgnoresUnpreparedOrForeignReplies() {
+        var dialog = dialog();
+        dialog.commit(CTX, Reply.ofText("普通回复"));
+        dialog.commit(CTX, chooseReply()); // 未经 prepare,无 selectionId
+        assertFalse(dialog.hasPending(CTX), "未携带准备标记的回复不得写入候选");
+    }
+
+    @Test
+    void rememberKeepsCompositeSemanticsForCompatibility() {
+        var dialog = dialog();
+        Reply remembered = dialog.remember(CTX, chooseReply());
+        assertTrue(remembered.intent().slots().containsKey("selectionId"));
+        assertTrue(dialog.hasPending(CTX), "remember 兼容语义 = prepare + commit");
+    }
+
     private static NavigationDialogService dialog() {
         return new NavigationDialogService(
                 Clock.fixed(Instant.parse("2026-08-27T00:00:00Z"), ZoneOffset.UTC), 120_000);
