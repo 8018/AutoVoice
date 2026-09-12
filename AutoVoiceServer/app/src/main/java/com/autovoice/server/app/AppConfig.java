@@ -345,6 +345,11 @@ public class AppConfig {
             readiness.registerDegradable("offline-engine");
             readiness.markReady("config");
             readiness.markReady("gateway");
+            // 可降级组件:装配完成即 READY(供排障观察);运行时若探测到故障再 markFailed,
+            // 但不阻断整体就绪——PENDING 会让人误读为"未接线"
+            readiness.markReady("skill-registry");
+            readiness.markReady("tts");
+            readiness.markReady("offline-engine");
         };
     }
 
