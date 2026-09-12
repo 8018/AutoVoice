@@ -232,6 +232,7 @@
           "type": "object",
           "required": ["kind"],
           "properties": {
+            "actionId": { "type": "string", "description": "动作身份(D07a):输出准入后由服务端签发;客户端执行入口凭此做幂等与最终准入" },
             "kind": { "enum": ["text", "audio", "action"] },
             "speakText": { "type": "string" },
             "text": { "type": "string" },

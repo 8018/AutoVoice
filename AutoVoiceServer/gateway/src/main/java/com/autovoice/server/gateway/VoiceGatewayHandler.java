@@ -35,6 +35,7 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -99,6 +100,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final SessionRegistry registry;
     /** D05a:输出准入后的导航候选提交点(默认 NONE,测试与旧装配不感知)。 */
     private final com.autovoice.server.contracts.NavigationDialog navigationDialog;
+    /** D07a:动作账本(独立 SQLite 业务库);默认 NONE,旧装配零变化。 */
+    private final com.autovoice.server.contracts.ActionLedger actionLedger;
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
@@ -195,6 +198,18 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                int maxAudioBytes, TelemetryRecorder recorder,
                                com.autovoice.server.contracts.NavigationDialog navigationDialog) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                navigationDialog, com.autovoice.server.contracts.ActionLedger.NONE);
+    }
+
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
+                               com.autovoice.server.contracts.ActionLedger actionLedger) {
         this.online = online;
         this.tts = tts;
         this.offline = offline;
@@ -209,6 +224,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         this.recorder = recorder;
         this.navigationDialog = navigationDialog == null
                 ? com.autovoice.server.contracts.NavigationDialog.NONE : navigationDialog;
+        this.actionLedger = actionLedger == null
+                ? com.autovoice.server.contracts.ActionLedger.NONE : actionLedger;
     }
 
     /** D05a:获准输出的候选回复在准入后提交(晚到/落败回复到不了这里)。 */
@@ -619,6 +636,15 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 // 会话层已撤销输出：不缓存、不下发决策、不回复；候选仍自然完成。
                 drainDecisions(session, st, utteranceId, false);
                 return;
+            }
+            if (result.intent() != null && result.actionId() == null) {
+                // D07a:输出准入通过后签发稳定动作身份并落盘;缓存重放复用同一 actionId
+                String actionId = UUID.randomUUID().toString();
+                actionLedger.recordDispatch(new com.autovoice.server.contracts.ActionPlan(
+                        actionId, ctx.sessionId(), utteranceId,
+                        result.intent().domain(), result.intent().intent(),
+                        "utterance=" + utteranceId, System.currentTimeMillis()));
+                result = result.withActionId(actionId);
             }
             CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
             completedTurns.put(turnKey, completed);

@@ -24,6 +24,7 @@ dependencies {
     testImplementation(testFixtures(project(":contracts")))
     testImplementation(libs.mockwebserver)
     testImplementation(project(":navigation-domain"))
+    testImplementation(project(":action-ledger"))
     testImplementation(project(":speech-classic"))
 }
 
