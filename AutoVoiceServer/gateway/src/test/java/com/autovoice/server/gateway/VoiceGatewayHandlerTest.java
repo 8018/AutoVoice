@@ -540,6 +540,22 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D12a:排空 ----------
+
+    @Test
+    void drainingRejectsNewConnectionsAndCompletesWhenIdle() {
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession before = open(h);
+        assertNull(before.closeStatus, "排空前连接正常");
+
+        h.beginDraining();
+        assertTrue(h.drainComplete(), "无在途工作时排空立即完成");
+
+        StubSession after = open(h);
+        assertNotNull(after.closeStatus, "排空期间的新连接必须被拒绝");
+        h.close();
+    }
+
     // ---------- D10b:TTS 文本长度上限 ----------
 
     @Test
@@ -575,7 +591,7 @@ class VoiceGatewayHandlerTest {
                 ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, true,
                 Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
                 com.autovoice.server.contracts.NavigationDialog.NONE,
-                com.autovoice.server.contracts.ActionLedger.NONE, quota, helloDeadlineMs);
+                com.autovoice.server.contracts.ActionLedger.NONE, quota, helloDeadlineMs, 30_000);
     }
 
     @Test
