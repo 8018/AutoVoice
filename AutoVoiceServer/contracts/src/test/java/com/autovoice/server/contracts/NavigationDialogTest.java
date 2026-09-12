@@ -24,26 +24,27 @@ class NavigationDialogTest {
             return CompletableFuture.completedFuture(Reply.ofText("model"));
         }).join();
 
-        assertEquals("remembered", reply.text());
+        assertEquals("selected", reply.text());
         assertEquals(0, modelCalls.get());
     }
 
     @Test
-    void completeRemembersModelReplyExactlyOnce() {
-        AtomicInteger remembers = new AtomicInteger();
-        NavigationDialog dialog = dialog(Optional.empty(), remembers);
+    void completePreparesModelReplyExactlyOnce() {
+        AtomicInteger prepares = new AtomicInteger();
+        NavigationDialog dialog = dialog(Optional.empty(), prepares);
 
         Reply reply = dialog.complete(CONTEXT, "导航去机场",
                 () -> CompletableFuture.completedFuture(Reply.ofText("model"))).join();
 
-        assertEquals("remembered", reply.text());
-        assertEquals(1, remembers.get());
+        assertEquals("prepared", reply.text());
+        assertEquals(1, prepares.get());
     }
 
     @Test
-    void completePropagatesRememberFailureInsteadOfLeavingCallerPending() {
+    void completePropagatesPrepareFailureInsteadOfLeavingCallerPending() {
         NavigationDialog dialog = new NavigationDialog() {
-            @Override public Reply remember(SessionContext context, Reply reply) {
+            @Override public Reply remember(SessionContext context, Reply reply) { return reply; }
+            @Override public Reply prepare(SessionContext context, Reply reply) {
                 throw new IllegalStateException("bad candidates");
             }
             @Override public boolean hasPending(SessionContext context) { return false; }
@@ -59,11 +60,15 @@ class NavigationDialogTest {
                 result::join).getCause().getMessage());
     }
 
-    private static NavigationDialog dialog(Optional<Reply> resolved, AtomicInteger remembers) {
+    private static NavigationDialog dialog(Optional<Reply> resolved, AtomicInteger prepares) {
         return new NavigationDialog() {
-            @Override public Reply remember(SessionContext context, Reply reply) {
-                remembers.incrementAndGet();
-                return Reply.ofText("remembered");
+            @Override public Reply remember(SessionContext context, Reply reply) { return reply; }
+            @Override public Reply prepare(SessionContext context, Reply reply) {
+                if ("model".equals(reply.text())) {
+                    prepares.incrementAndGet();
+                    return Reply.ofText("prepared");
+                }
+                return reply; // 已解析的回复无需丰富
             }
             @Override public boolean hasPending(SessionContext context) { return resolved.isPresent(); }
             @Override public Optional<Reply> resolve(SessionContext context, String transcript) {

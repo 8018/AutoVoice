@@ -56,6 +56,14 @@ public final class NavigationDialogService implements NavigationDialog {
 
     @Override
     public Reply remember(SessionContext context, Reply reply) {
+        // 兼容组合:prepare + commit(历史调用方/测试语义不变)
+        Reply prepared = prepare(context, reply);
+        commit(context, prepared);
+        return prepared;
+    }
+
+    @Override
+    public Reply prepare(SessionContext context, Reply reply) {
         String sessionId = logicalSessionId(context);
         if (sessionId == null || reply == null) return reply;
         Intent intent = reply.intent();
@@ -66,7 +74,7 @@ public final class NavigationDialogService implements NavigationDialog {
         if (raw == null || !(raw.value() instanceof String json)) return reply;
 
         try {
-            List<NavigationCandidate> parsed = parseAndEnrich(json);
+            List<NavigationCandidate> parsed = parseCandidates(json, true);
             if (parsed.isEmpty()) return Reply.ofText("地点结果无效，请重新搜索");
             String selectionId = UUID.randomUUID().toString();
             String enrichedJson = candidatesJson(parsed);
@@ -75,12 +83,36 @@ public final class NavigationDialogService implements NavigationDialog {
             slots.put(SLOT_CANDIDATES, SlotValue.stringValue(enrichedJson));
             Intent enrichedIntent = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0,
                     "navigation.dialog", json);
-            long now = clock.millis();
-            store.put(sessionId, new PendingNavigationSelection(
-                    selectionId, parsed, now, now + ttlMs));
+            // D05a:仅丰富,不写共享状态——落库由输出准入层的 commit 完成
             return Reply.ofAction(enrichedIntent, reply.speakText());
         } catch (Exception ignored) {
             return Reply.ofText("地点结果无效，请重新搜索");
+        }
+    }
+
+    @Override
+    public void commit(SessionContext context, Reply reply) {
+        String sessionId = logicalSessionId(context);
+        if (sessionId == null || reply == null) return;
+        Intent intent = reply.intent();
+        if (intent == null || !DOMAIN.equals(intent.domain()) || !CHOOSE_INTENT.equals(intent.intent())) {
+            return;
+        }
+        SlotValue sel = intent.slots() == null ? null : intent.slots().get("selectionId");
+        SlotValue cands = intent.slots() == null ? null : intent.slots().get(SLOT_CANDIDATES);
+        if (sel == null || !(sel.value() instanceof String selectionId)
+                || cands == null || !(cands.value() instanceof String json)) {
+            return;
+        }
+        try {
+            // 保留 prepare 已嵌入的 candidateId(不重新生成),与客户端所见列表一致
+            List<NavigationCandidate> parsed = parseCandidates(json, false);
+            if (parsed.isEmpty()) return;
+            long now = clock.millis();
+            store.put(sessionId, new PendingNavigationSelection(
+                    selectionId, parsed, now, now + ttlMs));
+        } catch (Exception ignored) {
+            // 提交失败不影响已下发的回复;列表缺席表现为"选择已失效"
         }
     }
 
@@ -167,7 +199,8 @@ public final class NavigationDialogService implements NavigationDialog {
         return context.sessionId();
     }
 
-    private static List<NavigationCandidate> parseAndEnrich(String json) throws Exception {
+    /** enrich=true:为 prepare 生成 candidateId;false:保留条目内已有 candidateId(commit 复用)。 */
+    private static List<NavigationCandidate> parseCandidates(String json, boolean enrich) throws Exception {
         JsonNode array = JSON.readTree(json);
         if (!array.isArray()) return List.of();
         List<NavigationCandidate> result = new ArrayList<>();
@@ -180,12 +213,15 @@ public final class NavigationDialogService implements NavigationDialog {
                     || Math.abs(lat.asDouble()) > 90 || Math.abs(lon.asDouble()) > 180) {
                 return List.of();
             }
-            ObjectNode enriched = item.deepCopy();
-            String candidateId = UUID.randomUUID().toString();
-            enriched.put("candidateId", candidateId);
+            String candidateId = enrich
+                    ? UUID.randomUUID().toString()
+                    : item.path("candidateId").asText("");
+            if (candidateId.isBlank()) return List.of();
+            ObjectNode stored = item.deepCopy();
+            stored.put("candidateId", candidateId);
             result.add(new NavigationCandidate(candidateId, name,
                     item.path("address").asText(""), lat.asDouble(), lon.asDouble(),
-                    enriched.toString()));
+                    stored.toString()));
         }
         return List.copyOf(result);
     }
