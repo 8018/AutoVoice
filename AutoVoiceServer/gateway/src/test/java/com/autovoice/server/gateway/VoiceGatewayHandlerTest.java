@@ -600,13 +600,31 @@ class VoiceGatewayHandlerTest {
         var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
         VoiceGatewayHandler h = quotaHandler(quota, 100); // 100ms 未握手即关闭
         StubSession silent = open(h);
-        // 不发 hello,等截止触发
-        long deadline = System.currentTimeMillis() + 2_000;
+        // 不发 hello,等截止触发(CI 负载高时调度可能延迟,等待放宽到 5s)
+        long deadline = System.currentTimeMillis() + 5_000;
         while (silent.closeStatus == null && System.currentTimeMillis() < deadline) {
             Thread.sleep(20);
         }
         assertNotNull(silent.closeStatus, "超过 hello 截止的静默连接必须被关闭(不占名额)");
         assertEquals(0, quota.activeFor(""), "关闭后应归还配额");
+        h.close();
+    }
+
+    @Test
+    void helloDeadlineEnforcementClosesAndRestoresQuotaDeterministically() throws Exception {
+        // 不依赖调度计时:截止设为 1ms,等待其过期后由测试显式触发检查
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
+        VoiceGatewayHandler h = quotaHandler(quota, 1);
+        StubSession silent = open(h);
+        assertEquals(1, quota.activeFor(""), "建连即占用匿名配额");
+        Thread.sleep(10); // 确保截止已过期(确定性:检查基于墙钟比较)
+
+        h.enforceHelloDeadline(silent);
+
+        assertNotNull(silent.closeStatus, "静默连接在截止检查时被关闭");
+        assertEquals(0, quota.activeFor(""), "关闭后归还配额");
+        h.enforceHelloDeadline(silent); // 幂等:已关闭再触发无副作用
+        assertEquals(0, quota.activeFor(""), "重复触发不得重复归还");
         h.close();
     }
 
