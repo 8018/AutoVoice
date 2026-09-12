@@ -6,6 +6,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +24,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -101,7 +103,8 @@ public class TelemetryController implements AutoCloseable {
 
     @PostMapping(value = "/audio", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public void uploadAudio(@RequestParam String utteranceId,
-                            @RequestParam("file") MultipartFile file) throws IOException {
+                            @RequestParam("file") MultipartFile file,
+                            @RequestParam(required = false) String deviceId) throws IOException {
         if (file == null || file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "file is required");
         }
@@ -109,7 +112,30 @@ public class TelemetryController implements AutoCloseable {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
                     "audio exceeds " + MAX_AUDIO_UPLOAD_BYTES + " bytes");
         }
-        service.saveAudio(utteranceId, file.getBytes());
+        service.saveAudio(utteranceId, file.getBytes(), deviceId); // D14b:按设备判定诊断窗口
+    }
+
+    /**
+     * D14b:开启临时诊断音频采集(按设备、限定时长,到期自动关闭)。
+     * 依赖管理令牌鉴权(上传令牌不可用);时长受上限约束。
+     */
+    @PostMapping("/audio/diagnostic")
+    public Map<String, Object> openDiagnosticWindow(@RequestParam String deviceId,
+                                                    @RequestParam(defaultValue = "300000")
+                                                    long durationMs) {
+        if (deviceId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "deviceId is required");
+        }
+        service.openDiagnosticAudio(deviceId, durationMs);
+        return Map.of("deviceId", deviceId, "durationMs", durationMs,
+                "activeDevices", service.diagnosticAudioDevices());
+    }
+
+    /** D14b:关闭指定设备的诊断采集。 */
+    @DeleteMapping("/audio/diagnostic")
+    public Map<String, Object> closeDiagnosticWindow(@RequestParam String deviceId) {
+        service.closeDiagnosticAudio(deviceId);
+        return Map.of("deviceId", deviceId, "activeDevices", service.diagnosticAudioDevices());
     }
 
     @GetMapping("/rounds")

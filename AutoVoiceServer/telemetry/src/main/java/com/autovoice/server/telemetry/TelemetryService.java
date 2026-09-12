@@ -56,6 +56,8 @@ public class TelemetryService implements TelemetryRecorder, AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(TelemetryService.class);
 
     private final TelemetryProperties props;
+    /** D14b:临时诊断音频窗口(null = 未接线,仅按全局开关判定)。 */
+    private volatile com.autovoice.server.contracts.DiagnosticAudioWindow diagnosticAudioWindow;
     private final LongSupplier clock;
     private final SqliteTelemetryStore store;
     private final ExecutorService writer = new ThreadPoolExecutor(
@@ -149,8 +151,79 @@ public class TelemetryService implements TelemetryRecorder, AutoCloseable {
      * audio_path=完整文件名（含 .wav，review finding 3：面板用 audio_path 拼回放 URL，
      * readAudio 原样 resolve）。
      */
+    /** D14b:开启诊断音频窗口(未接线时 no-op,由配置决定是否可用)。 */
+    public void openDiagnosticAudio(String deviceId, long durationMs) {
+        var window = diagnosticAudioWindow;
+        if (window == null) {
+            LOG.warn("diagnostic audio window not configured; ignoring open request");
+            return;
+        }
+        window.open(deviceId, durationMs);
+        LOG.info("diagnostic audio enabled for {} ({}ms)", deviceId,
+                Math.min(durationMs, com.autovoice.server.contracts.DiagnosticAudioWindow.MAX_WINDOW_MS));
+    }
+
+    public void closeDiagnosticAudio(String deviceId) {
+        var window = diagnosticAudioWindow;
+        if (window != null) {
+            window.close(deviceId);
+        }
+    }
+
+    public java.util.Set<String> diagnosticAudioDevices() {
+        var window = diagnosticAudioWindow;
+        return window == null ? java.util.Set.of() : window.activeDevices();
+    }
+
+    /** D14b:接线临时诊断窗口(由配置装配)。 */
+    public void setDiagnosticAudioWindow(
+            com.autovoice.server.contracts.DiagnosticAudioWindow window) {
+        this.diagnosticAudioWindow = window;
+    }
+
+    /** D14b:音频目录容量上限判定(超限丢弃新音频,不阻断链路)。 */
+    private boolean hasAudioCapacity(int incomingBytes) {
+        try {
+            Path dir = Path.of(props.audioDir());
+            if (!Files.isDirectory(dir)) {
+                // 目录尚未创建:仍须遵守本文件自身的大小上限(单条超限同样丢弃)
+                return incomingBytes <= props.audioMaxBytes();
+            }
+            long total;
+            try (var files = Files.list(dir)) {
+                total = files.filter(Files::isRegularFile).mapToLong(path -> {
+                    try {
+                        return Files.size(path);
+                    } catch (java.io.IOException e) {
+                        return 0L;
+                    }
+                }).sum();
+            }
+            return total + incomingBytes <= props.audioMaxBytes();
+        } catch (Exception e) {
+            return true; // 统计失败不阻断(容量是保护性上限,不是正确性约束)
+        }
+    }
+
     public void saveAudio(String utteranceId, byte[] pcm) {
+        saveAudio(utteranceId, pcm, null);
+    }
+
+    /**
+     * D14b:原始音频**默认不持久化**;仅当全局开启(非生产默认)或该设备处于临时诊断窗口
+     * 时才落盘,并受目录容量上限约束(超限丢弃并记 warn,不阻断识别链路)。
+     */
+    public void saveAudio(String utteranceId, byte[] pcm, String deviceId) {
         ensureOpen();
+        boolean allowed = props.audioPersistEnabled()
+                || (diagnosticAudioWindow != null && diagnosticAudioWindow.isEnabledFor(deviceId));
+        if (!allowed) {
+            return; // 默认不采集:静默跳过,避免每轮产生噪声日志
+        }
+        if (!hasAudioCapacity(pcm.length)) {
+            LOG.warn("telemetry audio capacity reached, dropping audio for {}", utteranceId);
+            return;
+        }
         String safe = safeFileName(utteranceId);
         byte[] wav = new byte[44 + pcm.length];
         System.arraycopy(wavHeader(pcm.length), 0, wav, 0, 44);

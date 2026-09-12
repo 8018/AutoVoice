@@ -79,9 +79,13 @@ class TelemetryServiceTest {
 
     @Test
     void savesWavFile() throws Exception {
+        // D14b:原始音频默认不落盘;本用例验证"显式开启"后的 WAV 头与内容正确
         TelemetryService svc = newService();
+        svc.setDiagnosticAudioWindow(
+                new com.autovoice.server.contracts.DiagnosticAudioWindow(System::currentTimeMillis));
+        svc.openDiagnosticAudio("device-test", 60_000);
         byte[] pcm = new byte[3200];
-        svc.saveAudio("utt-2", pcm);
+        svc.saveAudio("utt-2", pcm, "device-test");
         byte[] wav = Files.readAllBytes(tmp.resolve("audio/utt-2.wav"));
         assertEquals(44 + 3200, wav.length);
         // 44 字节标准头（clarification #2）：RIFF 魔数在 0-3，WAVE 标记在 8-11
