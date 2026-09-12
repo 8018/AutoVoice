@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":contracts"))
     implementation(libs.slf4j.api)
     testImplementation(libs.junit)
+    testImplementation(testFixtures(project(":contracts")))
 }
 
 tasks.test {

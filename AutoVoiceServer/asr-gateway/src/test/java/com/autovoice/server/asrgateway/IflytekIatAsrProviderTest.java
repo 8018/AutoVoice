@@ -201,7 +201,9 @@ class IflytekIatAsrProviderTest {
             @Override
             public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
                 receivedFrames.add(message);
-                if (receivedFrames.size() == 1) ws.send(resultFrame(2));
+                // 等尾帧(status=2)到齐再回最终结果:若在第 1 帧就回,客户端可能不再发送尾帧,
+                // 断言 receivedFrames==2 会因时序竞争随机失败(CI flaky)
+                if (receivedFrames.size() >= 2) ws.send(resultFrame(2));
             }
         }));
         IflytekIatAsrProvider provider = new IflytekIatAsrProvider(client, APP_ID, API_KEY, API_SECRET,
