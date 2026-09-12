@@ -128,6 +128,8 @@ data class AudioReply(
     val speakText: String = "",
     val intent: Intent? = null,
     override val asrText: String = "",
+    /** D07a 服务端签发的动作身份(音频+动作组合回复同样携带)。 */
+    val actionId: String = "",
 ) : Reply() {
     override val kind: String = "audio"
 }
@@ -160,6 +162,8 @@ data class ActionReply(
     val intent: Intent,
     val speakText: String,
     override val asrText: String = "",
+    /** D07a 服务端签发并落盘的动作身份;客户端执行入口凭此做最终准入与幂等执行。 */
+    val actionId: String = "",
 ) : Reply() {
     override val kind: String = "action"
 }
