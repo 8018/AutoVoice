@@ -1,6 +1,5 @@
 package com.autovoice.server.app;
 
-import com.autovoice.server.contracts.ActionLedger;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -51,22 +50,8 @@ public class AppConfig {
     /** {@code autovoice.*} 配置（constructor binding）。 */
     @ConfigurationProperties(prefix = "autovoice")
     public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
-                                      Offline offline, Tts tts, Gateway gateway, SkillManager skillManager,
-                                      ActionLedgerConfig actionLedger) {
-
-        /** D07a 独立业务账本配置。 */
-        public record ActionLedgerConfig(String dbPath) {
-            public ActionLedgerConfig {
-                dbPath = dbPath == null || dbPath.isBlank() ? "./action-ledger.db" : dbPath;
-            }
-        }
-
-        /** 兼容构造(历史测试):账本路径取默认。 */
-        public AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
-                                   Offline offline, Tts tts, Gateway gateway, SkillManager skillManager) {
-            this(arbitration, providers, secrets, offline, tts, gateway, skillManager,
-                    new ActionLedgerConfig("./action-ledger.db"));
-        }
+                                      Offline offline, Tts tts, Gateway gateway,
+                                      SkillManager skillManager) {
 
         /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32；
          *  skill-manager 缺省：平台空白（MCP 工具不注入）、轮询 600s。 */
@@ -74,7 +59,6 @@ public class AppConfig {
         public AutovoiceProperties {
             gateway = gateway == null ? new Gateway(false, "{}", 32, 1_920_000) : gateway;
             skillManager = skillManager == null ? new SkillManager("", "", 600_000) : skillManager;
-            actionLedger = actionLedger == null ? new ActionLedgerConfig("./action-ledger.db") : actionLedger;
         }
 
         public record Arbitration(long safetyTimeoutMs, long offlineGraceMs) {
@@ -359,27 +343,20 @@ public class AppConfig {
         return new com.autovoice.server.app.health.HealthController(readiness);
     }
 
-    /** D07a:独立 SQLite 业务账本(与遥测库分离)。 */
-    @Bean
-    public com.autovoice.server.actionledger.SqliteActionLedger actionLedger(AutovoiceProperties props) {
-        return new com.autovoice.server.actionledger.SqliteActionLedger(props.actionLedger().dbPath());
-    }
-
     @Bean
     public VoiceGatewayHandler voiceGatewayHandler(OnlineSpeechProvider online,
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props,
                                                    TelemetryRecorder recorder,
-                                                   NavigationDialog navigationDialog,
-                                                   ActionLedger actionLedger) {
+                                                   NavigationDialog navigationDialog) {
         AutovoiceProperties.Gateway g = props.gateway();
         long safetyTimeoutMs = Math.max(
                 props.arbitration().safetyTimeoutMs(), online.minimumTurnTimeoutMs());
         return new VoiceGatewayHandler(online, tts, offline, registry,
                 safetyTimeoutMs, props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
-                g.maxAudioBytes(), recorder, navigationDialog, actionLedger,
+                g.maxAudioBytes(), recorder, navigationDialog,
                 new com.autovoice.server.contracts.ConnectionQuota(g.maxConnectionsPerDevice()),
                 g.helloDeadlineMs(), g.drainTimeoutMs());
     }

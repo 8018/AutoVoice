@@ -59,13 +59,14 @@ class NavigationAdoptionTest {
     }
 
     @Test
-    void reAdoptionAfterDismissReactivatesList() {
+    void dismissedListCannotBeReactivatedByLateConfirmation() {
         SessionContext ctx = preparedContext();
         String selectionId = (String) ctx.attrs().get("navigationSelectionId");
         dialog.adopt(ctx, "");
         dialog.adopt(ctx, selectionId);
 
-        assertTrue(dialog.resolve(ctx, "第一个").isPresent(), "重新采用后应恢复可选");
+        Reply result = dialog.resolve(ctx, "第一个").orElseThrow();
+        assertEquals("地点选择已失效，请重新搜索", result.text());
     }
 
     @Test
@@ -73,14 +74,14 @@ class NavigationAdoptionTest {
         SessionContext ctx = preparedContext();
         dialog.adopt(ctx, "some-other-selection");
 
-        // 当前列表未被撤销(默认已采用,且外来 selectionId 不匹配)
-        assertTrue(dialog.resolve(ctx, "第一个").isPresent());
+        Reply result = dialog.resolve(ctx, "第一个").orElseThrow();
+        assertEquals("地点选择已失效，请重新搜索", result.text());
     }
 
     @Test
     void legacyClientWithoutAdoptionKeepsDefaultActiveBehavior() {
         SessionContext ctx = preparedContext();
-        // 旧客户端不发 adopt 消息:默认已采用(兼容)
+        // 旧客户端不发 adopt 字段:提交后的候选仍可兼容使用。
         assertTrue(dialog.resolve(ctx, "第一个").isPresent());
     }
 }

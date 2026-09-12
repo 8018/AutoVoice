@@ -139,10 +139,8 @@ internal object VoiceEngineFactory {
         val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
         // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
         // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
-        // D07b:手机动作本地账本(独立 SQLite 业务库);崩溃残留 EXECUTING 收敛为未知态
-        val actionLedger = com.autovoice.app.action.SqliteActionLedgerStore(context)
-        actionLedger.recoverUnknowns()
-        val actionGateway = com.autovoice.app.action.ActionExecutionGateway(actionLedger)
+        // 动作只属于当前交互；断线或重启不恢复、不补执行。
+        val actionGateway = com.autovoice.app.action.ActionExecutionGateway()
         val engine = VoiceEngine(
             cfg = cfg,
             arbiter = OnDeviceRaceArbiter(

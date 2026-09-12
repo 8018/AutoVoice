@@ -347,7 +347,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void reconnectResumesSessionAndReplaysCompletedTurnWithoutRunningPipelineTwice() throws InterruptedException {
+    void reconnectRejectsCompletedTurnWithoutReplayingOrRunningPipelineTwice() throws InterruptedException {
         AtomicInteger asrCalls = new AtomicInteger();
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrCalls.incrementAndGet();
@@ -367,12 +367,13 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(second, new TextMessage(audioStartWithUtteranceId(sid, "seg-retry", "utt-retry")));
         h.handleMessage(second, new BinaryMessage(new byte[]{1}));
         h.handleMessage(second, new TextMessage(audioEnd(sid)));
-        awaitSent(second, 2); // ready + cached reply（不再重复 ASR/LLM/仲裁）
+        awaitSent(second, 2); // ready + duplicate error（不再重复 ASR/LLM/仲裁）
 
         assertEquals(1, asrCalls.get());
-        JsonNode replay = parse(second.sent.get(1));
-        assertEquals("reply", replay.get("type").asText());
-        assertEquals("seg-retry", replay.get("payload").get("segmentId").asText());
+        JsonNode rejected = parse(second.sent.get(1));
+        assertEquals("error", rejected.get("type").asText());
+        assertEquals("DUPLICATE_TURN", rejected.get("payload").get("code").asText());
+        assertEquals("seg-retry", rejected.get("payload").get("segmentId").asText());
     }
 
     @Test
@@ -555,7 +556,6 @@ class VoiceGatewayHandlerTest {
                 registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
                 1_920_000, NoopTelemetryRecorder.INSTANCE,
                 com.autovoice.server.contracts.NavigationDialog.NONE,
-                com.autovoice.server.contracts.ActionLedger.NONE,
                 new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000,
                 128); // 预算 128 字节 < 音频 1024 字节
         StubSession s = open(h);
@@ -615,7 +615,6 @@ class VoiceGatewayHandlerTest {
                 clockRegistry, SAFETY, ASR_FAIL_WAIT, 1500, true,
                 Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
                 com.autovoice.server.contracts.NavigationDialog.NONE,
-                com.autovoice.server.contracts.ActionLedger.NONE,
                 new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000);
         StubSession first = open(h);
         h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
@@ -634,70 +633,6 @@ class VoiceGatewayHandlerTest {
         assertNotEquals(sid, reset.path("payload").path("sessionId").asText(),
                 "reset 应下发新会话 ID");
         h.close();
-    }
-
-    // ---------- D14c:签发失败降级 + 支持窗口 ----------
-
-    @Test
-    void ledgerWriteFailureRefusesActionButKeepsSpeech() throws Exception {
-        com.autovoice.server.contracts.ActionLedger failing =
-                new com.autovoice.server.contracts.ActionLedger() {
-                    @Override public boolean recordDispatch(
-                            com.autovoice.server.contracts.ActionPlan plan) {
-                        throw new IllegalStateException("ledger unavailable");
-                    }
-                    @Override public java.util.Optional<com.autovoice.server.contracts.ActionPlan>
-                            findByActionId(String actionId) {
-                        return java.util.Optional.empty();
-                    }
-                    @Override public void recordAudit(String a, String e, String d) { }
-                };
-        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
-                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
-                "已为您执行空调指令"));
-        VoiceGatewayHandler h = new VoiceGatewayHandler(
-                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
-                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
-                1_920_000, NoopTelemetryRecorder.INSTANCE,
-                com.autovoice.server.contracts.NavigationDialog.NONE, failing);
-        StubSession s = open(h);
-        String sid = handshake(h, s);
-        h.handleMessage(s, new TextMessage(audioStart(sid)));
-        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
-        h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        JsonNode reply = awaitType(s, "reply");
-        assertEquals("", reply.path("payload").path("actionId").asText(),
-                "账本写入失败时不得下发动作身份(客户端因此不执行该动作)");
-        assertEquals("已为您执行空调指令", reply.path("payload").path("speakText").asText(),
-                "播报文本仍照常下发");
-        h.close();
-    }
-
-    @Test
-    void issuedActionCarriesSupportWindowDeadline() throws Exception {
-        java.nio.file.Path db = java.nio.file.Files.createTempFile("window-ledger", ".db");
-        java.nio.file.Files.deleteIfExists(db);
-        var ledger = new com.autovoice.server.actionledger.SqliteActionLedger(db.toString());
-        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
-                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
-                "已执行"));
-        VoiceGatewayHandler h = new VoiceGatewayHandler(
-                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
-                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
-                1_920_000, NoopTelemetryRecorder.INSTANCE,
-                com.autovoice.server.contracts.NavigationDialog.NONE, ledger);
-        StubSession s = open(h);
-        String sid = handshake(h, s);
-        h.handleMessage(s, new TextMessage(audioStart(sid)));
-        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
-        h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        JsonNode reply = awaitType(s, "reply");
-        long expiresAt = reply.path("payload").path("actionExpiresAtMs").asLong();
-        assertTrue(expiresAt > System.currentTimeMillis(), "应答携带支持窗口截止时刻");
-        h.close();
-        java.nio.file.Files.deleteIfExists(db);
     }
 
     // ---------- D12a:排空 ----------
@@ -751,7 +686,7 @@ class VoiceGatewayHandlerTest {
                 ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, true,
                 Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
                 com.autovoice.server.contracts.NavigationDialog.NONE,
-                com.autovoice.server.contracts.ActionLedger.NONE, quota, helloDeadlineMs, 30_000);
+                quota, helloDeadlineMs, 30_000);
     }
 
     @Test
@@ -834,46 +769,6 @@ class VoiceGatewayHandlerTest {
         assertTrue(dialog.hasPending(registry.get(sid)), "获准输出的导航候选应已提交");
     }
 
-    // ---------- D07a:动作身份签发与持久化 ----------
-
-    @Test
-    void actionRepliesCarryStableActionIdRecordedInLedger() throws Exception {
-        java.nio.file.Path db = java.nio.file.Files.createTempFile("gateway-ledger", ".db");
-        java.nio.file.Files.deleteIfExists(db);
-        var ledger = new com.autovoice.server.actionledger.SqliteActionLedger(db.toString());
-        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
-                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
-                "已为您执行空调指令"));
-        VoiceGatewayHandler h = new VoiceGatewayHandler(
-                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
-                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
-                1_920_000, NoopTelemetryRecorder.INSTANCE,
-                com.autovoice.server.contracts.NavigationDialog.NONE, ledger);
-        StubSession s = open(h);
-        String sid = handshake(h, s);
-        h.handleMessage(s, new TextMessage(audioStart(sid)
-                .replace("\"encoding\":", "\"utteranceId\":\"u-fixed\",\"encoding\":")));
-        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
-        h.handleMessage(s, new TextMessage(audioEnd(sid)));
-
-        JsonNode reply = awaitType(s, "reply");
-        String actionId = reply.path("payload").path("actionId").asText();
-        assertFalse(actionId.isBlank(), "动作回复必须携带 actionId");
-        assertTrue(ledger.findByActionId(actionId).isPresent(), "签发记录必须落盘");
-
-        // 同轮缓存重放复用同一 actionId,不重复记账
-        s.sent.clear();
-        h.handleMessage(s, new TextMessage(audioStart(sid, "replay")
-                .replace("\"encoding\":", "\"utteranceId\":\"u-fixed\",\"encoding\":")));
-        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
-        h.handleMessage(s, new TextMessage(audioEnd(sid)));
-        JsonNode replay = awaitType(s, "reply");
-        assertEquals(actionId, replay.path("payload").path("actionId").asText(),
-                "缓存重放必须复用同一 actionId");
-        h.close();
-        java.nio.file.Files.deleteIfExists(db);
-    }
-
     @Test
     void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =
@@ -894,11 +789,7 @@ class VoiceGatewayHandlerTest {
         String selectionId = offer.path("payload").path("intent").path("slots")
                 .path("selectionId").path("value").asText();
 
-        // 撤销:客户端关闭列表 → 二轮序号不再激活
-        h.handleMessage(s, new TextMessage(
-                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
-                        + sid + "\",\"selectionId\":\"\"}}"));
-        // 重新采用
+        // 客户端实际展示列表后显式采用。
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
                         + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
@@ -1236,6 +1127,32 @@ class VoiceGatewayHandlerTest {
         assertEquals("error", error.get("type").asText());
         assertEquals("SESSION_RECOVER_DENIED", error.get("payload").get("code").asText());
         assertNotNull(b.closeStatus, "跨设备恢复应关闭连接");
+    }
+
+    @Test
+    void authenticatedConnectionCannotSwitchPrincipalWithSecondHello() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta", "device-b", "tb"), 32);
+        StubSession session = open(h);
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+        assertEquals("ready", parse(session.sent.get(0)).get("type").asText());
+
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-b", "tb")));
+
+        JsonNode error = parse(session.sent.get(1));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("PRINCIPAL_SWITCH_DENIED", error.get("payload").get("code").asText());
+        assertNotNull(session.closeStatus);
+    }
+
+    @Test
+    void repeatedHelloFromSamePrincipalIsIdempotentAtQuotaLimit() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 1);
+        StubSession session = open(h);
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        assertNull(session.closeStatus);
+        assertEquals("ready", parse(session.sent.get(1)).get("type").asText());
     }
 
     @Test
@@ -1589,6 +1506,9 @@ class VoiceGatewayHandlerTest {
             String selectionId = offer.path("slots").path("selectionId").path("value").asText();
             assertFalse(selectionId.isBlank());
             var displayed = MAPPER.readTree(offer.path("slots").path("candidates").path("value").asText());
+            handler.handleMessage(socket, new TextMessage(
+                    "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                            + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
             transcript.set("第二个");
             socket.sent.clear();
             handler.handleMessage(socket, new TextMessage(audioStart(sid, "select")

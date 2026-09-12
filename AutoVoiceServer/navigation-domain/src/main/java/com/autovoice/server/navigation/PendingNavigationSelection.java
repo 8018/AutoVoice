@@ -15,7 +15,7 @@ record PendingNavigationSelection(
 
     PendingNavigationSelection(String selectionId, List<NavigationCandidate> candidates,
                                long createdAtMs, long expiresAtMs) {
-        this(selectionId, candidates, createdAtMs, expiresAtMs, true); // D05b 兼容默认:已采用
+        this(selectionId, candidates, createdAtMs, expiresAtMs, false);
     }
 
     PendingNavigationSelection withAdopted(boolean adopted) {

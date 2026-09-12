@@ -44,7 +44,7 @@ ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 # 仅允许写入运行期需要的目录（离线 SDK work 目录、TTS 缓存、遥测库）
-ReadWritePaths=/opt/autovoice/iflytek-offline/work /opt/autovoice/tts-cache /opt/autovoice/telemetry /opt/autovoice/action-ledger.db
+ReadWritePaths=/opt/autovoice/iflytek-offline/work /opt/autovoice/tts-cache /opt/autovoice/telemetry
 
 # --- 资源上限 ---
 MemoryMax=2G

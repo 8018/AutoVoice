@@ -223,6 +223,7 @@ class NavigationDialogServiceTest {
         assertTrue(dialog.hasPending(CTX), "commit 后候选应生效");
         // 选择解析必须与客户端所见列表(已下发回复)使用同一 candidateId/selectionId
         var id = prepared.intent().slots().get("selectionId").value();
+        dialog.adopt(CTX, String.valueOf(id));
         Reply selected = dialog.resolve(CTX.withAttr("navigationSelectionId", id), "第一个")
                 .orElseThrow();
         var shown = new ObjectMapper().readTree(
@@ -239,8 +240,31 @@ class NavigationDialogServiceTest {
         dialog.commit(CTX, prepared);
         assertTrue(dialog.hasPending(CTX));
         var id = prepared.intent().slots().get("selectionId").value();
+        dialog.adopt(CTX, String.valueOf(id));
         assertTrue(dialog.resolve(CTX.withAttr("navigationSelectionId", id), "第一个").isPresent(),
                 "重复提交不得破坏候选可用性");
+    }
+
+    @Test
+    void unadoptedReplacementDoesNotOverwriteActiveList() {
+        var dialog = dialog();
+        Reply active = dialog.remember(CTX, chooseReply());
+        String activeId = (String) active.intent().slots().get("selectionId").value();
+
+        Reply next = dialog.prepare(CTX, chooseReply("另一个地点", CANDIDATES));
+        String nextId = (String) next.intent().slots().get("selectionId").value();
+        dialog.commit(CTX, next);
+
+        Reply selectedOld = dialog.resolve(
+                CTX.withAttr("navigationSelectionId", activeId), "第一个").orElseThrow();
+        assertEquals("navigate", selectedOld.intent().intent(),
+                "尚未显示的新列表不得覆盖当前可选择列表");
+
+        dialog.commit(CTX, next);
+        dialog.adopt(CTX, nextId);
+        Reply selectedNext = dialog.resolve(
+                CTX.withAttr("navigationSelectionId", nextId), "第一个").orElseThrow();
+        assertEquals("navigate", selectedNext.intent().intent());
     }
 
     @Test

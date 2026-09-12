@@ -285,6 +285,12 @@ public final class McpSkillRegistry implements AutoCloseable {
             if (owner == null) {
                 throw new McpToolException("no " + scope + " skill owns tool: " + name);
             }
+            // The selector is only a routing facade. It must not turn its own approved-operation
+            // marker into a bypass for an unknown or mutating target tool.
+            FunctionTool selected = owner.tools().get(name);
+            if (selected == null || !selected.executionTraits().readOnly()) {
+                throw new McpToolException("selected tool is not approved read-only: " + name);
+            }
             return owner.callTool(name, JSON.writeValueAsString(actual));
         } catch (McpToolException e) {
             throw e;
