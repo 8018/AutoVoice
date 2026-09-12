@@ -183,3 +183,26 @@ journalctl -u autovoice-gateway -f   # 实时日志
 客户端配合：Android release 构建禁用明文流量（debug 构建保留局域网明文例外），
 生产地址必须 `wss://`（见 docs/development-workflow.md）。域名、证书与设备凭据
 发放方式确认前不切换线上接入方式。
+
+## 低权限运行模板（D12b，可选）
+
+`deploy/autovoice-gateway-hardened.service` 提供以专用低权限用户运行、收敛文件系统/能力、
+带资源上限的 systemd 模板（默认**不启用**，启用步骤见文件头部注释）。要点：
+
+- 进程不再以 root 运行；`/opt/autovoice` 属主改为 `autovoice`；
+- `/etc/autovoice/.env` 保持 `root:autovoice 0640`（systemd 以 root 读取环境文件）；
+- 可写路径仅限：离线 SDK work 目录、TTS 缓存、遥测库、动作账本库；
+- 内存/文件描述符/任务数上限，避免单实例耗尽主机。
+
+## 部署判据与产物追溯（D13）
+
+`deploy-release.sh` 已升级：
+
+- **就绪判据**：gateway 用 `GET /health/ready`（200 才算就绪，区分"端口在监听"与
+  "业务可用"）；该端点不存在时自动回退 TCP 端口判据（兼容旧 jar）。其他服务沿用端口判据。
+- **产物追溯**：每次发布在 `/opt/autovoice/releases/<sha>/` 写入 `metadata.txt`
+  （SHA、环境、后端变体、时间）与 `checksums.sha256`（部署产物摘要）。
+- **回滚边界**：jar 回退不改变数据库 schema；若发布包含不向后兼容的 schema 变更，
+  按 D13 恢复流程处理（不要盲目回退代码）。
+
+> 以上判据与模板的**实际效果需在服务器上验收**（本地无法验证 systemd/权限行为）。
