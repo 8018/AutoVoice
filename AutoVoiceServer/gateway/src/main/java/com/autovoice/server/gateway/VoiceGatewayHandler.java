@@ -97,6 +97,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final TtsProvider tts;
     private final OfflineCommandService offline;
     private final SessionRegistry registry;
+    /** D05a:输出准入后的导航候选提交点(默认 NONE,测试与旧装配不感知)。 */
+    private final com.autovoice.server.contracts.NavigationDialog navigationDialog;
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
@@ -182,6 +184,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                int maxAudioBytes, TelemetryRecorder recorder) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                com.autovoice.server.contracts.NavigationDialog.NONE);
+    }
+
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog) {
         this.online = online;
         this.tts = tts;
         this.offline = offline;
@@ -194,6 +207,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         this.maxConnections = maxConnections;
         this.maxAudioBytes = maxAudioBytes < 1 ? DEFAULT_MAX_AUDIO_BYTES : maxAudioBytes;
         this.recorder = recorder;
+        this.navigationDialog = navigationDialog == null
+                ? com.autovoice.server.contracts.NavigationDialog.NONE : navigationDialog;
+    }
+
+    /** D05a:获准输出的候选回复在准入后提交(晚到/落败回复到不了这里)。 */
+    private void commitNavigationOnAdmit(SessionContext ctx, SegmentPipeline.SegmentResult result) {
+        Intent intent = result.intent();
+        if (intent == null || ctx == null) return;
+        navigationDialog.commit(ctx, Reply.ofAction(intent,
+                result.speakText() == null ? "" : result.speakText()));
     }
 
     @Override
@@ -547,6 +570,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 if (inputStream != null) inputStream.cancel();
                 // 流式首发的重放改成单帧 reply；结果携带完整音频，端侧仍走统一播放器。
                 if (ownedWork.outputPermit().allowsOutput()) {
+                    commitNavigationOnAdmit(ctx, cached.result());
                     downlink.sendReply(session, cached.result(), segmentId);
                 }
                 return;
@@ -593,6 +617,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
             drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && ownedWork.outputPermit().allowsOutput()) {
+                commitNavigationOnAdmit(ctx, result);
                 downlink.sendReply(session, result, segmentId);
             }
         } finally {

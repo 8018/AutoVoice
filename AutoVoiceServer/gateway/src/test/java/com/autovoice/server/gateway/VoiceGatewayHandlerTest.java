@@ -540,6 +540,74 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D05a:导航候选在输出准入后提交 ----------
+
+    private static com.autovoice.server.contracts.Reply chooseCandidatesReply() {
+        String candidates = "[{\"poiname\":\"天府机场\",\"lat\":30.1,\"lon\":120.1}]";
+        return com.autovoice.server.contracts.Reply.ofAction(
+                Intent.of("1.0", "navigation", "choose_destination",
+                        Map.of("candidates",
+                                com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
+                        0.95, "llm.tool", null),
+                "请选择地点");
+    }
+
+    @Test
+    void admittedNavigationCandidatesAreCommittedAfterReply() throws Exception {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        LlmProvider chooseLlm = (t, ctx) -> CompletableFuture.completedFuture(chooseCandidatesReply());
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), chooseLlm, dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode reply = awaitType(s, "reply");
+        assertEquals("choose_destination", reply.path("payload").path("intent").path("intent").asText());
+        assertTrue(dialog.hasPending(registry.get(sid)), "获准输出的导航候选应已提交");
+    }
+
+    @Test
+    void revokedTurnDoesNotCommitNavigationCandidates() throws InterruptedException {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        CountDownLatch started = new CountDownLatch(1);
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        OnlineSpeechProvider cancellable = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid,
+                    OnlineAudioSink audio) {
+                started.countDown();
+                return pending;
+            }
+            @Override public String id() { return "d05a-cancel"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(cancellable, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"seg-1\"}}"));
+        pending.complete(new OnlineSpeechResult(chooseCandidatesReply(), ""));
+        Thread.sleep(150); // 等工作线程收尾
+        assertFalse(dialog.hasPending(registry.get(sid)), "被撤销轮次的候选不得提交");
+    }
+
     @Test
     void nonAirconOfflineHitEmitsPendingFrameBeforeLlmDecision() throws InterruptedException {
         // B5 端到端：离线命中"打开车窗"（非空调 → 按未命中处理）+ LLM 慢 → 仲裁先发 pending 占位帧
@@ -1147,6 +1215,7 @@ class VoiceGatewayHandlerTest {
                 [{"poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471},
                  {"poiname":"成都天府国际机场","lat":30.312,"lon":104.441}]
                 """;
+        var navigation = new NavigationDialogService();
         var handler = new VoiceGatewayHandler(new ClassicOnlineSpeechProvider((pcm, ctx) -> {
             if (transcript.get().equals("第二个")) {
                 assertNull(ctx.attrs().get("latitude"), "no fix in second request must clear prior latitude");
@@ -1159,7 +1228,8 @@ class VoiceGatewayHandlerTest {
             return CompletableFuture.completedFuture(Reply.ofAction(Intent.of("1.0", "navigation",
                     "choose_destination", Map.of("candidates", com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
                     1.0, "test", null), "请选择"));
-        }, new NavigationDialogService()), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        }, navigation), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, false,
+        Map.of(), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE, navigation);
         try {
             var socket = open(handler);
             String sid = handshake(handler, socket);

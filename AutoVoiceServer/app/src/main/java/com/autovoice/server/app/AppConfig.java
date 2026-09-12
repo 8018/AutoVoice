@@ -1,5 +1,6 @@
 package com.autovoice.server.app;
 
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.TtsProvider;
@@ -291,14 +292,15 @@ public class AppConfig {
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props,
-                                                   TelemetryRecorder recorder) {
+                                                   TelemetryRecorder recorder,
+                                                   NavigationDialog navigationDialog) {
         AutovoiceProperties.Gateway g = props.gateway();
         long safetyTimeoutMs = Math.max(
                 props.arbitration().safetyTimeoutMs(), online.minimumTurnTimeoutMs());
         return new VoiceGatewayHandler(online, tts, offline, registry,
                 safetyTimeoutMs, props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
-                g.maxAudioBytes(), recorder);
+                g.maxAudioBytes(), recorder, navigationDialog);
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);
