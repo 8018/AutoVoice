@@ -130,3 +130,21 @@ poi_search 等；启用。
 - selector 分级未实现：启用工具 >8 个时仍全量注入，并打告警日志
   （`启用工具 N 个超过 direct 上限 8，selector 策略未实现，仍全量注入`）。
 - 空 MCP server（tools 为空）→ 该 skill 不注入工具但 skill 保持启用。
+
+## toolsJson 执行特性声明(D04)
+
+toolsJson 勾选清单同时是**可信执行特性声明**:候选阶段只执行已审核的只读工具;
+写入/未声明(UNKNOWN)工具被拒绝并返回结构化原因。条目格式:
+
+```json
+[
+  {"name": "poi_search", "enabled": true, "readOnly": true, "parallelSafe": true, "cacheSuccess": true},
+  {"name": "set_destination", "enabled": true, "approvedOperation": true}
+]
+```
+
+- `readOnly` / `parallelSafe` / `cacheSuccess` / `approvedOperation` 均可省略,默认 false;
+  写入工具声明 parallelSafe/cacheSuccess 为非法组合,按 UNKNOWN fail-closed。
+- 空清单 = 全选但特性 UNKNOWN → 全部被准入拒绝(需在清单中显式声明只读工具)。
+- `approvedOperation` 是"已审核非只读提交操作"的过渡批准(D05 落地后撤销)。
+- MCP 自报 schema 只作参数定义,不作为副作用分类依据。

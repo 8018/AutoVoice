@@ -25,7 +25,8 @@ class ExecutionBudgetTest {
 
     private RequestToolExecutor tools(AtomicInteger count) {
         return new RequestToolExecutor(call -> { count.incrementAndGet(); return "ok"; },
-                (call, error) -> error.toString(), runtime);
+                (call, error) -> error.toString(),
+                com.autovoice.server.agentloop.ToolExecutionPolicy.conservative(), runtime, false);
     }
 
     @Test
@@ -64,7 +65,8 @@ class ExecutionBudgetTest {
                 catch (InterruptedException error) { interrupted.countDown(); throw error; }
             } else writes.incrementAndGet();
             return "ok";
-        }, (call, error) -> error.toString(), runtime);
+        }, (call, error) -> error.toString(),
+                com.autovoice.server.agentloop.ToolExecutionPolicy.conservative(), runtime, false);
         var loop = new AgentLoop<>(new AgentLoop.Policy(3, 300, true), executor, new Adapter() {
             public String callModel(int round, boolean allowed) { return "tools"; }
             public List<AgentToolCall> toolCalls(String message) {

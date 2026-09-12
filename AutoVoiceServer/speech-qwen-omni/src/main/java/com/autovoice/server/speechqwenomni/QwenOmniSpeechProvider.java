@@ -76,9 +76,11 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
             + "不要执行导航或车控，也不要假装已经完成任何现实操作。"
             + "用户表达退出、结束或不想继续聊天时，必须调用 exit_chat；否则绝不调用。";
     public static final String EXIT_CHAT_TOOL = "exit_chat";
+    // D04:exit_chat 是已审核提交操作(产生 conversation intent,由输出准入层处理)
     private static final FunctionTool EXIT_CHAT = new FunctionTool(EXIT_CHAT_TOOL,
             "仅当用户明确要退出或结束当前闲聊会话时调用",
-            "{\"type\":\"object\",\"properties\":{}}");
+            "{\"type\":\"object\",\"properties\":{}}",
+            com.autovoice.server.contracts.ToolExecutionTraits.APPROVED_COMMIT);
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     /** 工具循环上限：正常导航为 resolve_navigation → navigate → 语音确认；

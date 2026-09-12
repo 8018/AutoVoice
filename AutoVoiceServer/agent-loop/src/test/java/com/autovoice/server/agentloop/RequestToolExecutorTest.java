@@ -19,25 +19,80 @@ class RequestToolExecutorTest {
     @Test
     void operationInvalidatesEarlierReadCacheAndIsNeverDeduplicated() {
         AtomicInteger reads = new AtomicInteger(), writes = new AtomicInteger();
+        var policy = ToolExecutionPolicy.declared(List.of(
+                new com.autovoice.server.contracts.FunctionTool("maps_geo", "", "{}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY),
+                new com.autovoice.server.contracts.FunctionTool("set_destination", "", "{}",
+                        new com.autovoice.server.contracts.ToolExecutionTraits(false, false, false))));
         var executor = new RequestToolExecutor(call -> {
             if (call.name().equals("maps_geo")) return "" + reads.incrementAndGet();
             writes.incrementAndGet(); return "ok";
-        }, (call, error) -> "error", queries(), runtime);
+        }, (call, error) -> "error", policy, runtime, false);
         var query = new AgentToolCall("1", "maps_geo", "{}");
         var operation = new AgentToolCall("2", "set_destination", "{}");
         executor.execute(List.of(query, operation, query, operation));
         assertEquals(2, reads.get());
         assertEquals(2, writes.get());
     }
+    // ---------- D04:候选阶段只读准入 ----------
+
     @Test
-    void unknownGetNamedToolIsNotCachedOrParallelized() {
+    void undeclaredToolIsRejectedWithoutInvocation() {
         AtomicInteger calls = new AtomicInteger();
-        var tool = new AgentToolCall("1", "get_or_create_route", "{}");
-        var executor = new RequestToolExecutor(call -> "" + calls.incrementAndGet(),
-                (call, error) -> "error", runtime);
-        assertTrue(!ToolExecutionPolicy.conservative().isParallelRead(tool));
-        assertEquals("1", executor.execute(List.of(tool)).getFirst().content());
-        assertEquals("2", executor.execute(List.of(tool)).getFirst().content());
+        var executor = new RequestToolExecutor(call -> {
+            calls.incrementAndGet();
+            return "ok";
+        }, (call, error) -> error.getMessage(), queries(), runtime);
+        var result = executor.execute(List.of(new AgentToolCall("1", "get_or_create_route", "{}")))
+                .getFirst();
+        assertTrue(result.error(), "未声明工具应被拒绝");
+        assertTrue(result.content().contains("get_or_create_route"));
+        assertTrue(result.content().contains("read-only"), "拒绝原因必须结构化说明");
+        assertEquals(0, calls.get(), "拒绝的工具不得调用上游");
+    }
+
+    @Test
+    void declaredWriteToolIsRejectedWithoutInvocation() {
+        var policy = ToolExecutionPolicy.declared(List.of(
+                new com.autovoice.server.contracts.FunctionTool("set_destination", "", "{}",
+                        new com.autovoice.server.contracts.ToolExecutionTraits(false, false, false))));
+        AtomicInteger calls = new AtomicInteger();
+        var executor = new RequestToolExecutor(call -> {
+            calls.incrementAndGet();
+            return "ok";
+        }, (call, error) -> error.getMessage(), policy, runtime);
+        var result = executor.execute(List.of(new AgentToolCall("1", "set_destination", "{}")))
+                .getFirst();
+        assertTrue(result.error(), "已声明写工具在候选阶段也必须拒绝");
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void approvedCommitOperationIsAllowedDuringTransition() {
+        var policy = ToolExecutionPolicy.declared(List.of(
+                new com.autovoice.server.contracts.FunctionTool("mcp_tools_execute", "", "{}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.APPROVED_COMMIT)));
+        AtomicInteger calls = new AtomicInteger();
+        var executor = new RequestToolExecutor(call -> {
+            calls.incrementAndGet();
+            return "executed";
+        }, (call, error) -> error.getMessage(), policy, runtime);
+        var result = executor.execute(List.of(new AgentToolCall("1", "mcp_tools_execute", "{}")))
+                .getFirst();
+        assertEquals("executed", result.content());
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void declaredReadOnlyToolStillExecutes() {
+        AtomicInteger calls = new AtomicInteger();
+        var executor = new RequestToolExecutor(call -> {
+            calls.incrementAndGet();
+            return "hit";
+        }, (call, error) -> error.getMessage(), queries(), runtime);
+        var result = executor.execute(List.of(new AgentToolCall("1", "maps_geo", "{}"))).getFirst();
+        assertEquals("hit", result.content());
+        assertEquals(1, calls.get());
     }
 
     @Test
@@ -132,7 +187,8 @@ class RequestToolExecutorTest {
         RequestToolExecutor executor = new RequestToolExecutor(call -> {
             order.append(call.id());
             return "ok";
-        }, (call, error) -> error.getMessage(), call -> call.name().startsWith("get_"), runtime);
+        }, (call, error) -> error.getMessage(),
+                call -> call.name().startsWith("get_"), runtime, false);
 
         executor.execute(List.of(
                 new AgentToolCall("1", "get_a", "{}"),

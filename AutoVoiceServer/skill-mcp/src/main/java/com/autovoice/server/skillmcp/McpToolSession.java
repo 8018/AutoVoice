@@ -1,6 +1,7 @@
 package com.autovoice.server.skillmcp;
 
 import com.autovoice.server.contracts.FunctionTool;
+import com.autovoice.server.contracts.ToolExecutionTraits;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpClient;
@@ -90,28 +91,42 @@ public final class McpToolSession implements AutoCloseable {
             }
             throw new IOException("mcp list_tools failed for " + config.id() + ": " + e.getMessage(), e);
         }
-        Map<String, Boolean> chosen = parseToolsJson(config.toolsJson());
+        Map<String, ToolSelection> chosen = parseToolsJson(config.toolsJson());
         boolean explicitSelection = !chosen.isEmpty();
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         for (Tool t : listed.tools()) {
             // 平台保存的是用户明确勾选的工具，而不是 MCP server 的完整工具清单。
             // 因此非空清单中未出现的工具必须视为未启用；只有空清单才兼容旧配置为全选。
-            if (!explicitSelection || chosen.getOrDefault(t.name(), false)) {
+            ToolSelection selection = explicitSelection
+                    ? chosen.get(t.name())
+                    : new ToolSelection(true, ToolExecutionTraits.UNKNOWN);
+            if (selection != null && selection.enabled()) {
                 // 2.0.0 的 Tool.inputSchema() 返回 Map<String,Object>（非 JsonNode/字符串），
                 // writeValueAsString(Map) 同样产出合法 JSON 文本
                 String schema = t.inputSchema() == null
                         ? "{\"type\":\"object\"}"
                         : MAPPER.writeValueAsString(t.inputSchema());
+                // D04:执行特性来自平台可信清单(toolsJson),MCP 自报 schema 只作参数定义;
+                // 未声明特性的工具为 UNKNOWN → 候选阶段被准入拒绝(fail-closed)
                 tools.put(t.name(), new FunctionTool(t.name(),
-                        t.description() == null ? "" : t.description(), schema));
+                        t.description() == null ? "" : t.description(), schema, selection.traits()));
             }
         }
         return new McpToolSession(config, c, tools);
     }
 
-    /** toolsJson 解析为 {name: enabled}；空白/非法 JSON 视为空表（= 全选）。 */
-    private static Map<String, Boolean> parseToolsJson(String toolsJson) {
-        Map<String, Boolean> out = new LinkedHashMap<>();
+    /** 平台勾选清单条目:enabled + 可信执行特性(D04)。 */
+    private record ToolSelection(boolean enabled, ToolExecutionTraits traits) {
+    }
+
+    /**
+     * toolsJson 解析为 {name: ToolSelection};空白/非法 JSON 视为空表(=全选,特性 UNKNOWN)。
+     * 条目格式:{@code {"name":"...","enabled":true,"readOnly":true,"parallelSafe":true,
+     * "cacheSuccess":true,"approvedOperation":false}},除 name 外均可省略。
+     * 非法特性组合(写入工具声明并行/缓存)按 UNKNOWN fail-closed。
+     */
+    private static Map<String, ToolSelection> parseToolsJson(String toolsJson) {
+        Map<String, ToolSelection> out = new LinkedHashMap<>();
         if (toolsJson == null || toolsJson.isBlank()) {
             return out;
         }
@@ -119,11 +134,25 @@ public final class McpToolSession implements AutoCloseable {
             var arr = MAPPER.readTree(toolsJson);
             if (arr.isArray()) {
                 for (var node : arr) {
-                    out.put(node.path("name").asText(""), node.path("enabled").asBoolean(false));
+                    String name = node.path("name").asText("");
+                    if (name.isBlank()) {
+                        continue;
+                    }
+                    ToolExecutionTraits traits;
+                    try {
+                        traits = new ToolExecutionTraits(
+                                node.path("readOnly").asBoolean(false),
+                                node.path("parallelSafe").asBoolean(false),
+                                node.path("cacheSuccess").asBoolean(false),
+                                node.path("approvedOperation").asBoolean(false));
+                    } catch (IllegalArgumentException e) {
+                        traits = ToolExecutionTraits.UNKNOWN; // 非法组合 fail-closed
+                    }
+                    out.put(name, new ToolSelection(node.path("enabled").asBoolean(false), traits));
                 }
             }
         } catch (IOException e) {
-            return out; // 非法勾选清单不致命：全选
+            return out; // 非法勾选清单不致命:全选(特性 UNKNOWN)
         }
         return out;
     }
