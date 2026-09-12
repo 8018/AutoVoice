@@ -297,8 +297,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         scheduler.schedule(() -> enforceHelloDeadline(session), helloDeadlineMs, TimeUnit.MILLISECONDS);
     }
 
-    /** D10a:握手截止检查(幂等:已握手/已关闭时 no-op)。 */
-    private void enforceHelloDeadline(WebSocketSession session) {
+    /** D10a:握手截止检查(幂等:已握手/已关闭时 no-op);包私有便于确定性测试。 */
+    void enforceHelloDeadline(WebSocketSession session) {
         ConnectionState st = connections.get(session);
         if (st == null) return;
         if (st.ctx != null) return; // 已握手
