@@ -283,6 +283,26 @@ class McpSkillRegistryTest {
     }
 
     @Test
+    void refreshPublishesSnapshotAtomicallyWithMonotonicVersion() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        FakePlatformClient client = new FakePlatformClient(List.of()) {
+            @Override public String fetchSystemPrompt() { return "新提示词"; }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> session(c))) {
+            long before = reg.currentSnapshot().version();
+            reg.refresh();
+            RegistrySnapshot after = reg.currentSnapshot();
+
+            assertTrue(after.version() > before, "刷新必须推进版本(单调递增)");
+            assertEquals("新提示词", after.systemPrompt(), "prompt 与连接同属一个快照版本");
+            assertEquals("新提示词", store.get());
+            // 同一快照内的连接与 prompt 一致:不会出现"旧 schema 配新 prompt"
+            assertEquals(after.sessions().size(), reg.currentSnapshot().sessions().size());
+        }
+    }
+
+    @Test
     void fetchPromptFailureKeepsPrevious() throws Exception {
         SystemPromptStore store = new SystemPromptStore();
         store.set("旧值");
