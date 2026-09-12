@@ -359,6 +359,7 @@ class GatewayClient(
                     intent = parseIntent(payload.get("intent")),
                     asrText = asrText,
                     actionId = payload.get("actionId")?.stringOrNull() ?: "",
+                    actionExpiresAtMs = payload.get("actionExpiresAtMs")?.numberOrNull()?.toLong() ?: 0L,
                 )
             }
             "action" -> {
@@ -368,6 +369,7 @@ class GatewayClient(
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     asrText = asrText,
                     actionId = payload.get("actionId")?.stringOrNull() ?: "",
+                    actionExpiresAtMs = payload.get("actionExpiresAtMs")?.numberOrNull()?.toLong() ?: 0L,
                 )
             }
             else -> null

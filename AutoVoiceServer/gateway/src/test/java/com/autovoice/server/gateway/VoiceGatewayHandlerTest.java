@@ -540,6 +540,70 @@ class VoiceGatewayHandlerTest {
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
     }
 
+    // ---------- D14c:签发失败降级 + 支持窗口 ----------
+
+    @Test
+    void ledgerWriteFailureRefusesActionButKeepsSpeech() throws Exception {
+        com.autovoice.server.contracts.ActionLedger failing =
+                new com.autovoice.server.contracts.ActionLedger() {
+                    @Override public boolean recordDispatch(
+                            com.autovoice.server.contracts.ActionPlan plan) {
+                        throw new IllegalStateException("ledger unavailable");
+                    }
+                    @Override public java.util.Optional<com.autovoice.server.contracts.ActionPlan>
+                            findByActionId(String actionId) {
+                        return java.util.Optional.empty();
+                    }
+                    @Override public void recordAudit(String a, String e, String d) { }
+                };
+        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
+                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
+                "已为您执行空调指令"));
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE, failing);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode reply = awaitType(s, "reply");
+        assertEquals("", reply.path("payload").path("actionId").asText(),
+                "账本写入失败时不得下发动作身份(客户端因此不执行该动作)");
+        assertEquals("已为您执行空调指令", reply.path("payload").path("speakText").asText(),
+                "播报文本仍照常下发");
+        h.close();
+    }
+
+    @Test
+    void issuedActionCarriesSupportWindowDeadline() throws Exception {
+        java.nio.file.Path db = java.nio.file.Files.createTempFile("window-ledger", ".db");
+        java.nio.file.Files.deleteIfExists(db);
+        var ledger = new com.autovoice.server.actionledger.SqliteActionLedger(db.toString());
+        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
+                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
+                "已执行"));
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE, ledger);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode reply = awaitType(s, "reply");
+        long expiresAt = reply.path("payload").path("actionExpiresAtMs").asLong();
+        assertTrue(expiresAt > System.currentTimeMillis(), "应答携带支持窗口截止时刻");
+        h.close();
+        java.nio.file.Files.deleteIfExists(db);
+    }
+
     // ---------- D12a:排空 ----------
 
     @Test

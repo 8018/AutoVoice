@@ -130,6 +130,8 @@ data class AudioReply(
     override val asrText: String = "",
     /** D07a 服务端签发的动作身份(音频+动作组合回复同样携带)。 */
     val actionId: String = "",
+    /** D14c 动作身份的支持窗口截止(毫秒);0 = 未携带(旧服务端)。 */
+    val actionExpiresAtMs: Long = 0L,
 ) : Reply() {
     override val kind: String = "audio"
 }
@@ -164,6 +166,8 @@ data class ActionReply(
     override val asrText: String = "",
     /** D07a 服务端签发并落盘的动作身份;客户端执行入口凭此做最终准入与幂等执行。 */
     val actionId: String = "",
+    /** D14c 动作身份的支持窗口截止(毫秒);0 = 未携带(旧服务端)。 */
+    val actionExpiresAtMs: Long = 0L,
 ) : Reply() {
     override val kind: String = "action"
 }
