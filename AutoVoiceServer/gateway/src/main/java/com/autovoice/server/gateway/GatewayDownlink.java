@@ -66,6 +66,7 @@ final class GatewayDownlink {
             if (result.speakText() != null) payload.put("speakText", result.speakText());
         }
         if (segmentId != null) payload.put("segmentId", segmentId);
+        if (result.actionId() != null) payload.put("actionId", result.actionId());
         send(session, "reply", payload);
     }
 

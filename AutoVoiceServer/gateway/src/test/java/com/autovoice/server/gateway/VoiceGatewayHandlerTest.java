@@ -572,6 +572,46 @@ class VoiceGatewayHandlerTest {
         assertTrue(dialog.hasPending(registry.get(sid)), "获准输出的导航候选应已提交");
     }
 
+    // ---------- D07a:动作身份签发与持久化 ----------
+
+    @Test
+    void actionRepliesCarryStableActionIdRecordedInLedger() throws Exception {
+        java.nio.file.Path db = java.nio.file.Files.createTempFile("gateway-ledger", ".db");
+        java.nio.file.Files.deleteIfExists(db);
+        var ledger = new com.autovoice.server.actionledger.SqliteActionLedger(db.toString());
+        LlmProvider actionLlm = (t, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(
+                Intent.of("1.0", "climate", "set_temperature", Map.of(), 0.9, "llm", null),
+                "已为您执行空调指令"));
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), actionLlm), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE, ledger);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)
+                .replace("\"encoding\":", "\"utteranceId\":\"u-fixed\",\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode reply = awaitType(s, "reply");
+        String actionId = reply.path("payload").path("actionId").asText();
+        assertFalse(actionId.isBlank(), "动作回复必须携带 actionId");
+        assertTrue(ledger.findByActionId(actionId).isPresent(), "签发记录必须落盘");
+
+        // 同轮缓存重放复用同一 actionId,不重复记账
+        s.sent.clear();
+        h.handleMessage(s, new TextMessage(audioStart(sid, "replay")
+                .replace("\"encoding\":", "\"utteranceId\":\"u-fixed\",\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{2}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode replay = awaitType(s, "reply");
+        assertEquals(actionId, replay.path("payload").path("actionId").asText(),
+                "缓存重放必须复用同一 actionId");
+        h.close();
+        java.nio.file.Files.deleteIfExists(db);
+    }
+
     @Test
     void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =

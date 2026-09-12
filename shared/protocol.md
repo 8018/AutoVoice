@@ -115,6 +115,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
+| `actionId` | string（可选，D07a） | 动作身份：服务端在输出准入通过后签发并落盘（独立业务账本）；客户端执行入口凭此做幂等与最终准入。缓存重放复用同一 actionId |
 | `selectionId` | string | 非空=采用该列表;空=撤销(未显示/已关闭) |
 
 服务端语义:未采用的列表在"现代客户端"(audio_start 携带 `navigationSelectionId` 字段)

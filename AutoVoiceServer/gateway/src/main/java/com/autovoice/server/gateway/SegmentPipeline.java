@@ -94,13 +94,18 @@ public final class SegmentPipeline {
      * intent 非空时下行 kind=action；asrText = 离线胜出时的离线原文，否则 ASR 识别文本。
      */
     public record SegmentResult(String text, String speakText, Intent intent, String asrText,
-                                String mime, byte[] audio, boolean streamed) {
+                                String mime, byte[] audio, boolean streamed, String actionId) {
         public SegmentResult(String text, String speakText, Intent intent, String asrText) {
-            this(text, speakText, intent, asrText, null, null, false);
+            this(text, speakText, intent, asrText, null, null, false, null);
         }
 
         SegmentResult asStreamed() {
-            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true);
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true, actionId);
+        }
+
+        /** D07a:输出准入后签发动作身份,随下行携带;缓存重放复用同一 actionId。 */
+        SegmentResult withActionId(String actionId) {
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, streamed, actionId);
         }
     }
 
@@ -319,7 +324,7 @@ public final class SegmentPipeline {
                     return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
                 }
                 return new SegmentResult(null, reply.speakText(), reply.intent(), textForAsr,
-                        reply.mime(), reply.data(), false);
+                        reply.mime(), reply.data(), false, null);
             }
             default -> {
                 // 防御：未知 kind → 文本化
