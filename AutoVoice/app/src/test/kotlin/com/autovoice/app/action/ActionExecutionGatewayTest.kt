@@ -100,6 +100,55 @@ class ActionExecutionGatewayTest {
     }
 
     @Test
+    fun resentActionInNewSessionWithLocalRecordIsIdempotent() {
+        // 约束 3 验证之一:新会话重发旧动作 + 本地账本有记录 → 幂等,不重复执行
+        val ledger = FakeLedger()
+        val gateway = ActionExecutionGateway(ledger)
+        val calls = AtomicInteger()
+        val future = System.currentTimeMillis() + 60_000
+
+        assertTrue(gateway.execute("a-old", "导航", actionExpiresAtMs = future) {
+            calls.incrementAndGet(); true
+        })
+        // 模拟重连后服务端重发同一动作(reply 重放)
+        assertTrue(gateway.execute("a-old", "导航", actionExpiresAtMs = future) {
+            calls.incrementAndGet(); true
+        })
+        assertEquals(1, calls.get(), "同 actionId 重发必须幂等")
+    }
+
+    @Test
+    fun resentActionBeyondWindowIsRejected() {
+        // 约束 3 验证之二:超出支持窗口 → 明确拒绝(不是当新动作执行)
+        val ledger = FakeLedger()
+        val gateway = ActionExecutionGateway(ledger)
+        val calls = AtomicInteger()
+        val past = System.currentTimeMillis() - 1
+
+        assertFalse(gateway.execute("a-old", "导航", actionExpiresAtMs = past) {
+            calls.incrementAndGet(); true
+        })
+        assertEquals(0, calls.get())
+    }
+
+    @Test
+    fun resentActionWithinWindowWithoutLocalRecordExecutes() {
+        // 约束 3 验证之三(已知风险,行为固化):本地账本无记录(如 App 重装)时,
+        // 窗口内的旧 actionId 会被当作新动作执行——客户端不查询服务端账本(首期不开放)。
+        // 该行为已记入 docs/recovery-objectives.md 的残留风险,真实写工具开放前必须升级。
+        val ledger = FakeLedger()
+        val gateway = ActionExecutionGateway(ledger)
+        val calls = AtomicInteger()
+        val future = System.currentTimeMillis() + 60_000
+
+        assertTrue(gateway.execute("a-unknown", "旧动作", actionExpiresAtMs = future) {
+            calls.incrementAndGet(); true
+        })
+        assertEquals(1, calls.get(), "当前实现会执行(风险已文档化)")
+        assertEquals(ActionLedgerStore.STATE_SUCCESS, ledger.stateOf("a-unknown"))
+    }
+
+    @Test
     fun crashRecoveryConvergesExecutingToUnknown() {
         val ledger = FakeLedger()
         val gateway = ActionExecutionGateway(ledger)
