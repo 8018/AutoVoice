@@ -176,7 +176,7 @@ class McpEndToEndGatewayTest {
 
         when(platform.fetchEnabled()).thenReturn(List.of(new SkillConfig(
                 "amap-maps", "高德地图", "导航", mcpServer.url("/mcp").toString(),
-                "", "", "", true, 1L)));
+                "", "", "[{\"name\":\"poi_search\",\"enabled\":true,\"readOnly\":true}]", true, 1L)));
 
         // 同步 refresh 填充真 registry 会话快照：没有这一步 callTool("poi_search") 抛
         // "no skill owns tool"，LLM 退回直答、tools/call 计数断言必挂

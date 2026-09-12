@@ -27,6 +27,7 @@ public final class RequestToolExecutor {
     private final Invoker invoker;
     private final ErrorFormatter errors;
     private final ToolExecutionPolicy policy;
+    private final boolean enforceReadOnly;
     private final java.util.concurrent.ThreadPoolExecutor reads;
     private final ConcurrentMap<String, CompletableFuture<AgentToolResult>> cache =
             new ConcurrentHashMap<>();
@@ -38,9 +39,20 @@ public final class RequestToolExecutor {
 
     public RequestToolExecutor(Invoker invoker, ErrorFormatter errors, ToolExecutionPolicy policy,
                                AgentExecutionRuntime runtime) {
+        this(invoker, errors, policy, runtime, true);
+    }
+
+    /**
+     * D04 只读准入:默认路径({@code enforceReadOnly=true})只执行策略批准的只读工具,
+     * 写入/未声明工具拒绝执行并给出结构化原因;仅在明确关停的调用方(如调度语义测试)
+     * 才允许写工具执行。
+     */
+    public RequestToolExecutor(Invoker invoker, ErrorFormatter errors, ToolExecutionPolicy policy,
+                               AgentExecutionRuntime runtime, boolean enforceReadOnly) {
         this.invoker = invoker;
         this.errors = errors;
         this.policy = policy;
+        this.enforceReadOnly = enforceReadOnly;
         this.reads = java.util.Objects.requireNonNull(runtime, "runtime").toolReads();
     }
 
@@ -52,6 +64,10 @@ public final class RequestToolExecutor {
         List<AgentToolResult> results = new ArrayList<>(calls.size());
         List<AgentToolCall> reads = new ArrayList<>();
         for (AgentToolCall call : calls) {
+            if (enforceReadOnly && !policy.isReadOnly(call) && !policy.isApprovedOperation(call)) {
+                results.add(rejected(call));
+                continue;
+            }
             if (policy.isParallelRead(call)) {
                 reads.add(call);
             } else {
@@ -63,6 +79,12 @@ public final class RequestToolExecutor {
         }
         flush(reads, results, budget);
         return results;
+    }
+
+    private AgentToolResult rejected(AgentToolCall call) {
+        return new AgentToolResult(call,
+                "tool \"" + call.name() + "\" rejected: not an approved read-only tool",
+                false, true);
     }
 
     private void flush(List<AgentToolCall> calls, List<AgentToolResult> target, ExecutionBudget budget) {

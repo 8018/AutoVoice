@@ -250,7 +250,8 @@ class QwenOmniSpeechProviderTest {
                 new OkHttpClient(), "test-key", server.url("/chat").toString(),
                 null, null,
                 () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
-                        "weather", "天气", "{\"type\":\"object\"}")),
+                        "weather", "天气", "{\"type\":\"object\"}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY)),
                 (name, args) -> {
                     invocation.set(name + ":" + args);
                     return "晴天";
@@ -277,7 +278,8 @@ class QwenOmniSpeechProviderTest {
                 new OkHttpClient(), "test-key", server.url("/chat").toString(),
                 null, null,
                 () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
-                        "poi_search", "地点搜索", "{\"type\":\"object\"}")),
+                        "poi_search", "地点搜索", "{\"type\":\"object\"}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY)),
                 (name, args) -> {
                     calls.add(name + ":" + args);
                     return "resolved:" + args;
@@ -345,8 +347,18 @@ class QwenOmniSpeechProviderTest {
     }
 
     private QwenOmniSpeechProvider provider(com.autovoice.server.contracts.ToolExecutor executor) {
+        // D04:内置工具(已审核提交)+ exit_chat + weather(已审核只读)的完整测试清单
         return new QwenOmniSpeechProvider(new OkHttpClient(), "test-key", server.url("/chat").toString(),
-                null, null, QwenOmniSpeechProvider::defaultTools, executor, () -> "测试");
+                null, null,
+                () -> {
+                    var tools = new java.util.ArrayList<>(
+                            com.autovoice.server.contracts.VehicleAgentTools.definitions());
+                    tools.add(QwenOmniSpeechProvider.exitChatTool());
+                    tools.add(new com.autovoice.server.contracts.FunctionTool("weather", "天气", "{\"type\":\"object\"}",
+                            com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY));
+                    return tools;
+                },
+                executor, () -> "测试");
     }
 
     // ------------------------------------------------------------ 工具循环上限与优雅降级

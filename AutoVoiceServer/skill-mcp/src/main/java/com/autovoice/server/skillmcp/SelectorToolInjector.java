@@ -15,13 +15,14 @@ final class SelectorToolInjector implements ToolInjector {
             """
             {"type":"object","properties":{"query":{"type":"string","description":"用户当前要完成的任务"}},
             "required":["query"]}
-            """);
+            """, com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY);
+    // D04 过渡:EXECUTE 是"已审核提交操作"(候选阶段允许),D05 将提交改由输出准入层承载
     private static final FunctionTool EXECUTE_TOOL = new FunctionTool(EXECUTE,
             "执行 mcp_tools_get 返回的某个工具。name 和 arguments 必须符合查询结果中的 schema。",
             """
             {"type":"object","properties":{"name":{"type":"string"},
             "arguments":{"type":"object","additionalProperties":true}},"required":["name","arguments"]}
-            """);
+            """, com.autovoice.server.contracts.ToolExecutionTraits.APPROVED_COMMIT);
 
     @Override
     public List<FunctionTool> inject(List<FunctionTool> all) {
