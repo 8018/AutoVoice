@@ -65,7 +65,8 @@ class DeepSeekLlmLoopTest {
         List<String> bodies = new ArrayList<>();
         try (MockWebServer llm = twoRoundLlm(calls, bodies)) {
             ToolProvider tools = () -> List.of(new FunctionTool("poi_search", "搜索兴趣点",
-                    "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}"));
+                    "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}",
+                    com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY));
             ToolExecutor exec = (name, args) -> {
                 execs.incrementAndGet();
                 assertEquals("{\"query\":\"西湖\"}", args);
