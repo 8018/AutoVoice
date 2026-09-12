@@ -91,6 +91,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     static final int DEFAULT_PER_DEVICE_CONNECTIONS = 4;
     /** D10a:重建连接后完成握手的期限;超时关闭,避免只占名额不握手。 */
     static final long DEFAULT_HELLO_DEADLINE_MS = 10_000;
+    /** D10b:每连接下行字节预算(未完成发送的累计上限),防慢客户端无界堆积。 */
+    static final long DEFAULT_DOWNLINK_BUDGET_BYTES = 4L * 1024 * 1024;
+    /** D10b:TTS 请求文本长度上限(字符),防超长文本占用合成与下行。 */
+    static final int DEFAULT_MAX_TTS_CHARS = 500;
     private static final int DEFAULT_TTS_WORKERS = 4;
     private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
     private static final long TURN_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(2);
@@ -873,6 +877,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         String text = String.valueOf(payload.get("text"));
         String ttsSegmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
+        if (text.length() > DEFAULT_MAX_TTS_CHARS) {
+            // D10b:超长文本明确拒绝(不排队、不合成),避免占用合成与下行资源
+            downlink.sendError(session, st.ctx, "TTS_TEXT_TOO_LONG",
+                    "tts text exceeds " + DEFAULT_MAX_TTS_CHARS + " chars", ttsSegmentId);
+            return;
+        }
         // 链路插桩（Task 5）：tts_request 的 utteranceId（GatewayCodec 白名单，Task 2）透传合成链，缺省 ""
         String utteranceId = payload.get("utteranceId") != null ? String.valueOf(payload.get("utteranceId")) : "";
         try {
@@ -889,14 +899,25 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (!"audio".equals(reply.kind()) || reply.data() == null || reply.data().length == 0) {
                 throw new IllegalStateException("tts returned non-audio reply: kind=" + reply.kind());
             }
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("mime", reply.mime());
-            out.put("dataBase64", Base64.getEncoder().encodeToString(reply.data()));
-            out.put("text", text);
-            if (ttsSegmentId != null) {
-                out.put("segmentId", ttsSegmentId);
+            // D10b:下行预算——慢客户端超出预算时明确失败,不无界堆积
+            byte[] audio = reply.data();
+            if (!st.downlinkBudget.tryReserve(audio.length)) {
+                downlink.sendError(session, st.ctx, "DOWNLINK_OVERLOADED",
+                        "downlink budget exhausted", ttsSegmentId);
+                return;
             }
-            downlink.send(session, "tts_response", out);
+            try {
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("mime", reply.mime());
+                out.put("dataBase64", Base64.getEncoder().encodeToString(audio));
+                out.put("text", text);
+                if (ttsSegmentId != null) {
+                    out.put("segmentId", ttsSegmentId);
+                }
+                downlink.send(session, "tts_response", out);
+            } finally {
+                st.downlinkBudget.release(audio.length);
+            }
         } catch (Exception e) {
             downlink.sendError(session, st.ctx, "TTS_FAILED",
                     "tts failed: " + e.getMessage(), ttsSegmentId);
@@ -933,6 +954,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         volatile String quotaSubject = "";
         /** D10a:hello 截止的绝对时刻。 */
         volatile long helloDeadlineAtMs;
+        /** D10b:本连接下行预算(慢客户端保护)。 */
+        final DownlinkBudget downlinkBudget = new DownlinkBudget(DEFAULT_DOWNLINK_BUDGET_BYTES);
 
         ConnectionState(WebSocketSession session) {
             this.session = session;
