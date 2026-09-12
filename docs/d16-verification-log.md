@@ -74,7 +74,27 @@ autovoice-dev-gateway is ready (/health/ready -> 200, port 8090).  ← health �
 
 **判定**:D12b 的就绪判据升级已生效;无该端点的服务正确回退到端口判据。
 
-### A2 排空 **[待批准]**（会停止 dev 接入）
+### A2 排空 **✅ 通过 2026-09-12T15:21:54Z**
+
+授权范围:允许排空 8090 的 dev 网关并重启 `autovoice-dev-gateway` 恢复;**禁止操作生产服务**;
+无论断言成败都必须尝试恢复并核验 dev 就绪与生产健康。
+
+| 步骤 | 实测 |
+| --- | --- |
+| 前置(只读) | dev `live=200` / `ready=200`;生产 gateway/tts/skill-manager 均 `active` |
+| 进入排空 | `POST /health/drain` → `{"draining":true,"inFlight":0}` |
+| 排空后 `live` | **200**(存活不受排空影响,与就绪正确分离) |
+| 排空后 `ready` | **503**,正文 `{"status":"DOWN","draining":true,"inFlight":0,"components":"config=READY, gateway=READY, tts=READY, skill-registry=READY, offline-engine=READY"}`(排空时仍保留组件状态供排障) |
+| 恢复 | `systemctl restart autovoice-dev-gateway` → `rc=0` |
+| **恢复耗时** | **6 秒**(restart → `ready=200`) |
+| dev 最终态 | `ready` 200、`draining=false`、components 全 READY、服务 `active`、8090 监听中 |
+| **生产核验(只读)** | gateway/tts/skill-manager 均 `active`;8080/8082/8083 监听数 **3**;**未做任何操作** |
+
+**判定**:通过。就绪语义正确(排空 → 不就绪但存活,符合负载均衡摘流量的预期);
+排空状态在内存、重启即清除(与 `docs/recovery-objectives.md` 的"重启丢失内存态"一致)。
+
+> 观察:恢复耗时 6 秒是"restart → ready 200";完整 RTO 还需加故障发现与客户端重连
+> (见 A5 场景实测),不得以 6 秒作为对外 RTO 承诺。
 
 ### A4 回滚演练 **[待批准]**
 
@@ -83,6 +103,23 @@ autovoice-dev-gateway is ready (/health/ready -> 200, port 8090).  ← health �
 > 用户指示:回滚、杀进程、主机重启**另行批准**;**dev 与生产同机**,不当作只影响 dev。
 
 ### A6 离线 SDK 演练 / 多进程实测 **[待批准]**
+
+## 记录汇总
+
+| 项 | 日期 | 实测值/结果 | 判定 |
+| --- | --- | --- | --- |
+| 0.3 健康端点 | 2026-09-12 | dev live/ready 均 200 | ✅ |
+| 0.4 部署元数据 | 2026-09-12 | metadata + checksums 存在;摘要与运行 jar 一致 | ✅ |
+| 0.5 后端变体记录 | — | 仍为 unknown(workflow 修复待发布) | ⏳ |
+| 0.6 自动部署链路 | 2026-09-12 | workflow_run success ×3;SHA 与摘要均一致 | ✅ |
+| A1 探测语义 | 2026-09-12 | 发现 components 为空 → 已修(PR #100/#101)并复验全 READY | ✅ |
+| A2 排空 | 2026-09-12T15:21:54Z | ready 503 / live 200;**恢复 6 秒**;生产未受影响 | ✅ |
+| A3 部署判据 | 2026-09-12 | 日志证实 gateway 用 `/health/ready -> 200` | ✅ |
+| A4 回滚演练 | — | 待批准 | ⏳ |
+| A5 进程重启 / kill -9 / 主机重启 / 账本可读性 / 断网重连 | — | 待批准 | ⏳ |
+| A6 离线演练 / 多进程实测 | — | 待批准 | ⏳ |
+| B 真机矩阵 | — | 待安排 | ⏳ |
+| C 容量与费用 | — | 待提供参数 | ⏳ |
 
 ## B. 真机侧 **[待验收]**（保持未标记,待你安排）
 
