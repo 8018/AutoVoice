@@ -12,6 +12,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.BiFunction;
@@ -37,6 +39,9 @@ final class NavigationToolFacade {
     private static final Pattern LOCATION = Pattern.compile(
             "(?<![0-9.])((?:7[3-9]|[89]\\d|1[0-3]\\d|140)(?:\\.\\d+)?)\\s*,\\s*"
                     + "((?:[0-5]?\\d)(?:\\.\\d+)?)(?![0-9.])");
+    /** 个人开发者基础额度通常只有 3 QPS；留出少量调度余量，避免边界抖动。 */
+    private static final long GEO_MIN_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(400);
+    private static final long GEO_QPS_BACKOFF_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     static final FunctionTool TOOL = new FunctionTool(NAME,
             "一次解析一个或多个地点，返回附近优先、可直接用于 navigate 的候选坐标",
@@ -50,14 +55,25 @@ final class NavigationToolFacade {
 
     private final Map<String, FunctionTool> tools;
     private final BiFunction<String, String, String> caller;
+    private final LongSupplier nanoTime;
+    private final Sleeper sleeper;
+    private final Object geoRateLock = new Object();
+    private long nextGeoCallNanos;
 
     NavigationToolFacade(McpToolSession session) {
         this(session.tools(), session::callTool);
     }
 
     NavigationToolFacade(Map<String, FunctionTool> tools, BiFunction<String, String, String> caller) {
+        this(tools, caller, System::nanoTime, Thread::sleep);
+    }
+
+    NavigationToolFacade(Map<String, FunctionTool> tools, BiFunction<String, String, String> caller,
+                         LongSupplier nanoTime, Sleeper sleeper) {
         this.tools = tools;
         this.caller = caller;
+        this.nanoTime = nanoTime;
+        this.sleeper = sleeper;
     }
 
     static boolean supports(McpToolSession session) {
@@ -207,7 +223,7 @@ final class NavigationToolFacade {
             geoValues.put("city", city);
             try {
                 List<Candidate> points = candidates(
-                        caller.apply(geo.name(), arguments(geo, geoValues)), 1);
+                        callGeocode(geo, arguments(geo, geoValues)), 1);
                 if (!points.isEmpty()) {
                     Candidate point = points.getFirst();
                     geocoded.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
@@ -223,6 +239,56 @@ final class NavigationToolFacade {
         List<Candidate> result = broadAirportQuery
                 ? mergeAirportCandidates(direct, geocoded) : geocoded;
         return toJson(broadAirportQuery ? rankAirports(result, location) : result, effectiveLimit);
+    }
+
+    /**
+     * 地理编码是整个 Skill 会话共享的受限能力。所有并发导航请求共用一个节流门；只有高德明确
+     * 返回 QPS 超限时才在本请求内退避一次，网络错误和业务错误仍立即失败。
+     */
+    private String callGeocode(FunctionTool geo, String argumentsJson) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            awaitGeoSlot();
+            try {
+                return caller.apply(geo.name(), argumentsJson);
+            } catch (McpToolException error) {
+                if (attempt > 0 || !isQpsExceeded(error)) throw error;
+                deferGeoCalls(GEO_QPS_BACKOFF_NANOS);
+                LOG.warn("AMap geocode QPS exceeded; retrying once after backoff");
+            }
+        }
+        throw new IllegalStateException("unreachable");
+    }
+
+    private void awaitGeoSlot() {
+        long waitNanos;
+        synchronized (geoRateLock) {
+            long now = nanoTime.getAsLong();
+            waitNanos = Math.max(0, nextGeoCallNanos - now);
+            nextGeoCallNanos = Math.max(now, nextGeoCallNanos) + GEO_MIN_INTERVAL_NANOS;
+        }
+        sleepNanos(waitNanos);
+    }
+
+    private void deferGeoCalls(long delayNanos) {
+        synchronized (geoRateLock) {
+            nextGeoCallNanos = Math.max(nextGeoCallNanos, nanoTime.getAsLong() + delayNanos);
+        }
+    }
+
+    private void sleepNanos(long nanos) {
+        if (nanos <= 0) return;
+        try {
+            sleeper.sleep(Math.max(1, TimeUnit.NANOSECONDS.toMillis(nanos)));
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new McpToolException("geocode rate-limit wait interrupted", error);
+        }
+    }
+
+    private static boolean isQpsExceeded(McpToolException error) {
+        String message = error.getMessage();
+        return message != null && (message.contains("CUQPS_HAS_EXCEEDED_THE_LIMIT")
+                || message.contains("QPS_HAS_EXCEEDED_THE_LIMIT"));
     }
 
     private String reverseGeocodeCity(String location) {
@@ -459,5 +525,10 @@ final class NavigationToolFacade {
     }
 
     private record Candidate(String name, double lat, double lon, String address) {
+    }
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
     }
 }
