@@ -28,6 +28,12 @@ final class NavigationToolFacade {
             "maps_text_search", "maps_around_search", "maps_regeocode", "maps_geo");
     private static final Pattern BROAD_AIRPORT_QUERY = Pattern.compile(
             "^(?:附近的?|周边的?|最近的?)?(?:国际)?(?:机场|飞机场)$");
+    private static final Pattern NEARBY_QUERY = Pattern.compile(
+            ".*(?:附近|周边|最近|就近|旁边|离我近|离当前位置近).*", Pattern.CASE_INSENSITIVE);
+    private static final Pattern GENERIC_NEARBY_CATEGORY = Pattern.compile(
+            "^(?:找|去|导航去|我要去)?(?:一家|一个|附近的?|周边的?|最近的?)?"
+                    + "(?:咖啡(?:店|馆)?|加油站|充电站|停车场|洗车店|维修店|医院|药店|银行|"
+                    + "厕所|卫生间|餐厅|饭店|酒店|宾馆|商场|超市|便利店|景区|公园|机场|飞机场)$");
     private static final Pattern LOCATION = Pattern.compile(
             "(?<![0-9.])((?:7[3-9]|[89]\\d|1[0-3]\\d|140)(?:\\.\\d+)?)\\s*,\\s*"
                     + "((?:[0-5]?\\d)(?:\\.\\d+)?)(?![0-9.])");
@@ -98,6 +104,7 @@ final class NavigationToolFacade {
         int effectiveLimit = broadAirportQuery ? Math.max(limit, 5) : limit;
         int recallLimit = broadAirportQuery ? 20 : effectiveLimit;
         String searchName = !location.isBlank() && tools.containsKey("maps_around_search")
+                && shouldSearchAround(query)
                 ? "maps_around_search" : "maps_text_search";
         FunctionTool search = tools.get(searchName);
         if (search == null) search = tools.get("maps_text_search");
@@ -129,6 +136,22 @@ final class NavigationToolFacade {
         }
         List<Candidate> direct = candidates(raw, recallLimit);
         List<Place> places = places(raw, recallLimit);
+
+        // 周边搜索适合“附近咖啡店”这类相对目的地，但某些返回只含名称/地址而没有坐标。
+        // 先用文本搜索补一次可直接导航的坐标，避免为每个候选消耗 maps_geo 配额。
+        // 这也是 named/跨城地点不应一律以车辆当前位置做周边搜索的兜底。
+        if (direct.isEmpty() && "maps_around_search".equals(search.name())
+                && tools.containsKey("maps_text_search")) {
+            FunctionTool textSearch = tools.get("maps_text_search");
+            try {
+                String textRaw = caller.apply(textSearch.name(), arguments(textSearch, values));
+                direct = candidates(textRaw, recallLimit);
+                places = mergePlaces(places(textRaw, recallLimit), places, recallLimit);
+            } catch (McpToolException error) {
+                LOG.warn("AMap coordinate enrichment through text search failed; keeping around results: {}",
+                        error.getMessage());
+            }
+        }
 
         if (broadAirportQuery && !location.isBlank() && tools.containsKey("maps_text_search")) {
             String resolvedCity = city.isBlank() ? reverseGeocodeCity(location) : city;
@@ -276,6 +299,13 @@ final class NavigationToolFacade {
 
     private static boolean isRootAirport(String name) {
         return compact(name).endsWith("机场");
+    }
+
+    private static boolean shouldSearchAround(String query) {
+        String value = compact(query);
+        return BROAD_AIRPORT_QUERY.matcher(value).matches()
+                || NEARBY_QUERY.matcher(value).matches()
+                || GENERIC_NEARBY_CATEGORY.matcher(value).matches();
     }
 
     private static String compact(String value) {

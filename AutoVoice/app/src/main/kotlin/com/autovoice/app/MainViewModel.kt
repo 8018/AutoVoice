@@ -201,6 +201,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var navigationDialogTimeoutJob: Job? = null
 
+    /**
+     * 用户主动关闭候选框时，同时结束本次导航追问窗口。
+     * 候选状态仍由 [NavigationSession] 统一清理并上报撤销，避免只隐藏 UI。
+     */
+    fun dismissNavigationCandidates() {
+        val interactionId = engine.conversation.snapshot.value.interactionId
+        clearNavigationCandidates()
+        interactionId?.let(engine::onFollowUpExpired)
+    }
+
+    private fun clearNavigationCandidates() {
+        navigationDialogTimeoutJob?.cancel()
+        navigationDialogTimeoutJob = null
+        navigationSession.cancelSelection()
+    }
+
+    private fun onFollowUpExpired(interactionId: String) {
+        // RecordingCoordinator 的旧定时器可能在新一轮开始后才恢复执行；旧轮不能关闭
+        // 新一轮候选框。当前轮的延时聆听结束时，候选框与服务端选择态一起撤销。
+        if (engine.conversation.snapshot.value.interactionId != interactionId) return
+        clearNavigationCandidates()
+        engine.onFollowUpExpired(interactionId)
+    }
+
     init {
         // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
         // Task 58：模式持久化（SharedPreferences）——重启/安装后保持用户上次选择；
@@ -387,7 +411,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun appendRealtimeChatAudio(block: ByteArray) = engine.appendRealtimeChatAudio(block)
             override fun startRealtimeChat() = engine.startRealtimeChat()
             override fun finishRealtimeChat() = engine.finishRealtimeChat()
-            override fun onFollowUpExpired(interactionId: String) = engine.onFollowUpExpired(interactionId)
+            override fun onFollowUpExpired(interactionId: String) =
+                this@MainViewModel.onFollowUpExpired(interactionId)
             override fun resetDialogue() = engine.resetDialogue()
         },
         scope = viewModelScope,
