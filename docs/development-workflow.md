@@ -34,6 +34,10 @@ codex/feature-* ──PR──▶ dev ──(发布 train PR)──▶ main ─�
 | .env | /etc/autovoice/.env | /etc/autovoice-dev/.env |
 | 状态(遥测/缓存/Skill DB/离线 work) | 独立 | 独立 |
 
+dev 网关的 `SKILL_MANAGER_URL` 必须是 `http://127.0.0.1:8093`。初始化 dev
+环境时只能从生产 `.env` 复制供应商密钥和令牌，不能整文件覆盖，否则会把内部路由带成
+8083，形成 dev 静默读取生产 Skill/Prompt 的跨环境依赖。发布脚本会在重启前拒绝该配置。
+
 部署细节(初始化、密钥配置、运维命令)见 `AutoVoiceServer/deploy/README.md`。
 
 ## CI 与部署触发

@@ -20,7 +20,7 @@ work 目录独立。安全组需放行入方向 TCP 8090（手机测试）。
 ```bash
 # 本机：把本目录脚本与 unit 文件上传服务器（或 clone 仓库后进入 AutoVoiceServer/deploy）
 bash init-dev.sh
-vi /etc/autovoice-dev/.env          # 密钥从 /etc/autovoice/.env 复制；端口类变量已预置
+vi /etc/autovoice-dev/.env          # 只复制密钥；端口、URL、目录必须保留 dev 模板值
 systemctl enable --now autovoice-dev-gateway autovoice-dev-tts autovoice-dev-skill-manager
 systemctl status autovoice-dev-gateway
 ```
@@ -38,6 +38,10 @@ systemctl status autovoice-dev-gateway
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
 Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
 `deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
+脚本会在替换 jar 前校验
+`SKILL_MANAGER_URL=http://127.0.0.1:8093`；若误指向生产 8083，发布立即失败，
+不会重启任何服务。dev Skill 配置需通过 8093 管理面板独立维护；首次需要同款 Skill 时，
+可从生产只读导出后导入 dev，后续修改互不影响。
 
 ### 部署密钥（为本机生成 + 安装到服务器）
 
