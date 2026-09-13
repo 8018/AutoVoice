@@ -67,6 +67,51 @@ class NavigationToolFacadeTest {
     }
 
     @Test
+    void namedOrRemoteFuzzyPlaceUsesTextSearchInsteadOfVehicleCenteredSearch() throws Exception {
+        List<String> calls = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            calls.add(name);
+            if (!name.equals("maps_text_search")) {
+                throw new AssertionError("named remote place must not be searched around the vehicle: " + name);
+            }
+            assertTrue(args.contains("保定有大旗杆的地方"));
+            return "{\"pois\":[{\"name\":\"保定爱情广场\",\"address\":\"竞秀区\","
+                    + "\"location\":\"115.4696,38.8654\"}]}";
+        });
+
+        JsonNode candidate = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"保定有大旗杆的地方\"],\"location\":\"104.06,30.65\"}"))
+                .path("destinations").get(0).path("candidates").get(0);
+
+        assertEquals(List.of("maps_text_search"), calls);
+        assertEquals("保定爱情广场", candidate.path("poiname").asText());
+        assertEquals(38.8654, candidate.path("lat").asDouble(), 0.0001);
+    }
+
+    @Test
+    void coordinateLessAroundSearchFallsBackToTextSearchBeforeGeo() throws Exception {
+        List<String> calls = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            calls.add(name);
+            return switch (name) {
+                case "maps_around_search" ->
+                        "{\"pois\":[{\"name\":\"附近咖啡店\",\"address\":\"人民路\"}]}";
+                case "maps_text_search" ->
+                        "{\"pois\":[{\"name\":\"附近咖啡店\",\"address\":\"人民路\","
+                                + "\"location\":\"104.07,30.67\"}]}";
+                default -> throw new AssertionError("geocode must not be needed: " + name);
+            };
+        });
+
+        JsonNode candidate = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"咖啡店\"],\"location\":\"104.06,30.65\"}"))
+                .path("destinations").get(0).path("candidates").get(0);
+
+        assertEquals(List.of("maps_around_search", "maps_text_search"), calls);
+        assertEquals("附近咖啡店", candidate.path("poiname").asText());
+    }
+
+    @Test
     void geocodesSearchResultsMissingCoordinates() throws Exception {
         Map<String, FunctionTool> tools = tools();
         NavigationToolFacade facade = new NavigationToolFacade(tools, (name, args) -> {
@@ -127,17 +172,17 @@ class NavigationToolFacadeTest {
             return switch (name) {
                 case "maps_around_search" -> throw new McpToolException("around temporarily unavailable");
                 case "maps_text_search" ->
-                        "{\"pois\":[{\"name\":\"天府机场\",\"address\":\"空港大道\"}]}";
+                        "{\"pois\":[{\"name\":\"附近咖啡店\",\"address\":\"人民路\"}]}";
                 case "maps_geo" -> "{\"results\":[{\"location\":\"104.441,30.319\"}]}";
                 default -> throw new AssertionError("unexpected call: " + name);
             };
         });
 
         JsonNode candidates = JSON.readTree(facade.resolve(
-                "{\"destinations\":[\"天府机场\"],\"location\":\"104.0665,30.5728\",\"city\":\"成都\"}"))
+                "{\"destinations\":[\"咖啡店\"],\"location\":\"104.0665,30.5728\",\"city\":\"成都\"}"))
                 .path("destinations").get(0).path("candidates");
 
-        assertEquals("天府机场", candidates.get(0).path("poiname").asText());
+        assertEquals("附近咖啡店", candidates.get(0).path("poiname").asText());
         assertEquals(List.of("maps_around_search", "maps_text_search", "maps_geo"), calls);
     }
 
