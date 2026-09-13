@@ -9,29 +9,19 @@ plugins {
 
 // 讯飞离线唤醒/命令词共享的 AIKit 授权凭据：从 local.properties（gitignored）注入。
 // 未配置时为空字符串 → 讯飞生产候选不可用；仅显式配置 fake-cmd 才使用 Demo 结果。
-val xfyunProps = Properties().apply {
+val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) FileInputStream(f).use { load(it) }
 }
-fun xfyunProp(key: String): String = "\"" + (xfyunProps.getProperty(key, "")) + "\""
+fun xfyunProp(key: String): String = "\"" + (localProps.getProperty(key, "")) + "\""
+fun quoted(value: String): String = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+fun gatewayAuthToken(): String = System.getenv("AUTOVOICE_GATEWAY_AUTH_TOKEN")
+    ?: localProps.getProperty("gateway.authToken", "")
 
-// 构建环境（dev 分支工作流）：dev 分支编译的 APK 默认连 dev 网关，其余默认连生产。
-// CI 通过 AUTOVOICE_APP_ENV 显式指定（push dev → dev / push main → prod）；
-// 本地构建未指定时按当前 git 分支推断。
-fun defaultDemoMode(): String {
-    val fromEnv = System.getenv("AUTOVOICE_APP_ENV")
-    if (fromEnv == "dev") return "demo-dev"
-    if (fromEnv == "prod") return "demo-full"
-    val branch = runCatching {
-        ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD")
-            .directory(rootProject.projectDir)
-            .start()
-            .inputStream
-            .bufferedReader()
-            .use { it.readText().trim() }
-    }.getOrDefault("")
-    return if (branch == "dev") "demo-dev" else "demo-full"
-}
+// 本地 debug 默认属于开发环境；CI 可为 main 明确生成连接生产的验收 APK。
+// release 无条件绑定生产，不能被环境变量切到 dev。
+fun debugOnlineConfigAsset(): String =
+    if (System.getenv("AUTOVOICE_APP_ENV") == "prod") "demo-full.json" else "demo-dev.json"
 
 android {
     namespace = "com.autovoice.app"
@@ -51,9 +41,9 @@ android {
         buildConfigField("String", "XFYUN_APPID", xfyunProp("xfyun.appid"))
         buildConfigField("String", "XFYUN_API_KEY", xfyunProp("xfyun.apiKey"))
         buildConfigField("String", "XFYUN_API_SECRET", xfyunProp("xfyun.apiSecret"))
+        // 接入令牌不进入配置资产；本地从 local.properties 注入，CI/发行从环境变量注入。
+        buildConfigField("String", "GATEWAY_AUTH_TOKEN", quoted(gatewayAuthToken()))
 
-        // 首次启动默认模式：dev 分支构建 → demo-dev；其余 → demo-full（设置区仍可切换）
-        buildConfigField("String", "DEFAULT_DEMO_MODE", "\"" + defaultDemoMode() + "\"")
     }
 
     compileOptions {
@@ -70,11 +60,14 @@ android {
     buildTypes {
         getByName("debug") {
             enableUnitTestCoverage = true
+            // 环境由构建类型绑定，手机端不提供服务器切换入口。
+            buildConfigField("String", "ONLINE_CONFIG_ASSET", "\"${debugOnlineConfigAsset()}\"")
             // D03c:debug 保留明文 ws:// 例外(局域网/dev 栈联调)
             manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
         getByName("release") {
             isMinifyEnabled = false
+            buildConfigField("String", "ONLINE_CONFIG_ASSET", "\"demo-full.json\"")
             // D03c:发布构建禁用非必要明文,生产走 wss://
             manifestPlaceholders["usesCleartextTraffic"] = "false"
         }

@@ -11,7 +11,7 @@ codex/feature-* ──PR──▶ dev ──(发布 train PR)──▶ main ─�
 ```
 
 1. **日常开发**:feature 分支(`codex/*`)→ PR 目标 `dev` → CI 全绿 → 合并。
-   合并后 dev 栈自动部署,手机 app 切 `demo-dev` 模式即可联调。
+   合并后 dev 栈自动部署；安装 debug APK 即连接 dev，无需在手机上切换服务器。
 2. **发布**:一批功能在 dev 验证稳定后,从 `dev` 提一个 PR 到 `main`(发布 train)。
    合并后走既有生产自动部署,流程不变。
 3. **hotfix**:紧急修复直接 `codex/fix-*` → PR 到 `main`;合并后立即以
@@ -45,14 +45,15 @@ codex/feature-* ──PR──▶ dev ──(发布 train PR)──▶ main ─�
 
 ## Android 连 dev
 
-构建期即绑定环境:dev 分支编译的 APK 首次启动默认 `demo-dev` 模式,连
-`ws://47.94.4.204:8090/ws`;main/PR 编译默认 `demo-full`(生产)。CI 按分支
-注入 `AUTOVOICE_APP_ENV`,本地构建按当前 git 分支推断(app/build.gradle.kts)。
-设置区仍可手动切换到 `demo-full` / `demo-offline` / `demo-dev`。
+构建期即绑定环境:本地 `debug` APK 默认加载 `demo-dev.json`,连接
+`ws://47.94.4.204:8090/ws`;CI 对 dev 分支及目标为 dev 的 PR 同样固定为 dev，
+main 验收构建固定为生产。`release` APK 无条件加载 `demo-full.json`,连接生产。
+手机设置区只保留“在线 / 离线”功能模式,不提供 dev/生产服务器切换入口。
 
-dev 网关默认不启用鉴权(`AUTOVOICE_GATEWAY_AUTH_ENABLED` 默认 false),因此
-demo-dev.json 的 `authToken` 为空;若 dev 栈开启鉴权做多设备测试,本机改该
-字段即可(勿提交真实 token)。
+配置资产不保存接入令牌；当前 dev 验收环境已启用网关鉴权。开发机在
+`AutoVoice/local.properties` 配置
+`gateway.authToken=<token>`；CI/发行构建通过 `AUTOVOICE_GATEWAY_AUTH_TOKEN` 注入。
+dev 与生产使用不同令牌时，由各自构建环境提供，手机端不可切换。
 
 ## TLS 与明文策略(D03c)
 
