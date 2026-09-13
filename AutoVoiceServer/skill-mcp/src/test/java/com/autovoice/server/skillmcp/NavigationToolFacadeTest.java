@@ -9,7 +9,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -205,6 +207,55 @@ class NavigationToolFacadeTest {
 
         assertEquals(1, candidates.size());
         assertEquals("好候选", candidates.get(0).path("poiname").asText());
+    }
+
+    @Test
+    void spacesFallbackGeocodesAcrossOneSharedFacade() throws Exception {
+        AtomicLong now = new AtomicLong();
+        List<Long> sleeps = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_text_search")) {
+                return "{\"pois\":[{\"name\":\"候选一\"},{\"name\":\"候选二\"}]}";
+            }
+            return "{\"geocodes\":[{\"location\":\"115.4696,38.8654\"}]}";
+        }, now::get, millis -> {
+            sleeps.add(millis);
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(millis));
+        });
+
+        JsonNode candidates = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"模糊地点\"],\"city\":\"保定\",\"limit\":2}"))
+                .path("destinations").get(0).path("candidates");
+
+        assertEquals(2, candidates.size());
+        assertEquals(List.of(400L), sleeps);
+    }
+
+    @Test
+    void retriesOnlyExplicitQpsFailureAfterBackoff() throws Exception {
+        AtomicLong now = new AtomicLong();
+        List<Long> sleeps = new ArrayList<>();
+        AtomicInteger geoCalls = new AtomicInteger();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_text_search")) {
+                return "{\"pois\":[{\"name\":\"爱情广场\",\"address\":\"竞秀区\"}]}";
+            }
+            if (geoCalls.getAndIncrement() == 0) {
+                throw new McpToolException("API 调用失败：CUQPS_HAS_EXCEEDED_THE_LIMIT");
+            }
+            return "{\"geocodes\":[{\"location\":\"115.4696,38.8654\"}]}";
+        }, now::get, millis -> {
+            sleeps.add(millis);
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(millis));
+        });
+
+        JsonNode candidates = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"爱情广场\"],\"city\":\"保定\"}"))
+                .path("destinations").get(0).path("candidates");
+
+        assertEquals(1, candidates.size());
+        assertEquals(2, geoCalls.get());
+        assertEquals(List.of(1000L), sleeps);
     }
 
     @Test
