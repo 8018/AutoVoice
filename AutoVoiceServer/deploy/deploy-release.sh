@@ -43,6 +43,18 @@ case "$environment" in
     ;;
 esac
 
+# dev 与生产同机时，错误的内部 URL 不会表现为连接失败，而会静默读取生产数据。
+# 发布前显式拒绝这种跨环境依赖，避免“dev 三服务都健康”掩盖配置串线。
+if [[ "$environment" == "dev" ]]; then
+  dev_env_file=/etc/autovoice-dev/.env
+  expected_skill_manager_url='SKILL_MANAGER_URL=http://127.0.0.1:8093'
+  if [[ ! -r "$dev_env_file" ]] || ! grep -Fqx "$expected_skill_manager_url" "$dev_env_file"; then
+    echo "Dev deployment refused: $dev_env_file must contain exactly:" >&2
+    echo "  $expected_skill_manager_url" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$staging_dir" != "$release_root/incoming/$release_sha" ]]; then
   echo "Unexpected staging directory: $staging_dir" >&2
   exit 1
