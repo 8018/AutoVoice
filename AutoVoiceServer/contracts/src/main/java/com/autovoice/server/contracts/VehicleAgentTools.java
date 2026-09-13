@@ -31,7 +31,8 @@ public final class VehicleAgentTools {
                 new FunctionTool(CAR_CONTROL, "控制空调或车窗", CAR_SCHEMA,
                         ToolExecutionTraits.APPROVED_COMMIT),
                 new FunctionTool(NAVIGATE,
-                        "开始导航；最终目的地填主字段，之前各站按顺序填 waypoints", NAVIGATE_SCHEMA,
+                        "打开导航页面；多地点时仅展示路线预览，最终目的地填主字段，之前各站按顺序填 waypoints",
+                        NAVIGATE_SCHEMA,
                         ToolExecutionTraits.APPROVED_COMMIT));
     }
 }

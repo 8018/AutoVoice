@@ -556,7 +556,9 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                 .anyMatch(t -> "resolve_navigation".equals(t.name()));
         if (hasResolver) {
             prompt += "\n单目的地导航必须先调用 resolve_navigation 展示候选；本轮不要自行选择候选，"
-                    + "也不要直接调用 navigate。用户下一轮明确说序号或名称后才开始导航。";
+                    + "也不要直接调用 navigate。用户下一轮明确说序号或名称后才开始导航。"
+                    + "多地点导航把所有地点按口述顺序放进一次 resolve_navigation；系统会为每站"
+                    + "选最优结果并直接打开路线预览，不询问候选、不自动开始导航。";
         }
         Object lat = ctx == null ? null : ctx.attrs().get("latitude");
         Object lon = ctx == null ? null : ctx.attrs().get("longitude");
