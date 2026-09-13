@@ -110,12 +110,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final SessionRegistry registry;
     /** D05a:输出准入后的导航候选提交点(默认 NONE,测试与旧装配不感知)。 */
     private final com.autovoice.server.contracts.NavigationDialog navigationDialog;
-    /** D07a:动作账本(独立 SQLite 业务库);默认 NONE,旧装配零变化。 */
-    private final com.autovoice.server.contracts.ActionLedger actionLedger;
     private final long safetyTimeoutMs;
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
-    private final GatewayDownlink downlink = new GatewayDownlink();
+    private final GatewayDownlink downlink;
 
     /** 接入网关（M1）：authEnabled=false → 裸连兼容（本地）；否则 hello 须携带合法 deviceId+authToken。 */
     private final boolean authEnabled;
@@ -166,8 +164,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** 每连接状态：pipeline / 会话 / 累积 PCM / 待下发决策事件。 */
     private final ConcurrentMap<WebSocketSession, ConnectionState> connections = new ConcurrentHashMap<>();
 
-    /** 重连重发幂等缓存：同一设备/会话 + utteranceId 只复用已完成结果，不重复执行语义。 */
-    private final ConcurrentMap<TurnKey, CachedTurn> completedTurns = new ConcurrentHashMap<>();
+    /** Short-lived duplicate marker. Duplicate turns are rejected; business replies are never replayed. */
+    private final ConcurrentMap<TurnKey, Long> completedTurns = new ConcurrentHashMap<>();
 
     /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）；鉴权关、连接上限 32。 */
     public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
@@ -221,19 +219,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                com.autovoice.server.contracts.NavigationDialog navigationDialog) {
         this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
                 authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
-                navigationDialog, com.autovoice.server.contracts.ActionLedger.NONE);
-    }
-
-    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
-                               OfflineCommandService offline, SessionRegistry registry,
-                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
-                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
-                               int maxAudioBytes, TelemetryRecorder recorder,
-                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
-                               com.autovoice.server.contracts.ActionLedger actionLedger) {
-        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
-                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
-                navigationDialog, actionLedger,
+                navigationDialog,
                 new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS),
                 DEFAULT_HELLO_DEADLINE_MS, DEFAULT_DRAIN_TIMEOUT_MS);
     }
@@ -244,12 +230,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                int maxAudioBytes, TelemetryRecorder recorder,
                                com.autovoice.server.contracts.NavigationDialog navigationDialog,
-                               com.autovoice.server.contracts.ActionLedger actionLedger,
                                com.autovoice.server.contracts.ConnectionQuota connectionQuota,
                                long helloDeadlineMs, long drainTimeoutMs) {
         this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
                 authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
-                navigationDialog, actionLedger, connectionQuota, helloDeadlineMs, drainTimeoutMs,
+                navigationDialog, connectionQuota, helloDeadlineMs, drainTimeoutMs,
                 DEFAULT_DOWNLINK_BUDGET_BYTES);
     }
 
@@ -259,12 +244,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                boolean authEnabled, Map<String, String> authDevices, int maxConnections,
                                int maxAudioBytes, TelemetryRecorder recorder,
                                com.autovoice.server.contracts.NavigationDialog navigationDialog,
-                               com.autovoice.server.contracts.ActionLedger actionLedger,
                                com.autovoice.server.contracts.ConnectionQuota connectionQuota,
                                long helloDeadlineMs, long drainTimeoutMs,
                                long downlinkBudgetBytes) {
         this.downlinkBudgetBytes = downlinkBudgetBytes < 1
                 ? DEFAULT_DOWNLINK_BUDGET_BYTES : downlinkBudgetBytes;
+        this.downlink = new GatewayDownlink((int) Math.min(Integer.MAX_VALUE,
+                this.downlinkBudgetBytes));
         this.drainTimeoutMs = drainTimeoutMs < 1 ? DEFAULT_DRAIN_TIMEOUT_MS : drainTimeoutMs;
         this.connectionQuota = connectionQuota == null
                 ? new com.autovoice.server.contracts.ConnectionQuota(DEFAULT_PER_DEVICE_CONNECTIONS)
@@ -284,8 +270,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         this.recorder = recorder;
         this.navigationDialog = navigationDialog == null
                 ? com.autovoice.server.contracts.NavigationDialog.NONE : navigationDialog;
-        this.actionLedger = actionLedger == null
-                ? com.autovoice.server.contracts.ActionLedger.NONE : actionLedger;
     }
 
     /** D05a:获准输出的候选回复在准入后提交(晚到/落败回复到不了这里)。 */
@@ -433,6 +417,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** 连接拆除：移除状态并关闭本连接串行工作线程（未决任务随线程池中断丢弃）。 */
     private void removeConnection(WebSocketSession session) {
         ConnectionState st = connections.remove(session);
+        downlink.release(session);
         if (st != null) {
             releaseConnection(st);
             activeConnections.decrementAndGet();
@@ -484,17 +469,29 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 downlink.closePolicy(session, "bad auth");
                 return;
             }
-            st.deviceId = deviceId;
-            // D10a:按设备主体重新配额(失败即拒绝:同一设备连接数超限)
-            if (!connectionQuota.tryAcquire(deviceId)) {
-                LOG.warn("per-device connection quota reached, rejecting device {}", deviceId);
-                downlink.sendError(session, st.ctx, "TOO_MANY_CONNECTIONS",
-                        "too many connections for this device", st.segmentId);
-                downlink.closePolicy(session, "per-device quota reached");
+            // A WebSocket connection has one authenticated principal for its whole lifetime.
+            // A second hello may be an idempotent retry, but must never switch the principal
+            // while retaining the first principal's SessionContext.
+            if (st.deviceId != null && !st.deviceId.equals(deviceId)) {
+                LOG.warn("principal switch denied for session {}", session.getId());
+                downlink.sendError(session, st.ctx, "PRINCIPAL_SWITCH_DENIED",
+                        "authenticated principal cannot change on an existing connection", st.segmentId);
+                downlink.closePolicy(session, "principal switch denied");
                 return;
             }
-            connectionQuota.release(st.quotaSubject == null ? "" : st.quotaSubject);
-            st.quotaSubject = deviceId;
+            // D10a:按设备主体重新配额(失败即拒绝:同一设备连接数超限)
+            if (st.deviceId == null) {
+                if (!connectionQuota.tryAcquire(deviceId)) {
+                    LOG.warn("per-device connection quota reached, rejecting device {}", deviceId);
+                    downlink.sendError(session, st.ctx, "TOO_MANY_CONNECTIONS",
+                            "too many connections for this device", st.segmentId);
+                    downlink.closePolicy(session, "per-device quota reached");
+                    return;
+                }
+                connectionQuota.release(st.quotaSubject == null ? "" : st.quotaSubject);
+                st.quotaSubject = deviceId;
+                st.deviceId = deviceId;
+            }
             LOG.info("authenticated device {} session {}", deviceId, session.getId());
         }
         String sessionState = "new"; // D15a:new | resumed | reset
@@ -722,37 +719,31 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             inFlightTurns.incrementAndGet(); // D12a:在途轮次计数(排空判定)
             inFlightStarted = true;
             TurnKey turnKey = new TurnKey(st.deviceId != null ? st.deviceId : ctx.sessionId(), utteranceId);
-            CachedTurn cached = completedTurns.get(turnKey);
-            if (cached != null && cached.expiresAtMs() > System.currentTimeMillis()) {
+            Long completedUntil = completedTurns.get(turnKey);
+            if (completedUntil != null && completedUntil > System.currentTimeMillis()) {
                 if (inputStream != null) inputStream.cancel();
-                // 流式首发的重放改成单帧 reply；结果携带完整音频，端侧仍走统一播放器。
                 if (ownedWork.outputPermit().allowsOutput()) {
-                    commitNavigationOnAdmit(ctx, cached.result());
-                    downlink.sendReply(session, cached.result(), segmentId);
+                    downlink.sendError(session, ctx, "DUPLICATE_TURN",
+                            "this turn has already completed and will not be replayed", segmentId);
                 }
                 return;
             }
-            if (cached != null) completedTurns.remove(turnKey, cached);
+            if (completedUntil != null) completedTurns.remove(turnKey, completedUntil);
             SegmentPipeline.SegmentResult result;
             try {
                 CompletableFuture<OnlineSpeechResult> onlineCandidate = null;
                 if (inputStream != null) {
                     try {
                         CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
-                        OnlineAsrSink fallbackAsr = asrSink(
-                                session, st, utteranceId, segmentId,
-                                ownedWork.outputPermit(), ownedWork.asrTrace());
-                        onlineCandidate = streamed.handle((value, error) -> {
-                            if (error == null) return CompletableFuture.completedFuture(value);
-                            ownedWork.asrTrace().onFailure(error);
-                            ownedWork.asrTrace().useBatch("streaming_finish_failed", error);
-                            LOG.warn("streaming ASR failed; retrying once with buffered PCM", error);
-                            return online.process(pcm, ctx, utteranceId,
-                                    OnlineAudioSink.NOOP, fallbackAsr);
-                        }).thenCompose(future -> future);
+                        streamed.whenComplete((value, error) -> {
+                            if (error != null) ownedWork.asrTrace().onFailure(error);
+                        });
+                        onlineCandidate = streamed;
                     }
                     catch (RuntimeException error) {
-                        LOG.warn("streaming ASR finish failed; batch fallback", error);
+                        ownedWork.asrTrace().onFailure(error);
+                        LOG.warn("streaming ASR finish failed; turn will not be replayed as batch", error);
+                        onlineCandidate = CompletableFuture.failedFuture(error);
                     }
                 }
                 result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
@@ -770,28 +761,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 return;
             }
             if (result.intent() != null && result.actionId() == null) {
-                // D07a:输出准入通过后签发稳定动作身份并落盘;缓存重放复用同一 actionId
-                String actionId = UUID.randomUUID().toString();
-                long nowMs = System.currentTimeMillis();
-                try {
-                    actionLedger.recordDispatch(new com.autovoice.server.contracts.ActionPlan(
-                            actionId, ctx.sessionId(), utteranceId,
-                            result.intent().domain(), result.intent().intent(),
-                            "utterance=" + utteranceId, nowMs,
-                            nowMs + com.autovoice.server.contracts.ActionPlan.DEFAULT_SUPPORT_WINDOW_MS));
-                    result = result.withActionId(actionId,
-                            nowMs + com.autovoice.server.contracts.ActionPlan.DEFAULT_SUPPORT_WINDOW_MS);
-                } catch (RuntimeException error) {
-                    // D14c(约束 2):执行前的账本/审计写入失败 → **拒绝该动作**(降级为不带
-                    // actionId 的回复,客户端因此不会执行);播报文本仍照常下发,用户不感知丢失。
-                    LOG.error("action ledger write failed; refusing action for utterance {}",
-                            utteranceId, error);
-                    result = result.withoutAction();
-                }
+                // Compatibility-only correlation ID for older clients. Current clients authorize
+                // execution from their current-turn gate; this ID is not persisted or replayed.
+                result = result.withActionId(UUID.randomUUID().toString(), 0L);
             }
-            CachedTurn completed = new CachedTurn(result, System.currentTimeMillis() + TURN_CACHE_TTL_MS);
-            completedTurns.put(turnKey, completed);
-            scheduler.schedule(() -> completedTurns.remove(turnKey, completed), TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
+            long completedUntilMs = System.currentTimeMillis() + TURN_CACHE_TTL_MS;
+            completedTurns.put(turnKey, completedUntilMs);
+            scheduler.schedule(() -> completedTurns.remove(turnKey, completedUntilMs),
+                    TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
             drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && ownedWork.outputPermit().allowsOutput()) {
                 commitNavigationOnAdmit(ctx, result);
@@ -942,7 +919,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                AsrTurnTrace asrTrace)
             implements ConnectionTurnCoordinator.WorkIdentity {}
 
-    private record CachedTurn(SegmentPipeline.SegmentResult result, long expiresAtMs) {}
 
     /**
      * tts_request：独立 TTS 链路（与识别/仲裁解耦，协议 v1.1 §4.5）——要求已握手；
@@ -1091,6 +1067,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     public void close() {
         for (ConnectionState st : connections.values()) {
             releaseConnection(st);
+            downlink.release(st.session);
         }
         connections.clear();
         completedTurns.clear();

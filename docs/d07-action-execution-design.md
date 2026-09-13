@@ -1,7 +1,11 @@
 # D07 动作执行边界设计提案(2026-09-12)
 
+> **已废止（2026-09-13）**：本提案曾实施，现已被
+> `docs/voice-interaction-simplification-review-2026-09-13.md` 取代。语音助手采用
+> “断线即本轮失败、不重放、不补执行”；本文仅保留为历史决策记录，不再代表当前实现。
+
 依据:`docs/decisions-2026-09-12-D05b-D07.md`(Neo 拍板)与
-`docs/production-development-plan.md` D07。状态:设计提案,待确认后实施。
+`docs/production-development-plan.md` D07。状态:历史提案（已废止）。
 
 ## 决策落点
 

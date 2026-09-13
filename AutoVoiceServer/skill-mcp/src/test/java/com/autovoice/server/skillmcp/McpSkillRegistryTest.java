@@ -179,7 +179,13 @@ class McpSkillRegistryTest {
 
     @Test
     void selectorCanDiscoverAndExecuteRealTool() throws Exception {
-        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
+        SkillConfig readOnly = new SkillConfig("a", "a", "d", mcpUrl, "", "", """
+                [{"name":"poi_search","enabled":true,"readOnly":true,
+                  "parallelSafe":true,"cacheSuccess":true},
+                 {"name":"route_plan","enabled":true,"readOnly":true,
+                  "parallelSafe":true,"cacheSuccess":true}]
+                """, true, 1L);
+        FakePlatformClient client = new FakePlatformClient(List.of(readOnly));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
                 new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
@@ -190,6 +196,19 @@ class McpSkillRegistryTest {
             String result = reg.callTool("mcp_tools_execute",
                     "{\"name\":\"poi_search\",\"arguments\":{}}");
             assertEquals("找到 1 个结果：西湖", result);
+        }
+    }
+
+    @Test
+    void selectorCannotBypassReadOnlyGateForUnknownTarget() throws Exception {
+        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            McpToolException error = assertThrows(McpToolException.class,
+                    () -> reg.callTool("mcp_tools_execute",
+                            "{\"name\":\"poi_search\",\"arguments\":{}}"));
+            assertTrue(error.getMessage().contains("not approved read-only"));
         }
     }
 

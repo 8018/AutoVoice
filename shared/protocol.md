@@ -115,7 +115,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
-| `actionId` | string（可选，D07a） | 动作身份：服务端在输出准入通过后签发并落盘（独立业务账本）；客户端执行入口凭此做幂等与最终准入。缓存重放复用同一 actionId |
+| `actionId` | string（可选，兼容字段） | 过渡期关联 ID；不得作为跨重连、跨重启补执行依据。当前客户端以本地 `turnId` 和当前轮状态做最终准入 |
 | `selectionId` | string | 非空=采用该列表;空=撤销(未显示/已关闭) |
 
 服务端语义:未采用的列表在"现代客户端"(audio_start 携带 `navigationSelectionId` 字段)
@@ -702,7 +702,8 @@ S2S 编译变体的结果阶段替换为：
 `choose_destination` carries a string slot `selectionId`. Each entry in its JSON `candidates`
 slot carries a unique `candidateId`. The server creates these identifiers, not the LLM.
 The Android client snapshots the visible `selectionId` at the start of each audio request and
-sends `audio_start.payload.navigationSelectionId`; retries reuse this snapshot. An empty string
+sends `audio_start.payload.navigationSelectionId`. A transport failure ends that turn; audio and
+its selection snapshot are not retransmitted. An empty string
 means no visible selection. An absent field is reserved for older clients.
 
 When resolving an ordinal or a name, the server checks the supplied list ID before consuming

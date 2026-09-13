@@ -35,7 +35,10 @@ public final class NavigationDialogService implements NavigationDialog {
 
     private final Clock clock;
     private final long ttlMs;
-    private final NavigationSelectionStore store;
+    /** 已下发但客户端尚未确认展示的候选。 */
+    private final NavigationSelectionStore pendingStore;
+    /** 客户端已经展示、允许后续语音选择的候选。 */
+    private final NavigationSelectionStore activeStore;
     private final NavigationSelectionPolicy policy;
 
     public NavigationDialogService() {
@@ -50,7 +53,8 @@ public final class NavigationDialogService implements NavigationDialog {
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
         if (ttlMs <= 0) throw new IllegalArgumentException("ttlMs must be positive");
         this.ttlMs = ttlMs;
-        this.store = new InMemoryNavigationSelectionStore(clock, capacity);
+        this.pendingStore = new InMemoryNavigationSelectionStore(clock, capacity);
+        this.activeStore = new InMemoryNavigationSelectionStore(clock, capacity);
         this.policy = new NavigationSelectionPolicy();
     }
 
@@ -59,6 +63,8 @@ public final class NavigationDialogService implements NavigationDialog {
         // 兼容组合:prepare + commit(历史调用方/测试语义不变)
         Reply prepared = prepare(context, reply);
         commit(context, prepared);
+        String selectionId = selectionId(prepared);
+        if (selectionId != null) adopt(context, selectionId);
         return prepared;
     }
 
@@ -109,8 +115,8 @@ public final class NavigationDialogService implements NavigationDialog {
             List<NavigationCandidate> parsed = parseCandidates(json, false);
             if (parsed.isEmpty()) return;
             long now = clock.millis();
-            store.put(sessionId, new PendingNavigationSelection(
-                    selectionId, parsed, now, now + ttlMs));
+            pendingStore.put(sessionId, new PendingNavigationSelection(
+                    selectionId, parsed, now, now + ttlMs, false));
         } catch (Exception ignored) {
             // 提交失败不影响已下发的回复;列表缺席表现为"选择已失效"
         }
@@ -120,42 +126,35 @@ public final class NavigationDialogService implements NavigationDialog {
     public void adopt(SessionContext context, String selectionId) {
         String sessionId = logicalSessionId(context);
         if (sessionId == null) return;
-        Optional<PendingNavigationSelection> current = store.find(sessionId);
-        if (current.isEmpty()) return;
-        PendingNavigationSelection selection = current.get();
-        boolean adopted;
         if (selectionId == null || selectionId.isBlank()) {
-            adopted = false; // 客户端关闭/未显示列表:撤销采用
-        } else if (!selection.selectionId().equals(selectionId)) {
-            return; // 过期的采用确认(列表已被更新):忽略
-        } else {
-            adopted = true;
+            pendingStore.find(sessionId).ifPresent(value -> pendingStore.remove(sessionId, value));
+            activeStore.find(sessionId).ifPresent(value -> activeStore.remove(sessionId, value));
+            return;
         }
-        if (selection.adopted() == adopted) return; // 幂等
-        store.put(sessionId, selection.withAdopted(adopted));
+        Optional<PendingNavigationSelection> pending = pendingStore.find(sessionId);
+        if (pending.isPresent() && pending.get().selectionId().equals(selectionId)) {
+            PendingNavigationSelection adopted = pending.get().withAdopted(true);
+            activeStore.put(sessionId, adopted);
+            pendingStore.remove(sessionId, pending.get());
+            return;
+        }
+        // 已采用列表的重复确认是幂等操作；其他 selectionId 属于迟到确认，直接忽略。
     }
 
     @Override
     public boolean hasPending(SessionContext context) {
         String sessionId = logicalSessionId(context);
-        return sessionId != null && store.find(sessionId).isPresent();
+        return sessionId != null && (pendingStore.find(sessionId).isPresent()
+                || activeStore.find(sessionId).isPresent());
     }
 
     @Override
     public Optional<Reply> resolve(SessionContext context, String transcript) {
         if (transcript == null || transcript.isBlank()) return Optional.empty();
         String sessionId = logicalSessionId(context);
-        Optional<PendingNavigationSelection> current = sessionId == null
-                ? Optional.empty() : store.find(sessionId);
-        // D05b:现代客户端(audio_start 携带 navigationSelectionId)且列表未被采用 →
-        // 不激活;序号回答给"已失效"提示,地址/名称类交给模型兜底
-        if (current.isPresent() && hasModernSelectionId(context) && !current.get().adopted()) {
-            return policy.isOrdinalAnswer(transcript)
-                    ? Optional.of(Reply.ofText("地点选择已失效，请重新搜索"))
-                    : Optional.empty();
-        }
+        Optional<PendingNavigationSelection> current = activeSelection(context, sessionId);
         if (current.isEmpty()) {
-            if (hasModernSelectionId(context) && policy.isOrdinalAnswer(transcript)) {
+            if (hasSelectionField(context) && policy.isOrdinalAnswer(transcript)) {
                 return Optional.of(Reply.ofText("地点选择已失效，请重新搜索"));
             }
             return Optional.empty();
@@ -170,7 +169,7 @@ public final class NavigationDialogService implements NavigationDialog {
             case AMBIGUOUS -> Optional.of(
                     Reply.ofText("有多个相似地点，请说第几个或更完整的地址"));
             case FRESH_SEARCH -> {
-                store.remove(sessionId, selection);
+                removeSelection(sessionId, selection);
                 yield Optional.empty();
             }
             case CANCEL -> Optional.of(cancel(context, sessionId, selection, transcript));
@@ -183,7 +182,7 @@ public final class NavigationDialogService implements NavigationDialog {
         if (!matchesSelection(context, selection)) {
             return Reply.ofText("地点列表已更新，请重新搜索");
         }
-        if (!store.remove(sessionId, selection)) {
+        if (!removeSelection(sessionId, selection)) {
             return Reply.ofText("地点列表已更新或失效，请重新搜索");
         }
         Intent intent = Intent.of("1.0", DOMAIN, CANCEL_INTENT,
@@ -194,7 +193,7 @@ public final class NavigationDialogService implements NavigationDialog {
 
     private Reply select(SessionContext context, String sessionId,
                          PendingNavigationSelection selection, NavigationCandidate candidate) {
-        if (!matchesSelection(context, selection) || !store.remove(sessionId, selection)) {
+        if (!matchesSelection(context, selection) || !removeSelection(sessionId, selection)) {
             return Reply.ofText("地点列表已更新或失效，请重新搜索");
         }
         Map<String, SlotValue> slots = new LinkedHashMap<>();
@@ -215,9 +214,31 @@ public final class NavigationDialogService implements NavigationDialog {
         return id == null || selection.selectionId().equals(id);
     }
 
-    private static boolean hasModernSelectionId(SessionContext context) {
+    private Optional<PendingNavigationSelection> activeSelection(
+            SessionContext context, String sessionId) {
+        if (sessionId == null) return Optional.empty();
         Object id = context == null ? null : context.attrs().get("navigationSelectionId");
-        return id instanceof String value && !value.isBlank();
+        if (id instanceof String selectionId) {
+            if (selectionId.isBlank()) return Optional.empty();
+            return activeStore.find(sessionId)
+                    .filter(value -> value.selectionId().equals(selectionId));
+        }
+        // 旧客户端没有采用确认字段：优先使用已采用列表，必要时兼容提交后的候选。
+        return activeStore.find(sessionId).or(() -> pendingStore.find(sessionId));
+    }
+
+    private static boolean hasSelectionField(SessionContext context) {
+        return context != null && context.attrs().containsKey("navigationSelectionId");
+    }
+
+    private boolean removeSelection(String sessionId, PendingNavigationSelection selection) {
+        return activeStore.remove(sessionId, selection) || pendingStore.remove(sessionId, selection);
+    }
+
+    private static String selectionId(Reply reply) {
+        if (reply == null || reply.intent() == null || reply.intent().slots() == null) return null;
+        SlotValue value = reply.intent().slots().get("selectionId");
+        return value != null && value.value() instanceof String id && !id.isBlank() ? id : null;
     }
 
     private static String logicalSessionId(SessionContext context) {

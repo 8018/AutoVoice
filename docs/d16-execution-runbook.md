@@ -68,8 +68,8 @@ journalctl -u autovoice-dev-gateway -n 50 --no-pager | grep -i "ready\|draining"
 | 进程重启 | `systemctl restart autovoice-dev-gateway` | 从发起到 `ready=200` 的实际秒数;客户端重连得到的 `sessionState` |
 | 进程 kill -9 | `kill -9 $(systemctl show -p MainPID --value autovoice-dev-gateway)` | 崩溃后是否自动重启;恢复秒数;日志有无半写记录 |
 | 主机重启 | `reboot`(需你确认时机) | 服务自启顺序;依赖就绪;数据完整性 |
-| 账本可读性 | 重启后:客户端重发窗口内旧 actionId | 是否幂等(不重复执行) |
-| 断网重连 | 手机切飞行模式再恢复 | 重连耗时;`resumed` 是否保留候选列表 |
+| 断线不补执行 | 发送一轮后切断连接再恢复 | 原轮明确失败且不重传音频、不重放回复、不补执行；下一轮可重新建连 |
+| 断网重连 | 手机切飞行模式再恢复 | 重连耗时；只恢复会话上下文，不恢复未完成动作 |
 
 **每项必须填写实测数值**;未能执行的标记"未验收"。
 

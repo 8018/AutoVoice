@@ -1,5 +1,6 @@
 package com.autovoice.app
 
+import com.autovoice.app.action.ActionExecutionGateway
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.ActionReply
@@ -21,62 +22,60 @@ internal class ResponseDispatcher(
     private val onRecognized: (String?) -> Unit,
     private val onReplyText: (String) -> Unit,
     private val onConversationMode: (Boolean) -> Unit,
-    /** D07b 客户端最终准入 + 原子执行抢占;默认直通(旧测试/装配不感知)。 */
     private val actionGateway: com.autovoice.app.action.ActionExecutionGateway =
-        com.autovoice.app.action.ActionExecutionGateway(
-            object : com.autovoice.app.action.ActionLedgerStore {
-                override fun claim(actionId: String, summary: String) = true
-                override fun markTerminal(actionId: String, state: String) {}
-                override fun stateOf(actionId: String): String? = null
-                override fun recoverUnknowns() {}
-            }),
+        com.autovoice.app.action.ActionExecutionGateway(),
 ) {
     fun dispatchCloud(turnId: String, reply: Reply) {
         if (!isCurrentTurn(turnId)) return
         if (reply.asrText.isNotBlank()) onRecognized(reply.asrText)
         when (reply) {
             is AudioReply -> {
-                if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
-                output.play(turnId, reply)
-                reply.intent?.takeIf { isCurrentTurn(turnId) }
-                    ?.let { applyAndNotify(turnId, it, reply.actionId, reply.actionExpiresAtMs) }
+                val result = reply.intent?.let { applyAndNotify(turnId, it) }
+                    ?: ActionExecutionGateway.Result.APPLIED
+                if (result == ActionExecutionGateway.Result.APPLIED) {
+                    if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
+                    output.play(turnId, reply)
+                } else if (result == ActionExecutionGateway.Result.FAILED) {
+                    reportExecutionFailure(turnId)
+                }
             }
             is StreamingAudioReply -> output.playStream(turnId, reply) { end ->
                 if (end.speakText.isNotBlank()) onReplyText(end.speakText)
                 if (end.asrText.isNotBlank()) onRecognized(end.asrText)
-                end.intent?.let { applyAndNotify(turnId, it, "local-" + java.util.UUID.randomUUID()) } // 流式端暂无服务端签发,先本地身份记账(D07c 覆盖)
+                end.intent?.let { applyAndNotify(turnId, it) }
             }
             is TextReply -> {
                 if (reply.text.isNotBlank()) onReplyText(reply.text)
                 output.speak(turnId, reply.text)
             }
             is ActionReply -> {
-                if (isCurrentTurn(turnId)) {
-                    applyAndNotify(turnId, reply.intent, reply.actionId, reply.actionExpiresAtMs)
+                when (applyAndNotify(turnId, reply.intent)) {
+                    ActionExecutionGateway.Result.APPLIED -> {
+                        if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
+                        output.speak(turnId, reply.speakText)
+                    }
+                    ActionExecutionGateway.Result.FAILED -> reportExecutionFailure(turnId)
+                    else -> Unit
                 }
-                if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
-                output.speak(turnId, reply.speakText)
             }
         }
     }
 
     fun dispatchLocal(turnId: String, nlu: NluResult) {
         nlu.recognizedText?.takeIf(String::isNotBlank)?.let(onRecognized)
-        // D07b:本地动作生成本地身份走执行网关(手机动作手机记账,幂等/未知不重试)
-        val localActionId = "local-" + java.util.UUID.randomUUID()
         var appliedText: String? = null
-        val executed = actionGateway.execute(localActionId, nlu.intent.intent) {
+        val result = actionGateway.execute(turnId) {
             appliedText = vehicle.apply(nlu.intent)
             appliedText != null
         }
-        val applied = if (executed) appliedText else null
+        val applied = if (result == ActionExecutionGateway.Result.APPLIED) appliedText else null
         telemetry.recordFor(
             turnId,
             TelemetryStages.EXECUTE,
             "info",
             mapOf(
                 "intent" to intentSummary(nlu.intent),
-                "result" to if (applied != null) "applied" else "skipped",
+                "result" to result.name.lowercase(),
                 "speakText" to (applied ?: ""),
             ),
         )
@@ -94,16 +93,14 @@ internal class ResponseDispatcher(
     fun dispatchRealtime(reply: StreamingAudioReply) {
         output.playStream("", reply) { end ->
             if (end.speakText.isNotBlank()) onReplyText(end.speakText)
-            end.intent?.let { applyAndNotify("", it, "local-" + java.util.UUID.randomUUID()) } // 流式端暂无服务端签发,先本地身份记账(D07c 覆盖)
+            end.intent?.takeIf { it.domain == "conversation" }?.let { applyAndNotify("", it) }
         }
     }
 
     private fun applyAndNotify(
         turnId: String,
         intent: Intent,
-        actionId: String,
-        actionExpiresAtMs: Long = 0L,
-    ) {
+    ): ActionExecutionGateway.Result {
         if (intent.domain == "conversation") {
             // 会话控制不属于副作用动作,不走执行网关
             val applied = when (intent.intent) {
@@ -111,28 +108,44 @@ internal class ResponseDispatcher(
                 "exit_chat" -> true.also { onConversationMode(false) }
                 else -> false
             }
-            recordExecution(turnId, intent, applied)
-            return
+            val result = if (applied) ActionExecutionGateway.Result.APPLIED
+            else ActionExecutionGateway.Result.FAILED
+            recordExecution(turnId, intent, result)
+            return result
         }
-        // D07b:副作用动作(导航/车控)经执行网关做最终准入与原子抢占;
-        // 幂等命中不重复执行;真实车控当前无执行器(保持关闭)
-        val applied = actionGateway.execute(actionId, intent.intent, actionExpiresAtMs) {
+        if (turnId.isBlank() || !isCurrentTurn(turnId)) {
+            return ActionExecutionGateway.Result.INVALID_TURN
+        }
+        val result = actionGateway.execute(turnId) {
             if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
-                navigation?.execute(intent)
+                navigation?.execute(intent) == true
             } else {
                 vehicle.apply(intent) != null
             }
         }
-        recordExecution(turnId, intent, applied)
-        if (applied && intent.domain != NavigationExecutor.DOMAIN_NAVIGATION) onVehicleApplied()
+        recordExecution(turnId, intent, result)
+        if (result == ActionExecutionGateway.Result.APPLIED &&
+            intent.domain != NavigationExecutor.DOMAIN_NAVIGATION
+        ) onVehicleApplied()
+        return result
     }
 
-    private fun recordExecution(turnId: String, intent: Intent, applied: Boolean) {
+    private fun reportExecutionFailure(turnId: String) {
+        if (!isCurrentTurn(turnId)) return
+        onReplyText(EXECUTION_FAILED_PHRASE)
+        output.speak(turnId, EXECUTION_FAILED_PHRASE)
+    }
+
+    private fun recordExecution(
+        turnId: String,
+        intent: Intent,
+        result: ActionExecutionGateway.Result,
+    ) {
         telemetry.recordFor(
             turnId,
             TelemetryStages.EXECUTE,
             "info",
-            mapOf("intent" to intentSummary(intent), "result" to if (applied) "applied" else "skipped"),
+            mapOf("intent" to intentSummary(intent), "result" to result.name.lowercase()),
         )
     }
 
@@ -140,5 +153,6 @@ internal class ResponseDispatcher(
 
     companion object {
         private const val FALLBACK_PHRASE = "网络开小差了，请稍后再试"
+        private const val EXECUTION_FAILED_PHRASE = "这个操作没有执行，请再说一次"
     }
 }

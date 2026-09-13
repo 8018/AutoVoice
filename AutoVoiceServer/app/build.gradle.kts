@@ -29,7 +29,6 @@ dependencies {
     implementation(project(":skill-mcp"))
     implementation(project(":llm"))
     implementation(project(":asr-gateway"))
-    implementation(project(":action-ledger"))
     implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.okhttp)
