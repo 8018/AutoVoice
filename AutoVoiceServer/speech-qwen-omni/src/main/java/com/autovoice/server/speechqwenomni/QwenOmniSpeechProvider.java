@@ -388,7 +388,9 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
         return enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))
                 ? "\nFor a single destination, call resolve_navigation first to show candidates. "
                     + "Do not choose one or call navigate in that turn; navigation starts only after "
-                    + "the user's next-turn ordinal or place-name selection."
+                    + "the user's next-turn ordinal or place-name selection. For multiple destinations, "
+                    + "send every stop in spoken order in one resolve_navigation call; the system selects "
+                    + "one best match per stop and opens route preview without starting guidance."
                 : "";
     }
 

@@ -289,6 +289,32 @@ class NavigationToolFacadeTest {
         assertEquals("成都天府国际机场", candidates.get(1).path("poiname").asText());
     }
 
+    @Test
+    void multiStopReturnsExactlyOneBestCandidatePerDestination() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_regeocode")) return "{\"city\":\"成都\"}";
+            if (name.equals("maps_geo")) return "{}";
+            if (args.contains("机场")) return """
+                    {"pois":[
+                     {"name":"成都双流国际机场","location":"103.9500,30.5700"},
+                     {"name":"成都天府国际机场","location":"104.4410,30.3190"}]}
+                    """;
+            return """
+                    {"pois":[
+                     {"name":"春熙路","location":"104.0810,30.6570"},
+                     {"name":"春熙路地铁站","location":"104.0820,30.6580"}]}
+                    """;
+        });
+
+        JsonNode result = JSON.readTree(facade.resolve(
+                "{\"destinations\":[\"春熙路\",\"机场\"],\"location\":\"104.0665,30.5728\",\"limit\":3}"));
+
+        assertEquals(2, result.path("destinations").size());
+        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
+        assertEquals(1, result.path("destinations").get(1).path("candidates").size());
+        assertTrue(result.path("instruction").asText().contains("路线预览"));
+    }
+
     private static Map<String, FunctionTool> tools() {
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         tools.put("maps_text_search", new FunctionTool("maps_text_search", "", schema("keywords", "city")));

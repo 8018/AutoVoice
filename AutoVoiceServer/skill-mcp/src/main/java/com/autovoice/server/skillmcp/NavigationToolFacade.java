@@ -96,17 +96,21 @@ final class NavigationToolFacade {
             String location = args.path("location").asText("");
             String city = args.path("city").asText("");
             int limit = Math.max(1, Math.min(5, args.path("limit").asInt(3)));
+            boolean multiStop = destinations.size() > 1;
             ArrayNode resolved = JSON.createArrayNode();
             for (JsonNode destination : destinations) {
                 if (!destination.isTextual() || destination.asText().isBlank()) continue;
                 ObjectNode item = resolved.addObject();
                 String query = destination.asText().trim();
                 item.put("query", query);
-                item.set("candidates", resolveOne(query, location, city, limit));
+                item.set("candidates", resolveOne(query, location, city,
+                        multiStop ? 1 : limit, multiStop));
             }
             ObjectNode out = JSON.createObjectNode();
             out.set("destinations", resolved);
-            out.put("instruction", "按原顺序选候选；最后一组填目的地，其余填 waypoints");
+            out.put("instruction", multiStop
+                    ? "每组已选最优结果；最后一组为目的地，其余按原顺序为 waypoints；打开路线预览，不自动开始导航"
+                    : "向用户展示候选，等待下一轮确认");
             return JSON.writeValueAsString(out);
         } catch (McpToolException e) {
             throw e;
@@ -115,9 +119,10 @@ final class NavigationToolFacade {
         }
     }
 
-    private ArrayNode resolveOne(String query, String location, String city, int limit) {
+    private ArrayNode resolveOne(String query, String location, String city, int limit,
+                                 boolean forceSingleCandidate) {
         boolean broadAirportQuery = BROAD_AIRPORT_QUERY.matcher(compact(query)).matches();
-        int effectiveLimit = broadAirportQuery ? Math.max(limit, 5) : limit;
+        int effectiveLimit = broadAirportQuery && !forceSingleCandidate ? Math.max(limit, 5) : limit;
         int recallLimit = broadAirportQuery ? 20 : effectiveLimit;
         String searchName = !location.isBlank() && tools.containsKey("maps_around_search")
                 && shouldSearchAround(query)
