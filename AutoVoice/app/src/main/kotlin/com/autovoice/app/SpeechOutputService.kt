@@ -1,9 +1,9 @@
 package com.autovoice.app
 
 import android.util.Log
-import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
+import com.autovoice.tts.TtsService
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AudioStreamEnd
 import com.autovoice.voicecore.StreamingAudioReply
@@ -13,8 +13,7 @@ import kotlinx.coroutines.launch
 
 /** Owns synthesis, cache lookup and playback preparation; it does not route business intents. */
 internal class SpeechOutputService(
-    private val tts: TtsRequester,
-    private val cache: TtsCache,
+    private val tts: TtsService,
     private val playback: PlaybackCoordinator,
     private val telemetry: TelemetryClient,
     private val scope: CoroutineScope,
@@ -58,15 +57,7 @@ internal class SpeechOutputService(
         val identity = playback.prepare(turnId)
         scope.launch {
             if (!isCurrentTurn(turnId)) return@launch
-            val cached = cache.get(text) { stage, level, payload ->
-                telemetry.recordFor(turnId, stage, level, payload)
-            }
-            if (cached != null) {
-                if (isCurrentTurn(turnId)) playback.play(identity, cached)
-                return@launch
-            }
-            tts.request(text, turnId)?.let { reply ->
-                cache.put(text, reply)
+            tts.audioFor(text, turnId)?.let { reply ->
                 if (isCurrentTurn(turnId)) playback.play(identity, reply)
             } ?: playback.failed(identity, IllegalStateException("TTS synthesis failed"))
         }

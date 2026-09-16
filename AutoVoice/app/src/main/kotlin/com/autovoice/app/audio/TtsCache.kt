@@ -19,7 +19,8 @@ import java.util.concurrent.ConcurrentHashMap
  * 容错：磁盘文件缺失或空/损坏 → 视为未命中（重新合成覆盖）；写盘失败静默
  * （内存缓存仍然生效）。空文本不缓存（返回 null，调用方走网络/兜底）。
  */
-class TtsCache(
+@Deprecated("Production cache is internal to the :tts module; retained for migration tests only")
+internal class TtsCache(
     /** 磁盘缓存目录；null = 仅内存（测试注入）。 */
     private val dir: File?,
     private val onEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit = { _, _, _ -> },

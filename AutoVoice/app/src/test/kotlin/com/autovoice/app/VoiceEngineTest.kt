@@ -1,6 +1,8 @@
 package com.autovoice.app
 
 import com.autovoice.app.audio.TtsCache
+import com.autovoice.app.business.AppBusinessHandler
+import com.autovoice.tts.TtsService
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
@@ -274,11 +276,11 @@ class VoiceEngineTest {
             networkAvailable = networkAvailable,
             local = local,
             cloud = cloud,
-            tts = tts,
+            tts = TtsService { text, turnId ->
+                ttsCache.get(text) ?: tts.request(text, turnId)?.also { ttsCache.put(text, it) }
+            },
             player = player,
-            ttsCache = ttsCache,
-            vehicle = vehicle,
-            navigation = navigation,
+            business = AppBusinessHandler(vehicle, navigation),
             scope = scope,
             debugBuild = debugBuild,
             onLocalRecognized = onRecognized,
@@ -1448,8 +1450,8 @@ class VoiceEngineTest {
                 awaitCancellation()
             },
             player = AudioPlayer {},
-            tts = TtsRequester { null },
-            vehicle = MockVehicleState(),
+            tts = TtsService { _, _ -> null },
+            business = AppBusinessHandler(MockVehicleState(), null),
             scope = scope,
         )
         runBlocking {

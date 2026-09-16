@@ -92,6 +92,9 @@ kotlin {
 dependencies {
     implementation(project(":voice-core"))
     implementation(project(":gateway-client"))
+    implementation(project(":message-dispatch"))
+    implementation(project(":business-core"))
+    implementation(project(":tts"))
     implementation(project(":adapter-local"))
     implementation(project(":adapter-iflytek"))
     implementation(platform(libs.compose.bom))

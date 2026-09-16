@@ -1,9 +1,10 @@
 package com.autovoice.app
 
 import android.util.Log
-import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
+import com.autovoice.business.BusinessHandler
+import com.autovoice.tts.TtsService
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Reply
@@ -70,9 +71,6 @@ class VoiceEngine(
     sink: DecisionSink,
     /** D05b:导航候选采用确认上行(由工厂装配到云端连接)。 */
     var navigationAdoptionSender: (String) -> Unit = {},
-    /** 当前交互内的一次性动作执行门。 */
-    private val actionGateway: com.autovoice.app.action.ActionExecutionGateway =
-        com.autovoice.app.action.ActionExecutionGateway(),
     /**
      * 链路数据上报客户端（T6）：生产装配由 [VoiceEngineFactory.create] 注入（telemetry 未配置 → enabled=false
      * 的全 no-op 实例）；JVM 测试不传时用默认 disabled 实例，行为不变。
@@ -87,22 +85,11 @@ class VoiceEngine(
     private val networkAvailable: () -> Boolean,
     local: LocalChainRunner,
     cloud: CloudRunner,
-    private val tts: TtsRequester,
+    private val tts: TtsService,
     private val player: AudioPlayer,
-    /**
-     * 端侧 TTS 缓存（架构变更：缓存从服务器移回端侧）：播报服务先查缓存，
-     * 命中直接播（不请求服务器）；未命中走 [tts] 网络合成，回传写缓存再播。
-     * 默认仅内存（JVM 测试注入预置缓存/fake）；生产装配由 [VoiceEngineFactory.create] 注入。
-     */
-    private val ttsCache: TtsCache = TtsCache(null),
-    val vehicle: MockVehicleState,
-    /**
-     * 导航执行器（spec §4.2）：navigation/navigate 意图不走 vehicle，转高德 URI 拉起高德 App。
-     * null（测试/未装配）时导航意图记 skipped。
-     */
-    private val navigation: NavigationExecutor? = null,
+    /** 已通过状态机与仲裁的语义唯一业务出口；引擎不感知导航、车控等具体领域。 */
+    private val business: BusinessHandler,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    private val onVehicleApplied: () -> Unit = {},
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
     private val onLocalRecognized: (String?) -> Unit = {},
     /** 模型回答文本（流式 partial 的最终兜底）。 */
@@ -121,8 +108,6 @@ class VoiceEngine(
     private val onCloudPending: (Boolean) -> Unit = {},
     /** 云端语义通过端侧仲裁后释放其回复字幕；ASR 文本不受此门控。 */
     private val onCloudWon: (String) -> Unit = {},
-    /** 服务端混合后端下发的闲聊锁域控制。 */
-    private val onConversationMode: (Boolean) -> Unit = {},
     /** 本地交互状态；只由 ConversationController 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     private val onDialogueState: (DialogueSnapshot) -> Unit = {},
     /** 已通过播放身份校验的生命周期事件；驱动层迟到回调不会触发此钩子。 */
@@ -199,7 +184,6 @@ class VoiceEngine(
 
     private val speechOutput = SpeechOutputService(
         tts = tts,
-        cache = ttsCache,
         playback = playbackCoordinator,
         telemetry = telemetry,
         scope = scope,
@@ -209,15 +193,11 @@ class VoiceEngine(
 
     private val responses = ResponseDispatcher(
         output = speechOutput,
-        vehicle = vehicle,
-        navigation = navigation,
+        business = business,
         telemetry = telemetry,
         isCurrentTurn = ::isLatestTurn,
-        onVehicleApplied = onVehicleApplied,
         onRecognized = onLocalRecognized,
         onReplyText = onReplyText,
-        onConversationMode = onConversationMode,
-        actionGateway = actionGateway,
     )
 
     init {

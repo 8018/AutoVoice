@@ -6,7 +6,7 @@ import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
-import com.autovoice.app.audio.TtsCache
+import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AsrResult
@@ -24,6 +24,9 @@ import com.autovoice.voicecore.dialog.AdmissionEvidence
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.validateForRuntime
+import com.autovoice.tts.TtsEventSink
+import com.autovoice.tts.TtsSynthesizer
+import com.autovoice.tts.createTtsService
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -133,14 +136,26 @@ internal object VoiceEngineFactory {
         clockOffsetProvider.set(cloudRunner::clockOffsetMs)
         // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）。
         // 缓存事件由 SpeechOutputService 携带固定 turnId 上报，不读可变的当前轮。
-        val ttsCache = TtsCache(File(context.filesDir, "tts_cache"))
+        val ttsService = createTtsService(
+            synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
+            cacheDir = File(context.filesDir, "tts_cache"),
+            events = TtsEventSink { stage, level, payload ->
+                val turnId = payload["turnId"] as? String ?: ""
+                telemetry.recordFor(turnId, stage, level, payload - "turnId")
+            },
+        )
         // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
         // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
         val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
         // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
         // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
-        // 动作只属于当前交互；断线或重启不恢复、不补执行。
-        val actionGateway = com.autovoice.app.action.ActionExecutionGateway()
+        // 业务路由位于引擎之外。只有状态机与仲裁通过后的语义才会抵达此边界。
+        val business = AppBusinessHandler(
+            vehicle = vehicle,
+            navigation = navigation,
+            onVehicleApplied = onVehicleApplied,
+            onConversationMode = onConversationMode,
+        )
         val engine = VoiceEngine(
             cfg = cfg,
             arbiter = OnDeviceRaceArbiter(
@@ -197,13 +212,10 @@ internal object VoiceEngineFactory {
                 telemetry,
             ),
             cloud = cloudRunner,
-            tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
-            ttsCache = ttsCache, // 缓存移回端侧：查缓存命中直接播，未命中才走网络
+            tts = ttsService,
             player = player,
-            vehicle = vehicle,
-            navigation = navigation,
+            business = business,
             scope = scope,
-            onVehicleApplied = onVehicleApplied,
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {
@@ -212,8 +224,6 @@ internal object VoiceEngineFactory {
             },
             onForeground = cloudRunner::warmUp,
             onCloudPending = onCloudPending,
-            onConversationMode = onConversationMode,
-            actionGateway = actionGateway,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
             onPlaybackStage = onPlaybackStage,

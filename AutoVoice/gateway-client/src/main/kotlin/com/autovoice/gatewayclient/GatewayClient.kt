@@ -135,6 +135,20 @@ class GatewayClient(
     fun clockOffsetMs(): Long = clockOffsetMs
 
     /**
+     * Transport-only text send API. Protocol/business layers own message names and payload shape.
+     */
+    fun send(type: String, payload: Map<String, Any?> = emptyMap()) {
+        require(type.isNotBlank()) { "message type must not be blank" }
+        sendFrame(mapOf("type" to type, "payload" to payload))
+    }
+
+    /** Transport-only binary send API; framing semantics belong to the protocol layer. */
+    fun send(bytes: ByteArray) {
+        val ws = webSocket ?: throw GatewayException("not connected")
+        if (!ws.send(bytes.toByteString())) throw GatewayException("send binary frame failed: websocket not open")
+    }
+
+    /**
      * 建立连接并等待 ready 后返回。
      *
      * 每次尝试：open → 发 hello → 等 ready（connectTimeoutMs 内未到即失败）。
@@ -186,7 +200,8 @@ class GatewayClient(
      * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
     /** D05b 导航候选采用确认(selectionId 非空=采用;空=撤销,幂等)。 */
-    fun sendNavigationSelectionStart(sessionId: String, selectionId: String) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendNavigationSelectionStart(sessionId: String, selectionId: String) {
         sendFrame(
             mapOf(
                 "type" to "navigation_selection_start",
@@ -198,7 +213,8 @@ class GatewayClient(
         )
     }
 
-    fun sendAudioStart(
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendAudioStart(
         sessionId: String,
         segmentId: String? = null,
         utteranceId: String? = null,
@@ -230,7 +246,8 @@ class GatewayClient(
     }
 
     /** 发送一帧二进制 PCM（S16LE/16kHz/单声道），仅允许在 audio_start 与 audio_end 之间。 */
-    fun sendAudioChunk(pcm: ByteArray) {
+    @Deprecated("Use GatewayClient.send(bytes) from a protocol-layer sender")
+    internal fun sendAudioChunk(pcm: ByteArray) {
         val ws = webSocket ?: throw GatewayException("not connected")
         if (!ws.send(pcm.toByteString())) {
             throw GatewayException("send audio chunk failed: websocket not open")
@@ -239,7 +256,8 @@ class GatewayClient(
     }
 
     /** 结束录音段（protocol.md §3.3）：durationMs 由已发送字节数换算（bytes / (2·rate) · 1000）。 */
-    fun sendAudioEnd(sessionId: String) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendAudioEnd(sessionId: String) {
         val durationMs = pcmBytesInSegment * 1000 / (2L * sampleRate)
         sendFrame(
             mapOf(
@@ -253,24 +271,28 @@ class GatewayClient(
     }
 
     /** 开启闲聊域的长连接上行；收到 chat_ready 后可连续发送二进制 PCM。 */
-    fun sendChatStart(sessionId: String) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendChatStart(sessionId: String) {
         sendFrame(mapOf("type" to "chat_start", "payload" to mapOf("sessionId" to sessionId)))
     }
 
     /** 闲聊域连续 PCM；不受模型输出/播放状态影响。 */
-    fun sendChatAudioChunk(pcm: ByteArray) {
+    @Deprecated("Use GatewayClient.send(bytes) from a protocol-layer sender")
+    internal fun sendChatAudioChunk(pcm: ByteArray) {
         val ws = webSocket ?: throw GatewayException("not connected")
         if (!ws.send(pcm.toByteString())) {
             throw GatewayException("send chat audio chunk failed: websocket not open")
         }
     }
 
-    fun sendChatFinish(sessionId: String) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendChatFinish(sessionId: String) {
         sendFrame(mapOf("type" to "chat_finish", "payload" to mapOf("sessionId" to sessionId)))
     }
 
     /** 端侧车窗候选胜出：取消对应云端轮，服务端据此终止 Qwen Call。 */
-    fun sendCancelTurn(segmentId: String, reason: String = "device_local_won") {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendCancelTurn(segmentId: String, reason: String = "device_local_won") {
         sendFrame(
             mapOf(
                 "type" to "cancel_turn",
@@ -280,7 +302,8 @@ class GatewayClient(
     }
 
     /** Confirm that a candidate capture became a business turn through ASR or semantic evidence. */
-    fun sendTurnCommit(segmentId: String, utteranceId: String) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendTurnCommit(segmentId: String, utteranceId: String) {
         require(segmentId.isNotBlank())
         require(utteranceId.isNotBlank())
         sendFrame(
@@ -298,7 +321,8 @@ class GatewayClient(
      * @param utteranceId 可选（T6）：当前话语的链路追踪 ID，服务端落库时关联 tts 事件。
      *                    非空才发送。
      */
-    fun sendTtsRequest(text: String, segmentId: String? = null, utteranceId: String? = null) {
+    @Deprecated("Use a protocol-layer sender; GatewayClient is a transport channel")
+    internal fun sendTtsRequest(text: String, segmentId: String? = null, utteranceId: String? = null) {
         val payload = linkedMapOf<String, Any>("text" to text)
         if (segmentId != null) {
             payload["segmentId"] = segmentId
@@ -313,7 +337,8 @@ class GatewayClient(
      * 解析 tts_response payload（protocol.md §4.6）：mime / dataBase64 解码 →
      * [AudioReply]（speakText=text 回显）。字段缺失 / base64 非法 → null（防御，不抛）。
      */
-    fun parseTtsResponse(payload: JsonObject): AudioReply? {
+    @Deprecated("Use GatewayPayloadParser; GatewayClient is a transport channel")
+    internal fun parseTtsResponse(payload: JsonObject): AudioReply? {
         val mime = payload.get("mime")?.stringOrNull() ?: return null
         val dataBase64 = payload.get("dataBase64")?.stringOrNull() ?: return null
         val data = try {
@@ -336,7 +361,8 @@ class GatewayClient(
      * asrText（Task 61：云端 ASR 识别文本）随各 kind 透传，缺失时为空串。
      * payload 非法 / 字段缺失 / 未知 kind → null（防御，不抛）。
      */
-    fun parseReply(payload: JsonObject): Reply? {
+    @Deprecated("Use GatewayPayloadParser; GatewayClient is a transport channel")
+    internal fun parseReply(payload: JsonObject): Reply? {
         val kind = payload.get("kind")?.stringOrNull() ?: return null
         val asrText = payload.get("asrText")?.stringOrNull() ?: ""
         return when (kind) {
@@ -376,7 +402,8 @@ class GatewayClient(
         }
     }
 
-    fun parseAudioStreamStart(
+    @Deprecated("Use GatewayPayloadParser; GatewayClient is a transport channel")
+    internal fun parseAudioStreamStart(
         payload: JsonObject,
         chunks: ReceiveChannel<ByteArray>,
         completion: Deferred<AudioStreamEnd>,
@@ -389,7 +416,8 @@ class GatewayClient(
         return StreamingAudioReply(mime, sampleRate, channels, encoding, chunks, completion)
     }
 
-    fun parseAudioStreamEnd(payload: JsonObject): AudioStreamEnd =
+    @Deprecated("Use GatewayPayloadParser; GatewayClient is a transport channel")
+    internal fun parseAudioStreamEnd(payload: JsonObject): AudioStreamEnd =
         AudioStreamEnd(
             speakText = payload.get("speakText")?.stringOrNull() ?: "",
             intent = parseIntent(payload.get("intent")),
