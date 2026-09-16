@@ -179,7 +179,13 @@ class McpSkillRegistryTest {
 
     @Test
     void selectorCanDiscoverAndExecuteRealTool() throws Exception {
-        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
+        SkillConfig readOnly = new SkillConfig("a", "a", "d", mcpUrl, "", "", """
+                [{"name":"poi_search","enabled":true,"readOnly":true,
+                  "parallelSafe":true,"cacheSuccess":true},
+                 {"name":"route_plan","enabled":true,"readOnly":true,
+                  "parallelSafe":true,"cacheSuccess":true}]
+                """, true, 1L);
+        FakePlatformClient client = new FakePlatformClient(List.of(readOnly));
         try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
                 new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
             reg.refresh();
@@ -190,6 +196,19 @@ class McpSkillRegistryTest {
             String result = reg.callTool("mcp_tools_execute",
                     "{\"name\":\"poi_search\",\"arguments\":{}}");
             assertEquals("找到 1 个结果：西湖", result);
+        }
+    }
+
+    @Test
+    void selectorCannotBypassReadOnlyGateForUnknownTarget() throws Exception {
+        FakePlatformClient client = new FakePlatformClient(List.of(cfg("a")));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
+            reg.refresh();
+            McpToolException error = assertThrows(McpToolException.class,
+                    () -> reg.callTool("mcp_tools_execute",
+                            "{\"name\":\"poi_search\",\"arguments\":{}}"));
+            assertTrue(error.getMessage().contains("not approved read-only"));
         }
     }
 
@@ -279,6 +298,53 @@ class McpSkillRegistryTest {
             reg.refresh();
             assertEquals("业务提示词", business.get());
             assertEquals("闲聊提示词", chat.get());
+        }
+    }
+
+    @Test
+    void leasedSnapshotDefersRetirementUntilRelease() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        java.util.List<McpToolSession> created = new java.util.ArrayList<>();
+        FakePlatformClient client = new FakePlatformClient(List.of(cfg("skill-a")));
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new SelectorToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> {
+                    McpToolSession session = session(c);
+                    created.add(session);
+                    return session;
+                })) {
+            reg.refresh();
+            McpToolSession first = created.get(0);
+            AutoCloseable lease = reg.lease(); // 模拟一个请求正在使用本版本
+
+            reg.refresh(); // 新版本发布;旧连接有租约 → 延迟退役
+            assertFalse(first.isClosed(), "有租约时旧连接不得立即关闭");
+
+            lease.close(); // 请求结束
+            long deadline = System.currentTimeMillis() + 2_000;
+            while (!first.isClosed() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+            assertTrue(first.isClosed(), "租约释放后旧连接应退役");
+        }
+    }
+
+    @Test
+    void refreshPublishesSnapshotAtomicallyWithMonotonicVersion() throws Exception {
+        SystemPromptStore store = new SystemPromptStore();
+        FakePlatformClient client = new FakePlatformClient(List.of()) {
+            @Override public String fetchSystemPrompt() { return "新提示词"; }
+        };
+        try (McpSkillRegistry reg = new McpSkillRegistry(client, new DirectToolInjector(),
+                store, 60_000, 5_000, (c, timeout) -> session(c))) {
+            long before = reg.currentSnapshot().version();
+            reg.refresh();
+            RegistrySnapshot after = reg.currentSnapshot();
+
+            assertTrue(after.version() > before, "刷新必须推进版本(单调递增)");
+            assertEquals("新提示词", after.systemPrompt(), "prompt 与连接同属一个快照版本");
+            assertEquals("新提示词", store.get());
+            // 同一快照内的连接与 prompt 一致:不会出现"旧 schema 配新 prompt"
+            assertEquals(after.sessions().size(), reg.currentSnapshot().sessions().size());
         }
     }
 

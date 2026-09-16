@@ -20,7 +20,8 @@ class AgentLoopTest {
         AtomicInteger modelCalls = new AtomicInteger();
         List<AgentToolResult> appended = new ArrayList<>();
         RequestToolExecutor tools = new RequestToolExecutor(call -> "42",
-                (call, error) -> error.getMessage(), runtime);
+                (call, error) -> error.getMessage(),
+                com.autovoice.server.agentloop.ToolExecutionPolicy.conservative(), runtime, false);
         AgentLoop<String, String> loop = new AgentLoop<>(
                 new AgentLoop.Policy(3, 1_000, true), tools, new AgentLoop.Adapter<>() {
                     @Override public String callModel(int round, boolean toolsAllowed) {

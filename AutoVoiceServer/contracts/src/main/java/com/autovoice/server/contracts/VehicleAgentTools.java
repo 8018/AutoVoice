@@ -25,9 +25,14 @@ public final class VehicleAgentTools {
     }
 
     public static List<FunctionTool> definitions() {
+        // D04:内置终局工具是"已审核提交操作"——模型只产出待执行计划,实际执行在
+        // 输出准入层之后的客户端;D07 将其改造为计划生成端口并撤销此批准
         return List.of(
-                new FunctionTool(CAR_CONTROL, "控制空调或车窗", CAR_SCHEMA),
+                new FunctionTool(CAR_CONTROL, "控制空调或车窗", CAR_SCHEMA,
+                        ToolExecutionTraits.APPROVED_COMMIT),
                 new FunctionTool(NAVIGATE,
-                        "开始导航；最终目的地填主字段，之前各站按顺序填 waypoints", NAVIGATE_SCHEMA));
+                        "打开导航页面；多地点时仅展示路线预览，最终目的地填主字段，之前各站按顺序填 waypoints",
+                        NAVIGATE_SCHEMA,
+                        ToolExecutionTraits.APPROVED_COMMIT));
     }
 }

@@ -86,6 +86,13 @@ internal class GatewayCloudRunner(
         { onRealtimeStreamFailed() },
     )
 
+    /** D05b:采用确认上行;ready 前忽略。 */
+    fun sendNavigationSelectionStart(selectionId: String) {
+        val sid = sessionId
+        if (!readyReceived || sid.isBlank()) return
+        client.sendNavigationSelectionStart(sid, selectionId)
+    }
+
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
 
     private val pendingReplyText = ConcurrentHashMap<String, ReplyTextSnapshot>()
@@ -210,6 +217,13 @@ internal class GatewayCloudRunner(
     @Volatile
     var onReadySessionId: (String) -> Unit = {}
 
+    /**
+     * D15b:服务端明确的恢复结果与候选有效性。
+     * sessionState: new / resumed / reset(缺省视为 new,兼容旧服务端)。
+     * 客户端**只在 reset 或候选无效时**清理待选列表——正常恢复保留列表。
+     */
+    var onSessionRecovery: (state: String, candidatesValid: Boolean) -> Unit = { _, _ -> }
+
     @Volatile
     var onConnectionEvent: (String, String, Map<String, Any?>) -> Unit = { _, _, _ -> }
 
@@ -245,6 +259,8 @@ internal class GatewayCloudRunner(
         sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
             ?: throw GatewayException("ready 事件缺少 sessionId")
         readyReceived = true
+        val recovery = SessionRecovery.parse(ready.payload)
+        onSessionRecovery(recovery.state, recovery.navigationCandidatesValid)
         onReadySessionId(sessionId)
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
     }
@@ -394,87 +410,66 @@ internal class GatewayCloudRunner(
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
         val navigationSelectionId = navigationSelectionProvider()
-        var lastFailure: GatewayException? = null
-        for (attempt in 0..1) {
-            val replySlot = bridge.newReplySlot(segmentId, utteranceId)
-            try {
-                ensureReady()
-                if (attempt > 0) {
-                    onConnectionEvent(TelemetryStages.WS_RECONNECT_OK, "info", emptyMap())
-                }
-                val location = locationProvider()
-                client.sendAudioStart(
-                    sessionId,
-                    segmentId,
-                    utteranceId.takeIf { it.isNotBlank() },
-                    location?.first,
-                    location?.second,
-                    attempt,
-                    navigationSelectionId = navigationSelectionId,
-                )
-                var offset = 0
-                while (offset < segment.size) {
-                    val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
-                    client.sendAudioChunk(segment.copyOfRange(offset, end))
-                    offset = end
-                }
-                client.sendAudioEnd(sessionId)
-                return replySlot.await()
-            } catch (e: GatewayRemoteException) {
-                pendingReplyText.remove(utteranceId)
-                if (e.code == "CONNECTION_FAILED" || e.code == "CONNECTION_CLOSED") {
-                    // listener 合成的连接错误仍走原有一次重连；其余服务端错误保留健康 WS。
-                    readyReceived = false
-                    sessionId = ""
-                    client.disconnect()
-                    if (attempt == 1) {
-                        onConnectionEvent(
-                            TelemetryStages.WS_RECONNECT_FAILED,
-                            "error",
-                            mapOf("code" to e.code, "message" to (e.message ?: "unknown")),
-                        )
-                        onCloudUnavailable()
-                        throw CloudUnavailableException("云端链路重试后仍故障：${e.message}", e)
-                    }
-                    onConnectionEvent(
-                        TelemetryStages.WS_RECONNECT_START,
-                        "warn",
-                        mapOf("code" to e.code, "message" to (e.message ?: "unknown")),
-                    )
-                    continue
-                }
-                throw CloudRequestFailedException("云端请求失败（${e.code}）：${e.message}", e)
-            } catch (e: GatewayException) {
-                lastFailure = e
+        val replySlot = bridge.newReplySlot(segmentId, utteranceId)
+        try {
+            // ensureReady may establish a connection before this turn starts. Once audio_start has
+            // been attempted, a transport failure ends the turn; its PCM is never retransmitted.
+            ensureReady()
+            val location = locationProvider()
+            client.sendAudioStart(
+                sessionId,
+                segmentId,
+                utteranceId.takeIf { it.isNotBlank() },
+                location?.first,
+                location?.second,
+                0,
+                navigationSelectionId = navigationSelectionId,
+            )
+            var offset = 0
+            while (offset < segment.size) {
+                val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
+                client.sendAudioChunk(segment.copyOfRange(offset, end))
+                offset = end
+            }
+            client.sendAudioEnd(sessionId)
+            return replySlot.await()
+        } catch (e: GatewayRemoteException) {
+            pendingReplyText.remove(utteranceId)
+            if (e.code == "CONNECTION_FAILED" || e.code == "CONNECTION_CLOSED") {
                 readyReceived = false
                 sessionId = ""
                 client.disconnect()
-                pendingReplyText.remove(utteranceId)
-                if (attempt == 1) {
-                    onConnectionEvent(
-                        TelemetryStages.WS_RECONNECT_FAILED,
-                        "error",
-                        mapOf("message" to (e.message ?: "unknown")),
-                    )
-                    onCloudUnavailable()
-                    throw CloudUnavailableException("云端链路重试后仍故障：${e.message}", e)
-                }
                 onConnectionEvent(
-                    TelemetryStages.WS_RECONNECT_START,
-                    "warn",
-                    mapOf("message" to (e.message ?: "unknown")),
+                    TelemetryStages.WS_RECONNECT_FAILED,
+                    "error",
+                    mapOf("code" to e.code, "message" to (e.message ?: "unknown"),
+                        "turnRetried" to false),
                 )
-            } catch (e: CancellationException) {
-                releasedReplyTurns.remove(utteranceId)
-                pendingReplyText.remove(utteranceId)
-                runCatching { client.sendCancelTurn(segmentId) }
-                bridge.cancelStream(segmentId)
-                throw e
-            } finally {
-                bridge.clearReplySlot(replySlot)
+                onCloudUnavailable()
+                throw CloudUnavailableException("云端链路故障，本轮已结束：${e.message}", e)
             }
+            throw CloudRequestFailedException("云端请求失败（${e.code}）：${e.message}", e)
+        } catch (e: GatewayException) {
+            readyReceived = false
+            sessionId = ""
+            client.disconnect()
+            pendingReplyText.remove(utteranceId)
+            onConnectionEvent(
+                TelemetryStages.WS_RECONNECT_FAILED,
+                "error",
+                mapOf("message" to (e.message ?: "unknown"), "turnRetried" to false),
+            )
+            onCloudUnavailable()
+            throw CloudUnavailableException("云端链路故障，本轮已结束：${e.message}", e)
+        } catch (e: CancellationException) {
+            releasedReplyTurns.remove(utteranceId)
+            pendingReplyText.remove(utteranceId)
+            runCatching { client.sendCancelTurn(segmentId) }
+            bridge.cancelStream(segmentId)
+            throw e
+        } finally {
+            bridge.clearReplySlot(replySlot)
         }
-        throw CloudUnavailableException("云端链路故障：${lastFailure?.message}", lastFailure)
     }
 
     /**

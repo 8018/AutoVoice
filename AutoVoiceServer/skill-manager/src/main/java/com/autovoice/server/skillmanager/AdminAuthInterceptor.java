@@ -10,24 +10,25 @@ import java.security.MessageDigest;
 
 /**
  * 平台鉴权：/api/skills/** 与 /api/admin/**（除 login/logout）要求
- * 管理端 cookie 或 X-Skill-Service-Token 二选一通过。
+ * 服务端会话 cookie（D03b，由 AdminSessionStore 校验与撤销）
+ * 或 X-Skill-Service-Token 二选一通过。
  */
 public class AdminAuthInterceptor implements HandlerInterceptor {
 
     public static final String SERVICE_TOKEN_HEADER = "X-Skill-Service-Token";
 
-    private final String adminToken;
+    private final AdminSessionStore sessions;
     private final String serviceToken;
 
-    public AdminAuthInterceptor(String adminToken, String serviceToken) {
-        this.adminToken = adminToken == null ? "" : adminToken;
+    public AdminAuthInterceptor(AdminSessionStore sessions, String serviceToken) {
+        this.sessions = sessions;
         this.serviceToken = serviceToken == null ? "" : serviceToken;
     }
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
             throws Exception {
-        if (checkServiceToken(request) || checkCookie(request)) {
+        if (checkServiceToken(request) || checkSessionCookie(request.getCookies())) {
             return true;
         }
         response.setStatus(401);
@@ -43,25 +44,15 @@ public class AdminAuthInterceptor implements HandlerInterceptor {
                 given.getBytes(StandardCharsets.UTF_8), serviceToken.getBytes(StandardCharsets.UTF_8));
     }
 
-    private boolean checkCookie(HttpServletRequest request) {
-        return matchesAdminCookie(adminToken, request.getCookies());
-    }
-
-    /**
-     * admin cookie 校验（ConfigController 写操作同用）：cookie 值 = SHA-256(adminToken)
-     * 十六进制比对；先拒空（空值绝不等于任何配置 token，防 token 侧为空的静默开门）。
-     */
-    public static boolean matchesAdminCookie(String adminToken, Cookie[] cookies) {
+    /** 管理会话 cookie 校验：令牌由会话存储服务端判定(存在、未过期),注销即失效。 */
+    private boolean checkSessionCookie(Cookie[] cookies) {
         if (cookies == null) {
             return false;
         }
-        String expected = AdminController.cookieValue(adminToken);
-        for (Cookie c : cookies) {
-            if (AdminController.COOKIE_NAME.equals(c.getName()) && c.getValue() != null
-                    && !c.getValue().isEmpty()
-                    && MessageDigest.isEqual(c.getValue().getBytes(StandardCharsets.UTF_8),
-                                              expected.getBytes(StandardCharsets.UTF_8))) {
-                return true;
+        for (Cookie cookie : cookies) {
+            if (AdminController.COOKIE_NAME.equals(cookie.getName())
+                    && cookie.getValue() != null && !cookie.getValue().isBlank()) {
+                return sessions.validate(cookie.getValue());
             }
         }
         return false;

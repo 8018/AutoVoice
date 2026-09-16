@@ -43,15 +43,28 @@ public final class McpSkillRegistry implements AutoCloseable {
         return t;
     });
 
-    private volatile Map<String, McpToolSession> sessions = Map.of();
+    /** D11a:运行时配置快照(连接+归属+导航门面+两个 prompt)一次性原子发布。 */
+    private volatile RegistrySnapshot snapshot = RegistrySnapshot.empty();
+
+    private Map<String, McpToolSession> sessions() {
+        return snapshot.sessions();
+    }
     /** 不可被外部 skill 覆盖的内置终局工具。 */
     private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate",
             NavigationToolFacade.NAME, SelectorToolInjector.GET, SelectorToolInjector.EXECUTE);
     /** 刷新时原子替换的域内唯一工具路由；不同模型域可安全复用同一工具名。 */
-    private volatile Map<String, McpToolSession> toolOwners = Map.of();
+    private Map<String, McpToolSession> toolOwners() {
+        return snapshot.toolOwners();
+    }
     /** 高德低层搜索 + 地理编码聚合成的一次导航解析调用。 */
-    private volatile NavigationToolFacade navigationFacade;
-    private volatile long lastRefreshMs;
+    private NavigationToolFacade navigationFacade() {
+        return snapshot.navigationFacade();
+    }
+
+    /** 当前快照(请求可持有该版本作为租约;版本单调递增)。 */
+    public RegistrySnapshot currentSnapshot() {
+        return snapshot;
+    }
 
     public McpSkillRegistry(SkillPlatformClient client, ToolInjector injector,
                             SystemPromptStore promptStore, long pollMs, long connectTimeoutMs,
@@ -91,7 +104,7 @@ public final class McpSkillRegistry implements AutoCloseable {
         } catch (RuntimeException e) {
             // 顶层守卫：任何未预期异常都不能穿透到 scheduleWithFixedDelay（ScheduledExecutor
             // 会静默取消后续轮询）；保留旧快照继续服务
-            LOG.warn("skill registry refresh failed, keep {} sessions", sessions.size(), e);
+            LOG.warn("skill registry refresh failed, keep {} sessions", sessions().size(), e);
         }
     }
 
@@ -100,7 +113,7 @@ public final class McpSkillRegistry implements AutoCloseable {
         try {
             configs = client.fetchEnabled();
         } catch (IOException e) {
-            LOG.warn("skill platform pull failed, keep {} sessions", sessions.size(), e);
+            LOG.warn("skill platform pull failed, keep {} sessions", sessions().size(), e);
             return; // 平台不可达：保留旧快照
         }
         Map<String, McpToolSession> next = new LinkedHashMap<>();
@@ -130,34 +143,67 @@ public final class McpSkillRegistry implements AutoCloseable {
                 LOG.warn("skill {} mcp connect failed, skip", cfg.id(), e);
             }
         }
-        Map<String, McpToolSession> old = sessions;
-        sessions = next;
-        toolOwners = Map.copyOf(nextOwners);
-        navigationFacade = next.values().stream()
-                .filter(s -> "llm".equals(s.scope()))
-                .filter(s -> "amap-maps".equals(s.skillId()))
-                .filter(NavigationToolFacade::supports)
-                .findFirst().map(NavigationToolFacade::new).orElse(null);
-        lastRefreshMs = System.currentTimeMillis();
-        String oldPrompt = promptStore.get();
+        // D11a:prompt 先取(与新连接同属一个候选版本),再一次性原子发布快照——
+        // 请求不会看到"旧 schema 配新 prompt"的混合版本
         String prompt = client.fetchSystemPrompt();
-        if (prompt != null && !prompt.equals(oldPrompt)) {
+        String chatPrompt = client.fetchChatSystemPrompt();
+        RegistrySnapshot previous = snapshot;
+        RegistrySnapshot candidate = new RegistrySnapshot(
+                previous.version() + 1,
+                next,
+                nextOwners,
+                next.values().stream()
+                        .filter(s -> "llm".equals(s.scope()))
+                        .filter(s -> "amap-maps".equals(s.skillId()))
+                        .filter(NavigationToolFacade::supports)
+                        .findFirst().map(NavigationToolFacade::new).orElse(null),
+                prompt != null ? prompt : previous.systemPrompt(),
+                chatPrompt != null ? chatPrompt : previous.chatSystemPrompt(),
+                System.currentTimeMillis());
+        snapshot = candidate; // 原子发布:此后新请求看到完整新版本
+        retireWhenIdle(previous, next);
+        // prompt store 只在确有新值时写入:拉取失败(null)保留旧值(既有语义)
+        if (prompt != null && !prompt.equals(previous.systemPrompt())) {
             promptStore.set(prompt);
             LOG.info("system prompt updated ({} chars)", prompt.length());
         }
-        String oldChatPrompt = chatPromptStore.get();
-        String chatPrompt = client.fetchChatSystemPrompt();
-        if (chatPrompt != null && !chatPrompt.equals(oldChatPrompt)) {
+        if (chatPrompt != null && !chatPrompt.equals(previous.chatSystemPrompt())) {
             chatPromptStore.set(chatPrompt);
             LOG.info("chat system prompt updated ({} chars)", chatPrompt.length());
         }
-        for (McpToolSession s : old.values()) {
-            if (!next.containsValue(s)) {
-                s.close();
+        LOG.info("skill registry refreshed: v{} {} sessions ({} tools)",
+                candidate.version(), next.size(), candidate.toolCount());
+    }
+
+    /**
+     * D11b:旧快照连接延迟退役——有活跃租约时等最后一个租约释放后关闭;
+     * 无租约(常见路径)时立即关闭,与历史行为一致。
+     */
+    private void retireWhenIdle(RegistrySnapshot previous, Map<String, McpToolSession> next) {
+        Runnable retire = () -> {
+            for (McpToolSession session : previous.sessions().values()) {
+                if (!next.containsValue(session)) {
+                    session.close();
+                }
             }
+        };
+        if (previous.isIdle()) {
+            retire.run();
+            return;
         }
-        LOG.info("skill registry refreshed: {} sessions ({} tools)",
-                next.size(), next.values().stream().mapToInt(s -> s.tools().size()).sum());
+        // 有请求正在使用旧版本:等租约释放(轮询间隔 50ms,退役最多延迟到请求结束)
+        scheduler.schedule(() -> {
+            if (previous.isIdle()) {
+                retire.run();
+            } else {
+                retireWhenIdle(previous, next);
+            }
+        }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /** D11b:为当前版本取租约(请求开始时调用,结束时 close)。 */
+    public AutoCloseable lease() {
+        return snapshot.acquire();
     }
 
     /** 注入 LLM 的工具列表（经注入策略，含分级）。 */
@@ -182,7 +228,7 @@ public final class McpSkillRegistry implements AutoCloseable {
     /** 按模型域执行工具；即使模型伪造工具名，也不能越权调用另一域的 Skill。 */
     public String callTool(String scope, String toolName, String argumentsJson) {
         String normalizedScope = "chat".equals(scope) ? "chat" : "llm";
-        NavigationToolFacade facade = "llm".equals(normalizedScope) ? navigationFacade : null;
+        NavigationToolFacade facade = "llm".equals(normalizedScope) ? navigationFacade() : null;
         if (NavigationToolFacade.NAME.equals(toolName) && facade != null) {
             return facade.resolve(argumentsJson);
         }
@@ -190,7 +236,7 @@ public final class McpSkillRegistry implements AutoCloseable {
         if (SelectorToolInjector.EXECUTE.equals(toolName)) {
             return executeSelectedTool(normalizedScope, argumentsJson);
         }
-        McpToolSession owner = toolOwners.get(ownerKey(normalizedScope, toolName));
+        McpToolSession owner = toolOwners().get(ownerKey(normalizedScope, toolName));
         if (owner != null) {
             return owner.callTool(toolName, argumentsJson);
         }
@@ -230,14 +276,20 @@ public final class McpSkillRegistry implements AutoCloseable {
             if (name.isBlank() || !actual.isObject()) {
                 throw new IllegalArgumentException("name and object arguments are required");
             }
-            NavigationToolFacade facade = "llm".equals(scope) ? navigationFacade : null;
+            NavigationToolFacade facade = "llm".equals(scope) ? navigationFacade() : null;
             if (NavigationToolFacade.NAME.equals(name) && facade != null) {
                 return facade.resolve(JSON.writeValueAsString(actual));
             }
             // 只允许真实 MCP 工具，禁止 meta 工具递归调用自身。
-            McpToolSession owner = toolOwners.get(ownerKey(scope, name));
+            McpToolSession owner = toolOwners().get(ownerKey(scope, name));
             if (owner == null) {
                 throw new McpToolException("no " + scope + " skill owns tool: " + name);
+            }
+            // The selector is only a routing facade. It must not turn its own approved-operation
+            // marker into a bypass for an unknown or mutating target tool.
+            FunctionTool selected = owner.tools().get(name);
+            if (selected == null || !selected.executionTraits().readOnly()) {
+                throw new McpToolException("selected tool is not approved read-only: " + name);
             }
             return owner.callTool(name, JSON.writeValueAsString(actual));
         } catch (McpToolException e) {
@@ -249,8 +301,8 @@ public final class McpSkillRegistry implements AutoCloseable {
 
     private List<FunctionTool> rawToolSpecs(String scope) {
         List<FunctionTool> all = new ArrayList<>();
-        NavigationToolFacade facade = "llm".equals(scope) ? navigationFacade : null;
-        for (McpToolSession session : sessions.values()) {
+        NavigationToolFacade facade = "llm".equals(scope) ? navigationFacade() : null;
+        for (McpToolSession session : sessions().values()) {
             if (!scope.equals(session.scope())) continue;
             for (FunctionTool tool : session.tools().values()) {
                 if (facade != null && "amap-maps".equals(session.skillId())
@@ -282,15 +334,14 @@ public final class McpSkillRegistry implements AutoCloseable {
     }
 
     public long lastRefreshMs() {
-        return lastRefreshMs;
+        return snapshot.createdAtMs();
     }
 
     @Override
     public void close() {
         scheduler.shutdownNow();
-        closeAll(sessions.values());
-        sessions = Map.of();
-        toolOwners = Map.of();
+        closeAll(sessions().values());
+        snapshot = RegistrySnapshot.empty();
     }
 
     private static void closeAll(Iterable<McpToolSession> values) {

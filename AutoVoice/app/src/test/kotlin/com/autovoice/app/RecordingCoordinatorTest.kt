@@ -9,8 +9,8 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import org.junit.Assert.*
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecordingCoordinatorTest {
@@ -118,7 +118,7 @@ class RecordingCoordinatorTest {
         assertTrue(wake.armed)
 
         coordinator.reconfigureCapture {
-            assertFalse("配置替换前必须先释放共享麦克风", capture.monitoring)
+            assertFalse(capture.monitoring, "配置替换前必须先释放共享麦克风")
             capture.vadAvailable = false
         }
 
@@ -139,7 +139,8 @@ class RecordingCoordinatorTest {
         capture = capture,
         wakeWord = wake,
         pipeline = pipeline,
-        scope = this,
+        // 协调器持有常驻监控任务,注入 backgroundScope(共享调度器,测试体结束自动取消)
+        scope = backgroundScope,
         isPlaybackSpeaking = { false },
         onState = onState,
         elapsedRealtimeMs = { testScheduler.currentTime },

@@ -47,7 +47,7 @@ class DeepSeekLlmBudgetTest {
         });
         server.start();
         try {
-            ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}"));
+            ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}", com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY));
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
                     server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 0, (n, a) -> "x", null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
@@ -84,7 +84,7 @@ class DeepSeekLlmBudgetTest {
         });
         server.start();
         try {
-            ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}"));
+            ToolProvider tools = () -> List.of(new FunctionTool("t", "d", "{}", com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY));
             ToolExecutor exec = (n, a) -> "ok";
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
                     server.url("/").toString(), NoopTelemetryRecorder.INSTANCE, tools, 60_000, exec, null);
@@ -150,7 +150,7 @@ class DeepSeekLlmBudgetTest {
             ToolExecutor exec = (n, a) -> { throw new RuntimeException("高德服务不可用"); };
             DeepSeekLlmProvider provider = new DeepSeekLlmProvider(new OkHttpClient(), "k",
                     server.url("/").toString(), NoopTelemetryRecorder.INSTANCE,
-                    () -> List.of(new FunctionTool("t", "d", "{}")), 5_000, exec, null);
+                    () -> List.of(new FunctionTool("t", "d", "{}", com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY)), 5_000, exec, null);
             Reply r = provider.chat("hi", new SessionContext("s", "zh", Map.of())).get(5, TimeUnit.SECONDS);
             assertEquals("抱歉，服务暂时不可用", r.text()); // 错误文本回 LLM → 兜底回复
         } finally {

@@ -20,7 +20,7 @@ work 目录独立。安全组需放行入方向 TCP 8090（手机测试）。
 ```bash
 # 本机：把本目录脚本与 unit 文件上传服务器（或 clone 仓库后进入 AutoVoiceServer/deploy）
 bash init-dev.sh
-vi /etc/autovoice-dev/.env          # 密钥从 /etc/autovoice/.env 复制；端口类变量已预置
+vi /etc/autovoice-dev/.env          # 只复制密钥；端口、URL、目录必须保留 dev 模板值
 systemctl enable --now autovoice-dev-gateway autovoice-dev-tts autovoice-dev-skill-manager
 systemctl status autovoice-dev-gateway
 ```
@@ -38,6 +38,10 @@ systemctl status autovoice-dev-gateway
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
 Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
 `deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
+脚本会在替换 jar 前校验
+`SKILL_MANAGER_URL=http://127.0.0.1:8093`；若误指向生产 8083，发布立即失败，
+不会重启任何服务。dev Skill 配置需通过 8093 管理面板独立维护；首次需要同款 Skill 时，
+可从生产只读导出后导入 dev，后续修改互不影响。
 
 ### 部署密钥（为本机生成 + 安装到服务器）
 
@@ -169,3 +173,63 @@ journalctl -u autovoice-gateway -f   # 实时日志
 - 服务器: JDK 21（`dnf install java-21-openjdk-headless`），`demo-full` profile 下
   启动（unit 已带 `--spring.profiles.active=demo-full`）
 - 阿里云安全组放行入方向 TCP 8080（手机 `ws://<公网IP>:8080/ws`）
+
+## HTTPS/WSS 接入（D03c，生产上线前置）
+
+生产接入必须 TLS。两种方式二选一，域名/证书由运维确认后配置：
+
+1. **反向代理终结 TLS（推荐）**：nginx 等终结 TLS，`wss://域名/ws` 转发到
+   `ws://127.0.0.1:8080/ws`（网关注入默认端口，安全组不再需要对外放行明文端口）。
+2. **网关注直连 TLS**：`.env` 置 `AUTOVOICE_SSL_ENABLED=true` +
+   `AUTOVOICE_SSL_KEYSTORE` / `AUTOVOICE_SSL_KEYSTORE_PASSWORD`（PKCS12），
+   客户端连 `wss://域名:端口/ws`。
+
+客户端配合：Android release 构建禁用明文流量（debug 构建保留局域网明文例外），
+生产地址必须 `wss://`（见 docs/development-workflow.md）。域名、证书与设备凭据
+发放方式确认前不切换线上接入方式。
+
+## 低权限运行模板（D12b，可选）
+
+`deploy/autovoice-gateway-hardened.service` 提供以专用低权限用户运行、收敛文件系统/能力、
+带资源上限的 systemd 模板（默认**不启用**，启用步骤见文件头部注释）。要点：
+
+- 进程不再以 root 运行；`/opt/autovoice` 属主改为 `autovoice`；
+- `/etc/autovoice/.env` 保持 `root:autovoice 0640`（systemd 以 root 读取环境文件）；
+- 可写路径仅限：离线 SDK work 目录、TTS 缓存、遥测库、动作账本库；
+- 内存/文件描述符/任务数上限，避免单实例耗尽主机。
+
+## 部署判据与产物追溯（D13）
+
+`deploy-release.sh` 已升级：
+
+- **就绪判据**：gateway 用 `GET /health/ready`（200 才算就绪，区分"端口在监听"与
+  "业务可用"）；该端点不存在时自动回退 TCP 端口判据（兼容旧 jar）。其他服务沿用端口判据。
+- **产物追溯**：每次发布在 `/opt/autovoice/releases/<sha>/` 写入 `metadata.txt`
+  （SHA、环境、后端变体、时间）与 `checksums.sha256`（部署产物摘要）。
+- **回滚边界**：jar 回退不改变数据库 schema；若发布包含不向后兼容的 schema 变更，
+  按 D13 恢复流程处理（不要盲目回退代码）。
+
+> 以上判据与模板的**实际效果需在服务器上验收**（本地无法验证 systemd/权限行为）。
+
+## MCP 凭据用秘密引用（D14a）
+
+平台侧 `authValue` 现在应填**引用**而非明文：
+
+| 形式 | 含义 | 示例 |
+| --- | --- | --- |
+| `env:NAME` | 由部署方注入的环境变量（推荐） | `env:AMAP_MCP_KEY` |
+| `file:/path` | 受控文件内容（建议 0600，属主为服务账号） | `file:/etc/autovoice/secrets/amap.key` |
+| 空 | 该 Skill 无需认证头 | —— |
+
+- **解析失败会让该 Skill 连接失败**（日志含引用名，不含秘密值），不会静默退化为
+  "无凭据连接"——那会以未认证身份访问下游。
+- 历史明文值仍可读，但网关会记录 `uses inline credential; migrate to env:/file: reference`
+  提示；生产建议尽快迁移。
+- 环境变量在 `/etc/autovoice/.env` 中配置（该文件不入库）。
+
+## 动作执行语义（2026-09-13）
+
+- 网络断开即结束当前语音轮：不重传音频、不重放业务回复、不补执行动作。
+- 客户端仅允许当前 `turnId` 抢占一次动作执行；迟到、重复和空轮回调均不执行。
+- 执行失败使用失败话术，不能继续播报“已完成”类成功文案。
+- `actionId` 仅作旧协议兼容关联字段，不落持久化动作账本；遥测与安全审计仍按各自策略保留。

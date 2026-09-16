@@ -3,7 +3,7 @@
 # 在服务器上以 root 运行:bash init-dev.sh [部署目录(含 unit/env 模板,默认当前目录)]
 #
 # 完成后还需管理员手动:
-#   1. 填 /etc/autovoice-dev/.env(密钥可从 /etc/autovoice/.env 复制)
+#   1. 填 /etc/autovoice-dev/.env(只复制密钥；端口、URL、目录保留 dev 模板值)
 #   2. systemctl enable --now autovoice-dev-{gateway,tts,skill-manager}
 #   3. 阿里云安全组放行入方向 TCP 8090(手机测试)
 set -Eeuo pipefail
@@ -31,7 +31,7 @@ if [[ -f /etc/autovoice-dev/.env ]]; then
   echo "skip: /etc/autovoice-dev/.env 已存在"
 else
   install -m 0600 "$DEPLOY_DIR/env.example-dev" /etc/autovoice-dev/.env
-  echo "created: /etc/autovoice-dev/.env(请填入密钥与端口变量)"
+  echo "created: /etc/autovoice-dev/.env(只填密钥；不要从生产覆盖 dev 内部路由)"
 fi
 
 echo "== 3/4 安装 systemd unit =="

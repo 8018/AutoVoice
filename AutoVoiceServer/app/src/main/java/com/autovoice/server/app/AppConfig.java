@@ -1,5 +1,6 @@
 package com.autovoice.server.app;
 
+import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OfflineCommandProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.TtsProvider;
@@ -49,10 +50,12 @@ public class AppConfig {
     /** {@code autovoice.*} 配置（constructor binding）。 */
     @ConfigurationProperties(prefix = "autovoice")
     public record AutovoiceProperties(Arbitration arbitration, Providers providers, Secrets secrets,
-                                      Offline offline, Tts tts, Gateway gateway, SkillManager skillManager) {
+                                      Offline offline, Tts tts, Gateway gateway,
+                                      SkillManager skillManager) {
 
         /** 配置缺省时（yml 未配 autovoice.gateway.*）：鉴权关、设备表空、连接上限 32；
          *  skill-manager 缺省：平台空白（MCP 工具不注入）、轮询 600s。 */
+        @org.springframework.boot.context.properties.bind.ConstructorBinding
         public AutovoiceProperties {
             gateway = gateway == null ? new Gateway(false, "{}", 32, 1_920_000) : gateway;
             skillManager = skillManager == null ? new SkillManager("", "", 600_000) : skillManager;
@@ -112,7 +115,14 @@ public class AppConfig {
          * 无 String→Map 转换器（ConverterNotFoundException），故组件按字符串接收、由
          * {@link #authDevicesMap()} 解析；max-connections 默认 32，超限新连接 close(4001)。
          */
-        public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
+        public record Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes,
+                              int maxConnectionsPerDevice, long helloDeadlineMs,
+                              long drainTimeoutMs) {
+
+            /** 兼容构造(历史配置/测试):每设备 4 连接、hello 截止 10s、排空期限 30s。 */
+            public Gateway(boolean authEnabled, String authDevices, int maxConnections, int maxAudioBytes) {
+                this(authEnabled, authDevices, maxConnections, maxAudioBytes, 4, 10_000, 30_000);
+            }
 
             private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -121,6 +131,9 @@ public class AppConfig {
                 authDevices = authDevices == null || authDevices.isBlank() ? "{}" : authDevices;
                 maxConnections = maxConnections < 1 ? 32 : maxConnections;
                 maxAudioBytes = maxAudioBytes < 1 ? 1_920_000 : maxAudioBytes;
+                maxConnectionsPerDevice = maxConnectionsPerDevice < 1 ? 4 : maxConnectionsPerDevice;
+                helloDeadlineMs = helloDeadlineMs < 1 ? 10_000 : helloDeadlineMs;
+                drainTimeoutMs = drainTimeoutMs < 1 ? 30_000 : drainTimeoutMs;
             }
 
             public Gateway(boolean authEnabled, String authDevices, int maxConnections) {
@@ -286,19 +299,66 @@ public class AppConfig {
      * 网关 WS 处理器：仲裁参数（safety / offline 宽限期）、ASR 失败等离线窗口与接入策略
      * （鉴权/连接上限，M1）均来自配置；每连接的 RaceArbiter 复用 handler 内部 daemon 调度线程池（随 JVM 退出）。
      */
+    /** D12a:服务就绪与排空状态(健康探针只读内存状态,不触网)。 */
+    @Bean
+    public com.autovoice.server.app.health.ServiceReadiness serviceReadiness(
+            AutovoiceProperties props) {
+        return new com.autovoice.server.app.health.ServiceReadiness(
+                System::currentTimeMillis, props.gateway().drainTimeoutMs());
+    }
+
+    /**
+     * D12a/D16:就绪接线——应用启动完成时声明必需组件并置为 READY。
+     *
+     * <p>必需组件(缺失/未就绪即不接流量):`config`(配置装配成功;生产 profile 已由
+     * {@link ProductionConfigGuard} fail-closed 校验)、`gateway`(WS 处理器装配完成)。
+     * 可降级组件(`skill-registry`/`tts`/`offline-engine`)只登记不阻断——单个可选依赖
+     * 失败不摘除整体业务。</p>
+     *
+     * <p>该 runner 在装配全部成功后才执行;故应用起不来的情况根本不会标记就绪
+     * (不会误报"坏配置部署成功")。</p>
+     */
+    @Bean
+    public org.springframework.boot.ApplicationRunner readinessInitializer(
+            com.autovoice.server.app.health.ServiceReadiness readiness) {
+        return args -> {
+            readiness.registerCritical("config");
+            readiness.registerCritical("gateway");
+            readiness.registerDegradable("skill-registry");
+            readiness.registerDegradable("tts");
+            readiness.registerDegradable("offline-engine");
+            readiness.markReady("config");
+            readiness.markReady("gateway");
+            // 可降级组件:装配完成即 READY(供排障观察);运行时若探测到故障再 markFailed,
+            // 但不阻断整体就绪——PENDING 会让人误读为"未接线"
+            readiness.markReady("skill-registry");
+            readiness.markReady("tts");
+            readiness.markReady("offline-engine");
+        };
+    }
+
+    @Bean
+    public com.autovoice.server.app.health.HealthController healthController(
+            com.autovoice.server.app.health.ServiceReadiness readiness) {
+        return new com.autovoice.server.app.health.HealthController(readiness);
+    }
+
     @Bean
     public VoiceGatewayHandler voiceGatewayHandler(OnlineSpeechProvider online,
                                                    TtsProvider tts, OfflineCommandService offline,
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props,
-                                                   TelemetryRecorder recorder) {
+                                                   TelemetryRecorder recorder,
+                                                   NavigationDialog navigationDialog) {
         AutovoiceProperties.Gateway g = props.gateway();
         long safetyTimeoutMs = Math.max(
                 props.arbitration().safetyTimeoutMs(), online.minimumTurnTimeoutMs());
         return new VoiceGatewayHandler(online, tts, offline, registry,
                 safetyTimeoutMs, props.offline().asrFailWaitMs(),
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
-                g.maxAudioBytes(), recorder);
+                g.maxAudioBytes(), recorder, navigationDialog,
+                new com.autovoice.server.contracts.ConnectionQuota(g.maxConnectionsPerDevice()),
+                g.helloDeadlineMs(), g.drainTimeoutMs());
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);

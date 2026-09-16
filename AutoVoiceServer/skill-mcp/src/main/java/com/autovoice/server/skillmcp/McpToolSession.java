@@ -1,6 +1,7 @@
 package com.autovoice.server.skillmcp;
 
 import com.autovoice.server.contracts.FunctionTool;
+import com.autovoice.server.contracts.ToolExecutionTraits;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpClient;
@@ -29,6 +30,11 @@ import java.util.stream.Collectors;
 public final class McpToolSession implements AutoCloseable {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(McpToolSession.class);
+    /** D14a:秘密引用解析(环境变量/文件;不访问网络)。 */
+    private static final com.autovoice.server.contracts.secret.SecretResolver SECRET_RESOLVER =
+            new com.autovoice.server.contracts.secret.SecretResolver(System::getenv);
 
     private final SkillConfig config;
     private final McpSyncClient client;
@@ -56,7 +62,18 @@ public final class McpToolSession implements AutoCloseable {
             }
             if (!config.authHeader().isBlank()) {
                 String header = config.authHeader();
-                String value = config.authValue();
+                // D14a:authValue 是**秘密引用**(env:NAME / file:/path);解析失败必须让连接失败,
+                // 不得静默退化为"无凭据连接"(那会以未认证身份访问下游)
+                var secret = SECRET_RESOLVER.resolve(config.authValue());
+                if (secret.failed()) {
+                    throw new IOException("skill " + config.id() + " credential unresolved: "
+                            + secret.reason());
+                }
+                if (secret.legacyInline()) {
+                    LOG.warn("skill {} uses inline credential; migrate to env:/file: reference",
+                            config.id());
+                }
+                String value = secret.value();
                 // 认证头必须每请求注入（httpRequestCustomizer），不能用已弃用的 customizeRequest()
                 // 2.0.0 的自定义器签名为 customize(builder, method, endpoint, body, context)，比计划多一个 context 参数
                 tb.httpRequestCustomizer((HttpRequest.Builder b, String method, URI endpoint, String body,
@@ -90,28 +107,42 @@ public final class McpToolSession implements AutoCloseable {
             }
             throw new IOException("mcp list_tools failed for " + config.id() + ": " + e.getMessage(), e);
         }
-        Map<String, Boolean> chosen = parseToolsJson(config.toolsJson());
+        Map<String, ToolSelection> chosen = parseToolsJson(config.toolsJson());
         boolean explicitSelection = !chosen.isEmpty();
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         for (Tool t : listed.tools()) {
             // 平台保存的是用户明确勾选的工具，而不是 MCP server 的完整工具清单。
             // 因此非空清单中未出现的工具必须视为未启用；只有空清单才兼容旧配置为全选。
-            if (!explicitSelection || chosen.getOrDefault(t.name(), false)) {
+            ToolSelection selection = explicitSelection
+                    ? chosen.get(t.name())
+                    : new ToolSelection(true, ToolExecutionTraits.UNKNOWN);
+            if (selection != null && selection.enabled()) {
                 // 2.0.0 的 Tool.inputSchema() 返回 Map<String,Object>（非 JsonNode/字符串），
                 // writeValueAsString(Map) 同样产出合法 JSON 文本
                 String schema = t.inputSchema() == null
                         ? "{\"type\":\"object\"}"
                         : MAPPER.writeValueAsString(t.inputSchema());
+                // D04:执行特性来自平台可信清单(toolsJson),MCP 自报 schema 只作参数定义;
+                // 未声明特性的工具为 UNKNOWN → 候选阶段被准入拒绝(fail-closed)
                 tools.put(t.name(), new FunctionTool(t.name(),
-                        t.description() == null ? "" : t.description(), schema));
+                        t.description() == null ? "" : t.description(), schema, selection.traits()));
             }
         }
         return new McpToolSession(config, c, tools);
     }
 
-    /** toolsJson 解析为 {name: enabled}；空白/非法 JSON 视为空表（= 全选）。 */
-    private static Map<String, Boolean> parseToolsJson(String toolsJson) {
-        Map<String, Boolean> out = new LinkedHashMap<>();
+    /** 平台勾选清单条目:enabled + 可信执行特性(D04)。 */
+    private record ToolSelection(boolean enabled, ToolExecutionTraits traits) {
+    }
+
+    /**
+     * toolsJson 解析为 {name: ToolSelection};空白/非法 JSON 视为空表(=全选,特性 UNKNOWN)。
+     * 条目格式:{@code {"name":"...","enabled":true,"readOnly":true,"parallelSafe":true,
+     * "cacheSuccess":true,"approvedOperation":false}},除 name 外均可省略。
+     * 非法特性组合(写入工具声明并行/缓存)按 UNKNOWN fail-closed。
+     */
+    private static Map<String, ToolSelection> parseToolsJson(String toolsJson) {
+        Map<String, ToolSelection> out = new LinkedHashMap<>();
         if (toolsJson == null || toolsJson.isBlank()) {
             return out;
         }
@@ -119,11 +150,25 @@ public final class McpToolSession implements AutoCloseable {
             var arr = MAPPER.readTree(toolsJson);
             if (arr.isArray()) {
                 for (var node : arr) {
-                    out.put(node.path("name").asText(""), node.path("enabled").asBoolean(false));
+                    String name = node.path("name").asText("");
+                    if (name.isBlank()) {
+                        continue;
+                    }
+                    ToolExecutionTraits traits;
+                    try {
+                        traits = new ToolExecutionTraits(
+                                node.path("readOnly").asBoolean(false),
+                                node.path("parallelSafe").asBoolean(false),
+                                node.path("cacheSuccess").asBoolean(false),
+                                node.path("approvedOperation").asBoolean(false));
+                    } catch (IllegalArgumentException e) {
+                        traits = ToolExecutionTraits.UNKNOWN; // 非法组合 fail-closed
+                    }
+                    out.put(name, new ToolSelection(node.path("enabled").asBoolean(false), traits));
                 }
             }
         } catch (IOException e) {
-            return out; // 非法勾选清单不致命：全选
+            return out; // 非法勾选清单不致命:全选(特性 UNKNOWN)
         }
         return out;
     }
@@ -174,8 +219,19 @@ public final class McpToolSession implements AutoCloseable {
         return text;
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean closed =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** 会话是否已关闭(退役可观测;D11b 延迟退役验证用)。 */
+    public boolean isClosed() {
+        return closed.get();
+    }
+
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return; // 幂等:重复关闭不重复触碰客户端
+        }
         try {
             client.close();
         } catch (RuntimeException ignored) {

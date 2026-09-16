@@ -43,6 +43,18 @@ case "$environment" in
     ;;
 esac
 
+# dev 与生产同机时，错误的内部 URL 不会表现为连接失败，而会静默读取生产数据。
+# 发布前显式拒绝这种跨环境依赖，避免“dev 三服务都健康”掩盖配置串线。
+if [[ "$environment" == "dev" ]]; then
+  dev_env_file=/etc/autovoice-dev/.env
+  expected_skill_manager_url='SKILL_MANAGER_URL=http://127.0.0.1:8093'
+  if [[ ! -r "$dev_env_file" ]] || ! grep -Fqx "$expected_skill_manager_url" "$dev_env_file"; then
+    echo "Dev deployment refused: $dev_env_file must contain exactly:" >&2
+    echo "  $expected_skill_manager_url" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$staging_dir" != "$release_root/incoming/$release_sha" ]]; then
   echo "Unexpected staging directory: $staging_dir" >&2
   exit 1
@@ -63,21 +75,36 @@ release_dir="$release_root/releases/$release_sha"
 backup_dir="$release_root/backups/${release_sha}-$(date -u +%Y%m%dT%H%M%SZ)"
 rollback_armed=false
 
+# D12b:优先用 /health/ready 判定业务就绪(区分"端口在listen"与"依赖可用"),
+# 端点不存在(旧 jar/无该端点的服务)时回退到 TCP 端口判据,保持兼容。
 wait_for_service() {
   local service="$1"
   local port="$2"
+  local health_path="${3:-}"
   local attempt
+  local ready
 
   for ((attempt = 1; attempt <= 90; attempt++)); do
-    if systemctl is-active --quiet "$service" &&
-      timeout 1 bash -c ": </dev/tcp/127.0.0.1/$port" 2>/dev/null; then
-      echo "$service is ready on port $port."
-      return 0
+    if systemctl is-active --quiet "$service"; then
+      if [[ -n "$health_path" ]]; then
+        ready="$(timeout 2 curl -fsS -o /dev/null -w '%{http_code}'           "http://127.0.0.1:${port}${health_path}" 2>/dev/null || true)"
+        if [[ "$ready" == "200" ]]; then
+          echo "$service is ready (${health_path} -> 200, port $port)."
+          return 0
+        fi
+      elif timeout 1 bash -c ": </dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+        echo "$service is ready on port $port."
+        return 0
+      fi
     fi
     sleep 1
   done
 
-  echo "$service did not become ready on port $port." >&2
+  if [[ -n "$health_path" ]]; then
+    echo "$service did not report ready (${health_path} on port $port)." >&2
+  else
+    echo "$service did not become ready on port $port." >&2
+  fi
   systemctl status "$service" --no-pager >&2 || true
   journalctl -u "$service" -n 80 --no-pager >&2 || true
   return 1
@@ -132,9 +159,27 @@ for index in "${!targets[@]}"; do
   mv -f "${targets[$index]}.new" "${targets[$index]}"
 done
 
+# D13:记录本次发布的兼容元数据(代码 SHA、schema 版本约束、回滚说明)
+cat > "$release_dir/metadata.txt" <<META
+release_sha=$release_sha
+environment=$environment
+deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+voice_backend=${VOICE_BACKEND:-unknown}
+# 回滚:jar 回退不改变数据库 schema;若发布包含不向后兼容的 schema 变更,
+# 回滚前需按 docs/production-development-plan.md D13 的恢复流程处理。
+META
+
+# D13:产物摘要(可追溯:确认部署的是 CI 产出的同一份)
+sha256sum "${targets[@]}" > "$release_dir/checksums.sha256" 2>/dev/null || true
+
 for index in "${!services[@]}"; do
   systemctl restart "${services[$index]}"
-  wait_for_service "${services[$index]}" "${ports[$index]}"
+  health_path=""
+  # 仅 gateway(app.jar)暴露 /health/ready;其余服务沿用端口判据
+  if [[ "${targets[$index]}" == */app.jar ]]; then
+    health_path="/health/ready"
+  fi
+  wait_for_service "${services[$index]}" "${ports[$index]}" "$health_path"
 done
 
 rollback_armed=false

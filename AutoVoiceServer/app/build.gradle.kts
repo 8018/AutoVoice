@@ -33,6 +33,7 @@ dependencies {
     implementation(libs.spring.boot.starter.websocket)
     implementation(libs.okhttp)
     testImplementation(libs.spring.boot.starter.test)
+    testImplementation(testFixtures(project(":contracts")))
     testImplementation(libs.okhttp)
     testImplementation(libs.mockwebserver)
     if (voiceBackend == "classic") {

@@ -118,6 +118,19 @@ class GatewayClient(
     @Volatile
     private var serverSessionId: String? = null
 
+    /** D02b：会话恢复凭据（ready 签发,独立于 sessionId）；重连 hello 与 sessionId 一同回带。 */
+    @Volatile
+    private var serverResumeToken: String? = null
+
+    /** 当前存储的会话 ID（服务端签发）；null = 尚未握手或会话已被清除。 */
+    fun currentSessionId(): String? = serverSessionId
+
+    /** 清除存储的会话上下文（会话级错误 SESSION_EXPIRED / SESSION_RECOVER_DENIED 后调用）。 */
+    fun clearSessionContext() {
+        serverSessionId = null
+        serverResumeToken = null
+    }
+
     /** 当前时钟偏移（ms）：telemetry 打戳时 `本地时间 + offset` 换算为服务器时钟。 */
     fun clockOffsetMs(): Long = clockOffsetMs
 
@@ -172,6 +185,19 @@ class GatewayClient(
      *                    onAudioStart 优先采纳端侧值（遥测按话语汇合）。非空才发送。
      * 此后发送二进制 PCM 帧直到 [sendAudioEnd]。
      */
+    /** D05b 导航候选采用确认(selectionId 非空=采用;空=撤销,幂等)。 */
+    fun sendNavigationSelectionStart(sessionId: String, selectionId: String) {
+        sendFrame(
+            mapOf(
+                "type" to "navigation_selection_start",
+                "payload" to mapOf(
+                    "sessionId" to sessionId,
+                    "selectionId" to selectionId,
+                ),
+            ),
+        )
+    }
+
     fun sendAudioStart(
         sessionId: String,
         segmentId: String? = null,
@@ -332,6 +358,8 @@ class GatewayClient(
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     intent = parseIntent(payload.get("intent")),
                     asrText = asrText,
+                    actionId = payload.get("actionId")?.stringOrNull() ?: "",
+                    actionExpiresAtMs = payload.get("actionExpiresAtMs")?.numberOrNull()?.toLong() ?: 0L,
                 )
             }
             "action" -> {
@@ -340,6 +368,8 @@ class GatewayClient(
                     intent = intent,
                     speakText = payload.get("speakText")?.stringOrNull() ?: "",
                     asrText = asrText,
+                    actionId = payload.get("actionId")?.stringOrNull() ?: "",
+                    actionExpiresAtMs = payload.get("actionExpiresAtMs")?.numberOrNull()?.toLong() ?: 0L,
                 )
             }
             else -> null
@@ -371,7 +401,7 @@ class GatewayClient(
         val ws = try {
             okHttp.newWebSocket(
                 Request.Builder().url(url).build(),
-                GatewayListener(events, gson, ready, ::markDisconnected),
+                GatewayListener(events, gson, ready, ::markDisconnected, ::clearSessionContext),
             )
         } catch (e: Exception) {
             throw GatewayException("cannot open websocket to $url: ${e.message}", e)
@@ -390,6 +420,8 @@ class GatewayClient(
                 ?.let { clockOffsetMs = it.asLong + (t1 - t0) / 2 - t1 }
             readyMsg.payload["sessionId"]?.takeIf { it.isJsonPrimitive }?.asString
                 ?.takeIf { it.isNotBlank() }?.let { serverSessionId = it }
+            readyMsg.payload["resumeToken"]?.takeIf { it.isJsonPrimitive }?.asString
+                ?.takeIf { it.isNotBlank() }?.let { serverResumeToken = it }
             if (webSocket !== ws) {
                 throw GatewayException("websocket disconnected before ready completed")
             }
@@ -420,6 +452,8 @@ class GatewayClient(
                     put("protocolVersion", PROTOCOL_VERSION)
                     // 仅回带服务端此前签发的 ID；首次连接仍不由客户端预生成。
                     serverSessionId?.let { put("sessionId", it) }
+                    // D02b：会话恢复凭据随 sessionId 一同回带（凭据绝不进日志/遥测）
+                    serverResumeToken?.let { put("resumeToken", it) }
                     // M5 鉴权：配置了凭据才带（auth-disabled 网关保持老 hello 形态）
                     deviceId?.let { put("deviceId", it) }
                     authToken?.let { put("authToken", it) }

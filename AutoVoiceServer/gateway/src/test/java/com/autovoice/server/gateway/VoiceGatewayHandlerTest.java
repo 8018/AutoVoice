@@ -15,6 +15,7 @@ import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.StreamingAsrProvider;
 import com.autovoice.server.contracts.StreamingAsrSession;
 import com.autovoice.server.contracts.TtsProvider;
+import com.autovoice.server.contracts.testing.TestClock;
 import com.autovoice.server.contracts.telemetry.NoopTelemetryRecorder;
 import com.autovoice.server.offlinecommand.NoopOfflineCommandProvider;
 import com.autovoice.server.offlinecommand.OfflineCommandService;
@@ -53,6 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -345,7 +347,7 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
-    void reconnectResumesSessionAndReplaysCompletedTurnWithoutRunningPipelineTwice() throws InterruptedException {
+    void reconnectRejectsCompletedTurnWithoutReplayingOrRunningPipelineTwice() throws InterruptedException {
         AtomicInteger asrCalls = new AtomicInteger();
         VoiceGatewayHandler h = newHandler((pcm, ctx) -> {
             asrCalls.incrementAndGet();
@@ -365,12 +367,13 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(second, new TextMessage(audioStartWithUtteranceId(sid, "seg-retry", "utt-retry")));
         h.handleMessage(second, new BinaryMessage(new byte[]{1}));
         h.handleMessage(second, new TextMessage(audioEnd(sid)));
-        awaitSent(second, 2); // ready + cached reply（不再重复 ASR/LLM/仲裁）
+        awaitSent(second, 2); // ready + duplicate error（不再重复 ASR/LLM/仲裁）
 
         assertEquals(1, asrCalls.get());
-        JsonNode replay = parse(second.sent.get(1));
-        assertEquals("reply", replay.get("type").asText());
-        assertEquals("seg-retry", replay.get("payload").get("segmentId").asText());
+        JsonNode rejected = parse(second.sent.get(1));
+        assertEquals("error", rejected.get("type").asText());
+        assertEquals("DUPLICATE_TURN", rejected.get("payload").get("code").asText());
+        assertEquals("seg-retry", rejected.get("payload").get("segmentId").asText());
     }
 
     @Test
@@ -536,6 +539,305 @@ class VoiceGatewayHandlerTest {
         assertFalse(futureCancelled.get(), "cancel_turn 是拦截而非取消：provider future 不被取消");
         Thread.sleep(100); // 等 void 收敛 + 工作线程收尾
         assertNoErrorAndOnlyPreRevocationPendingFor(s, "old-segment");
+    }
+
+    // ---------- D10b 补充:下行预算耗尽 ----------
+
+    @Test
+    void downlinkBudgetExhaustionReportsExplicitError() throws Exception {
+        // D16a 盘点补测:下行预算耗尽必须明确失败(DOWNLINK_OVERLOADED),不静默丢弃
+        java.util.concurrent.atomic.AtomicInteger synthCalls = new java.util.concurrent.atomic.AtomicInteger();
+        TtsProvider bigAudio = (text, ctx) -> {
+            synthCalls.incrementAndGet();
+            return Reply.ofAudio("audio/wav", new byte[1024]); // 音频大于测试预算
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), bigAudio, noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000,
+                128); // 预算 128 字节 < 音频 1024 字节
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"tts_request\",\"payload\":{\"sessionId\":\"" + sid
+                        + "\",\"text\":\"你好\"}}"));
+
+        JsonNode error = awaitType(s, "error");
+        assertEquals("DOWNLINK_OVERLOADED", error.path("payload").path("code").asText(),
+                "超出下行预算应明确报错,而不是静默丢弃片段");
+        assertEquals(1, synthCalls.get(), "合成已发生(预算是发送侧保护)");
+        h.close();
+    }
+
+    // ---------- D15a:明确恢复结果 ----------
+
+    @Test
+    void freshHandshakeReportsNewSessionState() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        JsonNode ready = parse(s.sent.get(0));
+        assertEquals("new", ready.path("payload").path("sessionState").asText(),
+                "无 sessionId 的首次握手应明确报告 new");
+        assertFalse(ready.path("payload").path("navigationCandidatesValid").asBoolean(true),
+                "新会话没有有效候选");
+        h.close();
+    }
+
+    @Test
+    void resumedSessionReportsResumedState() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.path("payload").path("sessionId").asText();
+        String token = ready.path("payload").path("resumeToken").asText();
+
+        StubSession second = open(h);
+        h.handleMessage(second, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode resumed = parse(second.sent.get(0));
+        assertEquals("resumed", resumed.path("payload").path("sessionState").asText(),
+                "合法恢复应明确报告 resumed");
+        assertEquals(sid, resumed.path("payload").path("sessionId").asText());
+        h.close();
+    }
+
+    @Test
+    void expiredSessionReportsResetInsteadOfClosing() {
+        TestClock clock = new TestClock(0);
+        SessionRegistry clockRegistry = new SessionRegistry(clock, 60_000);
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), ttsOk(), noopOffline(),
+                clockRegistry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                new com.autovoice.server.contracts.ConnectionQuota(4), 10_000, 30_000);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.path("payload").path("sessionId").asText();
+        String token = ready.path("payload").path("resumeToken").asText();
+
+        clock.advance(61_000);
+        StubSession after = open(h);
+        h.handleMessage(after, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode reset = parse(after.sent.get(0));
+        assertEquals("ready", reset.path("type").asText(), "过期会话应给 ready(而非直接关闭)");
+        assertEquals("reset", reset.path("payload").path("sessionState").asText(),
+                "过期会话应明确报告 reset,由客户端据此清理本地状态");
+        assertNotEquals(sid, reset.path("payload").path("sessionId").asText(),
+                "reset 应下发新会话 ID");
+        h.close();
+    }
+
+    // ---------- D12a:排空 ----------
+
+    @Test
+    void drainingRejectsNewConnectionsAndCompletesWhenIdle() {
+        VoiceGatewayHandler h = newHandler(asr("x"), llm("LLM"), ttsOk());
+        StubSession before = open(h);
+        assertNull(before.closeStatus, "排空前连接正常");
+
+        h.beginDraining();
+        assertTrue(h.drainComplete(), "无在途工作时排空立即完成");
+
+        StubSession after = open(h);
+        assertNotNull(after.closeStatus, "排空期间的新连接必须被拒绝");
+        h.close();
+    }
+
+    // ---------- D10b:TTS 文本长度上限 ----------
+
+    @Test
+    void oversizedTtsRequestIsRejectedWithoutSynthesis() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger synthCalls = new java.util.concurrent.atomic.AtomicInteger();
+        TtsProvider counting = (text, ctx) -> {
+            synthCalls.incrementAndGet();
+            return Reply.ofAudio("audio/wav", new byte[]{1, 2, 3});
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), counting, noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        String longText = "字".repeat(501);
+
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"tts_request\",\"payload\":{\"sessionId\":\"" + sid
+                        + "\",\"text\":\"" + longText + "\"}}"));
+
+        JsonNode error = awaitType(s, "error");
+        assertEquals("TTS_TEXT_TOO_LONG", error.path("payload").path("code").asText());
+        Thread.sleep(100); // 给潜在的合成任务一点时间(不应发生)
+        assertEquals(0, synthCalls.get(), "超长文本不得进入合成");
+        h.close();
+    }
+
+    // ---------- D10a:接入配额与 hello 截止 ----------
+
+    private VoiceGatewayHandler quotaHandler(
+            com.autovoice.server.contracts.ConnectionQuota quota, long helloDeadlineMs) {
+        return new VoiceGatewayHandler(new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")),
+                ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                quota, helloDeadlineMs, 30_000);
+    }
+
+    @Test
+    void perDeviceQuotaRejectsExcessConnections() {
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(1);
+        VoiceGatewayHandler h = quotaHandler(quota, 10_000);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        assertEquals("ready", parse(first.sent.get(0)).get("type").asText());
+
+        StubSession second = open(h);
+        h.handleMessage(second, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        JsonNode error = parse(second.sent.get(0));
+        assertEquals("TOO_MANY_CONNECTIONS", error.path("payload").path("code").asText());
+        assertNotNull(second.closeStatus, "超配额的设备连接应被关闭");
+        h.close();
+    }
+
+    @Test
+    void helloDeadlineEnforcementClosesAndRestoresQuotaDeterministically() throws Exception {
+        // 不依赖调度计时(CI 负载下调度延迟不可控):截止设为 1ms,过期后由测试显式触发。
+        // 生产路径的调度触发属实现细节,此处断言的是"截止检查"这一行为契约本身。
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
+        VoiceGatewayHandler h = quotaHandler(quota, 1);
+        StubSession silent = open(h);
+        assertEquals(1, quota.activeFor(""), "建连即占用匿名配额");
+        Thread.sleep(10); // 确保截止已过期(确定性:检查基于墙钟比较)
+
+        h.enforceHelloDeadline(silent);
+
+        assertNotNull(silent.closeStatus, "静默连接在截止检查时被关闭");
+        assertEquals(0, quota.activeFor(""), "关闭后归还配额");
+        h.enforceHelloDeadline(silent); // 幂等:已关闭再触发无副作用
+        assertEquals(0, quota.activeFor(""), "重复触发不得重复归还");
+        h.close();
+    }
+
+    @Test
+    void handshakeWithinDeadlineIsNotClosed() throws Exception {
+        var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
+        VoiceGatewayHandler h = quotaHandler(quota, 300);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithAuth("device-a", "ta")));
+        Thread.sleep(400); // 超过截止窗口
+        assertNull(s.closeStatus, "已完成握手的连接不受 hello 截止影响");
+        assertEquals(1, quota.activeFor("device-a"), "配额应记在设备主体上");
+        h.close();
+    }
+
+    // ---------- D05a:导航候选在输出准入后提交 ----------
+
+    private static com.autovoice.server.contracts.Reply chooseCandidatesReply() {
+        String candidates = "[{\"poiname\":\"天府机场\",\"lat\":30.1,\"lon\":120.1}]";
+        return com.autovoice.server.contracts.Reply.ofAction(
+                Intent.of("1.0", "navigation", "choose_destination",
+                        Map.of("candidates",
+                                com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
+                        0.95, "llm.tool", null),
+                "请选择地点");
+    }
+
+    @Test
+    void admittedNavigationCandidatesAreCommittedAfterReply() throws Exception {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        LlmProvider chooseLlm = (t, ctx) -> CompletableFuture.completedFuture(chooseCandidatesReply());
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), chooseLlm, dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+
+        JsonNode reply = awaitType(s, "reply");
+        assertEquals("choose_destination", reply.path("payload").path("intent").path("intent").asText());
+        assertTrue(dialog.hasPending(registry.get(sid)), "获准输出的导航候选应已提交");
+    }
+
+    @Test
+    void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        var transcript = new java.util.concurrent.atomic.AtomicReference<>("导航去机场");
+        AsrProvider switchAsr = (pcm, ctx) -> transcript.get();
+        LlmProvider chooseLlm = (t, ctx) -> CompletableFuture.completedFuture(chooseCandidatesReply());
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(switchAsr, chooseLlm, dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid)));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode offer = awaitType(s, "reply");
+        String selectionId = offer.path("payload").path("intent").path("slots")
+                .path("selectionId").path("value").asText();
+
+        // 客户端实际展示列表后显式采用。
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
+        // 采用后,带 navigationSelectionId 的二轮语音能选中
+        synchronized (s.sent) { s.sent.clear(); }
+        transcript.set("第一个");
+        h.handleMessage(s, new TextMessage(audioStart(sid, "select")
+                .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
+        assertEquals("navigate", selected.path("intent").asText());
+    }
+
+    @Test
+    void revokedTurnDoesNotCommitNavigationCandidates() throws InterruptedException {
+        com.autovoice.server.navigation.NavigationDialogService dialog =
+                new com.autovoice.server.navigation.NavigationDialogService();
+        CountDownLatch started = new CountDownLatch(1);
+        CompletableFuture<OnlineSpeechResult> pending = new CompletableFuture<>();
+        OnlineSpeechProvider cancellable = new OnlineSpeechProvider() {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid) {
+                throw new AssertionError("stream overload expected");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, com.autovoice.server.contracts.SessionContext ctx, String uid,
+                    OnlineAudioSink audio) {
+                started.countDown();
+                return pending;
+            }
+            @Override public String id() { return "d05a-cancel"; }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(cancellable, ttsOk(), noopOffline(), registry,
+                SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE,
+                dialog);
+        StubSession s = open(h);
+        String sid = handshake(h, s);
+        h.handleMessage(s, new TextMessage(audioStart(sid, "seg-1")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"seg-1\"}}"));
+        pending.complete(new OnlineSpeechResult(chooseCandidatesReply(), ""));
+        Thread.sleep(150); // 等工作线程收尾
+        assertFalse(dialog.hasPending(registry.get(sid)), "被撤销轮次的候选不得提交");
     }
 
     @Test
@@ -807,6 +1109,109 @@ class VoiceGatewayHandlerTest {
         assertNull(s.closeStatus);
     }
 
+    // ---------- D02a：会话所有权与恢复凭据 ----------
+
+    @Test
+    void authEnabledOtherDeviceCannotResumeSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta", "device-b", "tb"), 32);
+        StubSession a = open(h);
+        h.handleMessage(a, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(a.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        StubSession b = open(h);
+        h.handleMessage(b, new TextMessage(helloWithRecovery("device-b", "tb", sid, token)));
+
+        JsonNode error = parse(b.sent.get(0));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("SESSION_RECOVER_DENIED", error.get("payload").get("code").asText());
+        assertNotNull(b.closeStatus, "跨设备恢复应关闭连接");
+    }
+
+    @Test
+    void authenticatedConnectionCannotSwitchPrincipalWithSecondHello() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta", "device-b", "tb"), 32);
+        StubSession session = open(h);
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+        assertEquals("ready", parse(session.sent.get(0)).get("type").asText());
+
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-b", "tb")));
+
+        JsonNode error = parse(session.sent.get(1));
+        assertEquals("error", error.get("type").asText());
+        assertEquals("PRINCIPAL_SWITCH_DENIED", error.get("payload").get("code").asText());
+        assertNotNull(session.closeStatus);
+    }
+
+    @Test
+    void repeatedHelloFromSamePrincipalIsIdempotentAtQuotaLimit() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 1);
+        StubSession session = open(h);
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+        h.handleMessage(session, new TextMessage(helloWithAuth("device-a", "ta")));
+
+        assertNull(session.closeStatus);
+        assertEquals("ready", parse(session.sent.get(1)).get("type").asText());
+    }
+
+    @Test
+    void authEnabledExpiredSessionReportsReset() {
+        // D15a 语义更新:过期会话改为明确返回 reset(ready + sessionState=reset),
+        // 客户端据此清理本地状态并接着用新会话,不再需要断线重连
+        TestClock clock = new TestClock(0);
+        SessionRegistry clockRegistry = new SessionRegistry(clock, 60_000);
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("x"), llm("LLM")), ttsOk(), noopOffline(),
+                clockRegistry, SAFETY, ASR_FAIL_WAIT, 1500, true,
+                Map.of("device-a", "ta"), 32, NoopTelemetryRecorder.INSTANCE);
+        StubSession a = open(h);
+        h.handleMessage(a, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(a.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        clock.advance(61_000);
+        StubSession b = open(h);
+        h.handleMessage(b, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode reset = parse(b.sent.get(0));
+        assertEquals("ready", reset.get("type").asText());
+        assertEquals("reset", reset.get("payload").get("sessionState").asText());
+        assertNull(b.closeStatus, "reset 不应关闭连接");
+    }
+
+    @Test
+    void authEnabledOwnerWithTokenResumesOwnSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession first = open(h);
+        h.handleMessage(first, new TextMessage(helloWithAuth("device-a", "ta")));
+        JsonNode ready = parse(first.sent.get(0));
+        String sid = ready.get("payload").get("sessionId").asText();
+        String token = ready.get("payload").get("resumeToken").asText();
+
+        StubSession reconnected = open(h);
+        h.handleMessage(reconnected, new TextMessage(helloWithRecovery("device-a", "ta", sid, token)));
+
+        JsonNode resumed = parse(reconnected.sent.get(0));
+        assertEquals("ready", resumed.get("type").asText());
+        assertEquals(sid, resumed.get("payload").get("sessionId").asText());
+        assertEquals(token, resumed.get("payload").get("resumeToken").asText());
+        assertNull(reconnected.closeStatus);
+    }
+
+    @Test
+    void authEnabledUnknownSessionIdStartsOwnedSession() {
+        VoiceGatewayHandler h = newAuthHandler(Map.of("device-a", "ta"), 32);
+        StubSession s = open(h);
+        h.handleMessage(s, new TextMessage(helloWithRecovery("device-a", "ta", "no-such-session", "whatever")));
+
+        JsonNode ready = parse(s.sent.get(0));
+        assertEquals("ready", ready.get("type").asText());
+        assertNotEquals("no-such-session", ready.get("payload").get("sessionId").asText());
+        assertFalse(ready.get("payload").get("resumeToken").asText().isBlank());
+    }
+
     @Test
     void connectionLimitRejectsAdditionalConnection() {
         VoiceGatewayHandler h = newAuthHandler(Map.of("demo-1", "tok"), 1);
@@ -1051,7 +1456,11 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new BinaryMessage(new byte[]{2}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
 
-        assertFalse(s.sent.stream().map(VoiceGatewayHandlerTest::parse)
+        List<WebSocketMessage<?>> snapshot;
+        synchronized (s.sent) {
+            snapshot = new ArrayList<>(s.sent); // 流式遍历必须持锁快照,避免与工作线程下行并发 CME
+        }
+        assertFalse(snapshot.stream().map(VoiceGatewayHandlerTest::parse)
                 .anyMatch(n -> "error".equals(n.path("type").asText())),
                 "同 utteranceId 重发进入候选队列，不应返回 BUSY");
         Thread.sleep(SAFETY + 200); // 等 SAFETY 兜底收敛在途轮，避免 worker 泄漏到其他测试
@@ -1071,6 +1480,7 @@ class VoiceGatewayHandlerTest {
                 [{"poiname":"成都双流国际机场","lat":30.5785,"lon":103.9471},
                  {"poiname":"成都天府国际机场","lat":30.312,"lon":104.441}]
                 """;
+        var navigation = new NavigationDialogService();
         var handler = new VoiceGatewayHandler(new ClassicOnlineSpeechProvider((pcm, ctx) -> {
             if (transcript.get().equals("第二个")) {
                 assertNull(ctx.attrs().get("latitude"), "no fix in second request must clear prior latitude");
@@ -1083,7 +1493,8 @@ class VoiceGatewayHandlerTest {
             return CompletableFuture.completedFuture(Reply.ofAction(Intent.of("1.0", "navigation",
                     "choose_destination", Map.of("candidates", com.autovoice.server.contracts.SlotValue.stringValue(candidates)),
                     1.0, "test", null), "请选择"));
-        }, new NavigationDialogService()), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        }, navigation), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, false,
+        Map.of(), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE, navigation);
         try {
             var socket = open(handler);
             String sid = handshake(handler, socket);
@@ -1095,6 +1506,9 @@ class VoiceGatewayHandlerTest {
             String selectionId = offer.path("slots").path("selectionId").path("value").asText();
             assertFalse(selectionId.isBlank());
             var displayed = MAPPER.readTree(offer.path("slots").path("candidates").path("value").asText());
+            handler.handleMessage(socket, new TextMessage(
+                    "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                            + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
             transcript.set("第二个");
             socket.sent.clear();
             handler.handleMessage(socket, new TextMessage(audioStart(sid, "select")
@@ -1199,6 +1613,16 @@ class VoiceGatewayHandlerTest {
     private static String helloWithSessionId(String sessionId) {
         return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\","
                 + "\"protocolVersion\":\"1.1\",\"sessionId\":\"" + sessionId + "\"}}";
+    }
+
+    /** D02a：带设备凭据 + 会话恢复字段的 hello。 */
+    private static String helloWithRecovery(String deviceId, String authToken,
+                                            String sessionId, String resumeToken) {
+        String token = resumeToken == null ? "" : resumeToken;
+        return "{\"type\":\"hello\",\"payload\":{\"client\":\"autovoice-android\","
+                + "\"protocolVersion\":\"1.1\",\"deviceId\":\"" + deviceId + "\","
+                + "\"authToken\":\"" + authToken + "\",\"sessionId\":\"" + sessionId + "\","
+                + "\"resumeToken\":\"" + token + "\"}}";
     }
 
     private static String audioStart(String sessionId) {

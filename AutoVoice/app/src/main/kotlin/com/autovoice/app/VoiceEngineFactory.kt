@@ -139,6 +139,8 @@ internal object VoiceEngineFactory {
         val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
         // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
         // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
+        // 动作只属于当前交互；断线或重启不恢复、不补执行。
+        val actionGateway = com.autovoice.app.action.ActionExecutionGateway()
         val engine = VoiceEngine(
             cfg = cfg,
             arbiter = OnDeviceRaceArbiter(
@@ -211,6 +213,7 @@ internal object VoiceEngineFactory {
             onForeground = cloudRunner::warmUp,
             onCloudPending = onCloudPending,
             onConversationMode = onConversationMode,
+            actionGateway = actionGateway,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
             onPlaybackStage = onPlaybackStage,
@@ -232,6 +235,17 @@ internal object VoiceEngineFactory {
         cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
         // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
         cloudRunner.onReadySessionId = telemetry::onSessionId
+        // D15b:仅当服务端明确 reset(会话重建)或候选已失效时清理待选列表;
+        // 正常恢复(resumed 且候选有效)保留列表。清理的是待选列表,不影响已启动的导航。
+        cloudRunner.onSessionRecovery = { state, candidatesValid ->
+            if (SessionRecovery(state, candidatesValid).shouldClearCandidates) {
+                navigation?.session?.cancelSelection()
+            }
+        }
+        // D05b:采用确认上行绑定到云端连接
+        engine.navigationAdoptionSender = { selectionId ->
+            cloudRunner.sendNavigationSelectionStart(selectionId)
+        }
         return engine
     }
 

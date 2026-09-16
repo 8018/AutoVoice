@@ -61,8 +61,9 @@ public final class HybridBusinessChatSpeechProvider
     private final ConcurrentHashMap<String, Long> chatSessions = new ConcurrentHashMap<>();
     private final AtomicLong chatSequence = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final ConcurrentHashMap<String, CompletableFuture<OnlineSpeechResult>> active =
-            new ConcurrentHashMap<>();
+    /** D06a 在途索引:复合键(主体/会话/轮次),消除跨设备同名轮次的登记冲突。 */
+    private final com.autovoice.server.contracts.TurnIndex<OnlineSpeechResult> active =
+            new com.autovoice.server.contracts.TurnIndex<>();
 
     public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
                                             OnlineSpeechProvider chatSpeech,
@@ -96,7 +97,7 @@ public final class HybridBusinessChatSpeechProvider
             return CompletableFuture.failedFuture(new IllegalStateException("hybrid provider is closed"));
         }
         if (isChatting(context)) {
-            return track(utteranceId, processChat(pcm16k, context, utteranceId, audioSink, null));
+            return track(context, utteranceId, processChat(pcm16k, context, utteranceId, audioSink, null));
         }
         AtomicReference<CompletableFuture<?>> stage = new AtomicReference<>();
         CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
@@ -119,28 +120,32 @@ public final class HybridBusinessChatSpeechProvider
         }
         stage.set(transcript);
         transcript.whenComplete((text, asrError) -> {
-            if (asrError != null) {
-                asrSink.onError(asrError);
-                out.completeExceptionally(asrError);
-                return;
+            // D06c:sink/route 同步异常必须让 out 进入终态,不得泄入无人消费的回调 Future
+            try {
+                if (asrError != null) {
+                    asrSink.onError(asrError);
+                    out.completeExceptionally(asrError);
+                    return;
+                }
+                if (text.isBlank()) {
+                    out.completeExceptionally(new IllegalStateException("ASR returned blank text"));
+                    return;
+                }
+                asrSink.onTurnEstablished();
+                asrSink.onResult(text, true);
+                CompletableFuture<OnlineSpeechResult> routed = route(
+                        pcm16k, context, utteranceId, text, audioSink);
+                stage.set(routed);
+                routed.whenComplete((result, error) -> {
+                    if (error != null) out.completeExceptionally(error);
+                    else out.complete(result);
+                });
+            } catch (Throwable syncError) {
+                out.completeExceptionally(syncError);
             }
-            if (text.isBlank()) {
-                out.completeExceptionally(new IllegalStateException("ASR returned blank text"));
-                return;
-            }
-            asrSink.onTurnEstablished();
-            asrSink.onResult(text, true);
-            CompletableFuture<OnlineSpeechResult> routed = route(
-                    pcm16k, context, utteranceId, text, audioSink);
-            stage.set(routed);
-            routed.whenComplete((result, error) -> {
-                if (error != null) out.completeExceptionally(error);
-                else out.complete(result);
-            });
         });
         if (utteranceId != null && !utteranceId.isBlank()) {
-            active.put(utteranceId, out);
-            out.whenComplete((ignored, error) -> active.remove(utteranceId, out));
+            active.put(requestKey(context, utteranceId), out);
         }
         return out;
     }
@@ -166,7 +171,7 @@ public final class HybridBusinessChatSpeechProvider
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new IllegalStateException("ASR returned blank text"));
                     }
-                    return track(utteranceId, route(pcm.toByteArray(), context, utteranceId,
+                    return track(context, utteranceId, route(pcm.toByteArray(), context, utteranceId,
                             text.trim(), audioSink));
                 });
             }
@@ -175,12 +180,21 @@ public final class HybridBusinessChatSpeechProvider
     }
 
     private CompletableFuture<OnlineSpeechResult> track(
-            String utteranceId, CompletableFuture<OnlineSpeechResult> future) {
+            SessionContext context, String utteranceId, CompletableFuture<OnlineSpeechResult> future) {
         if (utteranceId != null && !utteranceId.isBlank()) {
-            active.put(utteranceId, future);
-            future.whenComplete((ignored, error) -> active.remove(utteranceId, future));
+            active.put(requestKey(context, utteranceId), future);
         }
         return future;
+    }
+
+    /** D06a:主体取会话所有者(鉴权开启时为设备标识),会话取逻辑会话 ID。 */
+    private static com.autovoice.server.contracts.RequestKey requestKey(
+            SessionContext context, String utteranceId) {
+        String owner = context == null ? "" : context.owner();
+        String session = context == null ? "" : context.sessionId();
+        return com.autovoice.server.contracts.RequestKey.of(
+                owner == null ? "" : owner, session == null ? "" : session,
+                utteranceId == null ? "" : utteranceId, "");
     }
 
     private CompletableFuture<OnlineSpeechResult> route(byte[] pcm16k, SessionContext context,
@@ -323,16 +337,14 @@ public final class HybridBusinessChatSpeechProvider
 
     @Override public void cancel(String utteranceId) {
         if (utteranceId == null) return;
-        CompletableFuture<OnlineSpeechResult> future = active.remove(utteranceId);
-        if (future != null) future.cancel(true);
+        active.cancelTurn(utteranceId);
         chatSpeech.cancel(utteranceId);
     }
 
     /** Application-owned router closes its private ASR workers and the composed Qwen HTTP provider. */
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        active.values().forEach(future -> future.cancel(true));
-        active.clear();
+        active.cancelAll();
         chatSessions.clear();
         asrWorkers.shutdownNow();
         if (chatSpeech instanceof AutoCloseable closeable) {

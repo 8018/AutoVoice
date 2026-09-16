@@ -9,7 +9,8 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  */
 @ConfigurationProperties(prefix = "autovoice.telemetry")
 public record TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays,
-                                  String accessToken) {
+                                  String accessToken, String adminToken,
+                                  boolean audioPersistEnabled, long audioMaxBytes) {
 
     @ConstructorBinding
     public TelemetryProperties {
@@ -17,9 +18,24 @@ public record TelemetryProperties(boolean enabled, String dbPath, String audioDi
         if (audioDir == null || audioDir.isBlank()) audioDir = "./telemetry-audio";
         if (retentionDays < 1) retentionDays = 7;
         accessToken = accessToken == null ? "" : accessToken;
+        adminToken = adminToken == null ? "" : adminToken;
+        // D14b:原始音频默认不持久化(生产默认);audioMaxBytes<=0 → 1GB 上限
+        if (audioMaxBytes <= 0) audioMaxBytes = 1L * 1024 * 1024 * 1024;
+    }
+
+    /** 兼容构造(audio 默认不持久化)。 */
+    public TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays,
+                               String accessToken, String adminToken) {
+        this(enabled, dbPath, audioDir, retentionDays, accessToken, adminToken, false,
+                1L * 1024 * 1024 * 1024);
     }
 
     public TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays) {
-        this(enabled, dbPath, audioDir, retentionDays, "");
+        this(enabled, dbPath, audioDir, retentionDays, "", "");
+    }
+
+    public TelemetryProperties(boolean enabled, String dbPath, String audioDir, int retentionDays,
+                               String accessToken) {
+        this(enabled, dbPath, audioDir, retentionDays, accessToken, "");
     }
 }

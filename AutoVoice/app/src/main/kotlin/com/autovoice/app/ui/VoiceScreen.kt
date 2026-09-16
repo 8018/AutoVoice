@@ -37,6 +37,7 @@ fun VoiceScreen(
     state: UiState,
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
+    onDismissNavigationCandidates: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -120,16 +121,20 @@ fun VoiceScreen(
         }
     }
     if (state.navigationCandidates.isNotEmpty()) {
-        NavigationCandidateDialog(state.navigationCandidates)
+        NavigationCandidateDialog(
+            candidates = state.navigationCandidates,
+            onDismissRequest = onDismissNavigationCandidates,
+        )
     }
 }
 
 @Composable
 private fun NavigationCandidateDialog(
     candidates: List<com.autovoice.app.NavigationExecutor.NavigationCandidate>,
+    onDismissRequest: () -> Unit,
 ) {
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = onDismissRequest,
         title = { Text("请选择导航目的地") },
         text = {
             Column(
@@ -281,11 +286,6 @@ private fun SettingsSection(
                     selected = mode == DemoMode.DEMO_OFFLINE,
                     onClick = { onModeChange(DemoMode.DEMO_OFFLINE) },
                     label = { Text(DemoMode.DEMO_OFFLINE.label) },
-                )
-                FilterChip(
-                    selected = mode == DemoMode.DEMO_DEV,
-                    onClick = { onModeChange(DemoMode.DEMO_DEV) },
-                    label = { Text(DemoMode.DEMO_DEV.label) },
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {

@@ -7,25 +7,44 @@ import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
 import java.io.IOException;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Serializes all protocol downlink writes for one or more WebSocket sessions. */
 final class GatewayDownlink {
     static final String PENDING_TEXT = "正在处理，请稍候";
     private static final CloseStatus POLICY_CLOSE = new CloseStatus(4001, "policy violation");
     private static final Logger LOG = LoggerFactory.getLogger(GatewayDownlink.class);
+    private static final int SEND_TIME_LIMIT_MS = 10_000;
+    private final int bufferSizeLimit;
+    private final Map<WebSocketSession, ConcurrentWebSocketSessionDecorator> sessions =
+            new ConcurrentHashMap<>();
+
+    GatewayDownlink() {
+        this(4 * 1024 * 1024);
+    }
+
+    GatewayDownlink(int bufferSizeLimit) {
+        this.bufferSizeLimit = Math.max(1, bufferSizeLimit);
+    }
+
+    private WebSocketSession writable(WebSocketSession session) {
+        return sessions.computeIfAbsent(session, key ->
+                new ConcurrentWebSocketSessionDecorator(
+                        key, SEND_TIME_LIMIT_MS, bufferSizeLimit));
+    }
 
     void send(WebSocketSession session, String type, Map<String, Object> payload) {
         try {
             // Spring's raw WebSocketSession does not guarantee concurrent send safety.
-            synchronized (session) {
-                if (session.isOpen()) {
-                    session.sendMessage(new TextMessage(GatewayCodec.encode(type, payload)));
-                }
+            WebSocketSession writable = writable(session);
+            if (writable.isOpen()) {
+                writable.sendMessage(new TextMessage(GatewayCodec.encode(type, payload)));
             }
         } catch (IOException error) {
             throw new IllegalStateException("failed to send " + type + " message", error);
@@ -34,9 +53,8 @@ final class GatewayDownlink {
 
     void sendBinary(WebSocketSession session, byte[] bytes) {
         try {
-            synchronized (session) {
-                if (session.isOpen()) session.sendMessage(new BinaryMessage(bytes));
-            }
+            WebSocketSession writable = writable(session);
+            if (writable.isOpen()) writable.sendMessage(new BinaryMessage(bytes));
         } catch (IOException error) {
             throw new IllegalStateException("failed to send audio chunk", error);
         }
@@ -66,6 +84,13 @@ final class GatewayDownlink {
             if (result.speakText() != null) payload.put("speakText", result.speakText());
         }
         if (segmentId != null) payload.put("segmentId", segmentId);
+        if (result.actionId() != null) {
+            payload.put("actionId", result.actionId());
+            // D14c:随回复下发支持窗口截止时刻(客户端据此明确拒绝过期动作)
+            if (result.actionExpiresAtMs() > 0) {
+                payload.put("actionExpiresAtMs", result.actionExpiresAtMs());
+            }
+        }
         send(session, "reply", payload);
     }
 
@@ -98,5 +123,9 @@ final class GatewayDownlink {
         } catch (IOException error) {
             LOG.warn("failed to close {}: {}", session.getId(), error.getMessage());
         }
+    }
+
+    void release(WebSocketSession session) {
+        sessions.remove(session);
     }
 }

@@ -38,7 +38,8 @@ public class TelemetryConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(new TelemetryAuthInterceptor(properties.accessToken()))
+        registry.addInterceptor(
+                new TelemetryAuthInterceptor(properties.accessToken(), properties.adminToken()))
                 .addPathPatterns("/api/telemetry/**");
     }
 

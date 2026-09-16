@@ -94,13 +94,27 @@ public final class SegmentPipeline {
      * intent 非空时下行 kind=action；asrText = 离线胜出时的离线原文，否则 ASR 识别文本。
      */
     public record SegmentResult(String text, String speakText, Intent intent, String asrText,
-                                String mime, byte[] audio, boolean streamed) {
+                                String mime, byte[] audio, boolean streamed, String actionId,
+                                long actionExpiresAtMs) {
         public SegmentResult(String text, String speakText, Intent intent, String asrText) {
-            this(text, speakText, intent, asrText, null, null, false);
+            this(text, speakText, intent, asrText, null, null, false, null, 0L);
         }
 
         SegmentResult asStreamed() {
-            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true);
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, true, actionId,
+                    actionExpiresAtMs);
+        }
+
+        /** D07a:输出准入后签发动作身份,随下行携带;缓存重放复用同一 actionId。 */
+        SegmentResult withActionId(String actionId, long actionExpiresAtMs) {
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, streamed,
+                    actionId, actionExpiresAtMs);
+        }
+
+        /** D14c:签发失败(如审计写失败)时降级——不携带 actionId,客户端不会执行该动作。 */
+        SegmentResult withoutAction() {
+            return new SegmentResult(text, speakText, intent, asrText, mime, audio, streamed,
+                    null, 0L);
         }
     }
 
@@ -319,7 +333,7 @@ public final class SegmentPipeline {
                     return fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
                 }
                 return new SegmentResult(null, reply.speakText(), reply.intent(), textForAsr,
-                        reply.mime(), reply.data(), false);
+                        reply.mime(), reply.data(), false, null, 0L);
             }
             default -> {
                 // 防御：未知 kind → 文本化

@@ -13,6 +13,9 @@ public interface ToolExecutionPolicy {
     default boolean cacheSuccess(AgentToolCall call) { return false; }
     default boolean isReadOnly(AgentToolCall call) { return false; }
 
+    /** D04 过渡:已审核的非只读提交操作(选择器执行等),D05 落地后撤销此类批准。 */
+    default boolean isApprovedOperation(AgentToolCall call) { return false; }
+
     static ToolExecutionPolicy conservative() { return call -> false; }
 
     /** Snapshot trusted declarations; duplicate tool names fail closed. */
@@ -31,6 +34,9 @@ public interface ToolExecutionPolicy {
             }
             public boolean cacheSuccess(AgentToolCall call) {
                 return snapshot.getOrDefault(call.name(), ToolExecutionTraits.UNKNOWN).cacheSuccess();
+            }
+            public boolean isApprovedOperation(AgentToolCall call) {
+                return snapshot.getOrDefault(call.name(), ToolExecutionTraits.UNKNOWN).approvedOperation();
             }
         };
     }

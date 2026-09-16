@@ -15,6 +15,7 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.45.3.0")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation(testFixtures(project(":contracts")))
     testImplementation(libs.mockwebserver)
 }
 

@@ -32,7 +32,8 @@ public final class GatewayCodec {
     private static final Set<String> TYPES = Set.of(
             "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
             "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
-            "chat_start", "chat_ready", "chat_finish", "chat_speech_started");
+            "chat_start", "chat_ready", "chat_finish", "chat_speech_started",
+            "navigation_selection_start");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
@@ -43,13 +44,14 @@ public final class GatewayCodec {
             Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId", "utteranceId",
                     "latitude", "longitude", "attempt", "navigationSelectionId")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
-            Map.entry("ready", Set.of("sessionId", "language", "protocolVersion", "serverTime")),
+            Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId")),
+            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),
             Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat")),
             Map.entry("pending", Set.of("segmentId", "text")),
-            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText")),
+            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText", "actionId", "actionExpiresAtMs")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
             Map.entry("bye", Set.of("sessionId", "reason")),
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),

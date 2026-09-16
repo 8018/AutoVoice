@@ -29,9 +29,21 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(new AdminAuthInterceptor(props.adminToken(), props.serviceToken()))
+        registry.addInterceptor(new AdminAuthInterceptor(adminSessionStore(), props.serviceToken()))
                 .addPathPatterns("/api/skills/**", "/api/admin/**", "/api/config/**")
                 .excludePathPatterns("/api/admin/login", "/api/admin/logout");
+    }
+
+    /** D03b 管理会话存储:TTL 由配置注入,时钟可替换(测试用)。 */
+    @Bean
+    public AdminSessionStore adminSessionStore() {
+        return new AdminSessionStore(System::currentTimeMillis, props.adminSessionTtlMs());
+    }
+
+    /** D03b 登录限流器:固定窗口,按来源 IP 计数。 */
+    @Bean
+    public LoginRateLimiter loginRateLimiter() {
+        return new LoginRateLimiter(System::currentTimeMillis);
     }
 
     @Bean
@@ -45,8 +57,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
      * 因构造参数缺失失败。
      */
     @Bean
-    public ConfigController configController(ConfigService service, SkillProperties props) {
-        return new ConfigController(service, props);
+    public ConfigController configController(ConfigService service, SkillProperties props,
+                                             AdminSessionStore sessions) {
+        return new ConfigController(service, props, sessions);
     }
 
     @Bean

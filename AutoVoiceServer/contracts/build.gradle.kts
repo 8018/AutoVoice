@@ -1,5 +1,7 @@
 plugins {
     `java-library`
+    // D01b:跨模块测试夹具(TestClock/FutureGate/FakeUpstream/SlowDrain)
+    `java-test-fixtures`
 }
 
 java {

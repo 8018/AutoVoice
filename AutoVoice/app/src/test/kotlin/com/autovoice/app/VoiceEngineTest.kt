@@ -761,6 +761,7 @@ class VoiceEngineTest {
                 data = ByteArray(8) { it.toByte() },
                 speakText = "已为您打开空调",
                 intent = powerOnIntent(),
+                actionId = "test-action-ac", // 模拟服务端签发,执行网关据此准入
             )
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
@@ -868,7 +869,8 @@ class VoiceEngineTest {
         val requested = mutableListOf<String>()
         val played = mutableListOf<AudioReply>()
         val audio =
-            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到 24 度")
+            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到 24 度",
+                    actionId = "test-action-ac")
         lateinit var engine: VoiceEngine
         runBlocking {
             val pair = engine(
@@ -898,6 +900,7 @@ class VoiceEngineTest {
                     com.autovoice.voicecore.ActionReply(
                         intent = setTempIntent(24.0),
                         speakText = "已为您把空调调到24度",
+                        actionId = "test-action-1",
                     )
                 },
                 tts = TtsRequester { requested.add(it); null },
@@ -916,7 +919,8 @@ class VoiceEngineTest {
         val requested = mutableListOf<String>()
         val played = mutableListOf<AudioReply>()
         val ttsAudio =
-            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到24度")
+            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "已为您把空调调到24度",
+                    actionId = "test-action-ac")
         lateinit var engine: VoiceEngine
         lateinit var vehicle: MockVehicleState
         runBlocking {
@@ -927,6 +931,7 @@ class VoiceEngineTest {
                     com.autovoice.voicecore.ActionReply(
                         intent = setTempIntent(24.0),
                         speakText = "已为您把空调调到24度",
+                        actionId = "test-action-1",
                     )
                 },
                 tts = TtsRequester {
@@ -958,6 +963,7 @@ class VoiceEngineTest {
                     com.autovoice.voicecore.ActionReply(
                         intent = navigateIntent("杭州东站", 30.2896, 120.2108),
                         speakText = "好的，已为您规划去杭州东站的导航",
+                        actionId = "test-action-1",
                     )
                 },
                 tts = TtsRequester { requested.add(it); null },
@@ -1037,6 +1043,7 @@ class VoiceEngineTest {
                             waypointsJson = """[{"poiname":"爱情广场","lat":38.8654,"lon":115.4696}]""",
                         ),
                         speakText = "好的，已为您规划先去爱情广场再去大旗杆的导航",
+                        actionId = "test-action-nav",
                     )
                 },
                 tts = TtsRequester { requested.add(it); null },
@@ -1074,6 +1081,7 @@ class VoiceEngineTest {
                             waypointsJson = "不是JSON",
                         ),
                         speakText = "好的，已为您打开导航",
+                        actionId = "test-action-nav",
                     )
                 },
                 tts = TtsRequester { null },
