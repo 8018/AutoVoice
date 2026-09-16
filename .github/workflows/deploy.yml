@@ -17,7 +17,9 @@ on:
     branches: [main]
 
 concurrency:
-  group: deploy-production
+  # Dev and production currently share one host. Serialize both workflows so concurrent SSH/SCP
+  # sessions cannot overload sshd or race release activation.
+  group: autovoice-shared-deploy-host
   cancel-in-progress: false
 
 permissions:
@@ -29,9 +31,11 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       vars.AUTO_DEPLOY_PRODUCTION == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
@@ -100,6 +104,10 @@ jobs:
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=15
+            -o ConnectionAttempts=1
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
             -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
           )
           SCP_ARGS=(
@@ -108,18 +116,32 @@ jobs:
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=15
+            -o ConnectionAttempts=1
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
             -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
           )
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
           STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
 
-          ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
-          scp "${SCP_ARGS[@]}" \
-            AutoVoiceServer/app/build/libs/app.jar \
-            AutoVoiceServer/tts-server/build/libs/tts-server.jar \
-            AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
-            AutoVoiceServer/deploy/deploy-release.sh \
-            "$TARGET:$STAGING_DIR/"
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              if [[ "$attempt" -eq 3 ]]; then return 1; fi
+              echo "::warning::SSH upload attempt $attempt failed; retrying in $((attempt * 10))s"
+              sleep $((attempt * 10))
+            done
+          }
+
+          retry ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
+          retry scp "${SCP_ARGS[@]}" \
+              AutoVoiceServer/app/build/libs/app.jar \
+              AutoVoiceServer/tts-server/build/libs/tts-server.jar \
+              AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
+              AutoVoiceServer/deploy/deploy-release.sh \
+              "$TARGET:$STAGING_DIR/"
 
       - name: Activate release
         shell: bash
@@ -130,6 +152,10 @@ jobs:
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=15
+            -o ConnectionAttempts=1
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
             -o "UserKnownHostsFile=$RUNNER_TEMP/autovoice-ssh/known_hosts"
           )
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
