@@ -38,6 +38,8 @@ systemctl status autovoice-dev-gateway
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
 Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
 `deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
+只有 `dev` 分支 push 产生的 CI 会触发部署，PR 自身的 CI 不会重复发布。同机的 dev
+与生产工作流使用同一个并发组，任一时刻只允许一个部署任务连接服务器。
 脚本会在替换 jar 前校验
 `SKILL_MANAGER_URL=http://127.0.0.1:8093`；若误指向生产 8083，发布立即失败，
 不会重启任何服务。dev Skill 配置需通过 8093 管理面板独立维护；首次需要同款 Skill 时，
@@ -137,6 +139,11 @@ systemd 状态和本机端口检查。任一服务在 90 秒内未就绪，会�
 Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
 `main` 分支的 **CI** 成功时会自动发布对应 commit。未设置该变量时，CI 后的自动
 发布 job 会跳过，不会产生失败记录。
+
+部署连接设置 15 秒 SSH 建连超时和 keepalive。创建暂存目录与上传产物最多尝试三次，
+退避 10/20 秒；整个部署任务最多运行 20 分钟。上传阶段可安全重试，激活阶段不做盲目
+重试，避免连接中断后无法判断远端脚本是否已经执行。由于 dev 与生产当前位于同一主机，
+两个部署工作流全局串行，防止并发 SSH/SCP 和服务切换互相干扰。
 
 `PROD_SSH_KNOWN_HOSTS` 应从已经验证过的管理机取得，不要在 workflow 中临时执行
 `ssh-keyscan`，否则无法防止中间人攻击。例如先确认当前连接使用的指纹，再读取：
