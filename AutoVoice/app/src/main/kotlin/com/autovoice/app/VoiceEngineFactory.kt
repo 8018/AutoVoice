@@ -11,11 +11,11 @@ import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
-import com.autovoice.voicecore.AsrStage
+import com.autovoice.voicecore.AsrEngine
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.NluResult
-import com.autovoice.voicecore.NluStage
+import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
@@ -25,8 +25,9 @@ import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.validateForRuntime
 import com.autovoice.tts.TtsEventSink
+import com.autovoice.tts.TtsPlaybackDriver
 import com.autovoice.tts.TtsSynthesizer
-import com.autovoice.tts.createTtsService
+import com.autovoice.tts.createTtsOutput
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -76,6 +77,8 @@ internal object VoiceEngineFactory {
         onDialogueState: (DialogueSnapshot) -> Unit = {},
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
+        /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
+        bindNavigationAdoptionSender: ((String) -> Unit) -> Unit = {},
     ): VoiceEngine {
         cfg.validateForRuntime()
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -135,14 +138,28 @@ internal object VoiceEngineFactory {
         // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
         clockOffsetProvider.set(cloudRunner::clockOffsetMs)
         // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）。
-        // 缓存事件由 SpeechOutputService 携带固定 turnId 上报，不读可变的当前轮。
-        val ttsService = createTtsService(
+        // 缓存事件由 :tts 携带固定 turnId 上报，不读可变的当前轮。
+        val ttsOutput = createTtsOutput(
             synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
             cacheDir = File(context.filesDir, "tts_cache"),
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: com.autovoice.voicecore.AudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.play(reply, identity)
+                override suspend fun playStream(reply: com.autovoice.voicecore.StreamingAudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.playStream(reply, identity)
+                override fun stop() = player.stop()
+            },
+            scope = scope,
+            isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
             events = TtsEventSink { stage, level, payload ->
                 val turnId = payload["turnId"] as? String ?: ""
                 telemetry.recordFor(turnId, stage, level, payload - "turnId")
             },
+            onPlaybackStage = { identity, stage ->
+                engineRef?.onPlaybackLifecycle(identity.turnId, stage)
+                onPlaybackStage(stage)
+            },
+            onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
         )
         // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
         // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
@@ -212,8 +229,7 @@ internal object VoiceEngineFactory {
                 telemetry,
             ),
             cloud = cloudRunner,
-            tts = ttsService,
-            player = player,
+            tts = ttsOutput,
             business = business,
             scope = scope,
             onLocalRecognized = onLocalRecognized,
@@ -226,7 +242,6 @@ internal object VoiceEngineFactory {
             onCloudPending = onCloudPending,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
-            onPlaybackStage = onPlaybackStage,
             streamingCloud = cloudRunner,
         )
         engineRef = engine
@@ -252,8 +267,8 @@ internal object VoiceEngineFactory {
                 navigation?.session?.cancelSelection()
             }
         }
-        // D05b:采用确认上行绑定到云端连接
-        engine.navigationAdoptionSender = { selectionId ->
+        // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
+        bindNavigationAdoptionSender { selectionId ->
             cloudRunner.sendNavigationSelectionStart(selectionId)
         }
         return engine
@@ -314,9 +329,9 @@ internal object VoiceEngineFactory {
         // 当前端侧 SDK 是 2C 命令词（文本+语义同源），不是通用 ASR；因此不能冒充
         // ASR 提前上屏。demo-full 的独立 ASR 来自云端 asr_partial；后续接入本地 PGS
         // 时只需替换本 stage，仲裁与 NLU 均无需改动。
-        val asr = AsrStage { _, _ -> null }
-        val nlu = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> NluStage { segment, _ ->
+        val localAsrEngine = AsrEngine { _, _ -> null }
+        val localNluEngine = when (cfg.local.nlu) {
+            DemoConfig.LOCAL_NLU_RULE -> NluEngine { segment, _ ->
                 val command = try {
                     recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
                 } catch (t: Throwable) {
@@ -335,7 +350,7 @@ internal object VoiceEngineFactory {
             override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
                 val startMs = System.currentTimeMillis()
                 return try {
-                    val asrResult = asr.recognize(segment, object : AsrSink {
+                    val asrResult = localAsrEngine.recognize(segment, object : AsrSink {
                         override fun onTurnEstablished() {
                             onLocalTurnEstablished(utteranceId)
                         }
@@ -352,7 +367,7 @@ internal object VoiceEngineFactory {
                             }
                         }
                     })
-                    val nluResult = nlu.understand(segment, asrResult)
+                    val nluResult = localNluEngine.understand(segment, asrResult)
                     val intent = nluResult.intent
                     Log.i(FACTORY_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
                     // ASR 与 NLU 分阶段落库；2C 自带文本归 NLU，不伪装成 ASR。

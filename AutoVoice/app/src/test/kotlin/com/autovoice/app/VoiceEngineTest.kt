@@ -1,8 +1,9 @@
 package com.autovoice.app
 
-import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.business.AppBusinessHandler
-import com.autovoice.tts.TtsService
+import com.autovoice.tts.TtsPlaybackDriver
+import com.autovoice.tts.TtsSynthesizer
+import com.autovoice.tts.createTtsOutput
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
@@ -217,8 +218,6 @@ class VoiceEngineTest {
         /** 2026-08-15：统一网络 TTS（不用系统 TTS）。默认 TTS 失败（返回 null）→ 静默记
          *  失败事件；用例可注入 fake 返回音频断言播放。 */
         tts: TtsRequester = TtsRequester { null },
-        /** 架构变更（缓存移回端侧）：默认空缓存，用例可注入预置/可查验实例。 */
-        ttsCache: TtsCache = TtsCache(null),
         /** 导航执行器（spec §4.2）：默认未装配（导航意图记 skipped），用例注入 fake opener。 */
         navigation: NavigationExecutor? = null,
         debugBuild: Boolean = true,
@@ -235,6 +234,25 @@ class VoiceEngineTest {
         // B2：仲裁器 utteranceId 延迟绑定引擎会话（生产 create() 同款 engineRef 模式，
         // 非最新 uid 拦截在测试里与生产语义一致）
         var engineRef: VoiceEngine? = null
+        val output = createTtsOutput(
+            synthesizer = TtsSynthesizer { text, turnId -> tts.request(text, turnId) },
+            cacheDir = null,
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: AudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.play(reply, identity)
+                override suspend fun playStream(reply: StreamingAudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.playStream(reply, identity)
+                override fun stop() = player.stop()
+            },
+            scope = scope,
+            isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
+            events = com.autovoice.tts.TtsEventSink { stage, level, payload ->
+                val turnId = payload["turnId"] as? String ?: ""
+                telemetry.recordFor(turnId, stage, level, payload - "turnId")
+            },
+            onPlaybackStage = { identity, stage -> engineRef?.onPlaybackLifecycle(identity.turnId, stage) },
+            onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
+        )
         val engine = VoiceEngine(
             cfg = cfg(cloudWaitMs),
             arbiter = OnDeviceRaceArbiter(
@@ -276,10 +294,7 @@ class VoiceEngineTest {
             networkAvailable = networkAvailable,
             local = local,
             cloud = cloud,
-            tts = TtsService { text, turnId ->
-                ttsCache.get(text) ?: tts.request(text, turnId)?.also { ttsCache.put(text, it) }
-            },
-            player = player,
+            tts = output,
             business = AppBusinessHandler(vehicle, navigation),
             scope = scope,
             debugBuild = debugBuild,
@@ -1140,134 +1155,6 @@ class VoiceEngineTest {
         // 由 recordFor 直传 /events；本用例 telemetry disabled，事件进 no-op 不断言）
     }
 
-    // --------------------------------------------------- 架构变更：TTS 缓存移回端侧（TtsCache）
-
-    /** 缓存命中：直接播缓存音频，不发 tts_request（counting fake 断言 0 次），
-     *  事件记 cache_check + cache_hit（带 bytes），不记 cache_miss。
-     *  注：cache 事件在 speakViaTts 的 scope.launch 内记录，晚于 round 收包 →
-     *  经 /events 直传（T7 同机制），故从 /events 断言。 */
-    @Test
-    fun `tts cache hit plays cached audio without network request`() {
-        val server = MockWebServer()
-        server.start()
-        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
-        server.enqueue(MockResponse().setResponseCode(200)) // round POST
-        server.enqueue(MockResponse().setResponseCode(200)) // /events POST（轮关闭后的 cache 事件）
-        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val cachedWav = ByteArray(32) { 7 }
-        var requested = 0
-        val played = mutableListOf<AudioReply>()
-        try {
-            runBlocking {
-                val telemetry = TelemetryClient(
-                    okHttp = OkHttpClient(),
-                    baseUrl = "http://localhost:${server.port}",
-                    deviceId = "demo-1",
-                    scope = telemetryScope,
-                    enabled = true,
-                )
-                // 事件桥同生产 create()：recordFor 快照通道（launch 晚于收口，record 会丢弃）
-                var cacheEngineRef: VoiceEngine? = null
-                val cache = TtsCache(null, onEvent = { s, l, p ->
-                    val e = cacheEngineRef ?: return@TtsCache
-                    telemetry.recordFor(e.session.currentUtteranceId, s, l, p)
-                })
-                cache.put("好的，车窗已打开", cachedWav)
-                val pair = engine(
-                    scope = this,
-                    local = LocalChainRunner { powerOnIntent() },
-                    cloud = CloudRunner { TextReply("好的，车窗已打开") },
-                    telemetry = telemetry,
-                    tts = TtsRequester { requested++; null },
-                    player = AudioPlayer { played.add(it) },
-                    ttsCache = cache,
-                )
-                cacheEngineRef = pair.first
-                utter(pair.first)
-            }
-            assertEquals(0, requested, "缓存命中不应发 tts_request")
-            assertEquals(1, played.size, "缓存音频应直接播放")
-            assertArrayEquals(cachedWav, played[0].data, "播放的应是缓存音频字节")
-            val events = collectLateEvents(server)
-            val check = events.find { it.getString("stage") == TelemetryStages.TTS_CACHE_CHECK }
-            assertNotNull(check, "缓存命中应记 tts_cache_check")
-            assertEquals(
-                "好的，车窗已打开",
-                check!!.getJSONObject("payload").getString("text"),
-                "cache_check payload 应带原文文本",
-            )
-            val hit = events.find { it.getString("stage") == TelemetryStages.TTS_CACHE_HIT }
-            assertNotNull(hit, "缓存命中应记 tts_cache_hit")
-            assertEquals(32, hit!!.getJSONObject("payload").getInt("bytes"), "cache_hit payload 应带字节数")
-            assertTrue(events.none { it.getString("stage") == TelemetryStages.TTS_CACHE_MISS }, "命中时不得记 cache_miss")
-        } finally {
-            telemetryScope.cancel()
-            server.shutdown()
-        }
-    }
-
-    /** 缓存未命中：发 tts.request，返回音频 → 播放并写入缓存（put 后再次 get 命中），
-     *  事件记 cache_check + cache_miss（轮关闭后直传 /events，见命中用例注释）。 */
-    @Test
-    fun `tts cache miss requests audio writes cache and plays`() {
-        val server = MockWebServer()
-        server.start()
-        server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
-        server.enqueue(MockResponse().setResponseCode(200)) // round POST
-        server.enqueue(MockResponse().setResponseCode(200)) // /events POST（轮关闭后的 cache 事件）
-        val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val requested = mutableListOf<String>()
-        val played = mutableListOf<AudioReply>()
-        lateinit var cache: TtsCache
-        val ttsAudio =
-            AudioReply(mime = "audio/wav", data = ByteArray(6) { it.toByte() }, speakText = "好的，车窗已打开")
-        try {
-            runBlocking {
-                val telemetry = TelemetryClient(
-                    okHttp = OkHttpClient(),
-                    baseUrl = "http://localhost:${server.port}",
-                    deviceId = "demo-1",
-                    scope = telemetryScope,
-                    enabled = true,
-                )
-                // 事件桥同生产 create()：recordFor 快照通道（launch 晚于收口，record 会丢弃）
-                var cacheEngineRef: VoiceEngine? = null
-                cache = TtsCache(null, onEvent = { s, l, p ->
-                    val e = cacheEngineRef ?: return@TtsCache
-                    telemetry.recordFor(e.session.currentUtteranceId, s, l, p)
-                })
-                val pair = engine(
-                    scope = this,
-                    local = LocalChainRunner { powerOnIntent() },
-                    cloud = CloudRunner { TextReply("好的，车窗已打开") },
-                    telemetry = telemetry,
-                    tts = TtsRequester { requested.add(it); ttsAudio },
-                    player = AudioPlayer { played.add(it) },
-                    ttsCache = cache,
-                )
-                cacheEngineRef = pair.first
-                utter(pair.first)
-            }
-            assertEquals(listOf("好的，车窗已打开"), requested, "未命中应先请求 TTS")
-            assertEquals(1, played.size, "网络音频应播放")
-            assertArrayEquals(ttsAudio.data, played[0].data)
-            assertArrayEquals(ttsAudio.data, cache.get("好的，车窗已打开")?.data, "收到音频应写入缓存")
-            // launch 内 check+miss 直传 /events（断言处的 get 会再产生 check+hit，聚合后只断言存在性）
-            val events = collectLateEvents(server)
-            assertTrue(
-                events.any { it.getString("stage") == TelemetryStages.TTS_CACHE_CHECK },
-                "未命中也应先记 tts_cache_check",
-            )
-            assertTrue(
-                events.any { it.getString("stage") == TelemetryStages.TTS_CACHE_MISS },
-                "未命中应记 tts_cache_miss",
-            )
-        } finally {
-            telemetryScope.cancel()
-            server.shutdown()
-        }
-    }
-
     /**
      * 云端链 ready 后故障（Task 15 M1）：CloudRunner 抛 CloudUnavailableException 且 latch 不可达
      * → 本轮转本地兜底（cloud_unreachable）。故障按【轮次】重试而非跨轮 latch：下一轮
@@ -1449,8 +1336,13 @@ class VoiceEngineTest {
                 cloudStarted.complete(Unit)
                 awaitCancellation()
             },
-            player = AudioPlayer {},
-            tts = TtsService { _, _ -> null },
+            tts = createTtsOutput(
+                synthesizer = TtsSynthesizer { _, _ -> null },
+                cacheDir = null,
+                driver = TtsPlaybackDriver { _, _ -> },
+                scope = scope,
+                isCurrentTurn = { true },
+            ),
             business = AppBusinessHandler(MockVehicleState(), null),
             scope = scope,
         )

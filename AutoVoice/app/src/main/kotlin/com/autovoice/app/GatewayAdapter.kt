@@ -560,8 +560,50 @@ internal class GatewayBridge(
     private val activeStream = AtomicReference<ActiveStream?>(null)
     private val chatReady = Channel<Unit>(Channel.CONFLATED)
 
+    /** Cloud ASR engine owns transcript/turn-established messages only. */
+    private inner class CloudAsrEngine : MessageListener {
+        val messageTypes = setOf("asr_turn_started", "asr_partial")
+        override fun onMessage(message: GatewayMessage) = handle(message)
+    }
+
+    /** Cloud NLU/response engine owns semantic, pending, decision and audio response messages. */
+    private inner class CloudNluEngine : MessageListener {
+        val messageTypes = setOf(
+            "decision", "reply_partial", "reply", "pending", "error",
+        )
+        override fun onMessage(message: GatewayMessage) = handle(message)
+    }
+
+    /** TTS response listener is independent from ASR/NLU; error is intentionally multi-cast. */
+    private inner class CloudTtsListener : MessageListener {
+        val messageTypes = setOf("tts_response", "error")
+        override fun onMessage(message: GatewayMessage) {
+            if (message.type == "tts_response") handle(message) else handleTtsError(message)
+        }
+    }
+
+    private inner class RealtimeChatListener : MessageListener {
+        val messageTypes = setOf("chat_ready", "chat_speech_started")
+        override fun onMessage(message: GatewayMessage) = handle(message)
+    }
+
+    /** Audio response stream is shared by ordinary NLU replies and realtime chat. */
+    private inner class CloudAudioReplyListener : MessageListener {
+        val messageTypes = setOf("audio_reply_start", "audio_reply_chunk", "audio_reply_end")
+        override fun onMessage(message: GatewayMessage) = handle(message)
+    }
+
     init {
-        dispatcher.register(SUPPORTED_TYPES, MessageListener(::handle))
+        val asrEngine = CloudAsrEngine()
+        val nluEngine = CloudNluEngine()
+        val ttsListener = CloudTtsListener()
+        val chatListener = RealtimeChatListener()
+        val audioListener = CloudAudioReplyListener()
+        dispatcher.register(asrEngine.messageTypes, asrEngine)
+        dispatcher.register(nluEngine.messageTypes, nluEngine)
+        dispatcher.register(ttsListener.messageTypes, ttsListener)
+        dispatcher.register(chatListener.messageTypes, chatListener)
+        dispatcher.register(audioListener.messageTypes, audioListener)
         scope.launch {
             client.messages.collect(dispatcher::dispatch)
         }
@@ -754,6 +796,16 @@ internal class GatewayBridge(
         }
     }
 
+    private fun handleTtsError(msg: GatewayMessage) {
+        val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
+        val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
+        val error = GatewayRemoteException(code, "$message [$code]")
+        val segmentId = msg.payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString
+        val affected = if (segmentId == null) pendingTts.values.toList()
+        else listOfNotNull(pendingTts[segmentId])
+        affected.forEach { it.deferred.completeExceptionally(error) }
+    }
+
     /**
      * 按 segmentId 对账（protocol.md §3.2）：消息携带的 segmentId 与当前话语不一致 → 他轮迟到的
      * 消息，丢弃（Log.d）；未携带（服务端合成错误 / 旧版服务端）→ 无从对账，按当前话语处理。
@@ -788,11 +840,4 @@ internal class GatewayBridge(
         return DecisionEntry(arbiter, route, reason, utteranceId, timestampMs)
     }
 
-    companion object {
-        private val SUPPORTED_TYPES = setOf(
-            "decision", "asr_turn_started", "asr_partial", "reply_partial", "reply",
-            "audio_reply_start", "audio_reply_chunk", "audio_reply_end", "chat_ready",
-            "chat_speech_started", "tts_response", "error", "pending",
-        )
-    }
 }

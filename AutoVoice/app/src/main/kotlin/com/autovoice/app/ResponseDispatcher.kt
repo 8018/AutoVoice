@@ -5,6 +5,7 @@ import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessCommand
 import com.autovoice.business.BusinessHandler
 import com.autovoice.business.BusinessResult
+import com.autovoice.tts.TtsOutput
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.Intent
@@ -15,7 +16,7 @@ import com.autovoice.voicecore.TextReply
 
 /** Routes an accepted semantic result to UI, business execution and speech output. */
 internal class ResponseDispatcher(
-    private val output: SpeechOutputService,
+    private val output: TtsOutput,
     private val business: BusinessHandler,
     private val telemetry: TelemetryClient,
     private val isCurrentTurn: (String) -> Boolean,

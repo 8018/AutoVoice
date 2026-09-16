@@ -6,9 +6,10 @@
 Recording / UI
       |
       v
- VoiceEngine  ----> TtsService (:tts)
+ VoiceEngine  ----> TtsOutput (:tts)
       |                 |-- cache（内部）
-      |                 `-- synthesizer port（内部选择）
+      |                 |-- synthesizer（内部选择）
+      |                 `-- playback coordinator（内部） -> Android playback driver
       v
 BusinessHandler (:business-core)
       |
@@ -22,6 +23,10 @@ GatewayCloudRunner
       |                    `-- GatewayPayloadParser（无状态解析）
       `-- GatewayClient（WebSocket 通道）
           `-- GatewayConnectionPolicy（心跳/超时/重连）
+
+Local semantic pipeline                 Cloud semantic pipeline
+  |-- local AsrEngine                     |-- CloudAsrEngine (typed listener)
+  `-- local NluEngine                     `-- CloudNluEngine (typed listener)
 ```
 
 ## 边界约束
@@ -34,8 +39,10 @@ GatewayCloudRunner
 4. `GatewayPayloadParser` 只解析协议，不持有连接、轮次或 UI 状态。
 5. `VoiceEngine` 只负责采集准入、状态机、仲裁和把胜出结果交给 `BusinessHandler`；不得依赖导航、
    车辆状态或具体业务 SDK。
-6. `TtsService` 是合成音频的唯一入口。缓存 key、磁盘格式、命中策略和生成实现不向调用方暴露；
-   Android 播放驱动仍作为输出 adapter，由既有播放身份机制保护迟到回调。
+6. `TtsOutput` 是播报、已有音频播放、流式播放、停止和播放事件的唯一入口。缓存 key、磁盘格式、
+   命中策略、生成实现和播放身份协调均不向调用方暴露；Android 只实现底层播放 driver。
+7. ASR 与 NLU 是两个独立引擎。端侧按 `local AsrEngine -> local NluEngine` 组合；云端 ASR 与
+   云端 NLU 分别注册自己消费的消息类型，ASR 文本不经过语义仲裁。
 
 ## 新业务接入
 
@@ -46,6 +53,6 @@ GatewayCloudRunner
 
 ## 迁移说明
 
-`GatewayClient` 内旧的业务发送与解析方法暂时保留为 `internal + Deprecated`，只供该模块的既有
-协议回归测试编译；app 生产代码已无调用。后续把这些测试迁到独立协议测试后可物理删除旧方法。
-app 内旧 `TtsCache` 同样只为迁移期测试保留为 `internal + Deprecated`，生产装配使用 `:tts`。
+`GatewayClient` 中旧的 audio/chat/TTS/turn 业务发送与 payload 解析方法已经物理删除。协议测试
+通过测试侧协议 helper 驱动通用帧接口。旧 app `TtsCache` 与 `SpeechOutputService` 已删除，
+生产装配、缓存和播放全链路均由 `:tts` 提供。

@@ -26,10 +26,14 @@ interface AsrSink {
     }
 }
 
-/** ASR 阶段：PCM → 0..n 个识别结果。 */
-fun interface AsrStage {
+/** ASR 原子引擎：PCM → 0..n 个识别结果；本地与云端实现遵循同一输出语义。 */
+fun interface AsrEngine {
     suspend fun recognize(segment: ByteArray, sink: AsrSink): AsrResult?
 }
+
+/** Source-compatible migration name. New composition code must depend on [AsrEngine]. */
+@Deprecated("Use AsrEngine")
+typealias AsrStage = AsrEngine
 
 /**
  * NLU 阶段输出。某些 2C/命令词引擎在语义中自带识别文本，放入 [recognizedText]；
@@ -44,6 +48,10 @@ data class NluResult(
  * NLU 阶段：PCM + 可选最终 ASR 文本 → 语义候选。
  * 传统 NLU 使用 asr.text；2C 命令词引擎可直接消费 PCM 并在结果中携带 recognizedText。
  */
-fun interface NluStage {
+fun interface NluEngine {
     suspend fun understand(segment: ByteArray, asr: AsrResult?): NluResult
 }
+
+/** Source-compatible migration name. New composition code must depend on [NluEngine]. */
+@Deprecated("Use NluEngine")
+typealias NluStage = NluEngine
