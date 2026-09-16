@@ -113,7 +113,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          # The legacy "tools" package was removed from current SDK repositories.
+          # Install only the supported base package; pinned platform/build tools follow below.
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
       - run: ./gradlew test lint :app:assembleDebug androidUnitTestCoverage -PuseIflytekStub=true
