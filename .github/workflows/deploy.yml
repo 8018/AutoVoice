@@ -125,18 +125,12 @@ jobs:
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
           STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
 
-          retry() {
-            local attempt
-            for attempt in 1 2 3; do
-              if "$@"; then return 0; fi
-              if [[ "$attempt" -eq 3 ]]; then return 1; fi
-              echo "::warning::SSH upload attempt $attempt failed; retrying in $((attempt * 10))s"
-              sleep $((attempt * 10))
-            done
-          }
+          source AutoVoiceServer/deploy/ssh-retry.sh
 
-          retry ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
-          retry scp "${SCP_ARGS[@]}" \
+          retry_ssh_operation 5 30 "Create production staging directory" \
+            ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
+          retry_ssh_operation 3 180 "Upload production release" \
+            scp "${SCP_ARGS[@]}" \
               AutoVoiceServer/app/build/libs/app.jar \
               AutoVoiceServer/tts-server/build/libs/tts-server.jar \
               AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
@@ -160,8 +154,11 @@ jobs:
           )
           TARGET="$DEPLOY_USER@$DEPLOY_HOST"
           STAGING_DIR="/opt/autovoice/incoming/$DEPLOY_SHA"
-          ssh "${SSH_ARGS[@]}" "$TARGET" \
-            "VOICE_BACKEND='$VOICE_BACKEND' bash '$STAGING_DIR/deploy-release.sh' 'prod' '$DEPLOY_SHA' '$STAGING_DIR'"
+          source AutoVoiceServer/deploy/ssh-retry.sh
+          # Activation has unknown outcome if the connection drops, so bound it but never replay it.
+          retry_ssh_operation 1 300 "Activate production release" \
+            ssh "${SSH_ARGS[@]}" "$TARGET" \
+              "VOICE_BACKEND='$VOICE_BACKEND' bash '$STAGING_DIR/deploy-release.sh' 'prod' '$DEPLOY_SHA' '$STAGING_DIR'"
 
       - name: Deployment summary
         if: success()

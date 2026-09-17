@@ -140,9 +140,11 @@ Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
 `main` 分支的 **CI** 成功时会自动发布对应 commit。未设置该变量时，CI 后的自动
 发布 job 会跳过，不会产生失败记录。
 
-部署连接设置 15 秒 SSH 建连超时和 keepalive。创建暂存目录与上传产物最多尝试三次，
-退避 10/20 秒；整个部署任务最多运行 20 分钟。上传阶段可安全重试，激活阶段不做盲目
-重试，避免连接中断后无法判断远端脚本是否已经执行。由于 dev 与生产当前位于同一主机，
+部署连接设置 15 秒 SSH 建连超时和 keepalive，并在命令外层使用 GNU `timeout`，
+避免 TCP 已接收但 SSH banner 迟迟不到时单次握手卡数分钟。创建暂存目录最多尝试 5 次
+（每次最多 30 秒），上传最多尝试 3 次（每次最多 180 秒）；整个部署任务最多运行
+20 分钟。上传阶段可安全重试，激活阶段只做一次且最多 300 秒，不盲目重放，避免连接
+中断后无法判断远端脚本是否已经执行。由于 dev 与生产当前位于同一主机，
 两个部署工作流全局串行，防止并发 SSH/SCP 和服务切换互相干扰。
 
 `PROD_SSH_KNOWN_HOSTS` 应从已经验证过的管理机取得，不要在 workflow 中临时执行
@@ -151,6 +153,12 @@ Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
 ```bash
 ssh-keygen -F 47.94.4.204
 ```
+
+若 GitHub Actions 和已授权管理机都报 `Connection timed out during banner exchange` 或
+`kex_exchange_identification`，说明 TCP 22 可能已被接收，但服务器/安全设备没有完成 SSH
+握手。工作流的有界重试只能处理短暂拒绝，不能修复持续的服务器侧故障。此时需通过
+阿里云 ECS 控制台/云助手/串口连接检查安全组、`sshd` 状态、`MaxStartups`、连接数与
+防火墙封禁；恢复前不要反复重跑生产部署。
 
 每次发布的构建产物和发布前备份分别保存在 `/opt/autovoice/releases/<commit>` 与
 `/opt/autovoice/backups/<commit>-<UTC时间>`，便于审计和手工回退。
