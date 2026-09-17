@@ -14,7 +14,7 @@ JSON Schema 与运行时校验必须同时更新；不能只让配置“解析�
 | `local.nlu` | 必填 | `VoiceEngineFactory.buildLocalChain` | 当前只支持 `rule.nlu`，其他名称启动期拒绝。 |
 | `cloud.enabled` | 必填 | `VoiceSession` | 是否启动云端候选；关闭时只走本地候选。 |
 | `cloud.gatewayUrl` | 必填 | `GatewayCloudRunner` | WebSocket 网关地址；`cloud.enabled=true` 时不得为空。 |
-| `cloud.waitMs` | 必填 | `OnDeviceRaceArbiter` | 端侧等待云端结果的第一阶段时间，必须大于 0。 |
+| `cloud.waitMs` | 必填 | `OnDeviceRaceArbiter` | 本地普通语义在进入 FIFO 就绪队列前等待云端的时间，必须大于 0；不延迟云端或本地车窗语义。 |
 | `cloud.deviceId` / `authToken` | 无 | `GatewayCloudRunner` | 网关 hello 鉴权；未配置时不发送对应字段。 |
 | `cloud.telemetry.enabled` | `true`（仅当 telemetry 段存在） | `VoiceEngineFactory` | 控制端侧链路遥测；整个 `telemetry` 段缺失时关闭。 |
 | `cloud.telemetry.url` | 由 `gatewayUrl` 推导 | `TelemetryClient` | 遥测 HTTP 基址；空字符串按未配置处理。 |

@@ -1,14 +1,15 @@
 package com.autovoice.app
 
 import android.util.Log
-import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
+import com.autovoice.business.BusinessHandler
+import com.autovoice.tts.PlaybackStage
+import com.autovoice.tts.TtsOutput
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.dialog.AdmissionEvidence
@@ -19,44 +20,25 @@ import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
 import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
-import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
-/** 云端音频回复播放出口（应用层实现：TtsPlayer）。JVM 测试可注入 fake。 */
-fun interface AudioPlayer {
-    fun play(reply: AudioReply)
-    fun play(reply: AudioReply, identity: PlaybackIdentity) = play(reply)
-    suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) = playStream(reply)
-
-    /** 停止当前播放；只中断输出，不取消端侧/云端候选计算。 */
-    fun stop() = Unit
-
-    /** 默认实现累积后复用完整音频播放器；生产 TtsPlayer 覆盖为 AudioTrack 边收边播。 */
-    suspend fun playStream(reply: StreamingAudioReply) {
-        val pcm = ByteArrayOutputStream()
-        for (chunk in reply.chunks) pcm.write(chunk)
-        val end = reply.completion.await()
-        play(AudioReply("audio/pcm", pcm.toByteArray(), end.speakText, end.intent, end.asrText))
-    }
-}
-
 /**
  * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
  *
  * 持有装配好的 [VoiceSession]（本地链 + 云端链 + [OnDeviceRaceArbiter]，见 voice-core
- * §5.1 编排语义）与两个出口：[player]（音频播放）、[vehicle]（车控执行）。
+ * §5.1 编排语义）以及通用 TTS、业务处理出口。引擎不持有导航或车辆状态。
  * 播报统一走网络 TTS（2026-08-15：不用系统 TTS）。结果路由与播放生命周期
- * 分别由 [ResponseDispatcher] 和 [SpeechOutputService] 管理：
+ * 分别由 [ResponseDispatcher] 和独立 `:tts` 模块管理：
  *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
  *    ActionReply → 执行 intent + 播报自带 speakText；
- *  - [RaceWinner.Local]：`vehicle.apply(intent)` 成功 → 播报其返回文本（未知意图不播报）；
- *  - [RaceWinner.Failed]：播报统一兜底话术（按钮录音模式下全败需要明确反馈）。
+ *  - [RaceWinner.Local]：胜出 NLU 交业务处理模块，成功时播报其返回文本。
  *
  * 弱网调试 hook（仅 debug 构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
  * 云端赶不上 cloudWaitMs → 仲裁回落到本地（reason `cloud_timeout_use_local`）。
@@ -67,12 +49,6 @@ fun interface AudioPlayer {
 class VoiceEngine(
     cfg: DemoConfig,
     arbiter: OnDeviceRaceArbiter,
-    sink: DecisionSink,
-    /** D05b:导航候选采用确认上行(由工厂装配到云端连接)。 */
-    var navigationAdoptionSender: (String) -> Unit = {},
-    /** 当前交互内的一次性动作执行门。 */
-    private val actionGateway: com.autovoice.app.action.ActionExecutionGateway =
-        com.autovoice.app.action.ActionExecutionGateway(),
     /**
      * 链路数据上报客户端（T6）：生产装配由 [VoiceEngineFactory.create] 注入（telemetry 未配置 → enabled=false
      * 的全 no-op 实例）；JVM 测试不传时用默认 disabled 实例，行为不变。
@@ -87,22 +63,10 @@ class VoiceEngine(
     private val networkAvailable: () -> Boolean,
     local: LocalChainRunner,
     cloud: CloudRunner,
-    private val tts: TtsRequester,
-    private val player: AudioPlayer,
-    /**
-     * 端侧 TTS 缓存（架构变更：缓存从服务器移回端侧）：播报服务先查缓存，
-     * 命中直接播（不请求服务器）；未命中走 [tts] 网络合成，回传写缓存再播。
-     * 默认仅内存（JVM 测试注入预置缓存/fake）；生产装配由 [VoiceEngineFactory.create] 注入。
-     */
-    private val ttsCache: TtsCache = TtsCache(null),
-    val vehicle: MockVehicleState,
-    /**
-     * 导航执行器（spec §4.2）：navigation/navigate 意图不走 vehicle，转高德 URI 拉起高德 App。
-     * null（测试/未装配）时导航意图记 skipped。
-     */
-    private val navigation: NavigationExecutor? = null,
+    private val tts: TtsOutput,
+    /** 已通过状态机与仲裁的语义唯一业务出口；引擎不感知导航、车控等具体领域。 */
+    private val business: BusinessHandler,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    private val onVehicleApplied: () -> Unit = {},
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
     private val onLocalRecognized: (String?) -> Unit = {},
     /** 模型回答文本（流式 partial 的最终兜底）。 */
@@ -112,6 +76,9 @@ class VoiceEngine(
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
+    private val listeningTimeoutMs: Long = 30_000,
+    private val understandingTimeoutMs: Long = 30_000,
+    private val thinkingTimeoutMs: Long = 60_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
     /**
@@ -121,12 +88,8 @@ class VoiceEngine(
     private val onCloudPending: (Boolean) -> Unit = {},
     /** 云端语义通过端侧仲裁后释放其回复字幕；ASR 文本不受此门控。 */
     private val onCloudWon: (String) -> Unit = {},
-    /** 服务端混合后端下发的闲聊锁域控制。 */
-    private val onConversationMode: (Boolean) -> Unit = {},
     /** 本地交互状态；只由 ConversationController 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     private val onDialogueState: (DialogueSnapshot) -> Unit = {},
-    /** 已通过播放身份校验的生命周期事件；驱动层迟到回调不会触发此钩子。 */
-    private val onPlaybackStage: (PlaybackStage) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
@@ -150,15 +113,13 @@ class VoiceEngine(
      */
     val onTtsPlayEvent: (stage: String, level: String, payload: Map<String, Any?>) -> Unit
 
-    /** 仅用于合成缓存遥测和准入停播判断；真实播放事件归属由 PlaybackIdentity 固定。 */
-    @Volatile
-    private var playUtteranceId = ""
-
     /** 本轮云端 VAD 段计数（T7 vad 聚合统计；onListeningStart 清零，onCloudSegment 累加）。 */
     private var turnSegmentCount = 0
 
     /** 本轮云端 VAD 段总时长 ms（T7 vad 聚合统计；16k 单声道 16bit，bytes/32 = ms）。 */
     private var turnSegmentsTotalMs = 0L
+
+    private var dialogueTimeoutJob: Job? = null
 
     /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
     @Volatile
@@ -169,63 +130,29 @@ class VoiceEngine(
 
     /** Capture 准入、pending 可见性和当前 turn 的唯一拥有者。 */
     val conversation: ConversationController = ConversationController(
-        onState = onDialogueState,
+        onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
-            if (playUtteranceId.isNotBlank() && playUtteranceId != admitted.turnId) {
-                playbackCoordinator.stop()
-            }
+            tts.stop()
             session.currentUtteranceId = admitted.turnId
             streamingCloud?.commitStreamingTurn(admitted.turnId)
         },
         onPendingVisible = onCloudPending,
     )
 
-    private val playbackCoordinator: PlaybackCoordinator = PlaybackCoordinator(player) { identity, kind, level, payload ->
-        val stage = when (kind) {
-            PlaybackStage.STARTED -> TelemetryStages.TTS_PLAY_START
-            PlaybackStage.INTERRUPTED -> TelemetryStages.TTS_PLAY_INTERRUPTED
-            else -> TelemetryStages.TTS_PLAY_END
-        }
-        telemetry.recordFor(identity.turnId, stage, level,
-            payload + mapOf("source" to "network", "event" to kind.wire))
-        onPlaybackStage(kind)
-        // Realtime playback has its own identity but never advances the ordinary dialogue.
-        if (identity.turnId.isNotBlank()) when (kind) {
-            PlaybackStage.STARTED -> conversation.onPlaybackStarted(identity.turnId)
-            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(identity.turnId)
-            PlaybackStage.INTERRUPTED -> Unit
-        }
-    }
-
-    private val speechOutput = SpeechOutputService(
-        tts = tts,
-        cache = ttsCache,
-        playback = playbackCoordinator,
-        telemetry = telemetry,
-        scope = scope,
-        isCurrentTurn = ::isLatestTurn,
-        onEmptyOutput = conversation::onPlaybackEnded,
-    )
-
     private val responses = ResponseDispatcher(
-        output = speechOutput,
-        vehicle = vehicle,
-        navigation = navigation,
+        output = tts,
+        business = business,
         telemetry = telemetry,
         isCurrentTurn = ::isLatestTurn,
-        onVehicleApplied = onVehicleApplied,
         onRecognized = onLocalRecognized,
         onReplyText = onReplyText,
-        onConversationMode = onConversationMode,
-        actionGateway = actionGateway,
     )
 
     init {
-        onTtsPlayEvent = playbackCoordinator::accept
+        onTtsPlayEvent = tts::acceptPlaybackEvent
         session = VoiceSession(
             cfg = cfg,
             arbiter = arbiter,
-            sink = sink,
             local = local,
             cloud = object : CloudRunner {
                 override suspend fun run(segment: ByteArray): Reply = run(segment, currentUtteranceId)
@@ -238,6 +165,8 @@ class VoiceEngine(
             },
             scope = scope,
             resultListener = ResultListener { utteranceId, winner -> onTurnResult(utteranceId, winner) },
+            listeningTimeoutMs = listeningTimeoutMs,
+            understandingTimeoutMs = understandingTimeoutMs,
         )
     }
 
@@ -249,13 +178,24 @@ class VoiceEngine(
      */
     fun close() {
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
-        playbackCoordinator.stop()
+        tts.stop()
+        dialogueTimeoutJob?.cancel()
         session.close()
         scope.cancel()
     }
 
     /** 统一停止当前输出；用于 realtime 对端确认用户开始说话等非普通新轮入口。 */
-    fun stopPlayback() = playbackCoordinator.stop()
+    fun stopPlayback() = tts.stop()
+
+    /** Called only by :tts after playback identity validation. */
+    internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) {
+        if (turnId.isBlank()) return
+        when (stage) {
+            PlaybackStage.STARTED -> conversation.onPlaybackStarted(turnId)
+            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(turnId)
+            PlaybackStage.INTERRUPTED -> Unit
+        }
+    }
 
     fun onForeground() = onForeground.invoke()
 
@@ -280,7 +220,7 @@ class VoiceEngine(
         telemetry.begin(captureId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
-        if (interruptPlayback) playbackCoordinator.stop()
+        if (interruptPlayback) tts.stop()
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -440,28 +380,18 @@ class VoiceEngine(
                 utteranceId,
                 AdmissionEvidence.LOCAL_SEMANTIC,
             )
-            is RaceWinner.Failed -> conversation.rejectCapture(utteranceId)
-            is RaceWinner.Intercepted -> Unit
         }
         if (!conversation.isCurrentTurn(utteranceId)) {
             telemetry.end(utteranceId)
             return
         }
         conversation.onFinalSemantic(utteranceId)
-        // T7 评审 C1：本轮所有播报由此发起，
-        // 先快照 utteranceId——播放的异步结果回调在 end() 收包之后才到，凭快照归属本轮
-        playUtteranceId = utteranceId
         when (winner) {
             is RaceWinner.Cloud -> {
                 onCloudWon(utteranceId)
                 responses.dispatchCloud(utteranceId, winner.reply)
             }
             is RaceWinner.Local -> responses.dispatchLocal(utteranceId, winner.nlu)
-            // 全败：播报兜底话术（按钮录音模式下需要明确反馈；2026-08-15 起同样走网络 TTS，
-            // 不再用系统 TTS；决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
-            is RaceWinner.Failed -> responses.dispatchFailure(utteranceId)
-            // 该 turn 已在仲裁层输出过语义：不重复播报或执行。
-            is RaceWinner.Intercepted -> Unit
         }
         // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
         setCloudPending(utteranceId, false)
@@ -472,12 +402,24 @@ class VoiceEngine(
     private fun isLatestTurn(utteranceId: String): Boolean =
         utteranceId.isBlank() || conversation.isCurrentTurn(utteranceId)
 
+    private fun onConversationState(snapshot: DialogueSnapshot) {
+        onDialogueState(snapshot)
+        dialogueTimeoutJob?.cancel()
+        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.THINKING ||
+            snapshot.state == com.autovoice.voicecore.dialog.DialogueState.SEMANTIC_PROCESSING
+        ) {
+            val turnId = snapshot.turnId ?: return
+            dialogueTimeoutJob = scope.launch {
+                delay(thinkingTimeoutMs)
+                conversation.onThinkingExpired(turnId)
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "VoiceEngine"
 
         /** 弱网调试 hook 的云端人为延迟（晚于 cloudWaitMs 即本地赢）。 */
         private const val WEAK_NETWORK_DELAY_MS = 3_000L
-
-
     }
 }

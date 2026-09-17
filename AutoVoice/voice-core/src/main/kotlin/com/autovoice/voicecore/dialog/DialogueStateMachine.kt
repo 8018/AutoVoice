@@ -80,6 +80,17 @@ class DialogueStateMachine(
         return update(DialogueSnapshot())
     }
 
+    /** Thinking is a UI/session concern. Expiry invalidates adoption but never cancels arbitration. */
+    @Synchronized
+    fun onThinkingExpired(turnId: String): DialogueSnapshot {
+        val current = _snapshot.value
+        if (current.turnId != turnId) return current
+        if (current.state != DialogueState.THINKING &&
+            current.state != DialogueState.SEMANTIC_PROCESSING
+        ) return current
+        return update(DialogueSnapshot())
+    }
+
     @Synchronized
     fun reset(): DialogueSnapshot = update(DialogueSnapshot())
 

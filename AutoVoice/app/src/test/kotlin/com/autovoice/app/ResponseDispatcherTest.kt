@@ -1,7 +1,10 @@
 package com.autovoice.app
 
-import com.autovoice.app.audio.TtsCache
 import com.autovoice.app.telemetry.TelemetryClient
+import com.autovoice.app.business.AppBusinessHandler
+import com.autovoice.tts.TtsPlaybackDriver
+import com.autovoice.tts.TtsSynthesizer
+import com.autovoice.tts.createTtsOutput
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.Intent
@@ -20,25 +23,21 @@ class ResponseDispatcherTest {
             OkHttpClient(), "http://unused", null,
             CoroutineScope(Dispatchers.Default), enabled = false,
         )
-        val output = SpeechOutputService(
-            tts = TtsRequester { null },
-            cache = TtsCache(null),
-            playback = PlaybackCoordinator(AudioPlayer { }, { _, _, _, _ -> }),
-            telemetry = telemetry,
+        val output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> null },
+            cacheDir = null,
+            driver = TtsPlaybackDriver { _, _ -> },
             scope = CoroutineScope(Dispatchers.Default),
             isCurrentTurn = { true },
             onEmptyOutput = {},
         )
         return ResponseDispatcher(
             output = output,
-            vehicle = MockVehicleState(),
-            navigation = null,
+            business = AppBusinessHandler(MockVehicleState(), null),
             telemetry = telemetry,
             isCurrentTurn = { true },
-            onVehicleApplied = {},
             onRecognized = {},
             onReplyText = onReplyText,
-            onConversationMode = {},
         )
     }
 
