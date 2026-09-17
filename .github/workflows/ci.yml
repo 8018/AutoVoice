@@ -57,7 +57,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Verify dev deployment isolation
         run: |
-          bash -n deploy/init-dev.sh deploy/deploy-release.sh deploy/verify-deploy-workflows.sh
+          bash -n deploy/init-dev.sh deploy/deploy-release.sh deploy/ssh-retry.sh deploy/verify-deploy-workflows.sh
           bash deploy/verify-deploy-workflows.sh
           test "$(grep -c '^SKILL_MANAGER_URL=' deploy/env.example-dev)" -eq 1
           grep -Fqx 'SKILL_MANAGER_URL=http://127.0.0.1:8093' deploy/env.example-dev
