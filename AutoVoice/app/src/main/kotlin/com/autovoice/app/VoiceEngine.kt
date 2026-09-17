@@ -10,7 +10,6 @@ import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.dialog.AdmissionEvidence
@@ -23,6 +22,7 @@ import com.autovoice.voicecore.session.SessionState
 import com.autovoice.voicecore.session.VoiceSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -38,8 +38,7 @@ import okhttp3.OkHttpClient
  * 分别由 [ResponseDispatcher] 和独立 `:tts` 模块管理：
  *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
  *    ActionReply → 执行 intent + 播报自带 speakText；
- *  - [RaceWinner.Local]：胜出 NLU 交业务处理模块，成功时播报其返回文本；
- *  - [RaceWinner.Failed]：播报统一兜底话术（按钮录音模式下全败需要明确反馈）。
+ *  - [RaceWinner.Local]：胜出 NLU 交业务处理模块，成功时播报其返回文本。
  *
  * 弱网调试 hook（仅 debug 构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
  * 云端赶不上 cloudWaitMs → 仲裁回落到本地（reason `cloud_timeout_use_local`）。
@@ -50,7 +49,6 @@ import okhttp3.OkHttpClient
 class VoiceEngine(
     cfg: DemoConfig,
     arbiter: OnDeviceRaceArbiter,
-    sink: DecisionSink,
     /**
      * 链路数据上报客户端（T6）：生产装配由 [VoiceEngineFactory.create] 注入（telemetry 未配置 → enabled=false
      * 的全 no-op 实例）；JVM 测试不传时用默认 disabled 实例，行为不变。
@@ -78,6 +76,9 @@ class VoiceEngine(
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
+    private val listeningTimeoutMs: Long = 30_000,
+    private val understandingTimeoutMs: Long = 30_000,
+    private val thinkingTimeoutMs: Long = 60_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
     /**
@@ -118,6 +119,8 @@ class VoiceEngine(
     /** 本轮云端 VAD 段总时长 ms（T7 vad 聚合统计；16k 单声道 16bit，bytes/32 = ms）。 */
     private var turnSegmentsTotalMs = 0L
 
+    private var dialogueTimeoutJob: Job? = null
+
     /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
     @Volatile
     private var awaitingVadStart = true
@@ -127,7 +130,7 @@ class VoiceEngine(
 
     /** Capture 准入、pending 可见性和当前 turn 的唯一拥有者。 */
     val conversation: ConversationController = ConversationController(
-        onState = onDialogueState,
+        onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
             tts.stop()
             session.currentUtteranceId = admitted.turnId
@@ -150,7 +153,6 @@ class VoiceEngine(
         session = VoiceSession(
             cfg = cfg,
             arbiter = arbiter,
-            sink = sink,
             local = local,
             cloud = object : CloudRunner {
                 override suspend fun run(segment: ByteArray): Reply = run(segment, currentUtteranceId)
@@ -163,6 +165,8 @@ class VoiceEngine(
             },
             scope = scope,
             resultListener = ResultListener { utteranceId, winner -> onTurnResult(utteranceId, winner) },
+            listeningTimeoutMs = listeningTimeoutMs,
+            understandingTimeoutMs = understandingTimeoutMs,
         )
     }
 
@@ -175,6 +179,7 @@ class VoiceEngine(
     fun close() {
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
         tts.stop()
+        dialogueTimeoutJob?.cancel()
         session.close()
         scope.cancel()
     }
@@ -375,8 +380,6 @@ class VoiceEngine(
                 utteranceId,
                 AdmissionEvidence.LOCAL_SEMANTIC,
             )
-            is RaceWinner.Failed -> conversation.rejectCapture(utteranceId)
-            is RaceWinner.Intercepted -> Unit
         }
         if (!conversation.isCurrentTurn(utteranceId)) {
             telemetry.end(utteranceId)
@@ -389,11 +392,6 @@ class VoiceEngine(
                 responses.dispatchCloud(utteranceId, winner.reply)
             }
             is RaceWinner.Local -> responses.dispatchLocal(utteranceId, winner.nlu)
-            // 全败：播报兜底话术（按钮录音模式下需要明确反馈；2026-08-15 起同样走网络 TTS，
-            // 不再用系统 TTS；决策日志已记录失败原因 cloud_timeout_use_local / both_failed 等）
-            is RaceWinner.Failed -> responses.dispatchFailure(utteranceId)
-            // 该 turn 已在仲裁层输出过语义：不重复播报或执行。
-            is RaceWinner.Intercepted -> Unit
         }
         // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
         setCloudPending(utteranceId, false)
@@ -404,12 +402,24 @@ class VoiceEngine(
     private fun isLatestTurn(utteranceId: String): Boolean =
         utteranceId.isBlank() || conversation.isCurrentTurn(utteranceId)
 
+    private fun onConversationState(snapshot: DialogueSnapshot) {
+        onDialogueState(snapshot)
+        dialogueTimeoutJob?.cancel()
+        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.THINKING ||
+            snapshot.state == com.autovoice.voicecore.dialog.DialogueState.SEMANTIC_PROCESSING
+        ) {
+            val turnId = snapshot.turnId ?: return
+            dialogueTimeoutJob = scope.launch {
+                delay(thinkingTimeoutMs)
+                conversation.onThinkingExpired(turnId)
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "VoiceEngine"
 
         /** 弱网调试 hook 的云端人为延迟（晚于 cloudWaitMs 即本地赢）。 */
         private const val WEAK_NETWORK_DELAY_MS = 3_000L
-
-
     }
 }

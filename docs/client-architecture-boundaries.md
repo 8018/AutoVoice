@@ -43,6 +43,10 @@ Local semantic pipeline                 Cloud semantic pipeline
    命中策略、生成实现和播放身份协调均不向调用方暴露；Android 只实现底层播放 driver。
 7. ASR 与 NLU 是两个独立引擎。端侧按 `local AsrEngine -> local NluEngine` 组合；云端 ASR 与
    云端 NLU 分别注册自己消费的消息类型，ASR 文本不经过语义仲裁。
+8. 仲裁器是进程级常驻的 FIFO 消息流水线，不拥有会话生命周期、不识别“当前轮”。
+   它只记录每个 `turnId` 是否已输出语义；当前轮和状态有效性由会话状态机判断。
+9. 端侧云端语义与本地车窗语义可立即入队；本地普通语义在云端优先窗口内留在
+   入队门外。一旦进入就绪队列，按消息到达顺序处理，首个合格候选胜出。
 
 ## 新业务接入
 

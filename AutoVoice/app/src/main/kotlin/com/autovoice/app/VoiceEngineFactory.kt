@@ -19,7 +19,6 @@ import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.arbiter.PendingSignalRegistry
 import com.autovoice.voicecore.dialog.AdmissionEvidence
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
@@ -38,9 +37,6 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 private const val FACTORY_TAG = "VoiceEngineFactory"
-
-/** 本地兜底超时：云端超时后等待本地链的最长时间。 */
-private const val LOCAL_FALLBACK_MS = 10_000L
 
 /**
  * Android 生产环境的组合根。只负责构造依赖与绑定回调，不处理录音、轮次、仲裁结果或播放状态。
@@ -110,10 +106,9 @@ internal object VoiceEngineFactory {
             sink.onDecision(entry)
         }
         // B5：云端 pending 占位信号（LLM 处理中）——桥收到 pending 帧 → 此通道 →
-        // 端侧仲裁器阶段 1 窗口延长（pendingWaitMs）。BUFFERED：pending 帧到达时若
-        // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
+        // 端侧仲裁流水线延后本地普通语义的入队时间（pendingWaitMs）。BUFFERED 保证
+        // 接收桥不被业务处理反压；信号只影响对应 turnId，不延迟云端语义入队。
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
-        val pendingByTurn = PendingSignalRegistry()
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
         var engineRef: VoiceEngine? = null
         val cloudRunner = GatewayCloudRunner(
@@ -173,46 +168,38 @@ internal object VoiceEngineFactory {
             onVehicleApplied = onVehicleApplied,
             onConversationMode = onConversationMode,
         )
+        val onDeviceArbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = cfg.cloud.waitMs,
+            clock = System::currentTimeMillis,
+            sink = telemetrySink,
+            onEvent = { event ->
+                when (event) {
+                    is OnDeviceArbiterEvent.Received -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                        "info",
+                        mapOf("route" to event.route),
+                    )
+                    is OnDeviceArbiterEvent.Won -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_WON,
+                        "info",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_LOST,
+                        "warn",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_PENDING,
+                        "info",
+                        mapOf("route" to event.route, "reason" to "llm_pending"),
+                    )
+                }
+            },
+        )
         val engine = VoiceEngine(
             cfg = cfg,
-            arbiter = OnDeviceRaceArbiter(
-                cloudWaitMs = cfg.cloud.waitMs,
-                localFallbackMs = LOCAL_FALLBACK_MS,
-                clock = System::currentTimeMillis,
-                sink = telemetrySink,
-                // T7：on-device 决策日志携带本轮真实 utteranceId（vad start 写入会话）
-                utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
-                // B2：仲裁过程事件（收到/胜出/失败）→ device_arbiter_received/won/lost 插桩
-                // B5：pending 占位 → device_arbiter_pending 插桩
-                onEvent = { event ->
-                    when (event) {
-                        is OnDeviceArbiterEvent.Received -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_RECEIVED,
-                            "info",
-                            mapOf("route" to event.route),
-                        )
-                        is OnDeviceArbiterEvent.Won -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_WON,
-                            "info",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        is OnDeviceArbiterEvent.Lost -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_LOST,
-                            "warn",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        is OnDeviceArbiterEvent.Pending -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_PENDING,
-                            "info",
-                            mapOf("route" to event.route, "reason" to "llm_pending"),
-                        )
-                    }
-                },
-                // B5：pending 信号 → 阶段 1 窗口延长（默认 50s，覆盖 Omni 45s safety）
-                pending = pendingSignals,
-                pendingByTurn = pendingByTurn,
-            ),
-            sink = telemetrySink,
+            arbiter = onDeviceArbiter,
             telemetry = telemetry,
             networkAvailable = networkAvailable,
             local = buildLocalChain(
@@ -253,7 +240,7 @@ internal object VoiceEngineFactory {
         cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
         // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
         cloudRunner.onPendingReceived = { turnId ->
-            pendingByTurn.signal(turnId)
+            onDeviceArbiter.submitPending(turnId)
             engine.setCloudPending(turnId, true)
         }
         // T6：云端链发帧时读取引擎当前话语的 utteranceId

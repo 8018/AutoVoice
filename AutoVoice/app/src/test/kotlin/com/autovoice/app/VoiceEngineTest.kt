@@ -36,6 +36,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withTimeout
@@ -204,7 +205,6 @@ class VoiceEngineTest {
         cloud: CloudRunner,
         networkAvailable: () -> Boolean = { true },
         cloudWaitMs: Long = 100,
-        localFallbackMs: Long = 1000,
         sink: DecisionSink = DecisionSink {},
         /** 默认 enabled=false 全 no-op 实例（T6），用例可注入 enabled=true + MockWebServer。 */
         telemetry: TelemetryClient = TelemetryClient(
@@ -227,7 +227,7 @@ class VoiceEngineTest {
         onRecognized: (String?) -> Unit = {},
         /** B5：pending 信号通道（生产 create() 由桥注入；默认空通道，窗口不延长）。
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
-        pending: Channel<Unit> = Channel(),
+        pending: Channel<Unit>? = null,
         streamingCloud: StreamingCloudRunner? = null,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
@@ -253,43 +253,38 @@ class VoiceEngineTest {
             onPlaybackStage = { identity, stage -> engineRef?.onPlaybackLifecycle(identity.turnId, stage) },
             onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
         )
+        val onDeviceArbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = cloudWaitMs,
+            clock = System::currentTimeMillis,
+            sink = sink,
+            onEvent = { event ->
+                when (event) {
+                    is OnDeviceArbiterEvent.Received -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                        "info",
+                        mapOf("route" to event.route),
+                    )
+                    is OnDeviceArbiterEvent.Won -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_WON,
+                        "info",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_LOST,
+                        "warn",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_PENDING,
+                        "info",
+                        mapOf("route" to event.route, "reason" to "llm_pending"),
+                    )
+                }
+            },
+        )
         val engine = VoiceEngine(
             cfg = cfg(cloudWaitMs),
-            arbiter = OnDeviceRaceArbiter(
-                cloudWaitMs = cloudWaitMs,
-                localFallbackMs = localFallbackMs,
-                clock = System::currentTimeMillis,
-                sink = sink,
-                utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
-                // B2：仲裁过程事件 → telemetry 插桩（生产 create() 同款映射）
-                onEvent = { event ->
-                    when (event) {
-                        is OnDeviceArbiterEvent.Received -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_RECEIVED,
-                            "info",
-                            mapOf("route" to event.route),
-                        )
-                        is OnDeviceArbiterEvent.Won -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_WON,
-                            "info",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        is OnDeviceArbiterEvent.Lost -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_LOST,
-                            "warn",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        // B5：pending 占位（非收敛事件）→ device_arbiter_pending 插桩
-                        is OnDeviceArbiterEvent.Pending -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_PENDING,
-                            "info",
-                            mapOf("route" to event.route, "reason" to "llm_pending"),
-                        )
-                    }
-                },
-                pending = pending,
-            ),
-            sink = sink,
+            arbiter = onDeviceArbiter,
             telemetry = telemetry,
             networkAvailable = networkAvailable,
             local = local,
@@ -298,12 +293,21 @@ class VoiceEngineTest {
             business = AppBusinessHandler(vehicle, navigation),
             scope = scope,
             debugBuild = debugBuild,
+            listeningTimeoutMs = 5_000,
+            understandingTimeoutMs = 500,
+            thinkingTimeoutMs = 500,
             onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
             onCloudWon = onCloudWon,
             streamingCloud = streamingCloud,
         )
         engineRef = engine
+        pending?.let { signals ->
+            scope.launch {
+                signals.receive()
+                onDeviceArbiter.submitPending(engine.conversation.captureId)
+            }
+        }
         return engine to vehicle
     }
 
@@ -366,10 +370,11 @@ class VoiceEngineTest {
      * 一轮话语（Task 50 双路）：onListeningStart → onCloudSegment（云端路段，0..n 个）
      * → onTurnSegment（本地整段，启动竞速）。在 runBlocking 内调用。
      */
-    private fun utter(engine: VoiceEngine, cloudSegments: Int = 1) {
+    private suspend fun utter(engine: VoiceEngine, cloudSegments: Int = 1) {
         engine.onListeningStart()
         repeat(cloudSegments) { engine.onCloudSegment(segment) }
         engine.onTurnSegment(segment)
+        awaitIdle(engine)
     }
 
     /**
@@ -491,8 +496,8 @@ class VoiceEngineTest {
     /**
      * B5（协议 §4.8）：pending 占位只改 UI 状态（onCloudPending true → false 序列），
      * 不触发执行/播报；窗口延长后最终语义到达照常云端胜出并播报。
-     * 时序要点：cloudWaitMs=100 是硬窗——pending 未生效时 150ms 处已走阶段 2 兜底
-     * （本地 unknown → Failed → 兜底话术），tts 非空即证明窗口未延长。
+     * 时序要点：cloudWaitMs=100 是本地普通语义的入队等待窗口；pending 会延后
+     * 本地入队，但不阻塞后续云端语义立即入队并胜出。
      */
     @Test
     fun `pending placeholder only toggles cloud pending then final plays normally`() {
@@ -517,7 +522,9 @@ class VoiceEngineTest {
             )
             engine = pair.first
             val vehicle = pair.second
-            utter(engine) // 竞速启动（cloudWaitMs=100）
+            engine.onListeningStart()
+            engine.onCloudSegment(segment)
+            engine.onTurnSegment(segment)
             // B5 pending 占位到达（生产路径：桥对账 → 信号延长窗口 + onPendingReceived → setCloudPending(true)）
             pendingSignals.trySend(Unit)
             engine.setCloudPending(true)
@@ -746,7 +753,6 @@ class VoiceEngineTest {
                         TextReply("好的")
                     },
                     cloudWaitMs = 1000,
-                    localFallbackMs = 2000,
                     telemetry = telemetry,
                     sink = DecisionSink { entries.add(it) },
                 )
@@ -859,7 +865,7 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `both routes fail → Failed → fallback phrase via network tts`() {
+    fun `both routes silent return to idle by state timer without synthetic fallback`() {
         val entries = mutableListOf<DecisionEntry>()
         val ttsRequests = mutableListOf<String>()
         lateinit var engine: VoiceEngine
@@ -868,7 +874,6 @@ class VoiceEngineTest {
                 scope = this,
                 local = LocalChainRunner { awaitCancellation() },
                 cloud = CloudRunner { awaitCancellation() },
-                localFallbackMs = 150,
                 sink = DecisionSink { entries.add(it) },
                 // 2026-08-15：全败兜底话术同样走网络 TTS（不再用系统 TTS）
                 tts = TtsRequester { ttsRequests.add(it); null },
@@ -876,7 +881,7 @@ class VoiceEngineTest {
             engine = pair.first
             utter(engine)
         }
-        assertEquals(listOf("both_failed"), entries.map { it.reason })
+        assertTrue(entries.isEmpty())
         // 没有 ASR/有效语义证据时仍是临时 capture；噪声不得触发失败播报。
         assertEquals(emptyList<String>(), ttsRequests)
     }
@@ -1325,11 +1330,9 @@ class VoiceEngineTest {
             cfg = cfg(cloudWaitMs = 10_000),
             arbiter = OnDeviceRaceArbiter(
                 cloudWaitMs = 10_000,
-                localFallbackMs = 10_000,
                 clock = System::currentTimeMillis,
                 sink = DecisionSink {},
             ),
-            sink = DecisionSink {},
             networkAvailable = { true },
             local = LocalChainRunner { awaitCancellation() },
             cloud = CloudRunner {

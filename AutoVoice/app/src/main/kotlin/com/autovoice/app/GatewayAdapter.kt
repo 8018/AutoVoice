@@ -523,7 +523,7 @@ internal class GatewayBridge(
     private val client: GatewayClient,
     private val sink: DecisionSink,
     scope: CoroutineScope,
-    /** B5：云端 pending 占位信号（LLM 处理中）→ 端侧仲裁器阶段 1 窗口延长。 */
+    /** B5：云端 pending 占位信号（LLM 处理中）→ 延后本地普通语义入队。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     /** B5：pending 帧已对账通过的回调（装配方绑定 → UI"处理中…"状态）。 */
     private val onPendingReceived: (String) -> Unit = {},

@@ -90,4 +90,12 @@ class DialogueStateMachineTest {
         gate.reset()
         assertNull(gate.confirmSemantic("pending", AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
     }
+
+    @Test
+    fun `thinking timeout invalidates adoption without involving arbiter`() {
+        machine.onWake()
+        machine.onSpeechCommitted("turn")
+        assertEquals(DialogueState.DORMANT, machine.onThinkingExpired("turn").state)
+        assertEquals(false, machine.isCurrentTurn("turn"))
+    }
 }

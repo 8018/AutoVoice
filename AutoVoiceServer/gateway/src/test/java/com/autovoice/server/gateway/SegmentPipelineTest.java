@@ -422,11 +422,11 @@ class SegmentPipelineTest {
         offlineRaw.complete(Optional.empty()); // 在线候选照常完成——输出已被 gate 拒绝
         Thread.sleep(50);
         assertTrue(audioEvents.isEmpty(), "输出撤销后缓冲音频不得越过仲裁门");
-        assertTrue(log.isEmpty());
-        // 仲裁与会话输出相互独立：此刻至多收到候选事件，尚无最终 winner。
-        assertTrue(events.stream().noneMatch(e -> TelemetryStages.CLOUD_ARBITER_WON.equals(e.stage())
-                        || TelemetryStages.CLOUD_ARBITER_LOST.equals(e.stage())),
-                "宽限期前不应产生 won/lost 事件: " + events);
+        // 仲裁流水线不感知会话/gate 生命周期：离线 miss 后 LLM 照常胜出并记录，
+        // 但下游输出 gate 独立保证音频、UI 和业务结果不再采用。
+        assertEquals(List.of("llm_reply"), log.stream().map(DecisionEntry::reason).toList());
+        assertTrue(events.stream().anyMatch(e -> TelemetryStages.CLOUD_ARBITER_WON.equals(e.stage())),
+                "候选胜出事件应独立于下游输出撤销: " + events);
     }
 
     // ------------------------------------------------------------ ASR 失败路径
