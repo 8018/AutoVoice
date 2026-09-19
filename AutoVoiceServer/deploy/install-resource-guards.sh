@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Persistent cgroup guards for the six AutoVoice JVM services.
+# Persistent cgroup guards for AutoVoice JVM services.
 set -Eeuo pipefail
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -9,11 +9,17 @@ fi
 
 systemd_root=/etc/systemd/system
 slice_file="$systemd_root/autovoice.slice"
+host_role="${AUTOVOICE_HOST_ROLE:-shared}"
+
+if [[ "$host_role" != "prod" && "$host_role" != "dev" && "$host_role" != "shared" ]]; then
+  echo "AUTOVOICE_HOST_ROLE must be prod, dev or shared: $host_role" >&2
+  exit 1
+fi
 
 install -d -m 0755 "$systemd_root"
 cat > "$slice_file" <<'UNIT'
 [Unit]
-Description=AutoVoice production and dev service resource boundary
+Description=AutoVoice service resource boundary
 
 [Slice]
 # Preserve memory for sshd, systemd and the operating system.
@@ -41,13 +47,27 @@ OOMScoreAdjust=$oom_score
 UNIT
 }
 
-# Production gets the larger share. Under host pressure, dev is reclaimed first.
-install_guard autovoice-gateway 25% 30% 100
-install_guard autovoice-tts 10% 15% 150
-install_guard autovoice-skill-manager 10% 15% 150
-install_guard autovoice-dev-gateway 15% 20% 500
-install_guard autovoice-dev-tts 7% 10% 550
-install_guard autovoice-dev-skill-manager 7% 10% 550
+case "$host_role" in
+  prod)
+    install_guard autovoice-gateway 40% 50% 100
+    install_guard autovoice-tts 15% 20% 150
+    install_guard autovoice-skill-manager 15% 20% 150
+    ;;
+  dev)
+    install_guard autovoice-dev-gateway 40% 50% 100
+    install_guard autovoice-dev-tts 15% 20% 150
+    install_guard autovoice-dev-skill-manager 15% 20% 150
+    ;;
+  shared)
+    # Compatibility mode for a host that still carries both stacks.
+    install_guard autovoice-gateway 25% 30% 100
+    install_guard autovoice-tts 10% 15% 150
+    install_guard autovoice-skill-manager 10% 15% 150
+    install_guard autovoice-dev-gateway 15% 20% 500
+    install_guard autovoice-dev-tts 7% 10% 550
+    install_guard autovoice-dev-skill-manager 7% 10% 550
+    ;;
+esac
 
 systemctl daemon-reload
 
@@ -64,11 +84,25 @@ apply_live_guard() {
   fi
 }
 
-apply_live_guard autovoice-gateway 25% 30%
-apply_live_guard autovoice-tts 10% 15%
-apply_live_guard autovoice-skill-manager 10% 15%
-apply_live_guard autovoice-dev-gateway 15% 20%
-apply_live_guard autovoice-dev-tts 7% 10%
-apply_live_guard autovoice-dev-skill-manager 7% 10%
+case "$host_role" in
+  prod)
+    apply_live_guard autovoice-gateway 40% 50%
+    apply_live_guard autovoice-tts 15% 20%
+    apply_live_guard autovoice-skill-manager 15% 20%
+    ;;
+  dev)
+    apply_live_guard autovoice-dev-gateway 40% 50%
+    apply_live_guard autovoice-dev-tts 15% 20%
+    apply_live_guard autovoice-dev-skill-manager 15% 20%
+    ;;
+  shared)
+    apply_live_guard autovoice-gateway 25% 30%
+    apply_live_guard autovoice-tts 10% 15%
+    apply_live_guard autovoice-skill-manager 10% 15%
+    apply_live_guard autovoice-dev-gateway 15% 20%
+    apply_live_guard autovoice-dev-tts 7% 10%
+    apply_live_guard autovoice-dev-skill-manager 7% 10%
+    ;;
+esac
 
-echo "AutoVoice resource guards installed."
+echo "AutoVoice resource guards installed for host role: $host_role."

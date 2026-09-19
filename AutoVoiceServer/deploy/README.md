@@ -32,7 +32,7 @@ systemctl status autovoice-dev-gateway
 - Secret `DEV_SSH_PRIVATE_KEY`：dev 部署专用 SSH 私钥（公钥在服务器 `~/.ssh/authorized_keys`；
   生成与安装步骤见下文"部署密钥"）
 - Secret `DEV_SSH_KNOWN_HOSTS`：服务器 known_hosts 记录
-- 可选 Variable `DEV_SSH_HOST`（默认 `47.94.4.204`）、`DEV_SSH_USER`（默认 `root`）、
+- 必填 Variable `DEV_SSH_HOST`（dev 专用主机）、可选 `DEV_SSH_USER`（默认 `root`）、
   `DEV_SSH_PORT`（默认 `22`）
 
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
