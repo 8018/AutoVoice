@@ -117,7 +117,7 @@ if [[ ! -s "$staging_dir/install-resource-guards.sh" ]]; then
   echo "Missing resource guard installer in $staging_dir." >&2
   exit 1
 fi
-bash "$staging_dir/install-resource-guards.sh"
+AUTOVOICE_HOST_ROLE="$environment" bash "$staging_dir/install-resource-guards.sh"
 # Reclaim old deployment data before the disk-space gate; otherwise a host that
 # has already filled its disk could never deploy the cleanup fix.
 prune_directory_history "$release_root/releases" 5

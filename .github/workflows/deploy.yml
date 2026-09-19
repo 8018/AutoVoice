@@ -17,9 +17,7 @@ on:
     branches: [main]
 
 concurrency:
-  # Dev and production currently share one host. Serialize both workflows so concurrent SSH/SCP
-  # sessions cannot overload sshd or race release activation.
-  group: autovoice-shared-deploy-host
+  group: autovoice-production-deploy-host
   cancel-in-progress: false
 
 permissions:
