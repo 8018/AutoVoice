@@ -135,6 +135,7 @@ jobs:
               AutoVoiceServer/tts-server/build/libs/tts-server.jar \
               AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
               AutoVoiceServer/deploy/deploy-release.sh \
+              AutoVoiceServer/deploy/install-resource-guards.sh \
               "$TARGET:$STAGING_DIR/"
 
       - name: Activate release
