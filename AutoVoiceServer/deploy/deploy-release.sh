@@ -75,6 +75,56 @@ release_dir="$release_root/releases/$release_sha"
 backup_dir="$release_root/backups/${release_sha}-$(date -u +%Y%m%dT%H%M%SZ)"
 rollback_armed=false
 
+require_host_capacity() {
+  local available_kib
+  local available_disk_kib
+
+  available_kib="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
+  available_disk_kib="$(df -Pk "$release_root" | awk 'NR == 2 { print $4 }')"
+  if [[ ! "$available_kib" =~ ^[0-9]+$ || "$available_kib" -lt 262144 ]]; then
+    echo "Deployment refused: host has less than 256 MiB available memory." >&2
+    free -h >&2 || true
+    exit 1
+  fi
+  if [[ ! "$available_disk_kib" =~ ^[0-9]+$ || "$available_disk_kib" -lt 1048576 ]]; then
+    echo "Deployment refused: host has less than 1 GiB free disk space." >&2
+    df -h "$release_root" >&2 || true
+    exit 1
+  fi
+}
+
+prune_directory_history() {
+  local root="$1"
+  local keep="$2"
+  local entries=()
+  local index
+
+  [[ -d "$root" ]] || return 0
+  mapfile -t entries < <(
+    find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' |
+      sort -rn |
+      cut -d' ' -f2-
+  )
+  for ((index = keep; index < ${#entries[@]}; index++)); do
+    case "${entries[$index]}" in
+      "$root"/*) rm -rf -- "${entries[$index]}" ;;
+      *) echo "Refusing to prune path outside $root: ${entries[$index]}" >&2; return 1 ;;
+    esac
+  done
+}
+
+if [[ ! -s "$staging_dir/install-resource-guards.sh" ]]; then
+  echo "Missing resource guard installer in $staging_dir." >&2
+  exit 1
+fi
+bash "$staging_dir/install-resource-guards.sh"
+# Reclaim old deployment data before the disk-space gate; otherwise a host that
+# has already filled its disk could never deploy the cleanup fix.
+prune_directory_history "$release_root/releases" 5
+prune_directory_history "$release_root/backups" 5
+find "$release_root/incoming" -mindepth 1 -maxdepth 1 -type d -mtime +1 -exec rm -rf -- {} +
+require_host_capacity
+
 # D12b:优先用 /health/ready 判定业务就绪(区分"端口在listen"与"依赖可用"),
 # 端点不存在(旧 jar/无该端点的服务)时回退到 TCP 端口判据,保持兼容。
 wait_for_service() {
@@ -185,4 +235,8 @@ done
 rollback_armed=false
 trap - ERR
 rm -rf -- "$staging_dir"
+# Bound disk growth caused by frequent automatic deployments.
+prune_directory_history "$release_root/releases" 5
+prune_directory_history "$release_root/backups" 5
+find "$release_root/incoming" -mindepth 1 -maxdepth 1 -type d -mtime +1 -exec rm -rf -- {} +
 echo "Deployed AutoVoice release $release_sha to $environment successfully."

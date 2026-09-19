@@ -38,6 +38,8 @@ systemctl status autovoice-dev-gateway
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
 Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
 `deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
+只有 `dev` 分支 push 产生的 CI 会触发部署，PR 自身的 CI 不会重复发布。同机的 dev
+与生产工作流使用同一个并发组，任一时刻只允许一个部署任务连接服务器。
 脚本会在替换 jar 前校验
 `SKILL_MANAGER_URL=http://127.0.0.1:8093`；若误指向生产 8083，发布立即失败，
 不会重启任何服务。dev Skill 配置需通过 8093 管理面板独立维护；首次需要同款 Skill 时，
@@ -138,12 +140,33 @@ Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
 `main` 分支的 **CI** 成功时会自动发布对应 commit。未设置该变量时，CI 后的自动
 发布 job 会跳过，不会产生失败记录。
 
+部署连接设置 15 秒 SSH 建连超时和 keepalive，并在命令外层使用 GNU `timeout`，
+避免 TCP 已接收但 SSH banner 迟迟不到时单次握手卡数分钟。创建暂存目录最多尝试 5 次
+（每次最多 30 秒），上传最多尝试 3 次（每次最多 180 秒）；整个部署任务最多运行
+20 分钟。上传阶段可安全重试，激活阶段只做一次且最多 300 秒，不盲目重放，避免连接
+中断后无法判断远端脚本是否已经执行。由于 dev 与生产当前位于同一主机，
+两个部署工作流全局串行，防止并发 SSH/SCP 和服务切换互相干扰。
+
+发布前会拒绝在可用内存低于 256 MiB 或磁盘剩余低于 1 GiB 时替换 jar。发布过程会安装
+`autovoice.slice` 与六个服务的 systemd drop-in：整组服务最多使用主机 85% 内存，dev
+进程比生产有更高的 OOM 回收优先级，从而为 sshd 和系统恢复保留资源。成功发布后只保留
+最近 5 套 release 和 5 套 backup，并清理超过一天的中断上传目录，避免频繁部署填满系统盘。
+
 `PROD_SSH_KNOWN_HOSTS` 应从已经验证过的管理机取得，不要在 workflow 中临时执行
 `ssh-keyscan`，否则无法防止中间人攻击。例如先确认当前连接使用的指纹，再读取：
 
 ```bash
 ssh-keygen -F 47.94.4.204
 ```
+
+若 GitHub Actions 和已授权管理机都报 `Connection timed out during banner exchange` 或
+`kex_exchange_identification`，说明 TCP 22 可能已被接收，但服务器/安全设备没有完成 SSH
+握手。工作流的有界重试只能处理短暂拒绝，不能修复持续的服务器侧故障。此时需通过
+阿里云 ECS 控制台/云助手/串口连接检查安全组、`sshd` 状态、`MaxStartups`、连接数、
+内存/磁盘压力或防火墙封禁。若 ICMP 正常、22/8080 的 TCP 能建连但都不返回应用数据，优先按主机
+资源耗尽处理：通过云助手临时停止三个 `autovoice-dev-*` 服务，确认 `free -h`、`df -h`
+恢复后重启 sshd，再运行 main 上的部署工作流。部署会安装上述资源保护；确认生产和 SSH
+稳定后再启动 dev 栈。不要在无法确认远端状态时反复触发部署，这只会增加 SSH backlog。
 
 每次发布的构建产物和发布前备份分别保存在 `/opt/autovoice/releases/<commit>` 与
 `/opt/autovoice/backups/<commit>-<UTC时间>`，便于审计和手工回退。
