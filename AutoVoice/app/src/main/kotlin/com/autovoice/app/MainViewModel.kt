@@ -170,12 +170,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
         _uiState.update { it.copy(locationHint = hint) }
     }
+    private var navigationAdoptionSender: (String) -> Unit = {}
     private val navigationSession = NavigationSession { snapshot ->
         _uiState.update { it.copy(navigation = snapshot) }
         // D05b:会话层采用决定 → 上行确认(selectionId 空 = 撤销;服务端幂等)
-        if (::engine.isInitialized) {
-            engine.navigationAdoptionSender(snapshot.selectionId ?: "")
-        }
+        navigationAdoptionSender(snapshot.selectionId ?: "")
     }
     private val navigationExecutor by lazy {
         NavigationExecutor(session = navigationSession, onCandidates = { candidates ->
@@ -480,6 +479,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onDialogueState = ::handleDialogueState,
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
             onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
+            bindNavigationAdoptionSender = { navigationAdoptionSender = it },
         )
         return engine
     }
@@ -544,7 +544,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 cloud = CloudConfig(
                     enabled = true,
                     gatewayUrl = if (onlineAsset == ASSET_DEMO_DEV) {
-                        "ws://47.94.4.204:8090/ws"
+                        "ws://8.153.153.77:8090/ws"
                     } else {
                         "ws://47.94.4.204:8080/ws"
                     },

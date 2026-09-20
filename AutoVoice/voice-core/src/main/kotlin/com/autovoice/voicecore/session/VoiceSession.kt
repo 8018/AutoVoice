@@ -1,19 +1,21 @@
 package com.autovoice.voicecore.session
 
-import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.NluResult
 import com.autovoice.voicecore.Reply
-import com.autovoice.voicecore.arbiter.DecisionSink
+import com.autovoice.voicecore.arbiter.ArbitrationOutput
+import com.autovoice.voicecore.arbiter.LocalAdmission
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.arbiter.RaceWinner
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,8 +52,7 @@ fun interface CloudRunner {
 
 /**
  * 收敛结果通道（Task 18/19/20 消费）：每轮话语恰好回调一次，
- * 含 [RaceWinner.Failed]（应用层据此播兜底话术"网络开小差了"）。
- * 回调在会话协程内同步发出，之后立即回 IDLE；demo 播报时长由应用层管理。
+ * 只下发真实胜出语义；拒识和无候选不伪造失败结果，由会话状态定时器回 IDLE。
  */
 fun interface ResultListener {
     fun onResult(utteranceId: String, winner: RaceWinner)
@@ -76,33 +77,33 @@ class CloudRequestFailedException(message: String, cause: Throwable? = null) : E
  *     [onTurnSegment] 全部喂完）——会话只缓存片段，不把一轮话拆成多次模型调用；
  *  3. 抬手/话语结束：调 [onTurnSegment]（本地路整段音频）——LISTENING → UNDERSTANDING，
  *     按时间顺序拼接本轮 VAD 片段并只启动一次云端链，同时启动本地链（整段），
- *     Deferred 交 [OnDeviceRaceArbiter] 收敛（云端优先，cloudWaitMs 兜底本地）；
- *  4. 收敛后按 winner 置 EXECUTING（[RaceWinner.Local]）/ SPEAKING（[RaceWinner.Cloud]），
- *     [ResultListener.onResult] 发出后立即回 IDLE；[RaceWinner.Failed] 不置执行/播报，
- *     直接回调后回 IDLE（兜底话术归应用层）。
+ *     两路候选各自投递到 [OnDeviceRaceArbiter] 的常驻消息流水线；
+ *  4. 胜出回调后按 winner 置 EXECUTING（[RaceWinner.Local]）/ SPEAKING（[RaceWinner.Cloud]），
+ *     [ResultListener.onResult] 发出后回 IDLE；没有候选时由 UNDERSTANDING 状态定时器回收。
  *
  * 云端链启动条件：`cfg.cloud.enabled && cloudAvailable`；[onCloudUnavailable] 置
  * cloudAvailable=false 后只跑本地链，且每次话语写一条 `cloud_unreachable` 决策日志；
  * [onCloudAvailable] 恢复（Task 20 engine 在话语开始、网络可用时调用）。
- * 本轮没有任何云端段（VAD 未切出 / 云端未启用）时跳过竞速，本地链直接赢，
+ * 本轮没有任何云端段（VAD 未切出 / 云端未启用）时直接放行本地候选，
  * 决策 reason = `no_cloud_segment`（区别于链路故障的 `cloud_unreachable`）。
  *
- * 防御：所有入口在非法状态调用时忽略并返回，不抛；runTurn 以 try/finally 收尾，
- * 任何异常/取消下状态都回 IDLE（不冻结在 UNDERSTANDING，Task 14 M1）。
+ * 防御：所有入口在非法状态调用时忽略并返回，不抛；LISTENING 与
+ * UNDERSTANDING 各自有状态定时器，候选链没有结果时也不会永久卡住。
  *
- * 协程语义：链内异常不吞，按协程语义传播；唯一特例是云端链的 [CloudUnavailableException]
- * ——会话捕获后转本地单链兜底路径（`cloud_unreachable` 决策 + [RaceWinner.Local]，Task 15 M1）。
- * 候选在独立 Supervisor scope 并发启动；仲裁收敛后输家自然完成，
+ * 协程语义：候选在独立 Supervisor scope 并发启动，单路异常不取消另一路；
+ * 云端链的 [CloudUnavailableException] 与 [CloudRequestFailedException] 会打开本地入队门。
+ * 仲裁产生首个输出后不取消输家，输家自然完成，
  * 迟到结果仍下发；是否为当前轮由下游 DialogueStateMachine 判断。
  */
 class VoiceSession(
     private val cfg: DemoConfig,
     private val arbiter: OnDeviceRaceArbiter,
-    private val sink: DecisionSink,
     private val local: LocalChainRunner,
     private val cloud: CloudRunner,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val resultListener: ResultListener = ResultListener { _, _ -> },
+    private val listeningTimeoutMs: Long = 30_000,
+    private val understandingTimeoutMs: Long = 30_000,
 ) {
     /**
      * 候选计算与仲裁等待解耦：仲裁返回后输家可继续自然完成，不阻塞轮次收口。
@@ -111,6 +112,9 @@ class VoiceSession(
     private val candidateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _state = MutableStateFlow(SessionState.IDLE)
+
+    private var listeningTimeoutJob: Job? = null
+    private var understandingTimeoutJob: Job? = null
 
     /** 当前会话状态，可订阅（flow 收集天然携带初始值）。 */
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -158,6 +162,13 @@ class VoiceSession(
         currentUtteranceId = captureId
         cloudSegments.clear()
         transition(SessionState.LISTENING)
+        listeningTimeoutJob = scope.launch {
+            delay(listeningTimeoutMs)
+            if (isCurrent(captureId) && _state.value == SessionState.LISTENING) {
+                cloudSegments.clear()
+                transition(SessionState.IDLE)
+            }
+        }
     }
 
     /** 录音中止（Task 18 调用）：LISTENING → IDLE；非 LISTENING 时忽略（防御）。 */
@@ -192,6 +203,12 @@ class VoiceSession(
         val cloudAudio = takeCloudAudio()
         transition(SessionState.UNDERSTANDING)
         scope.launch { runTurn(utteranceId, segment, cloudAudio) }
+        understandingTimeoutJob = scope.launch {
+            delay(understandingTimeoutMs)
+            if (isCurrent(utteranceId) && _state.value == SessionState.UNDERSTANDING) {
+                transition(SessionState.IDLE)
+            }
+        }
     }
 
     /** 云端不可达（断网/认证失效等，spec §5.1 可达性检查）：此后只跑本地链。 */
@@ -205,101 +222,64 @@ class VoiceSession(
     }
 
     /**
-     * 一轮话语编排。防御（Task 14 M1）：try/finally 保证无论链内发生什么
-     * （含 [CloudUnavailableException]、意外异常、取消），状态都回到 IDLE——
-     * 状态机绝不冻结在 UNDERSTANDING。意外异常不吞，按协程语义继续传播；
-     * [CloudUnavailableException]（云端链路故障）转本地单链兜底路径。
+     * Starts candidate producers and returns immediately. VoiceSession no longer waits for the
+     * arbiter: candidates post messages to a process-lived FIFO pipeline, whose winner callback is
+     * later checked against the dialogue state by the application layer.
      */
     private suspend fun runTurn(utteranceId: String, segment: ByteArray, cloudAudio: ByteArray?) {
-        try {
-            val winner = if (cloudAudio != null) {
-                try {
-                    raceCloudVsLocal(utteranceId, segment, cloudAudio)
-                } catch (e: CloudUnavailableException) {
-                    // 云端链故障（连接失败/ready 后中断，Task 15 M1）：转本地兜底路径
-                    onCloudUnavailable()
-                    localOnly(utteranceId, segment)
-                } catch (e: CloudRequestFailedException) {
-                    // BUSY / provider error 等服务端业务错误不重连、不 latch 连接不可达。
-                    localOnly(utteranceId, segment, reason = "cloud_request_failed")
-                }
-            } else {
-                // 本轮没有任何云端段（VAD 未切出 / 云端未启用）：跳过竞速，本地直接赢
-                localOnly(
+        arbiter.openTurn(utteranceId) { output ->
+            if (output is ArbitrationOutput.Winner) onWinner(utteranceId, output.value)
+        }
+
+        if (cloudAudio == null) {
+            val reason = if (cloudRouteActive()) "no_cloud_segment" else "cloud_unreachable"
+            candidateScope.launch {
+                arbiter.submitLocal(
                     utteranceId,
-                    segment,
-                    reason = if (cloudRouteActive()) "no_cloud_segment" else "cloud_unreachable",
+                    local.run(segment, utteranceId),
+                    admission = LocalAdmission.IMMEDIATE,
+                    immediateReason = reason,
                 )
             }
+            return
+        }
 
-            if (isCurrent(utteranceId)) {
-                when (winner) {
-                    is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
-                    is RaceWinner.Local -> transition(SessionState.EXECUTING)
-                    is RaceWinner.Failed, is RaceWinner.Intercepted -> Unit
-                }
+        // Start the cloud producer first. FIFO order is determined by actual submitted messages;
+        // a synchronous cloud failure must open the local gate before a fast local result is held.
+        candidateScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                arbiter.submitCloud(utteranceId, cloud.run(cloudAudio, utteranceId))
+            } catch (error: CloudUnavailableException) {
+                onCloudUnavailable()
+                arbiter.submitCloudUnavailable(utteranceId, "cloud_unreachable")
+            } catch (error: CloudRequestFailedException) {
+                arbiter.submitCloudUnavailable(utteranceId, "cloud_request_failed")
             }
-            // 仲裁结果一律下发；是否属于状态机当前轮由下游 DialogueStateMachine 判断。
-            resultListener.onResult(utteranceId, winner)
-        } finally {
-            // 旧轮自然完成时不得把新轮 LISTENING/UNDERSTANDING 状态踩回 IDLE。
-            if (isCurrent(utteranceId)) {
-                cloudSegments.clear()
-                transition(SessionState.IDLE)
-            }
+        }
+        candidateScope.launch {
+            arbiter.submitLocal(utteranceId, local.run(segment, utteranceId))
         }
     }
 
-    /** 云端链不启动（配置关闭/不可达/链路故障/无云端段）：写一条决策日志，只跑本地链。 */
-    private suspend fun localOnly(
-        utteranceId: String,
-        segment: ByteArray,
-        reason: String = "cloud_unreachable",
-    ): RaceWinner {
-        val nlu = local.run(segment, utteranceId)
-        if (nlu.intent.isUnknown()) {
-            sink.onDecision(
-                DecisionEntry(
-                    arbiter = "on-device",
-                    route = "none",
-                    reason = "${reason}_local_unknown",
-                    utteranceId = utteranceId,
-                    timestampMs = System.currentTimeMillis(),
-                ),
-            )
-            return RaceWinner.Failed
+    private fun onWinner(utteranceId: String, winner: RaceWinner) {
+        if (isCurrent(utteranceId)) {
+            when (winner) {
+                is RaceWinner.Cloud -> transition(SessionState.SPEAKING)
+                is RaceWinner.Local -> transition(SessionState.EXECUTING)
+            }
         }
-        if (!arbiter.claimSemantic(utteranceId, "local")) return RaceWinner.Intercepted
-        sink.onDecision(
-            DecisionEntry(
-                arbiter = "on-device",
-                route = "local",
-                reason = reason,
-                // T7：决策日志携带本轮真实 utteranceId（空串=未接 telemetry，语义不变）
-                utteranceId = utteranceId,
-                timestampMs = System.currentTimeMillis(),
-            ),
-        )
-        return RaceWinner.Local(nlu)
-    }
-
-    private suspend fun raceCloudVsLocal(
-        utteranceId: String,
-        segment: ByteArray,
-        cloudAudio: ByteArray,
-    ): RaceWinner {
-            // 云端只接收一次本轮拼接后的 VAD 音频。注意：异常（CloudUnavailableException）
-            // 从 await 原样上抛，经 race 到 runTurn 的
-            // catch 转本地兜底路径；取消语义同样不被 withTimeoutOrNull 吞掉（Task 14 M2）。
-        // 候选挂在会话 Supervisor scope，仲裁收敛不会等待输家，也不会取消输家。
-        // 候选自然完成；仲裁只做按轮单输出，是否采用交给下游状态机。
-        val cloudD = candidateScope.async { cloud.run(cloudAudio, utteranceId) }
-        val localD = candidateScope.async { local.run(segment, utteranceId) }
-        return arbiter.race(utteranceId, cloudD, localD)
+        resultListener.onResult(utteranceId, winner)
+        if (isCurrent(utteranceId)) {
+            cloudSegments.clear()
+            transition(SessionState.IDLE)
+        }
     }
 
     fun close() {
+        listeningTimeoutJob?.cancel()
+        understandingTimeoutJob?.cancel()
         candidateScope.cancel()
+        arbiter.close()
         cloudSegments.clear()
         transition(SessionState.IDLE)
     }
@@ -326,6 +306,14 @@ class VoiceSession(
     private fun cloudRouteActive(): Boolean = cfg.cloud.enabled && cloudAvailable
 
     private fun transition(next: SessionState) {
+        when (next) {
+            SessionState.LISTENING -> understandingTimeoutJob?.cancel()
+            SessionState.UNDERSTANDING -> listeningTimeoutJob?.cancel()
+            SessionState.IDLE, SessionState.EXECUTING, SessionState.SPEAKING -> {
+                listeningTimeoutJob?.cancel()
+                understandingTimeoutJob?.cancel()
+            }
+        }
         _state.value = next
         stateListeners.forEach { it(next) }
     }

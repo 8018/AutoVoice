@@ -6,24 +6,27 @@ import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
-import com.autovoice.app.audio.TtsCache
+import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
-import com.autovoice.voicecore.AsrStage
+import com.autovoice.voicecore.AsrEngine
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.NluResult
-import com.autovoice.voicecore.NluStage
+import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.arbiter.PendingSignalRegistry
 import com.autovoice.voicecore.dialog.AdmissionEvidence
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.validateForRuntime
+import com.autovoice.tts.TtsEventSink
+import com.autovoice.tts.TtsPlaybackDriver
+import com.autovoice.tts.TtsSynthesizer
+import com.autovoice.tts.createTtsOutput
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -34,9 +37,6 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 private const val FACTORY_TAG = "VoiceEngineFactory"
-
-/** 本地兜底超时：云端超时后等待本地链的最长时间。 */
-private const val LOCAL_FALLBACK_MS = 10_000L
 
 /**
  * Android 生产环境的组合根。只负责构造依赖与绑定回调，不处理录音、轮次、仲裁结果或播放状态。
@@ -73,6 +73,8 @@ internal object VoiceEngineFactory {
         onDialogueState: (DialogueSnapshot) -> Unit = {},
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
+        /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
+        bindNavigationAdoptionSender: ((String) -> Unit) -> Unit = {},
     ): VoiceEngine {
         cfg.validateForRuntime()
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -104,10 +106,9 @@ internal object VoiceEngineFactory {
             sink.onDecision(entry)
         }
         // B5：云端 pending 占位信号（LLM 处理中）——桥收到 pending 帧 → 此通道 →
-        // 端侧仲裁器阶段 1 窗口延长（pendingWaitMs）。BUFFERED：pending 帧到达时若
-        // 仲裁不在等待（如阶段 2 / 轮已结束），信号进缓冲区无接收方也绝不挂起发送方。
+        // 端侧仲裁流水线延后本地普通语义的入队时间（pendingWaitMs）。BUFFERED 保证
+        // 接收桥不被业务处理反压；信号只影响对应 turnId，不延迟云端语义入队。
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
-        val pendingByTurn = PendingSignalRegistry()
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
         var engineRef: VoiceEngine? = null
         val cloudRunner = GatewayCloudRunner(
@@ -132,55 +133,73 @@ internal object VoiceEngineFactory {
         // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
         clockOffsetProvider.set(cloudRunner::clockOffsetMs)
         // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）。
-        // 缓存事件由 SpeechOutputService 携带固定 turnId 上报，不读可变的当前轮。
-        val ttsCache = TtsCache(File(context.filesDir, "tts_cache"))
+        // 缓存事件由 :tts 携带固定 turnId 上报，不读可变的当前轮。
+        val ttsOutput = createTtsOutput(
+            synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
+            cacheDir = File(context.filesDir, "tts_cache"),
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: com.autovoice.voicecore.AudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.play(reply, identity)
+                override suspend fun playStream(reply: com.autovoice.voicecore.StreamingAudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
+                    player.playStream(reply, identity)
+                override fun stop() = player.stop()
+            },
+            scope = scope,
+            isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
+            events = TtsEventSink { stage, level, payload ->
+                val turnId = payload["turnId"] as? String ?: ""
+                telemetry.recordFor(turnId, stage, level, payload - "turnId")
+            },
+            onPlaybackStage = { identity, stage ->
+                engineRef?.onPlaybackLifecycle(identity.turnId, stage)
+                onPlaybackStage(stage)
+            },
+            onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
+        )
         // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
         // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
         val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
         // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
         // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
-        // 动作只属于当前交互；断线或重启不恢复、不补执行。
-        val actionGateway = com.autovoice.app.action.ActionExecutionGateway()
+        // 业务路由位于引擎之外。只有状态机与仲裁通过后的语义才会抵达此边界。
+        val business = AppBusinessHandler(
+            vehicle = vehicle,
+            navigation = navigation,
+            onVehicleApplied = onVehicleApplied,
+            onConversationMode = onConversationMode,
+        )
+        val onDeviceArbiter = OnDeviceRaceArbiter(
+            cloudWaitMs = cfg.cloud.waitMs,
+            clock = System::currentTimeMillis,
+            sink = telemetrySink,
+            onEvent = { event ->
+                when (event) {
+                    is OnDeviceArbiterEvent.Received -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                        "info",
+                        mapOf("route" to event.route),
+                    )
+                    is OnDeviceArbiterEvent.Won -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_WON,
+                        "info",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_LOST,
+                        "warn",
+                        mapOf("route" to event.route, "reason" to event.reason),
+                    )
+                    is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                        TelemetryStages.DEVICE_ARBITER_PENDING,
+                        "info",
+                        mapOf("route" to event.route, "reason" to "llm_pending"),
+                    )
+                }
+            },
+        )
         val engine = VoiceEngine(
             cfg = cfg,
-            arbiter = OnDeviceRaceArbiter(
-                cloudWaitMs = cfg.cloud.waitMs,
-                localFallbackMs = LOCAL_FALLBACK_MS,
-                clock = System::currentTimeMillis,
-                sink = telemetrySink,
-                // T7：on-device 决策日志携带本轮真实 utteranceId（vad start 写入会话）
-                utteranceId = { engineRef?.session?.currentUtteranceId ?: "" },
-                // B2：仲裁过程事件（收到/胜出/失败）→ device_arbiter_received/won/lost 插桩
-                // B5：pending 占位 → device_arbiter_pending 插桩
-                onEvent = { event ->
-                    when (event) {
-                        is OnDeviceArbiterEvent.Received -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_RECEIVED,
-                            "info",
-                            mapOf("route" to event.route),
-                        )
-                        is OnDeviceArbiterEvent.Won -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_WON,
-                            "info",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        is OnDeviceArbiterEvent.Lost -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_LOST,
-                            "warn",
-                            mapOf("route" to event.route, "reason" to event.reason),
-                        )
-                        is OnDeviceArbiterEvent.Pending -> telemetry.record(
-                            TelemetryStages.DEVICE_ARBITER_PENDING,
-                            "info",
-                            mapOf("route" to event.route, "reason" to "llm_pending"),
-                        )
-                    }
-                },
-                // B5：pending 信号 → 阶段 1 窗口延长（默认 50s，覆盖 Omni 45s safety）
-                pending = pendingSignals,
-                pendingByTurn = pendingByTurn,
-            ),
-            sink = telemetrySink,
+            arbiter = onDeviceArbiter,
             telemetry = telemetry,
             networkAvailable = networkAvailable,
             local = buildLocalChain(
@@ -197,13 +216,9 @@ internal object VoiceEngineFactory {
                 telemetry,
             ),
             cloud = cloudRunner,
-            tts = cloudRunner, // TTS 解耦：播报走独立 tts_request/tts_response（同一网关连接）
-            ttsCache = ttsCache, // 缓存移回端侧：查缓存命中直接播，未命中才走网络
-            player = player,
-            vehicle = vehicle,
-            navigation = navigation,
+            tts = ttsOutput,
+            business = business,
             scope = scope,
-            onVehicleApplied = onVehicleApplied,
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {
@@ -212,11 +227,8 @@ internal object VoiceEngineFactory {
             },
             onForeground = cloudRunner::warmUp,
             onCloudPending = onCloudPending,
-            onConversationMode = onConversationMode,
-            actionGateway = actionGateway,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
-            onPlaybackStage = onPlaybackStage,
             streamingCloud = cloudRunner,
         )
         engineRef = engine
@@ -228,7 +240,7 @@ internal object VoiceEngineFactory {
         cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
         // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
         cloudRunner.onPendingReceived = { turnId ->
-            pendingByTurn.signal(turnId)
+            onDeviceArbiter.submitPending(turnId)
             engine.setCloudPending(turnId, true)
         }
         // T6：云端链发帧时读取引擎当前话语的 utteranceId
@@ -242,8 +254,8 @@ internal object VoiceEngineFactory {
                 navigation?.session?.cancelSelection()
             }
         }
-        // D05b:采用确认上行绑定到云端连接
-        engine.navigationAdoptionSender = { selectionId ->
+        // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
+        bindNavigationAdoptionSender { selectionId ->
             cloudRunner.sendNavigationSelectionStart(selectionId)
         }
         return engine
@@ -304,9 +316,9 @@ internal object VoiceEngineFactory {
         // 当前端侧 SDK 是 2C 命令词（文本+语义同源），不是通用 ASR；因此不能冒充
         // ASR 提前上屏。demo-full 的独立 ASR 来自云端 asr_partial；后续接入本地 PGS
         // 时只需替换本 stage，仲裁与 NLU 均无需改动。
-        val asr = AsrStage { _, _ -> null }
-        val nlu = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> NluStage { segment, _ ->
+        val localAsrEngine = AsrEngine { _, _ -> null }
+        val localNluEngine = when (cfg.local.nlu) {
+            DemoConfig.LOCAL_NLU_RULE -> NluEngine { segment, _ ->
                 val command = try {
                     recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
                 } catch (t: Throwable) {
@@ -325,7 +337,7 @@ internal object VoiceEngineFactory {
             override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
                 val startMs = System.currentTimeMillis()
                 return try {
-                    val asrResult = asr.recognize(segment, object : AsrSink {
+                    val asrResult = localAsrEngine.recognize(segment, object : AsrSink {
                         override fun onTurnEstablished() {
                             onLocalTurnEstablished(utteranceId)
                         }
@@ -342,7 +354,7 @@ internal object VoiceEngineFactory {
                             }
                         }
                     })
-                    val nluResult = nlu.understand(segment, asrResult)
+                    val nluResult = localNluEngine.understand(segment, asrResult)
                     val intent = nluResult.intent
                     Log.i(FACTORY_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
                     // ASR 与 NLU 分阶段落库；2C 自带文本归 NLU，不伪装成 ASR。

@@ -136,7 +136,7 @@ jobs:
           node ../shared/verify-jacoco-coverage.mjs 25 \
             app/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 70 \
-            adapter-local/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
+            audio-frontend/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 20 \
             adapter-iflytek/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
       - name: Upload Android reports

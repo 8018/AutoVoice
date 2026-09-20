@@ -400,7 +400,7 @@ cd AutoVoice
 - `tts_response` 到达 → 播放 WAV；失败/超时 → **系统 TTS 兜底**（不静默）；
 - 服务端 TTS 有缓存：重复文本 `TTS cache HIT` 秒回（阿里云部署可见日志）；
 - 服务端 `tts_request` 合成失败 → `error`（`TTS_FAILED`，**不关连接**）；
-- `both_failed`（双败）→ 设备播报兜底话术，其余 `unknown` 拒识**静默**（不执行不播报）。
+- 双路都没有语义时，仲裁器不伪造 `both_failed` 输出；LISTENING/THINKING 定时器负责收口会话状态。`unknown` 拒识保持**静默**（不执行不播报）。
 
 ### 5.4 弱网开关仅 debug 构建生效
 

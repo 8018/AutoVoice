@@ -37,7 +37,7 @@
 | 模块 | 变体 | 测试执行数 |
 |---|---|---|
 | app（30 项）| testDebugUnitTest + testReleaseUnitTest | 30 + 30 |
-| adapter-local（9 项）| debug + release | 9 + 9 |
+| audio-frontend（含前端编排、VAD、RNNoise，25 项）| debug + release | 25 + 25 |
 | adapter-iflytek（12 项）| debug + release | 12 + 12 |
 | voice-core（24 项）| JVM `test`（`--rerun-tasks` 强制重跑取证）| 24 |
 | gateway-client（10 项）| JVM `test`（`--rerun-tasks` 强制重跑取证）| 10 |

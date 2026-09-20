@@ -32,6 +32,79 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
 
+/** Protocol test helper: GatewayClient itself intentionally exposes only generic frame sends. */
+private class TestProtocol(private val channel: GatewayClient) {
+    private var bytes = 0L
+
+    fun navigation(sessionId: String, selectionId: String) = channel.send(
+        "navigation_selection_start", mapOf("sessionId" to sessionId, "selectionId" to selectionId),
+    )
+
+    fun audioStart(
+        sessionId: String,
+        segmentId: String? = null,
+        utteranceId: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        attempt: Int = 0,
+        navigationSelectionId: String? = null,
+    ) {
+        val payload = linkedMapOf<String, Any?>(
+            "sessionId" to sessionId, "sampleRate" to 16_000, "channels" to 1,
+            "encoding" to "pcm_s16le", "attempt" to attempt,
+        )
+        segmentId?.let { payload["segmentId"] = it }
+        utteranceId?.let { payload["utteranceId"] = it }
+        if (latitude != null && longitude != null) {
+            payload["latitude"] = latitude
+            payload["longitude"] = longitude
+        }
+        navigationSelectionId?.let { payload["navigationSelectionId"] = it }
+        channel.send("audio_start", payload)
+        bytes = 0
+    }
+
+    fun audio(pcm: ByteArray) { channel.send(pcm); bytes += pcm.size }
+    fun audioEnd(sessionId: String) = channel.send(
+        "audio_end", mapOf("sessionId" to sessionId, "durationMs" to bytes * 1000 / 32_000),
+    )
+    fun commit(segmentId: String, utteranceId: String) = channel.send(
+        "turn_commit", mapOf("segmentId" to segmentId, "utteranceId" to utteranceId),
+    )
+    fun tts(text: String, segmentId: String? = null, utteranceId: String? = null) {
+        val payload = linkedMapOf<String, Any?>("text" to text)
+        segmentId?.let { payload["segmentId"] = it }
+        utteranceId?.let { payload["utteranceId"] = it }
+        channel.send("tts_request", payload)
+    }
+}
+
+private val testProtocols = java.util.WeakHashMap<GatewayClient, TestProtocol>()
+private fun GatewayClient.testProtocol(): TestProtocol = synchronized(testProtocols) {
+    testProtocols.getOrPut(this) { TestProtocol(this) }
+}
+private fun GatewayClient.sendNavigationSelectionStart(sessionId: String, selectionId: String) =
+    testProtocol().navigation(sessionId, selectionId)
+private fun GatewayClient.sendAudioStart(
+    sessionId: String, segmentId: String? = null, utteranceId: String? = null,
+    latitude: Double? = null, longitude: Double? = null, attempt: Int = 0,
+    navigationSelectionId: String? = null,
+) = testProtocol().audioStart(
+    sessionId, segmentId, utteranceId, latitude, longitude, attempt, navigationSelectionId,
+)
+private fun GatewayClient.sendAudioChunk(pcm: ByteArray) = testProtocol().audio(pcm)
+private fun GatewayClient.sendAudioEnd(sessionId: String) = testProtocol().audioEnd(sessionId)
+private fun GatewayClient.sendTurnCommit(segmentId: String, utteranceId: String) =
+    testProtocol().commit(segmentId, utteranceId)
+private fun GatewayClient.sendTtsRequest(
+    text: String, segmentId: String? = null, utteranceId: String? = null,
+) = testProtocol().tts(text, segmentId, utteranceId)
+
+private val payloadParser = GatewayPayloadParser()
+private fun GatewayClient.parseTtsResponse(payload: JsonObject) = payloadParser.tts(payload)
+private fun GatewayClient.parseReply(payload: JsonObject) = payloadParser.reply(payload)
+private fun GatewayClient.parseAudioStreamEnd(payload: JsonObject) = payloadParser.streamEnd(payload)
+
 /**
  * GatewayClient 集成测试：MockWebServer 真实 WS 握手扮演网关
  * （接 hello 回 ready、收 audio_start/二进制/audio_end 后回 decision + reply）。
