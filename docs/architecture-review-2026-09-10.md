@@ -294,7 +294,7 @@ d3fc686 已补齐 Android app/adapter 单测覆盖率报告、两个 Web 交互�
 | 服务端 JVM 加权合计 | 82.08% | 75% |
 | Android voice-core + gateway-client | 89.29% | 70% |
 | Android app | 28.64% | 25% |
-| Android adapter-local | 76.22% | 70% |
+| Android audio-frontend（原 adapter-local） | 71.48% | 70% |
 | Android adapter-iflytek | 24.68% | 20% |
 | Telemetry Web | 93.28% | 80% |
 | Skill Manager Web | 63.29% | 60% |

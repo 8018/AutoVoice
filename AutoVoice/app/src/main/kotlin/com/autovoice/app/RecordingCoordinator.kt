@@ -1,6 +1,6 @@
 package com.autovoice.app
 
-import com.autovoice.adapterlocal.vad.VadEvent
+import com.autovoice.audiofrontend.vad.VadEvent
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.dialog.DialogueState
 import kotlinx.coroutines.CoroutineScope

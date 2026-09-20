@@ -6,7 +6,7 @@
 
 - JVM 和 Android 使用 JaCoCo 行覆盖率。
 - Web 使用 Vitest V8 的 lines/statements/branches/functions 覆盖率。
-- Android `app` 与两个 adapter 使用 Debug JVM 单测生成
+- Android `app`、`audio-frontend` 与 `adapter-iflytek` 使用 Debug JVM 单测生成
   `jacocoDebugUnitTestReport`；真机 `androidTest` 不计入该报告。
 - CI 中的门槛是“防回退基线”，不代表所有模块已经达到目标覆盖率。
 
@@ -17,7 +17,7 @@
 | 服务端 JVM 模块加权合计 | 81.68% | 75% |
 | Android `voice-core` + `gateway-client` | 89.29% | 70% |
 | Android `app` | 28.64% | 25% |
-| Android `adapter-local` | 76.22% | 70% |
+| Android `audio-frontend` | 71.48% | 70% |
 | Android `adapter-iflytek` | 24.68% | 20% |
 | Telemetry Web | 93.28% | 80% |
 | Skill Manager Web | 63.29% | 60% |

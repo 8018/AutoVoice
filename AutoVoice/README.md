@@ -16,7 +16,7 @@ AutoVoice/                      Android 端（Kotlin）
 ├── voice-core/                 消息模型（gateway 消息 schema）、DemoConfig、
 │                               Stage SPI、VoiceSession 状态机、OnDeviceRaceArbiter
 ├── gateway-client/             WS 网关客户端（连接/重连、事件桥、segmentId 对账）
-├── adapter-local/              Silero VAD（ONNX）+ RNNoise 降噪（JNI，4 ABI）
+├── audio-frontend/             统一音频前端（信号处理 + Silero VAD；RNNoise JNI，4 ABI）
 ├── adapter-iflytek/            讯飞离线唤醒 IVW + 离线命令词 AIKit（共享运行时）+
 │                               FakeCommandAsr + RuleNlu（规则意图映射表）
 └── app/                        Compose UI（决策日志/模拟车控/录音）、AudioRecorder、

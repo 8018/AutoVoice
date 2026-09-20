@@ -76,7 +76,7 @@ android {
     sourceSets.getByName("test").resources.srcDir("../../shared/fixtures")
 
     testOptions {
-        // 单测用 JUnit 5（与 voice-core / adapter-local 保持一致）
+        // 单测用 JUnit 5（与 voice-core / audio-frontend 保持一致）
         unitTests.all { it.useJUnitPlatform() }
         // android.jar 方法默认抛 "not mocked"；bridge 的 Log.d 弃帧路径在 JVM 单测里必须可用
         unitTests.isReturnDefaultValues = true
@@ -95,7 +95,7 @@ dependencies {
     implementation(project(":message-dispatch"))
     implementation(project(":business-core"))
     implementation(project(":tts"))
-    implementation(project(":adapter-local"))
+    implementation(project(":audio-frontend"))
     implementation(project(":adapter-iflytek"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
