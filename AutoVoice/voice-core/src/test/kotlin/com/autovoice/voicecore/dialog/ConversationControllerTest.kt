@@ -65,6 +65,27 @@ class ConversationControllerTest {
         assertEquals(snapshot, controller.snapshot.value)
     }
 
+    @Test fun `late thinking timeout cannot clear a turn that is already responding`() {
+        val pending = mutableListOf<Boolean>()
+        val controller = ConversationController(
+            newCaptureId = { "capture" },
+            onPendingVisible = pending::add,
+        )
+        controller.onWake()
+        val turnId = controller.beginCapture()
+        controller.openCapture(turnId)
+        assertTrue(controller.confirmTurn(turnId, AdmissionEvidence.CLOUD_ASR))
+        assertTrue(controller.setPending(turnId, true))
+        assertTrue(controller.onFinalSemantic(turnId))
+
+        val snapshot = controller.onThinkingExpired(turnId)
+
+        assertEquals(DialogueState.RESPONDING, snapshot.state)
+        assertEquals(turnId, controller.captureId)
+        assertEquals(true, pending.last())
+        assertTrue(controller.isVisible(turnId))
+    }
+
     @Test fun `reset clears capture pending and dialogue together`() {
         val visible = mutableListOf<Boolean>()
         val controller = ConversationController(

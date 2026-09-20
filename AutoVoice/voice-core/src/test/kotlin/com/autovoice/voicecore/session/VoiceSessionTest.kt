@@ -18,9 +18,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -47,8 +47,8 @@ class VoiceSessionTest {
             mock = MockConfig(),
         )
 
-    private fun arbiter(cloudWaitMs: Long, localFallbackMs: Long, sink: DecisionSink) =
-        OnDeviceRaceArbiter(cloudWaitMs = cloudWaitMs, localFallbackMs = localFallbackMs, sink = sink)
+    private fun arbiter(cloudWaitMs: Long, sink: DecisionSink) =
+        OnDeviceRaceArbiter(cloudWaitMs = cloudWaitMs, sink = sink)
 
     private fun localIntent(): Intent =
         Intent(
@@ -77,8 +77,9 @@ class VoiceSessionTest {
         cloud: CloudRunner,
         cloudEnabled: Boolean = true,
         cloudWaitMs: Long = 100,
-        localFallbackMs: Long = 10_000,
         cloudSegments: Int = 1,
+        resultWaitMs: Long = 1_000,
+        understandingTimeoutMs: Long = 30_000,
         beforeFeed: (VoiceSession) -> Unit = {},
     ): Turn = runBlocking {
         val entries = mutableListOf<DecisionEntry>()
@@ -86,18 +87,21 @@ class VoiceSessionTest {
         val results = mutableListOf<RaceWinner>()
         val session = VoiceSession(
             cfg = cfg(cloudEnabled, cloudWaitMs),
-            arbiter = arbiter(cloudWaitMs, localFallbackMs, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(cloudWaitMs, DecisionSink { entries.add(it) }),
             local = local,
             cloud = cloud,
             scope = this,
             resultListener = ResultListener { _, winner -> results.add(winner) },
+            understandingTimeoutMs = understandingTimeoutMs,
         )
         session.onState { states.add(it) }
         beforeFeed(session)
         session.onListeningStart()
         repeat(cloudSegments) { session.onCloudSegment(segment) }
         session.onTurnSegment(segment)
+        withTimeoutOrNull(resultWaitMs) {
+            while (results.isEmpty()) delay(5)
+        }
         Turn(session, states, results, entries)
     }
 
@@ -147,8 +151,7 @@ class VoiceSessionTest {
         val result = CompletableDeferred<RaceWinner>()
         val session = VoiceSession(
             cfg = cfg(cloudWaitMs = 20),
-            arbiter = arbiter(20, 100, DecisionSink {}),
-            sink = DecisionSink {},
+            arbiter = arbiter(20, DecisionSink {}),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner {
                 cloudStarted.complete(Unit)
@@ -177,8 +180,7 @@ class VoiceSessionTest {
         val result = CompletableDeferred<RaceWinner>()
         val session = VoiceSession(
             cfg = cfg(cloudWaitMs = 2_000),
-            arbiter = arbiter(2_000, 2_000, DecisionSink {}),
-            sink = DecisionSink {},
+            arbiter = arbiter(2_000, DecisionSink {}),
             local = LocalChainRunner { awaitCancellation() },
             cloud = CloudRunner { oldCloud.await() },
             scope = this,
@@ -265,10 +267,12 @@ class VoiceSessionTest {
         val t = turn(
             local = LocalChainRunner { Intent.unknown("fake.local") },
             cloud = CloudRunner { error("云端链不应被启动") },
+            resultWaitMs = 120,
+            understandingTimeoutMs = 60,
             beforeFeed = { it.onCloudUnavailable() },
         )
-        assertTrue(t.results.single() is RaceWinner.Failed)
-        assertEquals(listOf("cloud_unreachable_local_unknown"), t.entries.map { it.reason })
+        assertTrue(t.results.isEmpty())
+        assertTrue(t.entries.isEmpty())
         assertEquals(
             listOf(
                 SessionState.IDLE, SessionState.LISTENING, SessionState.UNDERSTANDING,
@@ -284,18 +288,21 @@ class VoiceSessionTest {
             local = LocalChainRunner { Intent.unknown("fake.local") },
             cloud = CloudRunner { error("云端链不应被启动") },
             cloudSegments = 0,
+            resultWaitMs = 120,
+            understandingTimeoutMs = 60,
         )
-        assertTrue(t.results.single() is RaceWinner.Failed)
-        assertEquals(listOf("no_cloud_segment_local_unknown"), t.entries.map { it.reason })
+        assertTrue(t.results.isEmpty())
+        assertTrue(t.entries.isEmpty())
     }
 
     @Test
-    fun `both routes fail → Failed result, straight back to IDLE`() {
+    fun `both routes silent produce no arbiter result and state timer returns to IDLE`() {
         val t = turn(
             local = LocalChainRunner { awaitCancellation() },
             cloud = CloudRunner { awaitCancellation() },
             cloudWaitMs = 100,
-            localFallbackMs = 150,
+            resultWaitMs = 160,
+            understandingTimeoutMs = 80,
         )
         assertEquals(
             listOf(
@@ -304,8 +311,8 @@ class VoiceSessionTest {
             ),
             t.states,
         )
-        assertTrue(t.results.single() is RaceWinner.Failed)
-        assertEquals(listOf("both_failed"), t.entries.map { it.reason })
+        assertTrue(t.results.isEmpty())
+        assertTrue(t.entries.isEmpty())
         assertEquals(SessionState.IDLE, t.session.state.value)
     }
 
@@ -332,8 +339,7 @@ class VoiceSessionTest {
         val results = mutableListOf<RaceWinner>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(100, DecisionSink { entries.add(it) }),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { TextReply("hi") },
             scope = this,
@@ -359,8 +365,7 @@ class VoiceSessionTest {
         val signal = CompletableDeferred<Unit>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(100, DecisionSink { entries.add(it) }),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { cloudCalls.incrementAndGet(); TextReply("hi") },
             scope = this,
@@ -419,8 +424,7 @@ class VoiceSessionTest {
         var signal = CompletableDeferred<Unit>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(100, DecisionSink { entries.add(it) }),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner {
                 cloudCalls.incrementAndGet()
@@ -431,7 +435,7 @@ class VoiceSessionTest {
         )
 
         // 第一轮：上传即炸 → 本地兜底
-        session.onListeningStart()
+        session.onListeningStart("utt-cloud-failure-1")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
@@ -442,13 +446,14 @@ class VoiceSessionTest {
         // 第二轮：latch 生效，云端链不再启动
         signal = CompletableDeferred()
         session.onCloudAvailable() // 网络恢复（Task 20）：重新启用
-        session.onListeningStart()
+        session.onListeningStart("utt-cloud-failure-2")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
         assertEquals(2, cloudCalls.get(), "恢复后云端链应重新启动")
         assertTrue(results.last() is RaceWinner.Local)
         assertEquals(SessionState.IDLE, session.state.value)
+        session.close()
     }
 
     @Test
@@ -459,8 +464,7 @@ class VoiceSessionTest {
         var signal = CompletableDeferred<Unit>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(100, DecisionSink { entries.add(it) }),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner {
                 if (cloudCalls.incrementAndGet() == 1) throw CloudRequestFailedException("BUSY")
@@ -470,7 +474,7 @@ class VoiceSessionTest {
             resultListener = ResultListener { _, winner -> results.add(winner); signal.complete(Unit) },
         )
 
-        session.onListeningStart()
+        session.onListeningStart("utt-request-failure-1")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
@@ -480,12 +484,13 @@ class VoiceSessionTest {
         results.clear()
         entries.clear()
         signal = CompletableDeferred()
-        session.onListeningStart()
+        session.onListeningStart("utt-request-failure-2")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
         assertEquals(2, cloudCalls.get(), "业务错误不能阻止下一轮继续使用现有云端连接")
         assertTrue(results.single() is RaceWinner.Cloud)
+        session.close()
     }
 
     @Test
@@ -493,8 +498,7 @@ class VoiceSessionTest {
         val states = mutableListOf<SessionState>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink {}),
-            sink = DecisionSink {},
+            arbiter = arbiter(100, DecisionSink {}),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { TextReply("hi") },
             scope = this,
@@ -507,41 +511,32 @@ class VoiceSessionTest {
             states,
         )
         assertEquals(SessionState.IDLE, session.state.value)
+        session.close()
     }
 
-    /**
-     * Task 14 M1 加固：链内异常（非 CloudUnavailableException）仍要回 IDLE——
-     * 状态机绝不冻结在 UNDERSTANDING。异常不吞，按协程语义从 runBlocking 重抛，
-     * 测试 catch 后断言状态与阶段序列。
-     */
+    /** 候选生产者与会话调用栈解耦；异常不击穿调用方，思考定时器负责回 IDLE。 */
     @Test
-    fun `exception in runTurn still returns to IDLE`() {
+    fun `candidate exception does not block session timer returning to IDLE`() {
         val states = mutableListOf<SessionState>()
         val results = mutableListOf<RaceWinner>()
         val sessionRef = AtomicReference<VoiceSession>()
-        val thrown = try {
-            runBlocking {
-                val session = VoiceSession(
-                    cfg = cfg(cloudEnabled = true, cloudWaitMs = 100),
-                    arbiter = arbiter(100, 10_000, DecisionSink {}),
-                    sink = DecisionSink {},
-                    local = LocalChainRunner { error("local chain boom") },
-                    cloud = CloudRunner { delay(500); TextReply("hi") },
-                    scope = this,
-                    resultListener = ResultListener { _, winner -> results.add(winner) },
-                )
-                sessionRef.set(session)
-                session.onState { states.add(it) }
-                session.onListeningStart()
-                session.onCloudSegment(segment)
-                session.onTurnSegment(segment)
-                null
-            }
-        } catch (t: Throwable) {
-            t
+        runBlocking {
+            val session = VoiceSession(
+                cfg = cfg(cloudEnabled = true, cloudWaitMs = 100),
+                arbiter = arbiter(100, DecisionSink {}),
+                local = LocalChainRunner { error("local chain boom") },
+                cloud = CloudRunner { delay(500); TextReply("hi") },
+                scope = this,
+                resultListener = ResultListener { _, winner -> results.add(winner) },
+                understandingTimeoutMs = 60,
+            )
+            sessionRef.set(session)
+            session.onState { states.add(it) }
+            session.onListeningStart()
+            session.onCloudSegment(segment)
+            session.onTurnSegment(segment)
+            delay(100)
         }
-        assertNotNull(thrown, "链内异常应按协程语义传播")
-        assertEquals("local chain boom", thrown?.message)
         val session = sessionRef.get()!!
         assertEquals(SessionState.IDLE, session.state.value, "异常后必须回 IDLE，不冻结")
         assertEquals(
@@ -552,6 +547,7 @@ class VoiceSessionTest {
             states,
         )
         assertTrue(results.isEmpty(), "异常路径不回调结果")
+        session.close()
     }
 
     /**
@@ -565,8 +561,7 @@ class VoiceSessionTest {
         var signal = CompletableDeferred<Unit>()
         val session = VoiceSession(
             cfg = cfg(),
-            arbiter = arbiter(100, 10_000, DecisionSink { entries.add(it) }),
-            sink = DecisionSink { entries.add(it) },
+            arbiter = arbiter(100, DecisionSink { entries.add(it) }),
             local = LocalChainRunner { localIntent() },
             cloud = CloudRunner { delay(10); TextReply("hi") },
             scope = this,
@@ -575,7 +570,7 @@ class VoiceSessionTest {
 
         // 第一轮：云端不可达 → 只跑本地
         session.onCloudUnavailable()
-        session.onListeningStart()
+        session.onListeningStart("utt-recovery-1")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
@@ -587,12 +582,13 @@ class VoiceSessionTest {
         entries.clear()
         signal = CompletableDeferred()
         session.onCloudAvailable()
-        session.onListeningStart()
+        session.onListeningStart("utt-recovery-2")
         session.onCloudSegment(segment)
         session.onTurnSegment(segment)
         signal.await()
         assertTrue(results.single() is RaceWinner.Cloud)
         assertEquals(listOf("cloud_won"), entries.map { it.reason })
         assertEquals(SessionState.IDLE, session.state.value)
+        session.close()
     }
 }

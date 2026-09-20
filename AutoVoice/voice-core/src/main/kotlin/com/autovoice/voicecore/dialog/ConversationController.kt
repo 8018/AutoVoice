@@ -73,6 +73,19 @@ class ConversationController(
         dialogue.onFollowUpExpired(interactionId).also { next -> queue.add { onState(next) } }
     }
 
+    fun onThinkingExpired(turnId: String): DialogueSnapshot = mutate { queue ->
+        val current = dialogue.snapshot.value
+        if (current.turnId == turnId &&
+            (current.state == DialogueState.THINKING ||
+                current.state == DialogueState.SEMANTIC_PROCESSING)
+        ) {
+            admission.reset()
+            captureId = ""
+            clearPending(queue)
+        }
+        dialogue.onThinkingExpired(turnId).also { next -> queue.add { onState(next) } }
+    }
+
     /**
      * Confirms a capture using evidence produced by ASR/NLU. Repeated evidence for the current turn
      * is idempotent and never moves SPEAKING/FOLLOW_UP back to THINKING.
