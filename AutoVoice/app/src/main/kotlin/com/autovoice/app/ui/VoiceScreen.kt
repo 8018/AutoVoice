@@ -26,7 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.autovoice.app.DemoMode
 import com.autovoice.app.UiState
-import com.autovoice.voicecore.session.SessionState
+import com.autovoice.app.VoiceUiPhase
 
 /**
  * 主屏（Task 19）：会话状态头 + 车辆面板 + 决策日志 + 设置区。
@@ -226,7 +226,7 @@ private fun AsrResultCard(
 }
 
 @Composable
-private fun Header(sessionState: SessionState, cloudPending: Boolean) {
+private fun Header(sessionState: VoiceUiPhase, cloudPending: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -240,16 +240,16 @@ private fun Header(sessionState: SessionState, cloudPending: Boolean) {
         )
         Surface(
             shape = CircleShape,
-            color = if (sessionState == SessionState.IDLE) {
+            color = if (sessionState == VoiceUiPhase.IDLE) {
                 MaterialTheme.colorScheme.surfaceVariant
             } else {
                 MaterialTheme.colorScheme.primaryContainer
             },
         ) {
             Text(
-                // B5：云端 LLM 处理中占位 → "处理中…"徽标（不动 SessionState 状态机，
+                // B5：云端 LLM 处理中占位 → "处理中…"徽标（不动对话状态机，
                 // pending 期间仍是 UNDERSTANDING；仅 UI 状态，无执行无播报）
-                text = if (cloudPending && sessionState == SessionState.UNDERSTANDING) {
+                text = if (cloudPending && sessionState == VoiceUiPhase.UNDERSTANDING) {
                     "处理中…"
                 } else {
                     sessionState.displayName()
@@ -302,10 +302,10 @@ private fun SettingsSection(
 }
 
 /** 会话阶段展示文案。 */
-private fun SessionState.displayName(): String = when (this) {
-    SessionState.IDLE -> "空闲"
-    SessionState.LISTENING -> "聆听中…"
-    SessionState.UNDERSTANDING -> "理解中…"
-    SessionState.EXECUTING -> "执行中…"
-    SessionState.SPEAKING -> "播报中…"
+private fun VoiceUiPhase.displayName(): String = when (this) {
+    VoiceUiPhase.IDLE -> "空闲"
+    VoiceUiPhase.LISTENING -> "聆听中…"
+    VoiceUiPhase.UNDERSTANDING -> "理解中…"
+    VoiceUiPhase.EXECUTING -> "执行中…"
+    VoiceUiPhase.SPEAKING -> "播报中…"
 }

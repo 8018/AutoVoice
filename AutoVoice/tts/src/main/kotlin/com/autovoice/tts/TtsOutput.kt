@@ -97,7 +97,13 @@ private class DefaultTtsOutput(
                 reply.completion.await()
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Throwable) {
+            } catch (error: Throwable) {
+                // completion is the semantic end of a streaming response. Some playback drivers
+                // consume chunks without awaiting it, so this failure must explicitly close the
+                // playback identity and dialogue state instead of relying on the driver to fail.
+                playback.failed(identity, error)
+                playing.cancel()
+                playing.join()
                 return@launch
             }
             if (isCurrentTurn(turnId)) onComplete(end)

@@ -55,7 +55,7 @@ object TelemetryStages {
     /** TTS 缓存未命中（:tts 走注入的 synthesizer，含文本）。 */
     const val TTS_CACHE_MISS = "tts_cache_miss"
 
-    /** 端侧仲裁器决策（OnDeviceRaceArbiter / VoiceSession 的 on-device 条目）。 */
+    /** 端侧仲裁器决策（OnDeviceRaceArbiter / CandidateCoordinator 的 on-device 条目）。 */
     const val DEVICE_ARBITER = "device_arbiter"
 
     /** 端侧仲裁收到候选（B2 需求 4：route=cloud 收到云端语义 / route=local 收到本地 ASR 命令词）。 */

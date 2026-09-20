@@ -25,7 +25,7 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
-import com.autovoice.voicecore.session.SessionState
+import com.autovoice.voicecore.dialog.DialogueState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +55,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Task 20 引擎测试：真实 VoiceSession + 真实 OnDeviceRaceArbiter（小 cloudWaitMs），
+ * Task 20 引擎测试：真实 CandidateCoordinator + 真实 OnDeviceRaceArbiter（小 cloudWaitMs），
  * 注入 fake 本地链 / 云端链 / 播放 / 播报 / 车辆 / 网络检查。纯 JVM，无 Android 类型。
  *
  * 时序：仲裁编排 scope 注入 runBlocking；候选在独立 scope 运行，胜者收敛后
@@ -84,8 +84,8 @@ class VoiceEngineTest {
         engine.onListeningStart()
 
         assertEquals(1, stops)
-        assertEquals(SessionState.LISTENING, engine.session.state.value)
-        assertEquals(engine.conversation.captureId, engine.session.currentUtteranceId)
+        assertTrue(engine.candidates.isCapturing(engine.conversation.captureId))
+        assertEquals(engine.conversation.captureId, engine.candidates.currentCaptureId)
         assertNull(engine.conversation.snapshot.value.turnId)
     }
 
@@ -196,7 +196,7 @@ class VoiceEngineTest {
     }
 
     /**
-     * 测试装配：真实 VoiceSession + 真实仲裁器，注入 fake 链与出口。
+     * 测试装配：真实 CandidateCoordinator + 真实仲裁器，注入 fake 链与出口。
      * JVM 单测里 BuildConfig.DEBUG 恒为 false，弱网延迟 hook 需显式传 debugBuild=true 才生效。
      */
     private fun engine(
@@ -293,8 +293,6 @@ class VoiceEngineTest {
             business = AppBusinessHandler(vehicle, navigation),
             scope = scope,
             debugBuild = debugBuild,
-            listeningTimeoutMs = 5_000,
-            understandingTimeoutMs = 500,
             thinkingTimeoutMs = 500,
             onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
@@ -727,7 +725,7 @@ class VoiceEngineTest {
 
     /** 仲裁器不知道当前轮；下游状态机独立判断是否采用该轮语义。 */
     @Test
-    fun `changing legacy session id does not affect arbitration`() {
+    fun `new capture identity does not change old turn arbitration`() {
         val server = MockWebServer()
         server.start()
         server.enqueue(MockResponse().setResponseCode(200)) // uploadAudio multipart POST
@@ -749,7 +747,7 @@ class VoiceEngineTest {
                     local = LocalChainRunner { delay(600); powerOnIntent() },
                     cloud = CloudRunner {
                         delay(200) // 云端语义返回前，模拟新一轮 vad start 已刷新 utteranceId
-                        engine.session.currentUtteranceId = "utt-new"
+                        engine.onListeningStart(interruptPlayback = false)
                         TextReply("好的")
                     },
                     cloudWaitMs = 1000,
@@ -757,15 +755,14 @@ class VoiceEngineTest {
                     sink = DecisionSink { entries.add(it) },
                 )
                 engine = pair.first
-                utter(engine)
+                engine.onListeningStart()
+                engine.onCloudSegment(segment)
+                engine.onTurnSegment(segment)
+                delay(300)
             }
             assertEquals(listOf("cloud_won"), entries.map { it.reason })
-            val roundReq = takeRequestUntil(server, "/api/telemetry/round")
-            assertNotNull(roundReq, "end 应 POST /api/telemetry/round")
-            val events = JSONObject(roundReq!!.body.readUtf8()).getJSONArray("events")
-            val won = findEvent(events, TelemetryStages.DEVICE_ARBITER_WON)
-            assertNotNull(won)
-            assertEquals("cloud", won!!.getJSONObject("payload").getString("route"))
+            // 新 capture 已切换 telemetry 聚合身份，旧轮的仲裁事件不应被写入新轮。
+            // DecisionSink 是这里验证“仲裁不认当前轮”的权威输出。
         } finally {
             telemetryScope.cancel()
             server.shutdown()
@@ -865,7 +862,7 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `both routes silent return to idle by state timer without synthetic fallback`() {
+    fun `both routes silent stay outside dialogue state without synthetic fallback`() {
         val entries = mutableListOf<DecisionEntry>()
         val ttsRequests = mutableListOf<String>()
         lateinit var engine: VoiceEngine
@@ -879,10 +876,14 @@ class VoiceEngineTest {
                 tts = TtsRequester { ttsRequests.add(it); null },
             )
             engine = pair.first
-            utter(engine)
+            engine.onListeningStart()
+            engine.onCloudSegment(segment)
+            engine.onTurnSegment(segment)
+            delay(600)
         }
         assertTrue(entries.isEmpty())
-        // 没有 ASR/有效语义证据时仍是临时 capture；噪声不得触发失败播报。
+        // 没有 ASR/有效语义证据时对话状态从未建立 turn；候选层不伪造超时或失败播报。
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
         assertEquals(emptyList<String>(), ttsRequests)
     }
 
@@ -1179,7 +1180,7 @@ class VoiceEngineTest {
                 cloud = CloudRunner {
                     cloudCalls++
                     // 与生产 GatewayCloudRunner 相同语义：ready 后故障先 latch 再抛
-                    engine.session.onCloudUnavailable()
+                    engine.candidates.onCloudUnavailable()
                     throw CloudUnavailableException("网关中途断开")
                 },
                 sink = DecisionSink { entries.add(it) },
@@ -1306,11 +1307,31 @@ class VoiceEngineTest {
         }
 
         assertFalse(vehicle.isAcOn, "流式错误不得执行未收口的 intent")
+        assertEquals(
+            DialogueState.FOLLOW_UP_LISTENING,
+            engine.conversation.snapshot.value.state,
+            "流式 completion 失败必须发出播放失败生命周期，不得卡在 RESPONDING",
+        )
     }
 
-    /** 等一轮话语收敛完毕（状态回到 IDLE）——多轮用例在 runBlocking 内串行推进。 */
+    /** 等语义结果被状态机采用；播放收口由独立的 TTS 生命周期事件驱动。 */
     private suspend fun awaitIdle(engine: VoiceEngine) {
-        while (engine.session.state.value != SessionState.IDLE) {
+        var admitted = false
+        while (true) {
+            val snapshot = engine.conversation.snapshot.value
+            admitted = admitted || snapshot.turnId != null
+            if (admitted && snapshot.state in setOf(
+                    DialogueState.RESPONDING,
+                    DialogueState.SPEAKING,
+                    DialogueState.FOLLOW_UP_LISTENING,
+                    DialogueState.DORMANT,
+                )
+            ) {
+                // onFinalSemantic 先进入 RESPONDING，再同步分发业务/TTS。候选回调运行在
+                // 独立 dispatcher，这里给同一次回调留出完成执行和观测写入的时间。
+                delay(100)
+                return
+            }
             delay(10)
         }
     }
@@ -1355,7 +1376,7 @@ class VoiceEngineTest {
             engine.onTurnSegment(segment)
             withTimeout(2_000) { cloudStarted.await() } // 确保竞速已启动后才 close
         }
-        assertEquals(SessionState.UNDERSTANDING, engine.session.state.value)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
 
         engine.close()
 
@@ -1366,6 +1387,6 @@ class VoiceEngineTest {
             // 原 2s 墙钟等待偶发在 finally 获得调度前超时。
             withTimeout(5_000) { scope.coroutineContext[kotlinx.coroutines.Job]!!.join() }
         }
-        assertEquals(SessionState.IDLE, engine.session.state.value)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
     }
 }

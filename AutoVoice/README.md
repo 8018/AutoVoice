@@ -14,7 +14,7 @@ ASR → 规则 NLU）与云端链路（WS 网关 → 云端传统 NLU/LLM）**�
 ```
 AutoVoice/                      Android 端（Kotlin）
 ├── voice-core/                 消息模型（gateway 消息 schema）、DemoConfig、
-│                               Stage SPI、VoiceSession 状态机、OnDeviceRaceArbiter
+│                               Stage SPI、CandidateCoordinator、OnDeviceRaceArbiter
 ├── gateway-client/             WS 网关客户端（连接/重连、事件桥、segmentId 对账）
 ├── audio-frontend/             统一音频前端（信号处理 + Silero VAD；RNNoise JNI，4 ABI）
 ├── adapter-iflytek/            讯飞离线唤醒 IVW + 离线命令词 AIKit（共享运行时）+
@@ -81,10 +81,10 @@ adb push <离线唤醒SDK>/resource/ivw /sdcard/iflytek/
 
 | 剧本 | 状态 | 备注（headless 覆盖证据） |
 |---|---|---|
-| 1 断网本地兜底 | **待真机验收**（headless 已覆盖） | 本地链路 + `cloud_unreachable` 由 JVM 单测覆盖：`VoiceEngineTest`「network unavailable → local only，apply text spoken，cloud never ran」、`VoiceSessionTest`「onCloudUnavailable → local only」等（2026-08-08 headless 运行全绿） |
+| 1 断网本地兜底 | **待真机验收**（headless 已覆盖） | 本地链路 + `cloud_unreachable` 由 `VoiceEngineTest` 和 `CandidateCoordinatorTest` 覆盖。 |
 | 2 云端传统优先 | **待真机验收**（headless 已覆盖） | 云端链路（mock providers）由服务端 `EndToEndGatewayTest` 端到端覆盖：hello→audio→ASR→NLU→decision `nlu_first`→reply（audio + speakText + intent climate/set_temperature + segmentId 回显）；端侧 `cloud_won` 由 `VoiceEngineTest`「cloud wins fast → player got AudioReply, vehicle applied」覆盖 |
 | 3 云端 LLM 兜底 | **待真机验收**（headless 部分覆盖） | 云端链路（mock providers）由 `EndToEndGatewayTest` 覆盖；拒识→LLM 分支由 `RaceArbiterTest`（`nlu_rejected_use_llm` / `llm_first_wait_timeout`）+ `DeepSeekLlmProviderTest` 单测钉住；**拒识→LLM 的端到端路径未覆盖**，需真机 |
-| 4 云端超时用本地 | **待真机验收**（headless 已覆盖） | `cloud_timeout_use_local` 由 `VoiceEngineTest`「weakNetwork on → cloud delayed past cloudWaitMs → local wins」、`VoiceSessionTest`「cloud reachable but slow → Local winner, EXECUTING」覆盖 |
+| 4 云端超时用本地 | **待真机验收**（headless 已覆盖） | `cloud_timeout_use_local` 由 `VoiceEngineTest` 和 `CandidateCoordinatorTest` 覆盖。 |
 
 > **诚实标注**：四个剧本的 headless 覆盖以 JVM 单测 + mock/fake provider 为限——
 > 真实麦克风收音 → RNNoise 降噪 → 真实讯飞/阿里云 API → 真实授权流程 → 真实 TTS
