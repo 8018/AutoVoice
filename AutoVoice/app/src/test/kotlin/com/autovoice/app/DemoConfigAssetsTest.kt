@@ -25,6 +25,14 @@ class DemoConfigAssetsTest {
     }
 
     @Test
+    fun `demo-dev points to the dedicated dev gateway`() {
+        val cfg = DemoConfig.fromJson(readAsset("demo-dev.json"))
+        assertEquals("dev", cfg.mode)
+        assertTrue(cfg.cloud.enabled)
+        assertEquals("ws://8.153.153.77:8090/ws", cfg.cloud.gatewayUrl)
+    }
+
+    @Test
     fun `demo-full parses to full-mode cloud-first config`() {
         val cfg = DemoConfig.fromJson(readAsset("demo-full.json"))
         assertEquals("full", cfg.mode)
