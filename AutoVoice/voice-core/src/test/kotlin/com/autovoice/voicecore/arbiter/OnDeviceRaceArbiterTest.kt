@@ -75,6 +75,27 @@ class OnDeviceRaceArbiterTest {
     }
 
     @Test
+    fun `observer failures do not kill arbitration or block winner delivery`() = runBlocking {
+        val outputs = Channel<ArbitrationOutput>(Channel.UNLIMITED)
+        val failures = CopyOnWriteArrayList<Throwable>()
+        val arbiter = OnDeviceRaceArbiter(
+            sink = DecisionSink { error("decision sink failed") },
+            onEvent = { error("event sink failed") },
+            onPipelineFailure = failures::add,
+        )
+        arbiter.use {
+            arbiter.openTurn("turn-1") { outputs.trySend(it) }
+            arbiter.submitCloud("turn-1", TextReply("first"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+
+            arbiter.openTurn("turn-2") { outputs.trySend(it) }
+            arbiter.submitCloud("turn-2", TextReply("second"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+            assertTrue(failures.size >= 4)
+        }
+    }
+
+    @Test
     fun `ordinary local stays outside FIFO until cloud window opens`() = runBlocking {
         harness(cloudWaitMs = 100).use { h ->
             h.arbiter.submitLocal("turn-1", nlu(normalIntent()))

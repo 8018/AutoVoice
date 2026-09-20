@@ -15,7 +15,10 @@ import org.junit.jupiter.api.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecordingCoordinatorTest {
     @Test fun `wake turn owns capture then routes vad and completed audio in order`() = runTest {
-        val capture = FakeCapture().apply { segments = listOf(byteArrayOf(7, 8)) }
+        val capture = FakeCapture().apply {
+            segments = listOf(byteArrayOf(7, 8))
+            processedTail = ByteArray(64) { 2 }
+        }
         val wake = FakeWakeWord()
         val pipeline = FakePipeline()
         val states = mutableListOf<RecordingLifecycleSnapshot>()
@@ -40,7 +43,7 @@ class RecordingCoordinatorTest {
         assertEquals(10, pipeline.streamingBlocks)
         assertEquals(1, pipeline.finishStreaming)
         assertEquals(listOf(byteArrayOf(7, 8).toList()), pipeline.cloudSegments.map(ByteArray::toList))
-        assertEquals(9_600, pipeline.turnSegments.single().size)
+        assertEquals(9_664, pipeline.turnSegments.single().size)
         assertFalse(states.last().recording)
     }
 
@@ -164,6 +167,7 @@ class RecordingCoordinatorTest {
         override var openMicBargeInAvailable = true
         var startResult = true
         var segments = emptyList<ByteArray>()
+        var processedTail = byteArrayOf()
         var monitoring = false
         var followUpEnabled = false
         var bargeInListening = false
@@ -180,6 +184,7 @@ class RecordingCoordinatorTest {
             return startResult
         }
         override fun stop() = Unit
+        override fun finishProcessedAudio() = processedTail
         override fun finishSegments() = segments
         override fun close() = Unit
     }

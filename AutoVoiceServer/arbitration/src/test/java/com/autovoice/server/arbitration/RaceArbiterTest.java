@@ -99,6 +99,25 @@ class RaceArbiterTest {
         }
     }
 
+    @Test
+    void observerFailuresDoNotBlockWinnerOrLaterTurns() {
+        RaceArbiter isolated = new RaceArbiter(SAFETY, GRACE, sched,
+                entry -> { throw new IllegalStateException("sink failed"); },
+                (uid, event) -> { throw new IllegalStateException("event failed"); });
+
+        ArbiterDecision first = isolated.decide(
+                CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("first")),
+                ctx, "turn-1").join();
+        ArbiterDecision second = isolated.decide(
+                CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("second")),
+                ctx, "turn-2").join();
+
+        assertEquals("first", first.reply().text());
+        assertEquals("second", second.reply().text());
+    }
+
     // ------------------------------------------------------------ offline 胜出
 
     @Test
