@@ -35,7 +35,7 @@ Local semantic pipeline                 Cloud semantic pipeline
    `sendAudioStart`、`sendTtsRequest` 等业务方法。
 2. 上行协议命令统一放在 `GatewayProtocolSender`。连接失败结束当前轮，音频不得自动重放。
 3. 下行消息必须先经 `MessageDispatcher`。监听器注册时声明消息类型；一个类型允许多个监听器，
-   注销一个监听器不得影响其他监听器。
+   注销或单个监听器异常不得影响其他监听器，也不得终止传输收包协程。
 4. `GatewayPayloadParser` 只解析协议，不持有连接、轮次或 UI 状态。
 5. `VoiceEngine` 只负责采集准入、状态机、仲裁和把胜出结果交给 `BusinessHandler`；不得依赖导航、
    车辆状态或具体业务 SDK。
@@ -47,6 +47,10 @@ Local semantic pipeline                 Cloud semantic pipeline
    它只记录每个 `turnId` 是否已输出语义；当前轮和状态有效性由会话状态机判断。
 9. 端侧云端语义与本地车窗语义可立即入队；本地普通语义在云端优先窗口内留在
    入队门外。一旦进入就绪队列，按消息到达顺序处理，首个合格候选胜出。
+10. 音频上下行队列和仲裁控制队列必须有上限。达到上限时明确失败当前请求，
+    不允许无界增长，也不允许静默丢弃中间音频。
+11. 采集块（512 samples）与 RNNoise 帧（480 samples）是两个独立网格；前端必须跨块缓存并
+    在停录时补齐处理尾帧、再截回原长，保证输入输出样本数一致。
 
 ## 新业务接入
 

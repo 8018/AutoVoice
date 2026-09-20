@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,9 +67,10 @@ class OnDeviceRaceArbiter(
     private val pendingWaitMs: Long = 50_000,
     private val emissionLedger: SemanticEmissionLedger = SemanticEmissionLedger(),
     retainedTurns: Int = 64,
+    private val onPipelineFailure: (Throwable) -> Unit = {},
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val inbox = Channel<Message>(Channel.UNLIMITED)
+    private val inbox = Channel<Message>(INBOX_CAPACITY)
     private val states = LinkedHashMap<String, TurnState>()
     private val retainedTurns = retainedTurns.also { require(it > 0) }
     private val actor: Job = scope.launch { consume() }
@@ -148,13 +150,19 @@ class OnDeviceRaceArbiter(
 
     private suspend fun consume() {
         for (message in inbox) {
-            when (message) {
-                is Message.Open -> onOpen(message)
-                is Message.Cloud -> dispatch(ReadyCandidate.CloudCandidate(message.turnId, message.reply))
-                is Message.Local -> onLocal(message)
-                is Message.Pending -> onPending(message.turnId)
-                is Message.CloudUnavailable -> onCloudUnavailable(message)
-                is Message.ReleaseLocal -> onReleaseLocal(message)
+            try {
+                when (message) {
+                    is Message.Open -> onOpen(message)
+                    is Message.Cloud -> dispatch(ReadyCandidate.CloudCandidate(message.turnId, message.reply))
+                    is Message.Local -> onLocal(message)
+                    is Message.Pending -> onPending(message.turnId)
+                    is Message.CloudUnavailable -> onCloudUnavailable(message)
+                    is Message.ReleaseLocal -> onReleaseLocal(message)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                reportFailure(failure)
             }
         }
     }
@@ -217,7 +225,7 @@ class OnDeviceRaceArbiter(
     private fun onPending(turnId: String) {
         val now = monotonicMs()
         val state = stateFor(turnId, now)
-        onEvent(OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
+        emitEvent(OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
         state.cloudDeadlineMs = now + pendingWaitMs
         state.generation += 1
         if (state.heldLocal != null) scheduleRelease(turnId, state)
@@ -261,37 +269,37 @@ class OnDeviceRaceArbiter(
     /** Single actor thread: queue order itself is the atomicity boundary. */
     private fun dispatch(candidate: ReadyCandidate) {
         val state = stateFor(candidate.turnId, monotonicMs())
-        onEvent(OnDeviceArbiterEvent.Received(candidate.route.wire))
+        emitEvent(OnDeviceArbiterEvent.Received(candidate.route.wire))
 
         state.winner?.let { winner ->
-            onEvent(
+            emitEvent(
                 OnDeviceArbiterEvent.Lost(
                     candidate.route.wire,
                     if (winner == Route.CLOUD) "cloud_already_won" else "command_already_won",
                 ),
             )
-            state.output(ArbitrationOutput.AlreadyOutput)
+            emitOutput(state, ArbitrationOutput.AlreadyOutput)
             return
         }
 
         if (candidate is ReadyCandidate.LocalCandidate && candidate.nlu.intent.isUnknown()) {
-            onEvent(OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
-            state.output(ArbitrationOutput.UnknownLocal)
+            emitEvent(OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
+            emitOutput(state, ArbitrationOutput.UnknownLocal)
             return
         }
 
         if (emissionLedger.tryEmit(candidate.turnId) != SemanticEmissionResult.ACCEPTED) {
-            onEvent(OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
-            state.output(ArbitrationOutput.AlreadyOutput)
+            emitEvent(OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
+            emitOutput(state, ArbitrationOutput.AlreadyOutput)
             return
         }
 
         state.winner = candidate.route
         when (candidate) {
             is ReadyCandidate.CloudCandidate -> {
-                onEvent(OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
-                sink.onDecision(decision(candidate.turnId, Route.CLOUD.wire, "cloud_won"))
-                state.output(ArbitrationOutput.Winner(RaceWinner.Cloud(candidate.reply)))
+                emitEvent(OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
+                recordDecision(decision(candidate.turnId, Route.CLOUD.wire, "cloud_won"))
+                emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Cloud(candidate.reply)))
             }
 
             is ReadyCandidate.LocalCandidate -> {
@@ -300,9 +308,9 @@ class OnDeviceRaceArbiter(
                     candidate.decisionReason == "cloud_timeout_use_local" -> "cloud_timeout"
                     else -> candidate.decisionReason
                 }
-                onEvent(OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
-                sink.onDecision(decision(candidate.turnId, Route.LOCAL.wire, candidate.decisionReason))
-                state.output(ArbitrationOutput.Winner(RaceWinner.Local(candidate.nlu)))
+                emitEvent(OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
+                recordDecision(decision(candidate.turnId, Route.LOCAL.wire, candidate.decisionReason))
+                emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Local(candidate.nlu)))
             }
         }
     }
@@ -330,6 +338,26 @@ class OnDeviceRaceArbiter(
 
     private fun monotonicMs(): Long = System.nanoTime() / 1_000_000L
 
+    private fun emitEvent(event: OnDeviceArbiterEvent) = isolate { onEvent(event) }
+
+    private fun recordDecision(entry: DecisionEntry) = isolate { sink.onDecision(entry) }
+
+    private fun emitOutput(state: TurnState, output: ArbitrationOutput) = isolate { state.output(output) }
+
+    private inline fun isolate(block: () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            reportFailure(failure)
+        }
+    }
+
+    private fun reportFailure(failure: Throwable) {
+        runCatching { onPipelineFailure(failure) }
+    }
+
     private fun decision(turnId: String, route: String, reason: String): DecisionEntry =
         DecisionEntry("on-device", route, reason, turnId, clock())
 
@@ -337,5 +365,10 @@ class OnDeviceRaceArbiter(
         inbox.close()
         actor.cancel()
         scope.cancel()
+    }
+
+    private companion object {
+        /** Control messages are low-volume; overflow is explicit at the producer via getOrThrow. */
+        const val INBOX_CAPACITY = 256
     }
 }

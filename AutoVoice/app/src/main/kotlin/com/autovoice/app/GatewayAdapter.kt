@@ -41,6 +41,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** 云端音频分块大小（gateway 协议 16KB/帧）。 */
 private const val CLOUD_CHUNK_BYTES = 16_384
 
+/** About four seconds of 16 kHz PCM; overflow fails the turn instead of growing without limit. */
+private const val LIVE_UPLOAD_QUEUE_CAPACITY = 128
+
+/** At most 1 MiB of encoded/PCM response chunks may wait for playback. */
+private const val AUDIO_REPLY_QUEUE_CAPACITY = 64
+
 /** 网关事件桥日志 TAG。 */
 private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
 
@@ -121,7 +127,7 @@ internal class GatewayCloudRunner(
         val utteranceId: String,
         val navigationSelectionId: String,
         val segmentId: String = UUID.randomUUID().toString(),
-        val chunks: Channel<ByteArray> = Channel(Channel.UNLIMITED),
+        val chunks: Channel<ByteArray> = Channel(LIVE_UPLOAD_QUEUE_CAPACITY),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
         val admitted: AtomicBoolean = AtomicBoolean(false),
         val audioStarted: AtomicBoolean = AtomicBoolean(false),
@@ -286,7 +292,14 @@ internal class GatewayCloudRunner(
     }
 
     override fun appendStreamingAudio(pcm: ByteArray) {
-        if (pcm.isNotEmpty()) liveUpload.get()?.chunks?.trySend(pcm.copyOf())
+        if (pcm.isEmpty()) return
+        val upload = liveUpload.get() ?: return
+        val result = upload.chunks.trySend(pcm.copyOf())
+        if (result.isFailure && !result.isClosed) {
+            val overflow = CloudRequestFailedException("streaming audio queue overflow")
+            upload.chunks.close(overflow)
+            upload.reply.completeExceptionally(overflow)
+        }
     }
 
     override fun finishStreamingTurn(utteranceId: String) {
@@ -366,6 +379,8 @@ internal class GatewayCloudRunner(
             upload.reply.completeExceptionally(
                 CloudUnavailableException("流式云端链路故障：${error.message}", error),
             )
+        } catch (error: CloudRequestFailedException) {
+            upload.reply.completeExceptionally(error)
         } finally {
             bridge.clearReplySlot(slot)
         }
@@ -540,7 +555,9 @@ internal class GatewayBridge(
     /** Realtime 上游断开；调用方在锁域仍有效时重建 chat_start。 */
     private val onChatFailure: () -> Unit = {},
 ) {
-    private val dispatcher = MessageDispatcher()
+    private val dispatcher = MessageDispatcher { message, failure ->
+        Log.e(GATEWAY_BRIDGE_TAG, "gateway listener failed: type=${message.type}", failure)
+    }
     private val parser = GatewayPayloadParser()
 
     private class PendingSlot<T>(
@@ -702,7 +719,7 @@ internal class GatewayBridge(
             "audio_reply_start" -> {
                 if (msg.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
                     val segmentId = msg.payload.get("segmentId")?.asString ?: return
-                    val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+                    val chunks = Channel<ByteArray>(AUDIO_REPLY_QUEUE_CAPACITY)
                     val completion = CompletableDeferred<AudioStreamEnd>()
                     val reply = parser.streamStart(msg.payload, chunks, completion) ?: return
                     val stream = ActiveStream(segmentId, "", chunks, completion)
@@ -716,7 +733,7 @@ internal class GatewayBridge(
                 }
                 val slot = findSlot(msg.payload, pendingReplies) ?: return
                 if (!isForCurrentUtterance(msg.payload, slot)) return
-                val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+                val chunks = Channel<ByteArray>(AUDIO_REPLY_QUEUE_CAPACITY)
                 val completion = CompletableDeferred<AudioStreamEnd>()
                 val reply = parser.streamStart(msg.payload, chunks, completion) ?: return
                 val stream = ActiveStream(slot.segmentId, slot.utteranceId, chunks, completion)
@@ -730,7 +747,14 @@ internal class GatewayBridge(
             }
             "audio_reply_chunk" -> {
                 val stream = activeStream.get() ?: return
-                msg.binary?.let { bytes -> stream.chunks.trySend(bytes) }
+                msg.binary?.let { bytes ->
+                    val result = stream.chunks.trySend(bytes)
+                    if (result.isFailure && !result.isClosed && activeStream.compareAndSet(stream, null)) {
+                        val overflow = GatewayException("audio reply queue overflow: ${stream.segmentId}")
+                        stream.chunks.close(overflow)
+                        stream.completion.completeExceptionally(overflow)
+                    }
+                }
             }
             "audio_reply_end" -> {
                 val stream = activeStream.get() ?: return

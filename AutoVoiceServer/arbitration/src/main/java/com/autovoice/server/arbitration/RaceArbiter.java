@@ -10,8 +10,12 @@ import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.SpeakTexts;
 
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,12 +36,14 @@ import java.util.function.BiConsumer;
  * </ul>
  */
 public final class RaceArbiter {
+    private static final Logger LOGGER = System.getLogger(RaceArbiter.class.getName());
     static final long DEFAULT_OFFLINE_GRACE_MS = 1500;
 
     private static final String SAFETY_TEXT = "网络开小差了，请稍后再试";
     private static final String ARBITER_CLOUD = "cloud";
     private static final String ROUTE_LLM = "llm";
     private static final String ROUTE_NLU_TRADITIONAL = "nlu-traditional";
+    private static final int MESSAGE_QUEUE_CAPACITY = 1024;
 
     private final long safetyTimeoutMs;
     private final long offlineGraceMs;
@@ -46,7 +52,7 @@ public final class RaceArbiter {
     private final BiConsumer<String, CloudArbiterEvent> eventSink;
 
     /** Handler-style serial executor backed by the existing shared scheduler. */
-    private final ConcurrentLinkedQueue<Runnable> messages = new ConcurrentLinkedQueue<>();
+    private final BlockingQueue<Runnable> messages = new ArrayBlockingQueue<>(MESSAGE_QUEUE_CAPACITY);
     private final AtomicBoolean draining = new AtomicBoolean(false);
 
     public RaceArbiter(long safetyTimeoutMs, ScheduledExecutorService scheduler, DecisionSink sink) {
@@ -82,9 +88,9 @@ public final class RaceArbiter {
 
         // Registration order is explicit. Already-completed futures therefore enter FIFO in this
         // order; otherwise actual callback submission order decides, exactly like a Handler queue.
-        offline.whenComplete((hit, error) -> post(() -> onOffline(turn, hit, error)));
-        llm.whenComplete((reply, error) -> post(() -> onLlm(turn, reply, error)));
-        scheduler.schedule(() -> post(() -> onSafety(turn)), safetyTimeoutMs, TimeUnit.MILLISECONDS);
+        offline.whenComplete((hit, error) -> post(turn, () -> onOffline(turn, hit, error)));
+        llm.whenComplete((reply, error) -> post(turn, () -> onLlm(turn, reply, error)));
+        scheduler.schedule(() -> post(turn, () -> onSafety(turn)), safetyTimeoutMs, TimeUnit.MILLISECONDS);
         return turn.output;
     }
 
@@ -114,7 +120,7 @@ public final class RaceArbiter {
         turn.heldLlm = reply;
         long generation = ++turn.graceGeneration;
         scheduler.schedule(
-                () -> post(() -> onGraceExpired(turn, generation)),
+                () -> post(turn, () -> onGraceExpired(turn, generation)),
                 offlineGraceMs,
                 TimeUnit.MILLISECONDS);
     }
@@ -137,7 +143,7 @@ public final class RaceArbiter {
         }
         turn.winner = Winner.OFFLINE;
         Reply reply = Reply.ofAction(hit.intent(), SpeakTexts.speak(hit.intent()));
-        sink.log(entry(turn.utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
+        log(entry(turn.utteranceId, ROUTE_NLU_TRADITIONAL, "offline_won"));
         onEvent(turn.utteranceId, CloudArbiterEvent.won(
                 ROUTE_NLU_TRADITIONAL, CloudArbiterEvent.Reason.PRIORITY, "offline_won"));
         turn.output.complete(new ArbiterDecision(reply, "offline_won", hit.text()));
@@ -152,7 +158,7 @@ public final class RaceArbiter {
             return;
         }
         turn.winner = Winner.LLM;
-        sink.log(entry(turn.utteranceId, ROUTE_LLM, "llm_reply"));
+        log(entry(turn.utteranceId, ROUTE_LLM, "llm_reply"));
         onEvent(turn.utteranceId, CloudArbiterEvent.won(
                 ROUTE_LLM, CloudArbiterEvent.Reason.PRIORITY, "llm_reply"));
         turn.output.complete(new ArbiterDecision(reply, "llm_reply", null));
@@ -161,29 +167,59 @@ public final class RaceArbiter {
     private void onSafety(Turn turn) {
         if (turn.winner != null) return;
         turn.winner = Winner.SAFETY;
-        sink.log(entry(turn.utteranceId, ROUTE_LLM, "safety_timeout"));
+        log(entry(turn.utteranceId, ROUTE_LLM, "safety_timeout"));
         onEvent(turn.utteranceId, CloudArbiterEvent.won(
                 ROUTE_LLM, CloudArbiterEvent.Reason.LLM_TIMEOUT, "safety_timeout"));
         turn.output.complete(new ArbiterDecision(
                 Reply.ofText(SAFETY_TEXT), "safety_timeout", null));
     }
 
-    private void post(Runnable message) {
-        messages.add(message);
+    private void post(Turn turn, Runnable message) {
+        if (!messages.offer(message)) {
+            turn.output.completeExceptionally(
+                    new RejectedExecutionException("arbitration message queue overflow"));
+            LOGGER.log(Level.ERROR, "arbitration message queue overflow");
+            return;
+        }
         if (draining.compareAndSet(false, true)) scheduler.execute(this::drainMessages);
     }
 
     private void drainMessages() {
-        do {
-            Runnable message;
-            while ((message = messages.poll()) != null) message.run();
+        try {
+            do {
+                Runnable message;
+                while ((message = messages.poll()) != null) {
+                    try {
+                        message.run();
+                    } catch (RuntimeException failure) {
+                        LOGGER.log(Level.ERROR, "arbitration message failed", failure);
+                    }
+                }
+                draining.set(false);
+                // A producer may enqueue between poll()==null and draining=false.
+            } while (!messages.isEmpty() && draining.compareAndSet(false, true));
+        } finally {
             draining.set(false);
-            // A producer may enqueue between poll()==null and draining=false.
-        } while (!messages.isEmpty() && draining.compareAndSet(false, true));
+            if (!messages.isEmpty() && draining.compareAndSet(false, true)) {
+                scheduler.execute(this::drainMessages);
+            }
+        }
     }
 
     private void onEvent(String utteranceId, CloudArbiterEvent event) {
-        eventSink.accept(utteranceId, event);
+        try {
+            eventSink.accept(utteranceId, event);
+        } catch (RuntimeException failure) {
+            LOGGER.log(Level.WARNING, "arbitration event observer failed", failure);
+        }
+    }
+
+    private void log(DecisionEntry entry) {
+        try {
+            sink.log(entry);
+        } catch (RuntimeException failure) {
+            LOGGER.log(Level.WARNING, "arbitration decision observer failed", failure);
+        }
     }
 
     /** Legacy single-route entry uses the same message pipeline. */

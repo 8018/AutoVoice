@@ -27,6 +27,7 @@ interface RecordingCapture : AutoCloseable {
     fun detectFollowUpSpeech(block: ByteArray): Boolean
     fun start(includeBargeInPreRoll: Boolean = false): Boolean
     fun stop()
+    fun finishProcessedAudio(): ByteArray
     fun finishSegments(): List<ByteArray>
 }
 
@@ -251,7 +252,9 @@ internal class RecordingCoordinator(
         wakeTurnTimeoutJob = null
         capture.stop()
         updateState { it.copy(recording = false) }
+        val tail = capture.finishProcessedAudio()
         val denoised = synchronized(denoisedBlocks) {
+            if (tail.isNotEmpty()) denoisedBlocks += tail
             concatBlocks(denoisedBlocks).also { denoisedBlocks.clear() }
         }
         val cloudSegments = capture.finishSegments()

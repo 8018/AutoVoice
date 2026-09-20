@@ -20,4 +20,21 @@ class MessageDispatcherTest {
 
         assertEquals(listOf("first", "second:reply", "second:reply"), received)
     }
+
+    @Test
+    fun `listener failure is reported and does not block peers or later messages`() {
+        val failures = mutableListOf<String>()
+        val received = mutableListOf<String>()
+        val dispatcher = MessageDispatcher { message, failure ->
+            failures += "${message.type}:${failure.message}"
+        }
+        dispatcher.register(setOf("reply")) { error("broken observer") }
+        dispatcher.register(setOf("reply")) { received += it.type }
+
+        dispatcher.dispatch(GatewayMessage("reply", JsonObject()))
+        dispatcher.dispatch(GatewayMessage("reply", JsonObject()))
+
+        assertEquals(listOf("reply", "reply"), received)
+        assertEquals(listOf("reply:broken observer", "reply:broken observer"), failures)
+    }
 }
