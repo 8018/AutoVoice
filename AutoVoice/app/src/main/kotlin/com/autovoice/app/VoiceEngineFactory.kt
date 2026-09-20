@@ -237,7 +237,7 @@ internal object VoiceEngineFactory {
         // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
         // （telemetry 为构造参数，构造即绑定），此处无需再装配
         // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
-        cloudRunner.onCloudUnavailable = { engine.session.onCloudUnavailable() }
+        cloudRunner.onCloudUnavailable = { engine.candidates.onCloudUnavailable() }
         // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
         cloudRunner.onPendingReceived = { turnId ->
             onDeviceArbiter.submitPending(turnId)

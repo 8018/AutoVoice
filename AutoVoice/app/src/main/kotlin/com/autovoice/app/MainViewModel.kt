@@ -23,7 +23,6 @@ import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.dialog.DialogueSnapshot
 import com.autovoice.voicecore.dialog.DialogueState
-import com.autovoice.voicecore.session.SessionState
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -64,8 +63,7 @@ data class VehicleUiState(
 /**
  * UI 状态（单一 StateFlow 来源）。
  *
- * - [sessionState]：会话阶段（Task 19 只在 IDLE ⇄ LISTENING；Task 20 接入 VoiceSession 后
- *   补 UNDERSTANDING/EXECUTING/SPEAKING；Task 50 按钮模式：按下 → LISTENING，抬手 → 竞速）；
+ * - [sessionState]：单一对话状态机快照的 UI 投影，不是独立的状态源；
  * - [vehicle]：模拟车控面板快照；
  * - [mode] / [weakNetwork]：设置区纯 UI 状态；
  * - [recording]：按住录音中（按钮视觉，Task 50）；
@@ -73,10 +71,13 @@ data class VehicleUiState(
  * - [lastRecognizedText]：最近一次识别文本（Task 34）；[lastReplyText]：最近一次回复播报
  *   文本（Task 53：仲裁结果不再上屏，logcat 打印，界面留给识别/回复对话区）。
  */
+/** Pure presentation projection of [DialogueState]; it never drives dialogue transitions. */
+enum class VoiceUiPhase { IDLE, LISTENING, UNDERSTANDING, EXECUTING, SPEAKING }
+
 data class UiState(
     val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
-    val sessionState: SessionState = SessionState.IDLE,
+    val sessionState: VoiceUiPhase = VoiceUiPhase.IDLE,
     val vehicle: VehicleUiState = VehicleUiState(),
     val mode: DemoMode = DemoMode.DEMO_OFFLINE,
     val weakNetwork: Boolean = false,
@@ -150,7 +151,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.onTtsPlayEvent(stage, level, payload)
     }
 
-    /** 端侧引擎：VoiceSession + 双链路竞速 + 播报/执行路由（Task 20）。 */
+    /** 端侧引擎：候选协调 + 仲裁流水线 + 单一对话状态机 + 播报/执行路由。 */
     private lateinit var engine: VoiceEngine
 
     /** 只观察共享 PCM，不自行创建 AudioRecord。 */
@@ -276,19 +277,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearPermissionHint() = onAudioPermissionGranted()
 
     private fun handleDialogueState(snapshot: DialogueSnapshot) {
-        val state = when (snapshot.state) {
-            DialogueState.DORMANT -> SessionState.IDLE
-            DialogueState.AWAKE,
-            DialogueState.FOLLOW_UP_LISTENING,
-            -> SessionState.LISTENING
-            DialogueState.THINKING,
-            DialogueState.SEMANTIC_PROCESSING,
-            DialogueState.RESPONDING,
-            -> SessionState.UNDERSTANDING
-            DialogueState.SPEAKING -> SessionState.SPEAKING
-        }
+        val state = dialogueToUiPhase(snapshot.state)
         _uiState.update { it.copy(sessionState = state) }
         recordingCoordinator.onDialogueState(snapshot, _uiState.value.navigationCandidates.isNotEmpty())
+    }
+
+    private fun dialogueToUiPhase(state: DialogueState): VoiceUiPhase = when (state) {
+        DialogueState.DORMANT -> VoiceUiPhase.IDLE
+        DialogueState.AWAKE,
+        DialogueState.FOLLOW_UP_LISTENING,
+        -> VoiceUiPhase.LISTENING
+        DialogueState.THINKING,
+        DialogueState.SEMANTIC_PROCESSING,
+        DialogueState.RESPONDING,
+        -> VoiceUiPhase.UNDERSTANDING
+        DialogueState.SPEAKING -> VoiceUiPhase.SPEAKING
     }
 
     private fun setChatMode(enabled: Boolean) {
@@ -296,7 +299,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 chatMode = enabled,
-                sessionState = if (enabled) SessionState.LISTENING else engine.session.state.value,
+                sessionState = if (enabled) VoiceUiPhase.LISTENING else
+                    dialogueToUiPhase(engine.conversation.snapshot.value.state),
             )
         }
     }

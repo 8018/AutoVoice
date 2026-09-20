@@ -12,7 +12,7 @@ JSON Schema 与运行时校验必须同时更新；不能只让配置“解析�
 | `ecnr` | `rnnoise` | `MainViewModel` → `AudioRecorder` | `rnnoise` 对本地整段音频降噪；`none` 旁路降噪。其他值启动期拒绝。 |
 | `local.asr` | 必填 | `VoiceEngineFactory.buildLocalChain` | `iflytek.offline` 使用真实 2C 命令词 SDK；不可用时该候选未命中。`iflytek.fake-cmd` 仅在显式配置时产生 Demo 命令。 |
 | `local.nlu` | 必填 | `VoiceEngineFactory.buildLocalChain` | 当前只支持 `rule.nlu`，其他名称启动期拒绝。 |
-| `cloud.enabled` | 必填 | `VoiceSession` | 是否启动云端候选；关闭时只走本地候选。 |
+| `cloud.enabled` | 必填 | `CandidateCoordinator` | 是否启动云端候选；关闭时只走本地候选。 |
 | `cloud.gatewayUrl` | 必填 | `GatewayCloudRunner` | WebSocket 网关地址；`cloud.enabled=true` 时不得为空。 |
 | `cloud.waitMs` | 必填 | `OnDeviceRaceArbiter` | 本地普通语义在进入 FIFO 就绪队列前等待云端的时间，必须大于 0；不延迟云端或本地车窗语义。 |
 | `cloud.deviceId` / `authToken` | 无 | `GatewayCloudRunner` | 网关 hello 鉴权；未配置时不发送对应字段。 |

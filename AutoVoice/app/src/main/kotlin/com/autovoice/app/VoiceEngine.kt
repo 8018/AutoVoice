@@ -15,11 +15,10 @@ import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voicecore.dialog.AdmissionEvidence
 import com.autovoice.voicecore.dialog.ConversationController
 import com.autovoice.voicecore.dialog.DialogueSnapshot
+import com.autovoice.voicecore.session.CandidateCoordinator
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
-import com.autovoice.voicecore.session.SessionState
-import com.autovoice.voicecore.session.VoiceSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +31,8 @@ import okhttp3.OkHttpClient
 /**
  * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
  *
- * 持有装配好的 [VoiceSession]（本地链 + 云端链 + [OnDeviceRaceArbiter]，见 voice-core
- * §5.1 编排语义）以及通用 TTS、业务处理出口。引擎不持有导航或车辆状态。
+ * 持有装配好的 [CandidateCoordinator]（本地链 + 云端链 + [OnDeviceRaceArbiter]）以及
+ * 通用 TTS、业务处理出口。对话状态只由 [ConversationController] 产生。
  * 播报统一走网络 TTS（2026-08-15：不用系统 TTS）。结果路由与播放生命周期
  * 分别由 [ResponseDispatcher] 和独立 `:tts` 模块管理：
  *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
@@ -76,8 +75,6 @@ class VoiceEngine(
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
-    private val listeningTimeoutMs: Long = 30_000,
-    private val understandingTimeoutMs: Long = 30_000,
     private val thinkingTimeoutMs: Long = 60_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
@@ -125,15 +122,14 @@ class VoiceEngine(
     @Volatile
     private var awaitingVadStart = true
 
-    /** 装配好的会话：状态机 + 双路由竞速编排。 */
-    val session: VoiceSession
+    /** 只管理采集资源事实与候选生产，不拥有对话状态。 */
+    val candidates: CandidateCoordinator
 
     /** Capture 准入、pending 可见性和当前 turn 的唯一拥有者。 */
     val conversation: ConversationController = ConversationController(
         onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
             tts.stop()
-            session.currentUtteranceId = admitted.turnId
             streamingCloud?.commitStreamingTurn(admitted.turnId)
         },
         onPendingVisible = onCloudPending,
@@ -150,7 +146,7 @@ class VoiceEngine(
 
     init {
         onTtsPlayEvent = tts::acceptPlaybackEvent
-        session = VoiceSession(
+        candidates = CandidateCoordinator(
             cfg = cfg,
             arbiter = arbiter,
             local = local,
@@ -163,10 +159,7 @@ class VoiceEngine(
                     return cloud.run(segment, utteranceId)
                 }
             },
-            scope = scope,
             resultListener = ResultListener { utteranceId, winner -> onTurnResult(utteranceId, winner) },
-            listeningTimeoutMs = listeningTimeoutMs,
-            understandingTimeoutMs = understandingTimeoutMs,
         )
     }
 
@@ -180,7 +173,8 @@ class VoiceEngine(
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
         tts.stop()
         dialogueTimeoutJob?.cancel()
-        session.close()
+        candidates.close()
+        conversation.reset()
         scope.cancel()
     }
 
@@ -228,8 +222,8 @@ class VoiceEngine(
         // activeNetwork 只能作诊断提示，不能作为硬门禁：网络切换期间它可能短暂为 null，
         // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
         if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
-        session.onCloudAvailable()
-        session.onListeningStart(captureId)
+        candidates.onCloudAvailable()
+        candidates.beginCapture(captureId)
     }
 
     /**
@@ -249,7 +243,7 @@ class VoiceEngine(
      * 守卫：非录音中（LISTENING）的杂散 SpeechStart 忽略。
      */
     fun onVadStart() {
-        if (session.state.value != SessionState.LISTENING) return
+        if (!candidates.isCapturing(currentUtteranceId)) return
         awaitingVadStart = false
         conversation.openCapture(currentUtteranceId)
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
@@ -286,11 +280,10 @@ class VoiceEngine(
      * T7：累加本轮 VAD 聚合统计（段数/总时长，随 onTurnSegment 的 vad 事件上报）。
      */
     fun onCloudSegment(segment: ByteArray) {
-        if (session.state.value == SessionState.LISTENING) {
+        if (candidates.appendCloudSegment(currentUtteranceId, segment)) {
             turnSegmentCount += 1
             turnSegmentsTotalMs += durationMs(segment.size)
         }
-        session.onCloudSegment(segment)
     }
 
     /**
@@ -319,7 +312,7 @@ class VoiceEngine(
             ),
         )
         telemetry.uploadAudio(captureId, segment)
-        session.onTurnSegment(segment, captureId)
+        candidates.submitTurn(captureId, segment)
     }
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */
@@ -349,7 +342,7 @@ class VoiceEngine(
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
         conversation.rejectCapture(currentUtteranceId)
-        session.onListeningStop()
+        candidates.cancelCapture(currentUtteranceId)
     }
 
     // ------------------------------------------------------------------ 结果路由

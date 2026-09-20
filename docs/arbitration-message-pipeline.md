@@ -29,9 +29,9 @@
 - 本地 `unknown` 只丢弃该条消息，不占用本轮输出名额，后到云端语义仍可胜出。
 - 仲裁胜出不取消本地或云端候选；迟到候选由同轮单输出闸门拦截。
 
-`VoiceSession` 只启动候选生产者并立即返回，不等待仲裁结束。LISTENING 和 UNDERSTANDING
-有独立定时器；对话控制器的 THINKING/SEMANTIC_PROCESSING 也有独立定时器。定时器只
-收口会话状态，不向仲裁器发“轮次过期”指令。
+`CandidateCoordinator` 只启动候选生产者并立即返回，不等待仲裁结束，也不维护
+LISTENING/UNDERSTANDING 等第二套状态。对话控制器的 THINKING/SEMANTIC_PROCESSING 和录音层
+的聆听定时器各自收口所属资源，都不向仲裁器发“轮次过期”指令。
 
 ## 云端流程
 
@@ -57,5 +57,5 @@ LLM 回复 ─► 离线未决时暂存 ──├─► 串行消息队列 ─�
 2. 同一 `turnId` 最多有一个语义输出，不同 `turnId` 互不影响。
 3. 双路都没有结果时不伪造 `both_failed`；状态定时器回收 UI/会话状态。
 4. 有效云端语义不受本地等待窗口或 pending 影响，到达即可入队。
-5. 完整回归包括端侧仲裁器、`VoiceSession`/`VoiceEngine`、云端 `RaceArbiter` 以及全仓构建与 lint。
+5. 完整回归包括端侧仲裁器、`CandidateCoordinator`/`VoiceEngine`、云端 `RaceArbiter` 以及全仓构建与 lint。
 6. 观察回调抛异常时，当前胜者仍交付，后续轮仍可继续仲裁。
