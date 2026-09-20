@@ -544,7 +544,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 cloud = CloudConfig(
                     enabled = true,
                     gatewayUrl = if (onlineAsset == ASSET_DEMO_DEV) {
-                        "ws://47.94.4.204:8090/ws"
+                        "ws://8.153.153.77:8090/ws"
                     } else {
                         "ws://47.94.4.204:8080/ws"
                     },

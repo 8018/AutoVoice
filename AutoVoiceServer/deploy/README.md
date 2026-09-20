@@ -1,8 +1,8 @@
-# AutoVoice 云端服务部署（已部署: 47.94.4.204）
+# AutoVoice 云端服务部署（生产: 47.94.4.204；dev: 8.153.153.77）
 
-## Dev 部署栈（同机隔离，2026-09-11 起）
+## Dev 部署栈（独立主机，2026-09-19 起）
 
-dev 分支工作流见 `docs/development-workflow.md`。dev 栈与生产同机但完全隔离：
+dev 分支工作流见 `docs/development-workflow.md`。dev 栈与生产分别部署在独立主机：
 
 | 项 | 生产 | dev |
 |---|---|---|
@@ -12,8 +12,8 @@ dev 分支工作流见 `docs/development-workflow.md`。dev 栈与生产同机�
 | .env | `/etc/autovoice/.env` | `/etc/autovoice-dev/.env` |
 | 遥测 SQLite / TTS 缓存 / Skill DB / 离线 work | 生产路径 | 全部 dev 目录独立 |
 
-离线 SDK 只读资源（libs/resource/cn_fsa.txt/.so）由 dev 的 .env 直接指向生产路径共享，
-work 目录独立。安全组需放行入方向 TCP 8090（手机测试）。
+dev 主机持有自己的离线 SDK 只读资源（libs/resource/cn_fsa.txt/.so），work 目录位于
+`/opt/autovoice-dev/iflytek-offline/work`。安全组需放行入方向 TCP 8090（手机测试）。
 
 ### 首次初始化（服务器上，root）
 
@@ -32,14 +32,14 @@ systemctl status autovoice-dev-gateway
 - Secret `DEV_SSH_PRIVATE_KEY`：dev 部署专用 SSH 私钥（公钥在服务器 `~/.ssh/authorized_keys`；
   生成与安装步骤见下文"部署密钥"）
 - Secret `DEV_SSH_KNOWN_HOSTS`：服务器 known_hosts 记录
-- 可选 Variable `DEV_SSH_HOST`（默认 `47.94.4.204`）、`DEV_SSH_USER`（默认 `root`）、
+- 必填 Variable `DEV_SSH_HOST`（dev 专用主机）、可选 `DEV_SSH_USER`（默认 `root`）、
   `DEV_SSH_PORT`（默认 `22`）
 
 首次在 Actions 手动运行 **Deploy dev**（须从 dev 分支）验证三服务就绪后，将仓库
 Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动发布。发布脚本
 `deploy-release.sh dev` 与生产共用备份/回滚逻辑，失败只回滚 dev 栈。
-只有 `dev` 分支 push 产生的 CI 会触发部署，PR 自身的 CI 不会重复发布。同机的 dev
-与生产工作流使用同一个并发组，任一时刻只允许一个部署任务连接服务器。
+只有 `dev` 分支 push 产生的 CI 会触发部署，PR 自身的 CI 不会重复发布。dev 与生产
+使用各自的主机和并发组，部署互不阻塞。
 脚本会在替换 jar 前校验
 `SKILL_MANAGER_URL=http://127.0.0.1:8093`；若误指向生产 8083，发布立即失败，
 不会重启任何服务。dev Skill 配置需通过 8093 管理面板独立维护；首次需要同款 Skill 时，
@@ -49,10 +49,10 @@ Variable `AUTO_DEPLOY_DEV` 设为 `true`，之后 dev 分支 CI 成功时自动�
 
 ```bash
 ssh-keygen -t ed25519 -C "autovoice-dev-deploy" -f ~/.ssh/autovoice_dev_deploy -N ""
-cat ~/.ssh/autovoice_dev_deploy.pub | ssh root@47.94.4.204 \
+cat ~/.ssh/autovoice_dev_deploy.pub | ssh root@8.153.153.77 \
   "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-ssh -i ~/.ssh/autovoice_dev_deploy -o IdentitiesOnly=yes root@47.94.4.204 "echo dev-key-ok"
-ssh-keygen -F 47.94.4.204    # 取指纹行 → DEV_SSH_KNOWN_HOSTS
+ssh -i ~/.ssh/autovoice_dev_deploy -o IdentitiesOnly=yes root@8.153.153.77 "echo dev-key-ok"
+ssh-keygen -F 8.153.153.77    # 取指纹行 → DEV_SSH_KNOWN_HOSTS
 gh secret set DEV_SSH_PRIVATE_KEY --env dev < ~/.ssh/autovoice_dev_deploy
 gh secret set DEV_SSH_KNOWN_HOSTS --env dev   # 交互粘贴指纹行
 ```
@@ -147,6 +147,12 @@ Variable `AUTO_DEPLOY_PRODUCTION` 设为 `true`，之后
 中断后无法判断远端脚本是否已经执行。由于 dev 与生产当前位于同一主机，
 两个部署工作流全局串行，防止并发 SSH/SCP 和服务切换互相干扰。
 
+发布前会拒绝在可用内存低于 256 MiB 或磁盘剩余低于 1 GiB 时替换 jar。发布过程会安装
+`autovoice.slice` 与当前主机角色对应的三个 systemd drop-in：整组服务最多使用主机
+85% 内存，从而为 sshd 和系统恢复保留资源；兼容的 `shared` 模式才会同时限制六个服务。
+成功发布后只保留
+最近 5 套 release 和 5 套 backup，并清理超过一天的中断上传目录，避免频繁部署填满系统盘。
+
 `PROD_SSH_KNOWN_HOSTS` 应从已经验证过的管理机取得，不要在 workflow 中临时执行
 `ssh-keyscan`，否则无法防止中间人攻击。例如先确认当前连接使用的指纹，再读取：
 
@@ -157,8 +163,11 @@ ssh-keygen -F 47.94.4.204
 若 GitHub Actions 和已授权管理机都报 `Connection timed out during banner exchange` 或
 `kex_exchange_identification`，说明 TCP 22 可能已被接收，但服务器/安全设备没有完成 SSH
 握手。工作流的有界重试只能处理短暂拒绝，不能修复持续的服务器侧故障。此时需通过
-阿里云 ECS 控制台/云助手/串口连接检查安全组、`sshd` 状态、`MaxStartups`、连接数与
-防火墙封禁；恢复前不要反复重跑生产部署。
+阿里云 ECS 控制台/云助手/串口连接检查安全组、`sshd` 状态、`MaxStartups`、连接数、
+内存/磁盘压力或防火墙封禁。若 ICMP 正常、22/8080 的 TCP 能建连但都不返回应用数据，
+优先按生产主机资源耗尽处理：通过云助手检查 `free -h`、`df -h` 与三个
+`autovoice-*` 生产服务；不要操作独立 dev 主机。恢复 sshd 后再运行 main 上的部署工作流。
+不要在无法确认远端状态时反复触发部署，这只会增加 SSH backlog。
 
 每次发布的构建产物和发布前备份分别保存在 `/opt/autovoice/releases/<commit>` 与
 `/opt/autovoice/backups/<commit>-<UTC时间>`，便于审计和手工回退。

@@ -25,6 +25,7 @@ install -d -m 0755 \
   "$DEV_ROOT/releases" \
   "$DEV_ROOT/backups" \
   "$DEV_ROOT/incoming"
+install -d -m 0700 /etc/autovoice-dev
 
 echo "== 2/4 安装环境变量模板(已存在则跳过)=="
 if [[ -f /etc/autovoice-dev/.env ]]; then
