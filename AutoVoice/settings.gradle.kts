@@ -17,7 +17,7 @@ include(
     ":message-dispatch",
     ":business-core",
     ":tts",
-    ":adapter-local",
+    ":audio-frontend",
     ":adapter-iflytek",
     ":iflytek-sdk-stub",
     ":app",

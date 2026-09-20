@@ -2,9 +2,9 @@ package com.autovoice.app.vad
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.autovoice.adapterlocal.vad.SileroVad
-import com.autovoice.adapterlocal.vad.VadEvent
-import com.autovoice.adapterlocal.vad.VoiceActivityGate
+import com.autovoice.audiofrontend.vad.SileroVad
+import com.autovoice.audiofrontend.vad.VadEvent
+import com.autovoice.audiofrontend.vad.VoiceActivityGate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

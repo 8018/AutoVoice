@@ -5,20 +5,16 @@ import android.content.Context
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.NoiseSuppressor
 import android.util.Log
-import com.autovoice.adapterlocal.ecnr.RnnoiseProcessor
-import com.autovoice.adapterlocal.vad.SileroVad
-import com.autovoice.adapterlocal.vad.VadEvent
-import com.autovoice.adapterlocal.vad.VadSegmenter
-import com.autovoice.adapterlocal.vad.VoiceActivityGate
-import com.autovoice.adapterlocal.vad.createSegmentationGate
+import com.autovoice.audiofrontend.AndroidCaptureEffects
+import com.autovoice.audiofrontend.AudioFrontendEngine
+import com.autovoice.audiofrontend.AudioFrontendFactory
+import com.autovoice.audiofrontend.CaptureEffects
+import com.autovoice.audiofrontend.vad.OpenMicBargeInGate
+import com.autovoice.audiofrontend.vad.VadEvent
 import com.autovoice.app.RecordingCapture
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.VadConfig
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,51 +43,16 @@ object AudioFormat {
     const val BLOCK_MS = BLOCK_SAMPLES * 1000 / SAMPLE_RATE // 32
 
     /** RNNoise 帧：480 samples = 30ms @16k。 */
-    const val RNN_FRAME_SAMPLES = RnnoiseProcessor.FRAME_SIZE // 480
+    const val RNN_FRAME_SAMPLES = 480
     const val RNN_FRAME_BYTES = RNN_FRAME_SAMPLES * BYTES_PER_SAMPLE // 960
 }
 
-/** 1024 字节 PCM16 块（LE）→ 512 samples。 */
-internal fun pcm16BytesToShorts(bytes: ByteArray): ShortArray {
-    require(bytes.size == AudioFormat.BLOCK_BYTES) {
-        "expected ${AudioFormat.BLOCK_BYTES} bytes (${AudioFormat.BLOCK_SAMPLES} samples), got ${bytes.size}"
-    }
-    val samples = ShortArray(AudioFormat.BLOCK_SAMPLES)
-    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(samples)
-    return samples
-}
-
-/** samples → PCM16 字节（LE）。 */
-internal fun pcm16ShortsToBytes(shorts: ShortArray): ByteArray {
-    val out = ByteArray(shorts.size * AudioFormat.BYTES_PER_SAMPLE)
-    ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(shorts)
-    return out
-}
-
 /**
- * RNNoise 480 帧网格上的块切分/尾帧对齐（纯逻辑，JVM 可测）：
- * 512 samples 的块切出 1 帧（480 samples），尾 32 samples（2ms）丢弃——
- * 不重写切帧逻辑，直接复用 [RnnoiseProcessor.chunk]（纯 Kotlin，无 native 调用；
- * [RnnoiseProcessor] native 句柄懒加载，只在 [RnnoiseProcessor.process] 时触发）。
- */
-internal fun first480Frame(samples: ShortArray): ShortArray {
-    require(samples.size == AudioFormat.BLOCK_SAMPLES) {
-        "expected ${AudioFormat.BLOCK_SAMPLES} samples per block, got ${samples.size}"
-    }
-    val frames = RnnoiseProcessor().chunk(samples)
-    check(frames.size == 1) { "512 samples should yield exactly 1 frame of 480, got ${frames.size}" }
-    return frames[0]
-}
-
-/**
- * 录音通道（VOICE_COMMUNICATION 16k 单声道 PCM16）：AudioRecord 读 1024B/块 → 双网格。
+ * 录音通道（VOICE_COMMUNICATION 16k 单声道 PCM16）：只负责采集与发布流。
  *
- * - VAD 网格（512 samples/块 = 32ms）：原始 1024B 块喂 [VadSegmenter]（Silero VAD +
- *   门控切段，Task 49）——按住期间实时切出云端语音段；抬手后 [finishSegments]
- *   取全部段（含强制切出的未闭合尾段）。
- * - RNNoise 网格（480 samples/帧，独立于 VAD 网格）：块内切 480 帧、尾 32 samples 丢弃
- *   （Task 18 chunk 语义），降噪后 960B/块进 [pcmBlocks]——本地路整段音频，
- *   由 RecordingCoordinator 按普通轮采集期间收集。
+ * 原始 1024B 块统一交给 [AudioFrontendEngine]；VAD、切段、RNNoise 网格和实现选择均在
+ * `audio-frontend` 模块内闭环。recorder 仅发布处理后的 [pcmBlocks]、[vadEvents] 与原始
+ * [rawPcmBlocks]，不依赖 Silero/RNNoise 具体类型。
  *
  * 测试模式（Task 58 云端联调）：demo-full.json 声明 testAudio asset 时，输入源从
  * 麦克风切换为预置语音（[TestAudioSource]），读循环按真实 32ms/块节奏喂同一双网格
@@ -113,8 +74,8 @@ class AudioRecorder(
     testAudioSource: TestAudioSource? = TestAudioSource.fromConfig(context, testAudioAsset),
     vadConfig: VadConfig = VadConfig(),
     ecnr: String = DemoConfig.ECNR_RNNOISE,
-    vadSegmenter: VadSegmenter? = createVadSegmenter(context, vadConfig),
-    private val denoiser: RnnoiseProcessor = RnnoiseProcessor(),
+    frontend: AudioFrontendEngine = AudioFrontendFactory.create(context, vadConfig, ecnr),
+    private val captureEffects: CaptureEffects = AndroidCaptureEffects(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : RecordingCapture {
 
@@ -125,21 +86,16 @@ class AudioRecorder(
     private var activeTestAudioAsset: String? = testAudioAsset
 
     @Volatile
-    private var vadSegmenter: VadSegmenter? = vadSegmenter
+    private var frontend: AudioFrontendEngine = frontend
 
     @Volatile
     private var activeVadConfig: VadConfig = vadConfig
 
     @Volatile
-    private var ecnrProvider: String = requireSupportedEcnr(ecnr)
+    private var activeEcnr: String = ecnr
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
-    private val bargeInVad: SileroVad? = try {
-        SileroVad(context, SILERO_VAD_ASSET)
-    } catch (t: Throwable) {
-        Log.w(TAG, "打断 VAD 加载失败，降级为仅唤醒词打断", t)
-        null
-    }
+    private val bargeInVad = AudioFrontendFactory.createVad(context)
     private val bargeInGate = OpenMicBargeInGate()
     private val bargeInPreRoll = ArrayDeque<ByteArray>()
     private var pendingBargeInPreRoll: List<ByteArray> = emptyList()
@@ -168,7 +124,7 @@ class AudioRecorder(
     override val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
 
     /** VAD 是否可用（模型加载成功）。 */
-    override val vadAvailable: Boolean get() = vadSegmenter != null
+    override val vadAvailable: Boolean get() = frontend.vadAvailable
 
     /**
      * Applies mode-specific capture settings after an engine mode switch. Barge-in/follow-up VAD
@@ -178,35 +134,31 @@ class AudioRecorder(
     fun configureAudioProcessing(vad: VadConfig, ecnr: String, testAudioAsset: String? = null) {
         require(!turnActive) { "audio processing cannot be reconfigured during an active turn" }
         require(!monitoringRequested) { "audio processing cannot be reconfigured while monitoring" }
-        val provider = requireSupportedEcnr(ecnr)
         if (testAudioAsset != activeTestAudioAsset) {
             testAudioSource = TestAudioSource.fromConfig(context, testAudioAsset)
             activeTestAudioAsset = testAudioAsset
         }
-        if (vad != activeVadConfig) {
-            val replacement = createVadSegmenter(context, vad)
+        if (vad != activeVadConfig || ecnr != activeEcnr) {
+            val replacement = AudioFrontendFactory.create(context, vad, ecnr)
             val previous = synchronized(turnProcessingLock) {
-                val old = vadSegmenter
-                vadSegmenter = replacement
+                val old = frontend
+                frontend = replacement
                 activeVadConfig = vad
+                activeEcnr = ecnr
                 old
             }
-            runCatching { previous?.close() }
+            runCatching { previous.close() }
         }
-        ecnrProvider = provider
         Log.i(
             TAG,
             "audio config applied: vad.threshold=${vad.threshold} " +
                 "vad.minSpeechMs=${vad.minSpeechMs} vad.minSilenceMs=${vad.minSilenceMs} " +
-                "ecnr=$provider testAudio=${testAudioAsset ?: "microphone"}",
+                "ecnr=$ecnr testAudio=${testAudioAsset ?: "microphone"}",
         )
     }
 
     @Volatile
     private var record: AudioRecord? = null
-
-    private var echoCanceler: AcousticEchoCanceler? = null
-    private var noiseSuppressor: NoiseSuppressor? = null
 
     /** 只有系统 AEC 真正启用时才允许普通话术打断，避免扬声器回声自激。 */
     @Volatile
@@ -248,7 +200,7 @@ class AudioRecorder(
     override fun setOpenMicBargeInListening(enabled: Boolean) {
         if (enabled && openMicBargeInAvailable && bargeInVad != null) {
             bargeInListening = true
-            bargeInVad.resetDiagnostics()
+            bargeInVad.reset()
             synchronized(bargeInPreRoll) {
                 bargeInPreRoll.clear()
                 pendingBargeInPreRoll = emptyList()
@@ -264,7 +216,7 @@ class AudioRecorder(
     override fun setFollowUpListening(enabled: Boolean) {
         followUpListening = enabled && bargeInVad != null
         if (followUpListening) {
-            bargeInVad?.resetDiagnostics()
+            bargeInVad?.reset()
             synchronized(bargeInPreRoll) {
                 bargeInPreRoll.clear()
                 pendingBargeInPreRoll = emptyList()
@@ -318,7 +270,7 @@ class AudioRecorder(
             Log.i(TAG, "测试音频源模式：${source.describe()}")
             source.reset() // 每轮从头播（游标跨轮不重置 → 段起点随机，Task 58 联调发现）
             synchronized(turnProcessingLock) {
-                vadSegmenter?.resetForTurn()
+                frontend.startTurn()
                 turnActive = true
             }
             readJob = scope.launch { testReadLoop(source) }
@@ -333,7 +285,7 @@ class AudioRecorder(
         }
         // 本轮录音从干净状态起步；开放式打断会先补入触发前的环形缓冲，避免丢首字。
         synchronized(turnProcessingLock) {
-            vadSegmenter?.resetForTurn()
+            frontend.startTurn()
             turnActive = true
             preRoll.forEach(::processTurnBlock)
         }
@@ -342,18 +294,18 @@ class AudioRecorder(
 
     /**
      * 抬手取段（Task 49 双路：云端路段的 VAD 切段，时间顺序）。
-     * 必须在 [stop] 之后调用（feed 已停，[VadSegmenter.finish] 与录音线程互斥安全）；
+     * 必须在 [stop] 之后调用（前端 feed 已停，finish 与录音线程互斥安全）；
      * VAD 不可用时返回空列表。
      */
     override fun finishSegments(): List<ByteArray> {
-        val segments = vadSegmenter?.finish() ?: emptyList()
+        val segments = frontend.finishSegments()
         // Task 55 诊断：云端段为空时区分"VAD 未启用/概率过低/未切段"
-        val vs = vadSegmenter
+        val vs = frontend.diagnostics
         Log.i(
             TAG,
-            "VAD 诊断: vad=$vadAvailable segments=${segments.size} maxProb=${vs?.maxProbability} " +
-                "startEvt=${vs?.speechStartEvents} endEvt=${vs?.speechEndEvents} " +
-                "blocks=${vs?.blockCount} openStart=${vs?.openStart}",
+            "VAD 诊断: vad=$vadAvailable segments=${segments.size} maxProb=${vs.maxVadProbability} " +
+                "startEvt=${vs.speechStartEvents} endEvt=${vs.speechEndEvents} " +
+                "blocks=${vs.inputBlocks} openStart=${vs.openSegmentStart}",
         )
         return segments
     }
@@ -382,7 +334,7 @@ class AudioRecorder(
         releaseCaptureEffects()
     }
 
-    /** 释放 VAD 切分器 / RNNoise / 协程 scope（释放后不可再 [start]）。 */
+    /** 释放统一音频前端与协程 scope（释放后不可再 [start]）。 */
     override fun close() {
         monitoringRequested = false
         turnActive = false
@@ -390,15 +342,11 @@ class AudioRecorder(
         bargeInListening = false
         stopCapture()
         try {
-            vadSegmenter?.close()
+            frontend.close()
         } catch (_: Throwable) {
         }
         try {
             bargeInVad?.close()
-        } catch (_: Throwable) {
-        }
-        try {
-            denoiser.close()
         } catch (_: Throwable) {
         }
         scope.cancel()
@@ -461,10 +409,9 @@ class AudioRecorder(
     }
 
     private fun processTurnBlock(block: ByteArray) {
-        vadSegmenter?.feed(block)?.let { _vadEvents.tryEmit(it) }
-        val frame = first480Frame(pcm16BytesToShorts(block))
-        val denoised = if (ecnrProvider == DemoConfig.ECNR_RNNOISE) denoiser.process(frame) else frame
-        _pcmBlocks.tryEmit(pcm16ShortsToBytes(denoised))
+        val result = frontend.process(block)
+        result.vadEvent?.let { _vadEvents.tryEmit(it) }
+        _pcmBlocks.tryEmit(result.processedPcm)
     }
 
     // ------------------------------------------------------------------ 资源
@@ -519,25 +466,12 @@ class AudioRecorder(
 
     private fun attachCaptureEffects(audioSessionId: Int) {
         releaseCaptureEffects()
-        echoCanceler = if (AcousticEchoCanceler.isAvailable()) {
-            runCatching { AcousticEchoCanceler.create(audioSessionId)?.also { it.enabled = true } }
-                .onFailure { Log.w(TAG, "AEC 启用失败，开放式打断将禁用", it) }
-                .getOrNull()
-        } else {
-            null
-        }
-        openMicBargeInAvailable = echoCanceler?.enabled == true && bargeInVad != null
-        noiseSuppressor = if (NoiseSuppressor.isAvailable()) {
-            runCatching { NoiseSuppressor.create(audioSessionId)?.also { it.enabled = true } }
-                .onFailure { Log.w(TAG, "系统降噪启用失败，继续使用 RNNoise", it) }
-                .getOrNull()
-        } else {
-            null
-        }
+        captureEffects.attach(audioSessionId)
+        openMicBargeInAvailable = captureEffects.echoCancellationActive && bargeInVad != null
         Log.i(
             TAG,
-            "capture effects: aec=${echoCanceler?.enabled == true} " +
-                "ns=${noiseSuppressor?.enabled == true} openMicBargeIn=$openMicBargeInAvailable",
+            "capture effects: aec=${captureEffects.echoCancellationActive} " +
+                "ns=${captureEffects.noiseSuppressionActive} openMicBargeIn=$openMicBargeInAvailable",
         )
     }
 
@@ -546,10 +480,7 @@ class AudioRecorder(
         bargeInListening = false
         bargeInGate.stop()
         openMicBargeInAvailable = false
-        runCatching { echoCanceler?.release() }
-        runCatching { noiseSuppressor?.release() }
-        echoCanceler = null
-        noiseSuppressor = null
+        captureEffects.release()
     }
 
     private companion object {
@@ -560,61 +491,5 @@ class AudioRecorder(
 
         /** 保留触发前约 384ms PCM，包含 VAD 确认窗口和少量话首。 */
         const val BARGE_IN_PRE_ROLL_BLOCKS = 12
-    }
-}
-
-/** Silero VAD v5 model asset (packaged from adapter-local). */
-private const val SILERO_VAD_ASSET = "silero_vad.onnx"
-
-private fun createVadSegmenter(context: Context, config: VadConfig): VadSegmenter? = try {
-    VadSegmenter(
-        vad = SileroVad(context, SILERO_VAD_ASSET),
-        gate = config.createSegmentationGate(),
-    )
-} catch (error: Throwable) {
-    Log.w("AudioRecorder", "Silero VAD 模型加载失败，VAD 不可用（语音检测失效）", error)
-    null
-}
-
-private fun requireSupportedEcnr(provider: String): String {
-    require(provider == DemoConfig.ECNR_RNNOISE || provider == DemoConfig.ECNR_NONE) {
-        "unsupported ECNR provider '$provider'; supported: rnnoise, none"
-    }
-    return provider
-}
-
-/**
- * 播报期打断门：连续有效人声 160ms 才触发，触发后立即自动关闭，
- * 由上层建立新话语。AEC 是否可用由 [AudioRecorder] 额外门控。
- */
-internal class OpenMicBargeInGate(
-    private val gate: VoiceActivityGate = VoiceActivityGate(
-        threshold = 0.65f,
-        minSpeechMs = 160,
-        minSilenceMs = 320,
-    ),
-) {
-    @Volatile
-    var listening: Boolean = false
-        private set
-
-    @Synchronized
-    fun start() {
-        gate.reset()
-        listening = true
-    }
-
-    @Synchronized
-    fun stop() {
-        listening = false
-        gate.reset()
-    }
-
-    @Synchronized
-    fun feed(probability: Float): Boolean {
-        if (!listening) return false
-        if (gate.feed(probability) != VadEvent.SpeechStart) return false
-        listening = false
-        return true
     }
 }
