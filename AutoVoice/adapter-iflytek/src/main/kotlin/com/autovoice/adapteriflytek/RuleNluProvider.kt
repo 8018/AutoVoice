@@ -45,11 +45,30 @@ object RuleNluProvider {
     /** 提取命令文本中的首个数字（支持小数）。 */
     private val NUMBER_REGEX = Regex("""\d+(\.\d+)?""")
 
+    /** Closed offline grammar: exact phrases only, avoiding substring exits in normal requests. */
+    val EXIT_COMMANDS: Set<String> = linkedSetOf(
+        "退出",
+        "退出对话",
+        "结束对话",
+        "退出当前对话",
+        "结束当前对话",
+    )
+
     /**
      * 命令文本 → [Intent]。
      * 领域：首个命中的领域别名；意图：首个命中的意图规则；均未命中 → [Intent.unknown]([SOURCE])。
      */
     fun understand(command: String): Intent {
+        if (command.trim() in EXIT_COMMANDS) {
+            return Intent(
+                schemaVersion = "1.0",
+                domain = "conversation",
+                intent = "exit_dialogue",
+                slots = emptyMap(),
+                confidence = 1.0,
+                source = SOURCE,
+            )
+        }
         val domain = DOMAIN_ALIASES.entries
             .firstOrNull { (alias, _) -> command.contains(alias) }
             ?.value ?: return Intent.unknown(SOURCE)

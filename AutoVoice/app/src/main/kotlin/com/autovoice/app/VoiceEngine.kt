@@ -181,6 +181,14 @@ class VoiceEngine(
     /** 统一停止当前输出；用于 realtime 对端确认用户开始说话等非普通新轮入口。 */
     fun stopPlayback() = tts.stop()
 
+    /** Ends the current interaction locally. Candidate producers may finish, but become stale. */
+    fun exitCurrentDialogue() {
+        tts.stop()
+        dialogueTimeoutJob?.cancel()
+        dialogueTimeoutJob = null
+        conversation.reset()
+    }
+
     /** Called only by :tts after playback identity validation. */
     internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) {
         if (turnId.isBlank()) return

@@ -14,6 +14,7 @@ class AppBusinessHandler(
     private val actionGateway: ActionExecutionGateway = ActionExecutionGateway(),
     private val onVehicleApplied: () -> Unit = {},
     private val onConversationMode: (Boolean) -> Unit = {},
+    private val onExitDialogue: () -> Unit = {},
 ) : BusinessHandler {
     override fun handle(command: BusinessCommand): BusinessResult {
         val intent = command.intent
@@ -22,6 +23,11 @@ class AppBusinessHandler(
             return when (intent.intent) {
                 "enter_chat" -> BusinessResult.applied().also { onConversationMode(true) }
                 "exit_chat" -> BusinessResult.applied().also { onConversationMode(false) }
+                "exit_dialogue" -> BusinessResult.applied().also {
+                    navigation?.abortPendingTask()
+                    onConversationMode(false)
+                    onExitDialogue()
+                }
                 else -> BusinessResult.failed()
             }
         }
