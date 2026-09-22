@@ -55,7 +55,7 @@ enum class LocalAdmission {
  * per-turn single-output ledger and event ordering. The arbiter deliberately does not know which
  * turn is current and has no per-call/round lifecycle. Dialogue validity is checked downstream.
  *
- * The ready queue contains only eligible semantics: cloud and local window commands enter
+ * The ready queue contains only eligible semantics: cloud and local hard-rule commands enter
  * immediately; ordinary local semantics are held before the queue until the cloud window opens;
  * pending moves that release time without changing already queued messages.
  */
@@ -103,7 +103,7 @@ class OnDeviceRaceArbiter(
         data class LocalCandidate(
             override val turnId: String,
             val nlu: NluResult,
-            val directWindow: Boolean,
+            val directLocal: Boolean,
             val decisionReason: String,
         ) : ReadyCandidate {
             override val route = Route.LOCAL
@@ -182,22 +182,22 @@ class OnDeviceRaceArbiter(
         val now = monotonicMs()
         val state = stateFor(message.turnId, now)
         val immediateReason = state.immediateLocalReason
-        val window = message.nlu.intent.isWindowPower()
+        val immediateLocal = message.nlu.intent.isImmediateLocalCommand()
         when {
             message.admission == LocalAdmission.IMMEDIATE || immediateReason != null -> dispatch(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = false,
+                    directLocal = false,
                     decisionReason = immediateReason ?: message.immediateReason,
                 ),
             )
 
-            window -> dispatch(
+            immediateLocal -> dispatch(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = now < state.cloudDeadlineMs,
+                    directLocal = now < state.cloudDeadlineMs,
                     decisionReason = if (now < state.cloudDeadlineMs) {
                         "local_command_won"
                     } else {
@@ -210,7 +210,7 @@ class OnDeviceRaceArbiter(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = false,
+                    directLocal = false,
                     decisionReason = "cloud_timeout_use_local",
                 ),
             )
@@ -240,7 +240,7 @@ class OnDeviceRaceArbiter(
             ReadyCandidate.LocalCandidate(
                 message.turnId,
                 held.nlu,
-                directWindow = false,
+                directLocal = false,
                 decisionReason = message.reason,
             ),
         )
@@ -260,7 +260,7 @@ class OnDeviceRaceArbiter(
             ReadyCandidate.LocalCandidate(
                 message.turnId,
                 held.nlu,
-                directWindow = false,
+                directLocal = false,
                 decisionReason = "cloud_timeout_use_local",
             ),
         )
@@ -304,7 +304,7 @@ class OnDeviceRaceArbiter(
 
             is ReadyCandidate.LocalCandidate -> {
                 val eventReason = when {
-                    candidate.directWindow -> "local_command"
+                    candidate.directLocal -> "local_command"
                     candidate.decisionReason == "cloud_timeout_use_local" -> "cloud_timeout"
                     else -> candidate.decisionReason
                 }

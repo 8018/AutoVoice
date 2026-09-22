@@ -79,6 +79,12 @@ data class Intent(
     fun isWindowPower(): Boolean =
         domain == "window" && (intent == "power_on" || intent == "power_off")
 
+    /** Explicit local dialogue exit. It is a control command, not an LLM conversation reply. */
+    fun isDialogueExit(): Boolean = domain == "conversation" && intent == "exit_dialogue"
+
+    /** Local hard-rule candidates enter the arbiter FIFO immediately. */
+    fun isImmediateLocalCommand(): Boolean = isWindowPower() || isDialogueExit()
+
     companion object {
         const val INTENT_UNKNOWN = "unknown"
         /** 旧协议未携带 source 时的诊断值；不参与路由、仲裁或轮次判断。 */

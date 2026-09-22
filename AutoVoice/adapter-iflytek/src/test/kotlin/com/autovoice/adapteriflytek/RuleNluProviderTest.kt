@@ -6,6 +6,17 @@ import org.junit.jupiter.api.Test
 
 class RuleNluProviderTest {
     @Test
+    fun `explicit dialogue exit phrases map locally without substring matching`() {
+        RuleNluProvider.EXIT_COMMANDS.forEach { phrase ->
+            val intent = RuleNluProvider.understand(phrase)
+            assertEquals("conversation", intent.domain)
+            assertEquals("exit_dialogue", intent.intent)
+            assertTrue(intent.isImmediateLocalCommand())
+        }
+        assertTrue(RuleNluProvider.understand("退出导航后回家").isUnknown())
+    }
+
+    @Test
     fun `window command maps to window`() {
         assertEquals("window", RuleNluProvider.understand("打开车窗").domain)
     }

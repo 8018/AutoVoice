@@ -160,6 +160,16 @@ class VoiceEngineTest {
             source = "test.local",
         )
 
+    private fun exitDialogueIntent(): Intent =
+        Intent(
+            schemaVersion = "1.0",
+            domain = "conversation",
+            intent = "exit_dialogue",
+            slots = emptyMap(),
+            confidence = 1.0,
+            source = "rule.nlu",
+        )
+
     private fun setTempIntent(temperature: Double): Intent =
         Intent(
             schemaVersion = "1.0",
@@ -290,7 +300,11 @@ class VoiceEngineTest {
             local = local,
             cloud = cloud,
             tts = output,
-            business = AppBusinessHandler(vehicle, navigation),
+            business = AppBusinessHandler(
+                vehicle,
+                navigation,
+                onExitDialogue = { engineRef?.exitCurrentDialogue() },
+            ),
             scope = scope,
             debugBuild = debugBuild,
             thinkingTimeoutMs = 500,
@@ -307,6 +321,31 @@ class VoiceEngineTest {
             }
         }
         return engine to vehicle
+    }
+
+    @Test
+    fun `local exit wins immediately and returns current dialogue to dormant`() = runBlocking {
+        val decisions = java.util.concurrent.CopyOnWriteArrayList<DecisionEntry>()
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { exitDialogueIntent() },
+            cloud = CloudRunner { delay(1_000); TextReply("不应胜出") },
+            cloudWaitMs = 10_000,
+            sink = DecisionSink(decisions::add),
+        )
+
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first {
+                decisions.isNotEmpty() && it.state == DialogueState.DORMANT
+            }
+        }
+        assertEquals("local_command_won", decisions.single().reason)
+        assertEquals("local", decisions.single().route)
     }
 
     @Test
