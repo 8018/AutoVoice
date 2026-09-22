@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
                         onModeChange = viewModel::setMode,
                         onWeakNetworkChange = viewModel::setWeakNetwork,
                         onDismissNavigationCandidates = viewModel::dismissNavigationCandidates,
+                        onSelectNavigationCandidate = viewModel::selectNavigationCandidate,
                     )
                 }
             }

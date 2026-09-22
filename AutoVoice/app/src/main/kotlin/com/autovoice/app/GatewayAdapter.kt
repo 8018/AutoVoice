@@ -68,7 +68,7 @@ internal class GatewayCloudRunner(
     /** B5：云端 pending 占位信号（LLM 处理中）→ 透传给桥，桥对账后发出。 */
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
-    private val navigationSelectionProvider: () -> String = { "" },
+    private val navigationContextProvider: () -> NavigationTaskContextRef? = { null },
 ) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClientFactory.create(
@@ -97,10 +97,10 @@ internal class GatewayCloudRunner(
     )
 
     /** D05b:采用确认上行;ready 前忽略。 */
-    fun sendNavigationSelectionStart(selectionId: String) {
+    fun sendNavigationSelectionStart(context: NavigationTaskContextRef) {
         val sid = sessionId
         if (!readyReceived || sid.isBlank()) return
-        protocol.navigationSelection(sid, selectionId)
+        protocol.navigationSelection(sid, context)
     }
 
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
@@ -125,7 +125,7 @@ internal class GatewayCloudRunner(
 
     private data class LiveUpload(
         val utteranceId: String,
-        val navigationSelectionId: String,
+        val navigationContext: NavigationTaskContextRef?,
         val segmentId: String = UUID.randomUUID().toString(),
         val chunks: Channel<ByteArray> = Channel(LIVE_UPLOAD_QUEUE_CAPACITY),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
@@ -277,7 +277,7 @@ internal class GatewayCloudRunner(
 
     override fun beginStreamingTurn(utteranceId: String) {
         if (!cfg.enabled || utteranceId.isBlank()) return
-        val upload = LiveUpload(utteranceId, navigationSelectionProvider())
+        val upload = LiveUpload(utteranceId, navigationContextProvider())
         while (true) {
             val previous = liveUpload.get()
             // 同一按钮轮可能包含多个 VAD 段；它们属于同一条业务音频流。
@@ -346,7 +346,7 @@ internal class GatewayCloudRunner(
                 upload.utteranceId,
                 location?.first,
                 location?.second,
-                navigationSelectionId = upload.navigationSelectionId,
+                navigationContext = upload.navigationContext,
             )
             upload.audioStarted.set(true)
             sendCommitIfReady(upload)
@@ -364,6 +364,7 @@ internal class GatewayCloudRunner(
                 readyReceived = false
                 sessionId = ""
                 client.disconnect()
+                onCloudUnavailable()
             }
             upload.reply.completeExceptionally(
                 if (error.code == "CONNECTION_FAILED" || error.code == "CONNECTION_CLOSED") {
@@ -376,6 +377,7 @@ internal class GatewayCloudRunner(
             readyReceived = false
             sessionId = ""
             client.disconnect()
+            onCloudUnavailable()
             upload.reply.completeExceptionally(
                 CloudUnavailableException("流式云端链路故障：${error.message}", error),
             )
@@ -428,7 +430,7 @@ internal class GatewayCloudRunner(
         releasedReplyTurns.remove(utteranceId)
         // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
         val segmentId = UUID.randomUUID().toString()
-        val navigationSelectionId = navigationSelectionProvider()
+        val navigationContext = navigationContextProvider()
         val replySlot = bridge.newReplySlot(segmentId, utteranceId)
         try {
             // ensureReady may establish a connection before this turn starts. Once audio_start has
@@ -442,7 +444,7 @@ internal class GatewayCloudRunner(
                 location?.first,
                 location?.second,
                 0,
-                navigationSelectionId = navigationSelectionId,
+                navigationContext = navigationContext,
             )
             var offset = 0
             while (offset < segment.size) {

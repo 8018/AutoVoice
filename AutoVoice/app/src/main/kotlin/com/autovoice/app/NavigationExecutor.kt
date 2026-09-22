@@ -25,16 +25,19 @@ class NavigationExecutor(
     val session: NavigationSession = NavigationSession(),
     private val opener: (String) -> Boolean,
 ) {
+    private val dialoguePolicy = NavigationDialoguePolicy()
+
+    fun abortPendingTask() = session.abortSelection()
 
 
     /** 执行导航意图；非 navigation/navigate、槽位缺失或拉起失败返回 false。 */
-    @Synchronized fun execute(intent: Intent): Boolean {
+    @Synchronized fun execute(intent: Intent, turnId: String = "legacy-navigation-turn"): Boolean {
         if (intent.domain != DOMAIN_NAVIGATION) return false
         if (intent.intent == INTENT_CANCEL_NAVIGATION) {
             val selectionId = intent.slots["selectionId"]?.value as? String
             if (session.snapshot.selectionId != null && selectionId != session.snapshot.selectionId) return false
             if (selectionId != null && selectionId != session.snapshot.selectionId) return false
-            if (!session.cancelSelection()) return false
+            if (!session.cancelSelection(selectionId)) return false
             onCandidates(emptyList())
             return true
         }
@@ -42,9 +45,8 @@ class NavigationExecutor(
             val json = intent.slots?.get(SLOT_CANDIDATES)?.value as? String ?: return false
             val candidates = parseCandidates(json) ?: return false
             val selectionId = intent.slots["selectionId"]?.value as? String
-            if (selectionId != null && (selectionId.isBlank() || candidates.any { it.candidateId.isBlank() }
-                    || candidates.map { it.candidateId }.toSet().size != candidates.size)) return false
-            session.offer(candidates, selectionId)
+            if (!dialoguePolicy.acceptsOffer(selectionId, candidates)) return false
+            session.offer(candidates, selectionId, turnId)
             onCandidates(candidates)
             return true
         }
@@ -65,8 +67,17 @@ class NavigationExecutor(
         val pending = session.snapshot
         if (selectionId != null || candidateId != null || pending.selectionId != null) {
             if (selectionId == null || selectionId != pending.selectionId || candidateId.isNullOrBlank()) return false
-            val candidate = pending.candidates.singleOrNull { it.candidateId == candidateId } ?: return false
-            if (candidate.poiname != poiname || candidate.lat != lat || candidate.lon != lon || waypoints.isNotEmpty()) return false
+            val candidate = dialoguePolicy.matchSelection(
+                pending,
+                selectionId,
+                candidateId,
+                trip.destination,
+                waypoints.isNotEmpty(),
+            ) ?: return false
+            if (session.claimSelection(selectionId, candidateId) != candidate) return false
+        } else if (pending.taskStatus == com.autovoice.voicecore.dialog.TaskStatus.WAITING_INPUT) {
+            // A fully resolved navigation intent without candidate identity is a fresh request.
+            session.abortSelection(com.autovoice.voicecore.dialog.TaskEndReason.REPLACED)
         }
         val uri = if (waypoints.isEmpty()) buildNaviUri(poiname, lat, lon)
             else buildRoutePlanUri(poiname, lat, lon, waypoints)

@@ -789,19 +789,39 @@ class VoiceGatewayHandlerTest {
         String selectionId = offer.path("payload").path("intent").path("slots")
                 .path("selectionId").path("value").asText();
 
-        // 客户端实际展示列表后显式采用。
+        // 客户端实际展示列表后，用精确任务上下文显式采用。
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
-                        + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
-        // 采用后,带 navigationSelectionId 的二轮语音能选中
+                        + sid + "\",\"selectionId\":\"" + selectionId
+                        + "\",\"taskId\":\"task-new\",\"taskRevision\":2,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":true}}"));
+        // 旧任务的迟到关闭不得撤销新任务。
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"\",\"taskId\":\"task-old\",\"taskRevision\":1,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":false}}"));
+        // 采用后，只有完全匹配的任务上下文才能用于二轮选择。
         synchronized (s.sent) { s.sent.clear(); }
         transcript.set("第一个");
         h.handleMessage(s, new TextMessage(audioStart(sid, "select")
-                .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,"
+                        + "\"navigationSelectionId\":\"" + selectionId + "\","
+                        + "\"navigationTaskId\":\"task-new\",\"navigationTaskRevision\":2,"
+                        + "\"navigationInteractionId\":\"interaction-1\",\"encoding\":")));
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
         JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
         assertEquals("navigate", selected.path("intent").asText());
+
+        // task_dialog_v1 without an exact identity must not fall back to the session's recent list.
+        synchronized (s.sent) { s.sent.clear(); }
+        h.handleMessage(s, new TextMessage(audioStart(sid, "missing-context")
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{5, 6}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode rejected = awaitType(s, "reply").path("payload");
+        assertEquals("text", rejected.path("kind").asText());
+        assertFalse(rejected.has("intent"));
     }
 
     @Test

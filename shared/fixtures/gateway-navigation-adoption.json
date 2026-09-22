@@ -2,6 +2,10 @@
   "type": "navigation_selection_start",
   "payload": {
     "sessionId": "navigation-regression",
-    "selectionId": "selection-airports"
+    "selectionId": "selection-airports",
+    "taskId": "navigation-task-1",
+    "taskRevision": 1,
+    "interactionId": "interaction-1",
+    "active": true
   }
 }

@@ -169,7 +169,9 @@ public final class NavigationDialogService implements NavigationDialog {
             case AMBIGUOUS -> Optional.of(
                     Reply.ofText("有多个相似地点，请说第几个或更完整的地址"));
             case FRESH_SEARCH -> {
-                removeSelection(sessionId, selection);
+                // Modern task-dialog clients close the exact old context only after the new reply
+                // is adopted. Legacy clients retain their historical consume-on-proposal policy.
+                if (!isTaskDialog(context)) removeSelection(sessionId, selection);
                 yield Optional.empty();
             }
             case CANCEL -> Optional.of(cancel(context, sessionId, selection, transcript));
@@ -182,7 +184,7 @@ public final class NavigationDialogService implements NavigationDialog {
         if (!matchesSelection(context, selection)) {
             return Reply.ofText("地点列表已更新，请重新搜索");
         }
-        if (!removeSelection(sessionId, selection)) {
+        if (!isTaskDialog(context) && !removeSelection(sessionId, selection)) {
             return Reply.ofText("地点列表已更新或失效，请重新搜索");
         }
         Intent intent = Intent.of("1.0", DOMAIN, CANCEL_INTENT,
@@ -193,7 +195,10 @@ public final class NavigationDialogService implements NavigationDialog {
 
     private Reply select(SessionContext context, String sessionId,
                          PendingNavigationSelection selection, NavigationCandidate candidate) {
-        if (!matchesSelection(context, selection) || !removeSelection(sessionId, selection)) {
+        if (!matchesSelection(context, selection)) {
+            return Reply.ofText("地点列表已更新或失效，请重新搜索");
+        }
+        if (!isTaskDialog(context) && !removeSelection(sessionId, selection)) {
             return Reply.ofText("地点列表已更新或失效，请重新搜索");
         }
         Map<String, SlotValue> slots = new LinkedHashMap<>();
@@ -229,6 +234,11 @@ public final class NavigationDialogService implements NavigationDialog {
 
     private static boolean hasSelectionField(SessionContext context) {
         return context != null && context.attrs().containsKey("navigationSelectionId");
+    }
+
+    private static boolean isTaskDialog(SessionContext context) {
+        return context != null && context.attrs().get("taskDialogVersion") instanceof Number value
+                && value.intValue() >= 1;
     }
 
     private boolean removeSelection(String sessionId, PendingNavigationSelection selection) {

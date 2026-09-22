@@ -567,8 +567,31 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.activePermit = new TurnOutputPermit(st.utteranceId, st.segmentId);
         st.outputPermits.putIfAbsent(st.utteranceId, st.activePermit);
         st.activeAsrTrace = new AsrTurnTrace(recorder, st.utteranceId, online.id());
-        // Snapshot before opening ASR: the streaming provider must see this turn's displayed list.
-        st.ctx = st.ctx.withAttr("navigationSelectionId", payload.get("navigationSelectionId") instanceof String id ? id : null);
+        // Snapshot before opening ASR: a modern client must prove that the displayed selection
+        // belongs to the exact active task. This prevents reconnect from reviving an old server
+        // list. Legacy clients keep the old selectionId-only behaviour until they migrate.
+        int taskDialogVersion = payload.get("taskDialogVersion") instanceof Number value
+                ? value.intValue() : 0;
+        if (taskDialogVersion >= 1) {
+            String selectionId = stringValue(payload.get("navigationSelectionId"));
+            String taskId = stringValue(payload.get("navigationTaskId"));
+            String interactionId = stringValue(payload.get("navigationInteractionId"));
+            long revision = longValue(payload.get("navigationTaskRevision"));
+            boolean exactActiveTask = selectionId != null && !selectionId.isBlank()
+                    && selectionId.equals(st.navigationSelectionId)
+                    && taskId != null && taskId.equals(st.navigationTaskId)
+                    && interactionId != null && interactionId.equals(st.navigationInteractionId)
+                    && revision > 0 && revision == st.navigationTaskRevision;
+            st.ctx = st.ctx
+                    .withAttr("taskDialogVersion", 1)
+                    .withAttr("navigationTaskId", exactActiveTask ? taskId : "")
+                    .withAttr("navigationTaskRevision", exactActiveTask ? revision : 0L)
+                    .withAttr("navigationInteractionId", exactActiveTask ? interactionId : "")
+                    .withAttr("navigationSelectionId", exactActiveTask ? selectionId : "");
+        } else {
+            st.ctx = st.ctx.withAttr("navigationSelectionId",
+                    payload.get("navigationSelectionId") instanceof String id ? id : null);
+        }
         // Position belongs to this audio request. Absence must clear a previous fix.
         st.ctx = st.ctx.withAttr("latitude", null).withAttr("longitude", null);
         Object latitude = payload.get("latitude");
@@ -629,11 +652,45 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
     }
 
-    /** D05b 采用确认:客户端会话层采用(selectionId 非空)或撤销(空)候选列表。 */
+    /** Exact task-context adoption. A late close from a replaced task cannot clear the new task. */
     private void onNavigationSelectionStart(ConnectionState st, Map<String, Object> payload) {
         if (st.ctx == null) return; // 未握手不处理
         String selectionId = payload.get("selectionId") instanceof String id ? id : null;
-        navigationDialog.adopt(st.ctx, selectionId == null ? "" : selectionId);
+        String taskId = stringValue(payload.get("taskId"));
+        if (taskId == null) {
+            // Legacy selectionId-only protocol.
+            navigationDialog.adopt(st.ctx, selectionId == null ? "" : selectionId);
+            return;
+        }
+        String interactionId = stringValue(payload.get("interactionId"));
+        long revision = longValue(payload.get("taskRevision"));
+        boolean active = !(payload.get("active") instanceof Boolean value) || value;
+        if (taskId.isBlank() || interactionId == null || interactionId.isBlank() || revision <= 0) return;
+        if (active) {
+            if (selectionId == null || selectionId.isBlank()) return;
+            st.navigationTaskId = taskId;
+            st.navigationTaskRevision = revision;
+            st.navigationInteractionId = interactionId;
+            st.navigationSelectionId = selectionId;
+            navigationDialog.adopt(st.ctx, selectionId);
+            return;
+        }
+        if (taskId.equals(st.navigationTaskId) && revision == st.navigationTaskRevision
+                && interactionId.equals(st.navigationInteractionId)) {
+            navigationDialog.adopt(st.ctx, "");
+            st.navigationTaskId = null;
+            st.navigationTaskRevision = 0;
+            st.navigationInteractionId = null;
+            st.navigationSelectionId = null;
+        }
+    }
+
+    private static String stringValue(Object value) {
+        return value instanceof String text ? text : null;
+    }
+
+    private static long longValue(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
     }
 
     /** Client-side ASR/NLU admission for providers whose evidence is established on the device. */
@@ -1053,6 +1110,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         String deviceId; // 鉴权通过后记录（日志/审计用；authEnabled=false 时恒 null）
         String utteranceId; // 端侧 utteranceId 或自增回退（u-N），决策事件/链路插桩复用
         String segmentId; // 当前话语的客户端生成 ID（audio_start 可选字段，reply/error 回显）
+        String navigationTaskId;
+        long navigationTaskRevision;
+        String navigationInteractionId;
+        String navigationSelectionId;
         volatile TurnOutputPermit activePermit;
         volatile AsrTurnTrace activeAsrTrace;
         final ConnectionTurnCoordinator<SegmentWork> turns = new ConnectionTurnCoordinator<>();

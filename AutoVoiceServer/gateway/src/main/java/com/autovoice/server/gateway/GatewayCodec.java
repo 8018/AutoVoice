@@ -42,9 +42,11 @@ public final class GatewayCodec {
     private static final Map<String, Set<String>> FIELD_WHITELIST = Map.ofEntries(
             Map.entry("hello", Set.of("client", "protocolVersion", "sessionId", "deviceId", "authToken")),
             Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId", "utteranceId",
-                    "latitude", "longitude", "attempt", "navigationSelectionId")),
+                    "latitude", "longitude", "attempt", "navigationSelectionId", "navigationTaskId",
+                    "navigationTaskRevision", "navigationInteractionId", "taskDialogVersion")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
-            Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId")),
+            Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId", "taskId", "taskRevision",
+                    "interactionId", "active")),
             Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),

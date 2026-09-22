@@ -57,7 +57,7 @@ internal interface RecordingPipeline {
     fun appendRealtimeChatAudio(block: ByteArray)
     fun startRealtimeChat()
     fun finishRealtimeChat()
-    fun onFollowUpExpired(interactionId: String)
+    fun onFollowUpExpired(interactionId: String, taskRevision: Long?)
     fun resetDialogue()
 }
 
@@ -74,8 +74,13 @@ internal data class RecordingLifecycleSnapshot(
 internal data class RecordingTiming(
     val wakeTurnTimeoutMs: Long = 10_000L,
     val followUpListenMs: Long = 10_000L,
-    val navigationFollowUpListenMs: Long = 30_000L,
     val maxInteractionMs: Long = 60_000L,
+)
+
+/** Opaque task listening policy. The recorder executes it without knowing the business domain. */
+internal data class TaskListeningDirective(
+    val revision: Long,
+    val listenWindowMs: Long,
 )
 
 /**
@@ -115,7 +120,7 @@ internal class RecordingCoordinator(
     private var followUpTimeoutJob: Job? = null
     private var timedInteractionId: String? = null
     private var interactionStartedAtMs = 0L
-    private var navigationFollowUp = false
+    private var taskListeningDirective: TaskListeningDirective? = null
 
     val isRecording: Boolean get() = recording
     val isChatLocked: Boolean get() = chatLocked
@@ -293,9 +298,9 @@ internal class RecordingCoordinator(
         capture.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
     }
 
-    fun onDialogueState(snapshot: DialogueSnapshot, hasNavigationCandidates: Boolean) {
+    fun onDialogueState(snapshot: DialogueSnapshot, taskDirective: TaskListeningDirective?) {
         dialogueSnapshot = snapshot
-        navigationFollowUp = hasNavigationCandidates
+        taskListeningDirective = taskDirective
         snapshot.interactionId?.takeIf { it != timedInteractionId }?.let {
             timedInteractionId = it
             interactionStartedAtMs = elapsedRealtimeMs()
@@ -467,19 +472,16 @@ internal class RecordingCoordinator(
 
     private fun armFollowUpListening(snapshot: DialogueSnapshot) {
         val interactionId = snapshot.interactionId ?: return
+        val taskRevision = taskListeningDirective?.revision
         if (startingTurn || chatLocked || !foreground || recording) return
         pauseWakeObservation()
         if (!capture.startMonitoring()) {
-            pipeline.onFollowUpExpired(interactionId)
+            pipeline.onFollowUpExpired(interactionId, taskRevision)
             return
         }
         capture.setFollowUpListening(true)
         followUpTimeoutJob?.cancel()
-        val requestedWindow = if (navigationFollowUp) {
-            timing.navigationFollowUpListenMs
-        } else {
-            timing.followUpListenMs
-        }
+        val requestedWindow = taskListeningDirective?.listenWindowMs ?: timing.followUpListenMs
         val absoluteRemaining = (timing.maxInteractionMs -
             (elapsedRealtimeMs() - interactionStartedAtMs)).coerceAtLeast(0L)
         val timeoutMs = minOf(requestedWindow, absoluteRemaining)
@@ -489,7 +491,7 @@ internal class RecordingCoordinator(
             if (current.interactionId == interactionId && !recording &&
                 (current.state == DialogueState.AWAKE || current.state == DialogueState.FOLLOW_UP_LISTENING)) {
                 capture.setFollowUpListening(false)
-                pipeline.onFollowUpExpired(interactionId)
+                pipeline.onFollowUpExpired(interactionId, taskRevision)
             }
         }
     }
