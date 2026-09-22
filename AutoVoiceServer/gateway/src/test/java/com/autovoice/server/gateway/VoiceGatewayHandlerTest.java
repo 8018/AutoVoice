@@ -770,6 +770,48 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void exactClosePreservesPendingListAndMissingAdoptionDoesNotReplaceActiveContext() throws Exception {
+        var dialog = new NavigationDialogService();
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("第一个"),
+                        (text, context) -> CompletableFuture.completedFuture(Reply.ofText("unused")), dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            var ctx = registry.get(sid);
+            Reply a = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, a);
+            String aId = (String) a.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            Reply b = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, b);
+            String bId = (String) b.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, false);
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "b", 2, bId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            assertTrue(dialog.hasAdopted(ctx, bId));
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "missing", 3, "missing-list", true);
+            assertEquals("CONTEXT_MISSING", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            // Failed adoption never updates the connection's active identity.
+            sendTaskContext(h, s, sid, "b", 2, bId, false);
+            assertFalse(dialog.hasAdopted(ctx, bId));
+        } finally { h.close(); }
+    }
+
+    private static void sendTaskContext(VoiceGatewayHandler h, StubSession s, String sid,
+                                        String taskId, long revision, String selectionId, boolean active) throws Exception {
+        h.handleMessage(s, new TextMessage(new ObjectMapper().writeValueAsString(Map.of(
+                "type", "navigation_selection_start", "payload", Map.of(
+                        "sessionId", sid, "taskId", taskId, "taskRevision", revision,
+                        "interactionId", "interaction", "selectionId", selectionId, "active", active)))));
+    }
+
+    @Test
     void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =
                 new com.autovoice.server.navigation.NavigationDialogService();
@@ -789,19 +831,42 @@ class VoiceGatewayHandlerTest {
         String selectionId = offer.path("payload").path("intent").path("slots")
                 .path("selectionId").path("value").asText();
 
-        // 客户端实际展示列表后显式采用。
+        // 客户端实际展示列表后，用精确任务上下文显式采用。
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
-                        + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
-        // 采用后,带 navigationSelectionId 的二轮语音能选中
+                        + sid + "\",\"selectionId\":\"" + selectionId
+                        + "\",\"taskId\":\"task-new\",\"taskRevision\":2,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":true}}"));
+        // 旧任务的迟到关闭不得撤销新任务。
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"\",\"taskId\":\"task-old\",\"taskRevision\":1,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":false}}"));
+        // 采用后，只有完全匹配的任务上下文才能用于二轮选择。
         synchronized (s.sent) { s.sent.clear(); }
         transcript.set("第一个");
         h.handleMessage(s, new TextMessage(audioStart(sid, "select")
-                .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,"
+                        + "\"navigationSelectionId\":\"" + selectionId + "\","
+                        + "\"navigationTaskId\":\"task-new\",\"navigationTaskRevision\":2,"
+                        + "\"navigationInteractionId\":\"interaction-1\",\"encoding\":")));
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
         JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
         assertEquals("navigate", selected.path("intent").asText());
+        assertEquals("task-new", selected.path("slots").path("taskId").path("value").asText());
+        assertEquals(2, selected.path("slots").path("taskRevision").path("value").asInt());
+        assertEquals("select", selected.path("slots").path("navigationOperation").path("value").asText());
+
+        // task_dialog_v1 without an exact identity must not fall back to the session's recent list.
+        synchronized (s.sent) { s.sent.clear(); }
+        h.handleMessage(s, new TextMessage(audioStart(sid, "missing-context")
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{5, 6}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode rejected = awaitType(s, "reply").path("payload");
+        assertEquals("text", rejected.path("kind").asText());
+        assertFalse(rejected.has("intent"));
     }
 
     @Test

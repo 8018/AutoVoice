@@ -10,6 +10,7 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.coroutines.core)
     testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 }
 
 sourceSets.test { resources.srcDir("../../shared/fixtures") }

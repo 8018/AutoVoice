@@ -56,13 +56,15 @@ class NavigationDialogServiceTest {
     @Test
     void resolvesOrdinalAndClassifierStyleWithoutCallingModelAgain() {
         var dialog = dialog();
-        dialog.remember(CTX, chooseReply());
-        Reply second = dialog.resolve(CTX, "选第二个").orElseThrow();
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        Reply second = dialog.resolve(modern(id), "选第二个").orElseThrow();
         assertEquals("万达广场（西店）", second.intent().slots().get("poiname").value());
-        assertFalse(dialog.hasPending(CTX));
+        assertTrue(dialog.hasPending(CTX));
 
-        dialog.remember(CTX, chooseReply());
-        Reply first = dialog.resolve(CTX, "一个。").orElseThrow();
+        offer = dialog.remember(CTX, chooseReply());
+        id = (String) offer.intent().slots().get("selectionId").value();
+        Reply first = dialog.resolve(modern(id), "一个。").orElseThrow();
         assertEquals("万达广场（东店）", first.intent().slots().get("poiname").value());
     }
 
@@ -79,21 +81,26 @@ class NavigationDialogServiceTest {
     @Test
     void rejectsOutOfRangeAndSupportsCancel() {
         var dialog = dialog();
-        dialog.remember(CTX, chooseReply());
-        assertEquals("没有第3个，请重新选择", dialog.resolve(CTX, "第三个").orElseThrow().text());
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        SessionContext modern = modern(id);
+        assertEquals("没有第3个，请重新选择", dialog.resolve(modern, "第三个").orElseThrow().text());
         assertTrue(dialog.hasPending(CTX));
-        Reply cancel = dialog.resolve(CTX, "算了").orElseThrow();
+        Reply cancel = dialog.resolve(modern, "算了").orElseThrow();
         assertEquals("cancel_navigation", cancel.intent().intent());
         assertEquals("已取消导航", cancel.speakText());
+        assertTrue(dialog.hasPending(CTX));
+        dialog.adopt(CTX, "");
         assertFalse(dialog.hasPending(CTX));
     }
 
     @Test
-    void newNavigationRequestClearsOldDialogAndFallsThroughForFreshSearch() {
+    void newNavigationRequestFallsThroughWithoutConsumingOldDialogBeforeAdoption() {
         var dialog = dialog();
-        dialog.remember(CTX, chooseReply());
-        assertTrue(dialog.resolve(CTX, "导航去万达广场").isEmpty());
-        assertFalse(dialog.hasPending(CTX));
+        Reply offer = dialog.remember(CTX, chooseReply());
+        String id = (String) offer.intent().slots().get("selectionId").value();
+        assertTrue(dialog.resolve(modern(id), "导航去万达广场").isEmpty());
+        assertTrue(dialog.hasPending(CTX));
     }
 
     @Test
@@ -110,7 +117,7 @@ class NavigationDialogServiceTest {
     }
 
     @Test
-    void replacementRejectsStaleListAndSelectedCandidateCanOnlyBeConsumedOnce() {
+    void replacementRejectsStaleListAndSelectionProposalRemainsUntilClientClosesContext() {
         var dialog = dialog();
         Reply first = dialog.remember(CTX, chooseReply());
         String firstId = (String) first.intent().slots().get("selectionId").value();
@@ -118,13 +125,16 @@ class NavigationDialogServiceTest {
         String secondId = (String) second.intent().slots().get("selectionId").value();
         assertNotEquals(firstId, secondId);
         assertEquals("text", dialog.resolve(
-                CTX.withAttr("navigationSelectionId", firstId), "第一个").orElseThrow().kind());
+                modern(firstId), "第一个").orElseThrow().kind());
         assertTrue(dialog.hasPending(CTX));
         Reply selected = dialog.resolve(
-                CTX.withAttr("navigationSelectionId", secondId), "第一个").orElseThrow();
+                modern(secondId), "第一个").orElseThrow();
         assertEquals("navigate", selected.intent().intent());
         assertEquals(secondId, selected.intent().slots().get("selectionId").value());
         assertFalse(((String) selected.intent().slots().get("candidateId").value()).isBlank());
+        assertEquals("navigate", dialog.resolve(
+                modern(secondId), "第一个").orElseThrow().intent().intent());
+        dialog.adopt(CTX, "");
         assertEquals("text", dialog.resolve(
                 CTX.withAttr("navigationSelectionId", secondId), "第一个").orElseThrow().kind());
     }
@@ -170,11 +180,11 @@ class NavigationDialogServiceTest {
     }
 
     @Test
-    void concurrentSelectionAtomicallyProducesOnlyOneNavigateAction() throws Exception {
+    void concurrentSelectionMayProduceDuplicateProposalsForClientDmToClaimOnce() throws Exception {
         var dialog = dialog();
         Reply offer = dialog.remember(CTX, chooseReply());
         String id = (String) offer.intent().slots().get("selectionId").value();
-        SessionContext selected = CTX.withAttr("navigationSelectionId", id);
+        SessionContext selected = modern(id);
         CountDownLatch start = new CountDownLatch(1);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var first = executor.submit(() -> {
@@ -192,7 +202,7 @@ class NavigationDialogServiceTest {
                     .filter(reply -> "action".equals(reply.kind()))
                     .filter(reply -> "navigate".equals(reply.intent().intent()))
                     .count();
-            assertEquals(1, actions);
+            assertEquals(2, actions);
         }
     }
 
@@ -286,6 +296,12 @@ class NavigationDialogServiceTest {
     private static NavigationDialogService dialog() {
         return new NavigationDialogService(
                 Clock.fixed(Instant.parse("2026-08-27T00:00:00Z"), ZoneOffset.UTC), 120_000);
+    }
+
+    private static SessionContext modern(String selectionId) {
+        return CTX.withAttr("navigationSelectionId", selectionId)
+                .withAttr("taskDialogVersion", 1)
+                .withAttr("navigationTaskId", "navigation-task-test");
     }
 
     private static Reply chooseReply() {

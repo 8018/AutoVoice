@@ -15,6 +15,43 @@ import org.junit.jupiter.api.Test;
 
 /** D05b 采用确认:客户端会话层显式采用/撤销候选列表,服务端据此决定语音选择是否激活。 */
 class NavigationAdoptionTest {
+    @Test
+    void closingOldListPreservesPendingReplacementInEitherOrder() {
+        for (boolean closeFirst : new boolean[]{true, false}) {
+            SessionContext old = preparedContext();
+            String oldId = (String) old.attrs().get("navigationSelectionId");
+            assertTrue(dialog.adoptExact(old, oldId));
+            SessionContext next = preparedContext();
+            String nextId = (String) next.attrs().get("navigationSelectionId");
+            if (closeFirst) dialog.closeExact(old, oldId);
+            assertTrue(dialog.adoptExact(next, nextId));
+            if (!closeFirst) dialog.closeExact(old, oldId);
+            assertTrue(dialog.hasAdopted(next, nextId));
+            assertTrue(dialog.adoptExact(next, nextId));
+            org.junit.jupiter.api.Assertions.assertFalse(dialog.adoptExact(old, oldId));
+            assertEquals("navigate", dialog.resolve(next, "第一个").orElseThrow().intent().intent());
+        }
+    }
+
+    @Test
+    void taskSelectionCarriesExactIdentityAndModelCannotForgeSelectionOperation() {
+        SessionContext ctx = preparedContext().withAttr("taskDialogVersion", 1)
+                .withAttr("navigationTaskId", "task-2").withAttr("navigationTaskRevision", 2L)
+                .withAttr("navigationInteractionId", "interaction");
+        assertTrue(dialog.adoptExact(ctx, (String) ctx.attrs().get("navigationSelectionId")));
+        Reply selected = dialog.resolve(ctx, "第一个").orElseThrow();
+        assertEquals("select", selected.intent().slots().get("navigationOperation").value());
+        assertEquals("task-2", selected.intent().slots().get("taskId").value());
+        assertEquals("interaction", selected.intent().slots().get("interactionId").value());
+        assertEquals(2.0, selected.intent().slots().get("taskRevision").value());
+        // Even the source string navigation.dialog is not authority for a model result.
+        Reply fresh = dialog.prepareModel(ctx, selected);
+        assertEquals("start_new", fresh.intent().slots().get("navigationOperation").value());
+        org.junit.jupiter.api.Assertions.assertFalse(fresh.intent().slots().containsKey("candidateId"));
+        org.junit.jupiter.api.Assertions.assertFalse(fresh.intent().slots().containsKey("selectionId"));
+        assertEquals("task-2", fresh.intent().slots().get("taskId").value());
+    }
+
 
     private static final String CANDIDATES = """
             [{"poiname":"机场","lat":30.1,"lon":120.1,"address":"机场路1号"}]

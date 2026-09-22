@@ -64,7 +64,10 @@ class ConversationController(
         dialogue.reset().also { next -> queue.add { onState(next) } }
     }
 
-    fun onFollowUpExpired(interactionId: String): DialogueSnapshot = mutate { queue ->
+    fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null): DialogueSnapshot = mutate { queue ->
+        // A newer ASR-admitted turn can share the same interaction ID. Only explicit UI dismissal
+        // omits the expected snapshot; timer events must compare the exact listening state.
+        if (expected != null && dialogue.snapshot.value != expected) return@mutate dialogue.snapshot.value
         if (dialogue.snapshot.value.interactionId == interactionId) {
             admission.reset()
             captureId = ""

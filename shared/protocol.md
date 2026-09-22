@@ -99,27 +99,54 @@
 - **连接上限**（`max-connections`，默认 32）：超限新连接直接 `close(4001)`（不注册、不发 `error`）。
 - 未开启鉴权时，老 hello（无凭据字段）行为不变。
 
-### 3.1b navigation_selection_start(D05b)
+### 3.1b navigation_selection_start（task_dialog_v1）
 
-客户端会话层对导航候选列表的**采用确认**:会话层决定采用(展示并参与后续语音选择)
-云端候选时发送非空 `selectionId`;列表关闭、过期或端侧胜出未采用时发送空 `selectionId`
-撤销。重复发送幂等;不携带本消息的旧客户端默认已采用(兼容)。
+客户端任务 DM 对导航候选列表的精确上下文发布/关闭。新路径以
+`taskId + taskRevision + interactionId` 为身份；关闭只能作用于完全匹配的任务，
+因此旧任务的迟到关闭不会清掉新列表。旧客户端可暂时只携带 `selectionId`。
 
 ```json
 {
   "type": "navigation_selection_start",
-  "payload": { "sessionId": "demo-1", "selectionId": "selection-airports" }
+  "payload": {
+    "sessionId": "demo-1", "selectionId": "selection-airports",
+    "taskId": "navigation-task-1", "taskRevision": 1,
+    "interactionId": "interaction-1", "active": true
+  }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
-| `actionId` | string（可选，兼容字段） | 过渡期关联 ID；不得作为跨重连、跨重启补执行依据。当前客户端以本地 `turnId` 和当前轮状态做最终准入 |
-| `selectionId` | string | 非空=采用该列表;空=撤销(未显示/已关闭) |
+| `selectionId` | string | 候选列表 ID；新客户端关闭时保留原 ID（兼容旧关闭空值） |
+| `taskId` | string | 客户端任务 ID |
+| `taskRevision` | integer | 任务版本，拦截旧列表的迟到事件 |
+| `interactionId` | string | 连续交互 ID |
+| `active` | boolean | `true`=发布；`false`=精确关闭 |
 
-服务端语义:未采用的列表在"现代客户端"(audio_start 携带 `navigationSelectionId` 字段)
-的语音选择中不激活——序号回答返回"地点选择已失效,请重新搜索",地址/名称类交给模型兜底。
+服务端只使用与当前连接上已发布任务完全匹配的列表。理解出“第二个”或取消只产生提议，
+不删除列表；客户端采用并结束任务后发送精确关闭。
+
+服务端领域层按确切 selectionId 删除：close(A) 不得删除已准备但尚未采用的 B。
+只有 `adoptExact` 成功才登记连接上下文；失败不覆盖此前已采用的上下文。
+
+### 3.1c navigation_context_result（task_dialog_v1 下行）
+
+回显 `taskId / taskRevision / interactionId / selectionId`，`status` 为
+`ACCEPTED`、`CLOSED` 或 `CONTEXT_MISSING`。客户端将结构化缺失交给任务监听器，
+仅结束完全匹配的 WAITING_INPUT 任务；旧回执不清新列表，已执行动作不撤销、不重试。
+`audio_start` 带非空任务引用但上下文已失效时也返回该回执及关联 segmentId 的
+`error(code=CONTEXT_MISSING)`，不启动该段业务处理。
+
+现代候选 offer 在 slots 标记 `taskDialogVersion=1`。其后导航提议 slots 增加
+`navigationOperation=select|cancel|start_new`；有原任务时附带原任务的
+`taskId / taskRevision / interactionId`。select 还必须精确匹配 selectionId、candidateId 和坐标；
+start_new 是新检索结果，携带原任务引用用于条件替换，但不携带旧 selectionId/candidateId。
+该分类由服务端模型结果入口与确定性选择入口生成，不相信模型的 source 或任务身份字段。
+客户端对现代列表拒绝缺少 operation/任务引用的选择；旧 offer 保留 selectionId 兼容路径。
+升级顺序为服务端再客户端；新客户端连接旧服务器仍按旧 offer 协议工作，但不能获得新的
+start_new/缺失回执能力，不应宣称混合版本已具备完整任务闭环。
 
 ### 3.2 audio_start
 
@@ -150,7 +177,12 @@
 | `encoding` | string | 编码，固定 `"pcm_s16le"` |
 | `segmentId` | string（可选） | 每轮话语的唯一 ID（客户端生成，如 UUID）。demo 单连接多轮往返时，服务端无法凭 `sessionId` 区分话语，客户端需以此关联 `reply` / `error`（服务端原样回显） |
 | `utteranceId` | string（可选） | 链路追踪 ID（端侧每轮 UUID）；服务端决策/插桩事件回带该值；缺省时服务端回退 `u-N` 自增 |
-| `attempt` | integer（可选） | 同一 `utteranceId` 的发送次数，首次为 0；服务端按设备/会话 + `utteranceId` 幂等复用已完成结果 |
+| `attempt` | integer（可选） | 兼容字段；当前客户端固定为 0，断线后不重发音频 |
+| `taskDialogVersion` | integer（可选） | `1` 表示启用精确任务上下文，缺少/不匹配时禁止回退到“最近列表” |
+| `navigationSelectionId` | string（可选） | 本轮固定的候选列表 ID |
+| `navigationTaskId` | string（可选） | 导航任务 ID |
+| `navigationTaskRevision` | integer（可选） | 导航任务版本 |
+| `navigationInteractionId` | string（可选） | 导航任务所属连续交互 ID |
 | `latitude` | number（可选） | 当前车辆纬度；定位授权且系统已有最近定位时发送，用于周边 POI 检索 |
 | `longitude` | number（可选） | 当前车辆经度；与 `latitude` 成对发送；缺失时服务端退化为普通关键词检索 |
 
@@ -701,14 +733,14 @@ S2S 编译变体的结果阶段替换为：
 
 `choose_destination` carries a string slot `selectionId`. Each entry in its JSON `candidates`
 slot carries a unique `candidateId`. The server creates these identifiers, not the LLM.
-The Android client snapshots the visible `selectionId` at the start of each audio request and
-sends `audio_start.payload.navigationSelectionId`. A transport failure ends that turn; audio and
-its selection snapshot are not retransmitted. An empty string
-means no visible selection. An absent field is reserved for older clients.
+The Android client publishes an exact `taskId + taskRevision + interactionId + selectionId`
+context and snapshots it at the start of each audio request. A transport failure ends both that
+turn and the waiting client task; audio and task context are not retransmitted. New clients send
+`taskDialogVersion=1`, so missing or mismatched identity never falls back to a recent server list.
 
-When resolving an ordinal or a name, the server checks the supplied list ID before consuming
-pending selection state. Mismatch or an expired/disconnected ordinal selection returns a text
-prompt to search again. A selected `navigate` action returns both IDs with the original name and
+When resolving an ordinal or a name, the server checks the full task context and produces a
+proposal without consuming selection state. Mismatch or an expired/disconnected ordinal selection
+returns a text prompt to search again. A selected `navigate` action returns both IDs with the original name and
 coordinates; `cancel_navigation` returns the list ID. The client checks them against its visible
 list before execution. An expired, replaced, duplicated or coordinate-modified selection cannot
 launch the map. New unrelated navigation requests retain the existing search path.
@@ -716,6 +748,6 @@ launch the map. New unrelated navigation requests retain the existing search pat
 Rollout: deploy the server first, then the APK. Legacy clients that omit the audio field keep the
 existing selection behavior. ID-less offers from older servers remain a compatibility path and
 do not provide cross-device identity protection. A modern list cannot accept an ID-less action.
-The protocol does not restore pending selections after a new server session is created; users
-are asked to search again. A late list may invalidate another server list; the mismatch then fails
-closed rather than selecting from the wrong list.
+The protocol does not restore pending selections after reconnect or a new server session; users
+are asked to search again. A late close is scoped to its exact task revision and cannot invalidate
+a replacement list.

@@ -7,10 +7,27 @@
   "required": ["type", "payload"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "navigation_selection_start", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
+    {
+      "title": "navigation_context_result (server -> client)",
+      "properties": {
+        "type": { "const": "navigation_context_result" },
+        "payload": {
+          "type": "object",
+          "required": ["taskId", "taskRevision", "interactionId", "selectionId", "status"],
+          "properties": {
+            "taskId": { "type": "string" },
+            "taskRevision": { "type": "integer", "minimum": 1 },
+            "interactionId": { "type": "string" },
+            "selectionId": { "type": "string" },
+            "status": { "enum": ["ACCEPTED", "CLOSED", "CONTEXT_MISSING"] }
+          }
+        }
+      }
+    },
     {
       "title": "navigation_selection_start (client -> server, D05b)",
       "properties": {
@@ -19,7 +36,11 @@
           "type": "object",
           "properties": {
             "sessionId": { "type": "string" },
-            "selectionId": { "type": "string", "description": "非空=客户端会话层采用了该候选列表;空=撤销(列表关闭/未显示)" }
+            "selectionId": { "type": "string", "description": "候选列表 ID；active=false 时可为空" },
+            "taskId": { "type": "string", "minLength": 1 },
+            "taskRevision": { "type": "integer", "minimum": 1 },
+            "interactionId": { "type": "string", "minLength": 1 },
+            "active": { "type": "boolean", "description": "true=发布精确任务上下文；false=只关闭同 taskId/revision 上下文" }
           }
         }
       }
@@ -56,8 +77,12 @@
             "encoding": { "type": "string" },
             "segmentId": { "type": "string", "description": "客户端每轮生成的话语 ID，下行原样回显" },
             "utteranceId": { "type": "string", "description": "链路追踪：端侧每轮生成的 UUID，随 audio_start 上传，服务端插桩复用（可选，向后兼容）" },
-            "attempt": { "type": "integer", "minimum": 0, "description": "同一 utteranceId 的发送次数；首次为 0，重连重发递增" },
+            "attempt": { "type": "integer", "minimum": 0, "description": "兼容字段；当前客户端固定为 0，断线不重发音频" },
             "navigationSelectionId": { "type": "string", "description": "本轮开始时手机显示的候选列表 ID；空字符串表示无候选；缺失为旧客户端" },
+            "taskDialogVersion": { "type": "integer", "minimum": 1, "description": "任务对话协议版本；1 表示禁止回退到服务端最近列表" },
+            "navigationTaskId": { "type": "string", "minLength": 1 },
+            "navigationTaskRevision": { "type": "integer", "minimum": 1 },
+            "navigationInteractionId": { "type": "string", "minLength": 1 },
             "latitude": { "type": "number", "minimum": -90, "maximum": 90, "description": "当前车辆纬度（可选），用于周边 POI 检索" },
             "longitude": { "type": "number", "minimum": -180, "maximum": 180, "description": "当前车辆经度（可选），用于周边 POI 检索" }
           }

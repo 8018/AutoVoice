@@ -74,7 +74,7 @@ internal object VoiceEngineFactory {
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
-        bindNavigationAdoptionSender: ((String) -> Unit) -> Unit = {},
+        bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
     ): VoiceEngine {
         cfg.validateForRuntime()
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -114,7 +114,21 @@ internal object VoiceEngineFactory {
         val cloudRunner = GatewayCloudRunner(
             cfg.cloud, telemetrySink, scope, pendingSignals,
             locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
-            navigationSelectionProvider = { navigation?.session?.snapshot?.selectionId ?: "" },
+            navigationContextProvider = {
+                navigation?.session?.snapshot?.let { snapshot ->
+                    val taskId = snapshot.taskId
+                    val interactionId = snapshot.interactionId
+                    val selectionId = snapshot.selectionId
+                    if (taskId != null && interactionId != null && !selectionId.isNullOrBlank()) {
+                        NavigationTaskContextRef(
+                            taskId,
+                            snapshot.candidateVersion,
+                            interactionId,
+                            selectionId,
+                        )
+                    } else null
+                }
+            },
         )
         cloudRunner.onAsrResult = { text, _, turnId ->
             if (text.isNotBlank()) {
@@ -237,7 +251,15 @@ internal object VoiceEngineFactory {
         // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
         // （telemetry 为构造参数，构造即绑定），此处无需再装配
         // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
-        cloudRunner.onCloudUnavailable = { engine.candidates.onCloudUnavailable() }
+        cloudRunner.onCloudUnavailable = {
+            engine.candidates.onCloudUnavailable()
+            // A transport break ends the local task. We intentionally do not resume or replay a
+            // navigation selection after reconnect; the user must make a fresh request.
+            navigation?.abortPendingTask()
+        }
+        cloudRunner.onNavigationContextMissing = { ref ->
+            if (navigation?.session?.contextMissing(ref) == true) onReplyText("地点选择已失效，请重新搜索")
+        }
         // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
         cloudRunner.onPendingReceived = { turnId ->
             onDeviceArbiter.submitPending(turnId)
@@ -247,16 +269,14 @@ internal object VoiceEngineFactory {
         cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
         // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
         cloudRunner.onReadySessionId = telemetry::onSessionId
-        // D15b:仅当服务端明确 reset(会话重建)或候选已失效时清理待选列表;
-        // 正常恢复(resumed 且候选有效)保留列表。清理的是待选列表,不影响已启动的导航。
-        cloudRunner.onSessionRecovery = { state, candidatesValid ->
-            if (SessionRecovery(state, candidatesValid).shouldClearCandidates) {
-                navigation?.session?.cancelSelection()
-            }
+        // A ready frame establishes a new transport generation. Task-dialog state is deliberately
+        // not resumed across it, even when the logical server session itself was resumed.
+        cloudRunner.onSessionRecovery = { _, _ ->
+            navigation?.abortPendingTask()
         }
         // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
-        bindNavigationAdoptionSender { selectionId ->
-            cloudRunner.sendNavigationSelectionStart(selectionId)
+        bindNavigationAdoptionSender { context ->
+            cloudRunner.sendNavigationSelectionStart(context)
         }
         return engine
     }

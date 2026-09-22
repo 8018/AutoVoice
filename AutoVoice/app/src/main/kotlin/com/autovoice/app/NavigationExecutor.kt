@@ -25,16 +25,36 @@ class NavigationExecutor(
     val session: NavigationSession = NavigationSession(),
     private val opener: (String) -> Boolean,
 ) {
+    private val dialoguePolicy = NavigationDialoguePolicy()
+
+    fun abortPendingTask() = session.abortSelection()
 
 
     /** 执行导航意图；非 navigation/navigate、槽位缺失或拉起失败返回 false。 */
-    @Synchronized fun execute(intent: Intent): Boolean {
+    @Synchronized fun execute(intent: Intent, turnId: String = "legacy-navigation-turn"): Boolean {
         if (intent.domain != DOMAIN_NAVIGATION) return false
+        val operation = intent.slots["navigationOperation"]?.value as? String
+        val current = session.snapshot
+        if (current.requiresTaskIdentity && operation == null &&
+            intent.intent != INTENT_CHOOSE_DESTINATION) return false
+        if (operation != null) {
+            if (operation !in setOf("start_new", "select", "cancel")) return false
+            val taskId = intent.slots["taskId"]?.value as? String
+            if (operation != "start_new" && taskId.isNullOrBlank()) return false
+            if (operation == "select" && intent.intent != INTENT_NAVIGATE) return false
+            // A response cannot act on a replacement task, nor revive an already ended task.
+            if (taskId != null || current.taskId != null) {
+                if (taskId != current.taskId ||
+                    (intent.slots["taskRevision"]?.value as? Number)?.toLong() != current.candidateVersion ||
+                    intent.slots["interactionId"]?.value != current.interactionId) return false
+            }
+            if ((operation == "cancel") != (intent.intent == INTENT_CANCEL_NAVIGATION)) return false
+        }
         if (intent.intent == INTENT_CANCEL_NAVIGATION) {
             val selectionId = intent.slots["selectionId"]?.value as? String
             if (session.snapshot.selectionId != null && selectionId != session.snapshot.selectionId) return false
             if (selectionId != null && selectionId != session.snapshot.selectionId) return false
-            if (!session.cancelSelection()) return false
+            if (!session.cancelSelection(selectionId, current.identity())) return false
             onCandidates(emptyList())
             return true
         }
@@ -42,9 +62,9 @@ class NavigationExecutor(
             val json = intent.slots?.get(SLOT_CANDIDATES)?.value as? String ?: return false
             val candidates = parseCandidates(json) ?: return false
             val selectionId = intent.slots["selectionId"]?.value as? String
-            if (selectionId != null && (selectionId.isBlank() || candidates.any { it.candidateId.isBlank() }
-                    || candidates.map { it.candidateId }.toSet().size != candidates.size)) return false
-            session.offer(candidates, selectionId)
+            if (!dialoguePolicy.acceptsOffer(selectionId, candidates)) return false
+            session.offer(candidates, selectionId, turnId,
+                requiresTaskIdentity = (intent.slots["taskDialogVersion"]?.value as? Number)?.toInt() == 1)
             onCandidates(candidates)
             return true
         }
@@ -62,18 +82,31 @@ class NavigationExecutor(
         }.getOrNull() ?: return false
         val selectionId = slots["selectionId"]?.value as? String
         val candidateId = slots["candidateId"]?.value as? String
-        val pending = session.snapshot
-        if (selectionId != null || candidateId != null || pending.selectionId != null) {
+        val pending = current
+        if (operation == "start_new") {
+            if (selectionId != null || candidateId != null) return false
+            if (pending.taskId != null && !session.abortSelection(
+                    com.autovoice.voicecore.dialog.TaskEndReason.REPLACED, pending.identity())) return false
+        } else if (selectionId != null || candidateId != null || pending.selectionId != null) {
             if (selectionId == null || selectionId != pending.selectionId || candidateId.isNullOrBlank()) return false
-            val candidate = pending.candidates.singleOrNull { it.candidateId == candidateId } ?: return false
-            if (candidate.poiname != poiname || candidate.lat != lat || candidate.lon != lon || waypoints.isNotEmpty()) return false
+            val candidate = dialoguePolicy.matchSelection(
+                pending,
+                selectionId,
+                candidateId,
+                trip.destination,
+                waypoints.isNotEmpty(),
+            ) ?: return false
+            if (session.claimSelection(selectionId, candidateId, pending.identity()) != candidate) return false
+        } else if (pending.taskStatus == com.autovoice.voicecore.dialog.TaskStatus.WAITING_INPUT) {
+            // A fully resolved navigation intent without candidate identity is a fresh request.
+            session.abortSelection(com.autovoice.voicecore.dialog.TaskEndReason.REPLACED)
         }
         val uri = if (waypoints.isEmpty()) buildNaviUri(poiname, lat, lon)
             else buildRoutePlanUri(poiname, lat, lon, waypoints)
-        session.beginHandoff(trip)
+        val handoffGeneration = session.beginHandoff(trip)
         clearCandidatesBeforeOpen()
         val opened = runCatching { opener(uri) }.getOrDefault(false)
-        session.finishHandoff(opened)
+        session.finishHandoff(handoffGeneration, opened)
         return opened
     }
 
@@ -82,6 +115,10 @@ class NavigationExecutor(
         // 生命周期切换或并发 UI 更新可能让旧弹窗在返回 AutoVoice 时重新露出。
         onCandidates(emptyList())
     }
+
+    private fun NavigationSnapshot.identity(): com.autovoice.voicecore.dialog.TaskIdentity? =
+        if (taskId != null && interactionId != null)
+            com.autovoice.voicecore.dialog.TaskIdentity(interactionId, taskId, candidateVersion) else null
 
     private fun parseCandidates(json: String): List<NavigationCandidate>? =
         runCatching {
