@@ -7,6 +7,49 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class TaskDialogueCoordinatorTest {
+    @Test fun `expired effect cannot overtake replacement projection`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val projection = java.util.concurrent.atomic.AtomicReference<String?>()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val coordinator = TaskDialogueCoordinator<String> { task, end ->
+            if (end?.reason == TaskEndReason.EXPIRED) {
+                entered.countDown()
+                check(release.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            projection.set(task?.context)
+        }
+        try {
+            val old = coordinator.offer("i", "navigation", "old", expectation, "old")
+            val expired = executor.submit<Boolean> { coordinator.finishWaiting(old.identity, TaskEndReason.EXPIRED) }
+            assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            coordinator.offer("i", "navigation", "new", expectation, "new")
+            release.countDown()
+            assertTrue(expired.get(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("new", coordinator.active!!.context)
+            assertEquals("new", projection.get())
+        } finally { release.countDown(); executor.shutdownNow() }
+    }
+
+    @Test fun `reentrant observer and failed observer do not strand queued projections`() {
+        val observed = mutableListOf<String?>()
+        lateinit var coordinator: TaskDialogueCoordinator<String>
+        coordinator = TaskDialogueCoordinator { task, _ ->
+            observed += task?.context
+            if (task?.context == "old") {
+                coordinator.offer("i", "navigation", "new", expectation, "new")
+                error("observer failure")
+            }
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            coordinator.offer("i", "navigation", "old", expectation, "old")
+        }
+        assertEquals(listOf("old", null, "new"), observed)
+        assertEquals("new", coordinator.active!!.context)
+        assertTrue(coordinator.abortActive())
+        assertNull(observed.last())
+    }
+
     private val expectation = InputExpectation("navigation_candidate", 30_000)
 
     @Test fun `replacement and stale events cannot change the active task`() {

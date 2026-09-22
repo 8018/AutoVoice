@@ -33,7 +33,7 @@ public final class GatewayCodec {
             "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
             "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
             "chat_start", "chat_ready", "chat_finish", "chat_speech_started",
-            "navigation_selection_start");
+            "navigation_selection_start", "navigation_context_result");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
@@ -47,6 +47,7 @@ public final class GatewayCodec {
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
             Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId", "taskId", "taskRevision",
                     "interactionId", "active")),
+            Map.entry("navigation_context_result", Set.of("taskId", "taskRevision", "interactionId", "selectionId", "status")),
             Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),

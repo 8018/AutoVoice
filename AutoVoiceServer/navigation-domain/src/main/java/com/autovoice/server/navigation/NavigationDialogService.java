@@ -85,7 +85,12 @@ public final class NavigationDialogService implements NavigationDialog {
             String selectionId = UUID.randomUUID().toString();
             String enrichedJson = candidatesJson(parsed);
             Map<String, SlotValue> slots = new LinkedHashMap<>(intent.slots());
+            slots.remove("navigationOperation");
+            slots.remove("taskId");
+            slots.remove("taskRevision");
+            slots.remove("interactionId");
             slots.put("selectionId", SlotValue.stringValue(selectionId));
+            if (isTaskDialog(context)) slots.put("taskDialogVersion", SlotValue.number(1));
             slots.put(SLOT_CANDIDATES, SlotValue.stringValue(enrichedJson));
             Intent enrichedIntent = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0,
                     "navigation.dialog", json);
@@ -97,7 +102,23 @@ public final class NavigationDialogService implements NavigationDialog {
     }
 
     @Override
-    public void commit(SessionContext context, Reply reply) {
+    public Reply prepareModel(SessionContext context, Reply reply) {
+        Intent intent = reply == null ? null : reply.intent();
+        if (isTaskDialog(context) && intent != null && DOMAIN.equals(intent.domain())
+                && NAVIGATE_INTENT.equals(intent.intent())) {
+            Map<String, SlotValue> slots = new LinkedHashMap<>(intent.slots());
+            // Classification comes from this entry point, never a model-controlled source string.
+            slots.remove("selectionId");
+            slots.remove("candidateId");
+            bindTask(context, slots, "start_new");
+            return Reply.ofAction(Intent.of("1.0", DOMAIN, NAVIGATE_INTENT, slots,
+                    intent.confidence(), intent.source(), intent.rawSemantic()), reply.speakText());
+        }
+        return prepare(context, reply);
+    }
+
+    @Override
+    public synchronized void commit(SessionContext context, Reply reply) {
         String sessionId = logicalSessionId(context);
         if (sessionId == null || reply == null) return;
         Intent intent = reply.intent();
@@ -123,7 +144,7 @@ public final class NavigationDialogService implements NavigationDialog {
     }
 
     @Override
-    public void adopt(SessionContext context, String selectionId) {
+    public synchronized void adopt(SessionContext context, String selectionId) {
         String sessionId = logicalSessionId(context);
         if (sessionId == null) return;
         if (selectionId == null || selectionId.isBlank()) {
@@ -131,14 +152,39 @@ public final class NavigationDialogService implements NavigationDialog {
             activeStore.find(sessionId).ifPresent(value -> activeStore.remove(sessionId, value));
             return;
         }
+        adoptExact(context, selectionId);
+    }
+
+    @Override
+    public synchronized boolean adoptExact(SessionContext context, String selectionId) {
+        String sessionId = logicalSessionId(context);
+        if (sessionId == null || selectionId == null || selectionId.isBlank()) return false;
+        if (hasAdopted(context, selectionId)) return true;
         Optional<PendingNavigationSelection> pending = pendingStore.find(sessionId);
         if (pending.isPresent() && pending.get().selectionId().equals(selectionId)) {
             PendingNavigationSelection adopted = pending.get().withAdopted(true);
             activeStore.put(sessionId, adopted);
             pendingStore.remove(sessionId, pending.get());
-            return;
+            return true;
         }
-        // 已采用列表的重复确认是幂等操作；其他 selectionId 属于迟到确认，直接忽略。
+        return false;
+    }
+
+    @Override
+    public synchronized boolean hasAdopted(SessionContext context, String selectionId) {
+        String sessionId = logicalSessionId(context);
+        return sessionId != null && selectionId != null && activeStore.find(sessionId)
+                .filter(value -> value.selectionId().equals(selectionId)).isPresent();
+    }
+
+    @Override
+    public synchronized void closeExact(SessionContext context, String selectionId) {
+        String sessionId = logicalSessionId(context);
+        if (sessionId == null || selectionId == null || selectionId.isBlank()) return;
+        pendingStore.find(sessionId).filter(value -> value.selectionId().equals(selectionId))
+                .ifPresent(value -> pendingStore.remove(sessionId, value));
+        activeStore.find(sessionId).filter(value -> value.selectionId().equals(selectionId))
+                .ifPresent(value -> activeStore.remove(sessionId, value));
     }
 
     @Override
@@ -187,8 +233,10 @@ public final class NavigationDialogService implements NavigationDialog {
         if (!isTaskDialog(context) && !removeSelection(sessionId, selection)) {
             return Reply.ofText("地点列表已更新或失效，请重新搜索");
         }
-        Intent intent = Intent.of("1.0", DOMAIN, CANCEL_INTENT,
-                Map.of("selectionId", SlotValue.stringValue(selection.selectionId())),
+        Map<String, SlotValue> slots = new LinkedHashMap<>();
+        slots.put("selectionId", SlotValue.stringValue(selection.selectionId()));
+        if (isTaskDialog(context)) bindTask(context, slots, "cancel");
+        Intent intent = Intent.of("1.0", DOMAIN, CANCEL_INTENT, slots,
                 1.0, "navigation.dialog", transcript);
         return Reply.ofAction(intent, "已取消导航");
     }
@@ -207,6 +255,7 @@ public final class NavigationDialogService implements NavigationDialog {
         slots.put("poiname", SlotValue.stringValue(candidate.poiname()));
         slots.put("lat", SlotValue.number(candidate.lat()));
         slots.put("lon", SlotValue.number(candidate.lon()));
+        if (isTaskDialog(context)) bindTask(context, slots, "select");
         Intent intent = Intent.of("1.0", DOMAIN, NAVIGATE_INTENT, slots, 1.0,
                 "navigation.dialog", candidate.rawJson());
         return Reply.ofAction(intent, "好的，开始导航去" + candidate.poiname());
@@ -239,6 +288,20 @@ public final class NavigationDialogService implements NavigationDialog {
     private static boolean isTaskDialog(SessionContext context) {
         return context != null && context.attrs().get("taskDialogVersion") instanceof Number value
                 && value.intValue() >= 1;
+    }
+
+    private static void bindTask(SessionContext context, Map<String, SlotValue> slots, String operation) {
+        slots.remove("taskId");
+        slots.remove("taskRevision");
+        slots.remove("interactionId");
+        slots.put("navigationOperation", SlotValue.stringValue(operation));
+        if (context.attrs().get("navigationTaskId") instanceof String id && !id.isBlank()
+                && context.attrs().get("navigationTaskRevision") instanceof Number revision
+                && context.attrs().get("navigationInteractionId") instanceof String interaction) {
+            slots.put("taskId", SlotValue.stringValue(id));
+            slots.put("taskRevision", SlotValue.number(revision.doubleValue()));
+            slots.put("interactionId", SlotValue.stringValue(interaction));
+        }
     }
 
     private boolean removeSelection(String sessionId, PendingNavigationSelection selection) {

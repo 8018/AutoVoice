@@ -770,6 +770,48 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void exactClosePreservesPendingListAndMissingAdoptionDoesNotReplaceActiveContext() throws Exception {
+        var dialog = new NavigationDialogService();
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("第一个"),
+                        (text, context) -> CompletableFuture.completedFuture(Reply.ofText("unused")), dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            var ctx = registry.get(sid);
+            Reply a = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, a);
+            String aId = (String) a.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            Reply b = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, b);
+            String bId = (String) b.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, false);
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "b", 2, bId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            assertTrue(dialog.hasAdopted(ctx, bId));
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "missing", 3, "missing-list", true);
+            assertEquals("CONTEXT_MISSING", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            // Failed adoption never updates the connection's active identity.
+            sendTaskContext(h, s, sid, "b", 2, bId, false);
+            assertFalse(dialog.hasAdopted(ctx, bId));
+        } finally { h.close(); }
+    }
+
+    private static void sendTaskContext(VoiceGatewayHandler h, StubSession s, String sid,
+                                        String taskId, long revision, String selectionId, boolean active) throws Exception {
+        h.handleMessage(s, new TextMessage(new ObjectMapper().writeValueAsString(Map.of(
+                "type", "navigation_selection_start", "payload", Map.of(
+                        "sessionId", sid, "taskId", taskId, "taskRevision", revision,
+                        "interactionId", "interaction", "selectionId", selectionId, "active", active)))));
+    }
+
+    @Test
     void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =
                 new com.autovoice.server.navigation.NavigationDialogService();
@@ -812,6 +854,9 @@ class VoiceGatewayHandlerTest {
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
         JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
         assertEquals("navigate", selected.path("intent").asText());
+        assertEquals("task-new", selected.path("slots").path("taskId").path("value").asText());
+        assertEquals(2, selected.path("slots").path("taskRevision").path("value").asInt());
+        assertEquals("select", selected.path("slots").path("navigationOperation").path("value").asText());
 
         // task_dialog_v1 without an exact identity must not fall back to the session's recent list.
         synchronized (s.sent) { s.sent.clear(); }

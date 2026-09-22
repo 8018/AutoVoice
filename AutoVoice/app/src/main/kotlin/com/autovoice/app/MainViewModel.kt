@@ -173,7 +173,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var navigationAdoptionSender: (NavigationTaskContextRef) -> Unit = {}
     private var publishedNavigationContext: NavigationTaskContextRef? = null
     private val navigationSession = NavigationSession(
-        scope = viewModelScope,
         interactionIdProvider = { turnId ->
             engine.conversation.snapshot.value.takeIf { it.turnId == turnId }?.interactionId
                 ?: "interaction:$turnId"
@@ -195,7 +194,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             navigationAdoptionSender(next)
         } else if (next == null) {
             publishedNavigationContext?.let { previous ->
-                navigationAdoptionSender(previous.copy(selectionId = "", active = false))
+                navigationAdoptionSender(previous.copy(active = false))
             }
             publishedNavigationContext = null
         }
@@ -231,6 +230,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             domain = NavigationExecutor.DOMAIN_NAVIGATION,
             intent = NavigationExecutor.INTENT_NAVIGATE,
             slots = mapOf(
+                "navigationOperation" to SlotValue.StringValue("select"),
+                "taskId" to SlotValue.StringValue(snapshot.taskId ?: return),
+                "taskRevision" to SlotValue.Number(snapshot.candidateVersion.toDouble()),
+                "interactionId" to SlotValue.StringValue(snapshot.interactionId ?: return),
                 "selectionId" to SlotValue.StringValue(selectionId),
                 "candidateId" to SlotValue.StringValue(candidate.candidateId),
                 NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(candidate.poiname),
@@ -309,6 +312,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearPermissionHint() = onAudioPermissionGranted()
 
     private fun handleDialogueState(snapshot: DialogueSnapshot) {
+        navigationSession.onDialogueState(snapshot)
         val state = dialogueToUiPhase(snapshot.state)
         _uiState.update { it.copy(sessionState = state) }
         recordingCoordinator.onDialogueState(
@@ -461,6 +465,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun finishRealtimeChat() = engine.finishRealtimeChat()
             override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) =
                 this@MainViewModel.onFollowUpExpired(interactionId, taskRevision)
+            override fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
+                if (taskRevision != null && navigationSession.activeIdentity()?.revision != taskRevision) return
+                expected.interactionId?.let { engine.onFollowUpExpired(it, expected) }
+            }
             override fun resetDialogue() {
                 navigationExecutor.abortPendingTask()
                 engine.resetDialogue()

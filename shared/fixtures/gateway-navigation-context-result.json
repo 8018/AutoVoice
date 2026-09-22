@@ -1,0 +1,10 @@
+{
+  "type": "navigation_context_result",
+  "payload": {
+    "taskId": "navigation-task-1",
+    "taskRevision": 1,
+    "interactionId": "interaction-1",
+    "selectionId": "selection-1",
+    "status": "CONTEXT_MISSING"
+  }
+}

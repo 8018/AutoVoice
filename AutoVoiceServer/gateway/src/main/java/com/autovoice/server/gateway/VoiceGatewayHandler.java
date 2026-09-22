@@ -581,7 +581,19 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     && selectionId.equals(st.navigationSelectionId)
                     && taskId != null && taskId.equals(st.navigationTaskId)
                     && interactionId != null && interactionId.equals(st.navigationInteractionId)
-                    && revision > 0 && revision == st.navigationTaskRevision;
+                    && revision > 0 && revision == st.navigationTaskRevision
+                    && navigationDialog.hasAdopted(st.ctx, selectionId);
+            if (taskId != null && !taskId.isBlank() && !exactActiveTask) {
+                sendNavigationContext(st, taskId, revision, interactionId, selectionId, "CONTEXT_MISSING");
+                downlink.sendError(st.session, st.ctx, "CONTEXT_MISSING",
+                        "地点选择已失效，请重新搜索", st.segmentId);
+                st.audioActive = false;
+                st.activePermit.revoke(TurnOutputPermit.RevocationReason.CANCELLED);
+                schedulePermitCleanup(st, st.activePermit);
+                if (st.onlineStream != null) st.onlineStream.cancel();
+                st.onlineStream = null;
+                return;
+            }
             st.ctx = st.ctx
                     .withAttr("taskDialogVersion", 1)
                     .withAttr("navigationTaskId", exactActiveTask ? taskId : "")
@@ -668,21 +680,37 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (taskId.isBlank() || interactionId == null || interactionId.isBlank() || revision <= 0) return;
         if (active) {
             if (selectionId == null || selectionId.isBlank()) return;
+            if (!navigationDialog.adoptExact(st.ctx, selectionId)) {
+                sendNavigationContext(st, taskId, revision, interactionId, selectionId, "CONTEXT_MISSING");
+                return;
+            }
             st.navigationTaskId = taskId;
             st.navigationTaskRevision = revision;
             st.navigationInteractionId = interactionId;
             st.navigationSelectionId = selectionId;
-            navigationDialog.adopt(st.ctx, selectionId);
+            sendNavigationContext(st, taskId, revision, interactionId, selectionId, "ACCEPTED");
             return;
         }
         if (taskId.equals(st.navigationTaskId) && revision == st.navigationTaskRevision
                 && interactionId.equals(st.navigationInteractionId)) {
-            navigationDialog.adopt(st.ctx, "");
+            navigationDialog.closeExact(st.ctx, st.navigationSelectionId);
+            sendNavigationContext(st, taskId, revision, interactionId, st.navigationSelectionId, "CLOSED");
             st.navigationTaskId = null;
             st.navigationTaskRevision = 0;
             st.navigationInteractionId = null;
             st.navigationSelectionId = null;
         }
+    }
+
+    private void sendNavigationContext(ConnectionState st, String taskId, long revision,
+                                       String interactionId, String selectionId, String status) {
+        Map<String, Object> reply = new LinkedHashMap<>();
+        reply.put("taskId", taskId);
+        reply.put("taskRevision", revision);
+        reply.put("interactionId", interactionId);
+        reply.put("selectionId", selectionId);
+        reply.put("status", status);
+        downlink.send(st.session, "navigation_context_result", reply);
     }
 
     private static String stringValue(Object value) {

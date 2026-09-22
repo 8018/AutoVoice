@@ -10,6 +10,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class ConversationControllerTest {
+    @Test fun `late listening expiry cannot end a newer admitted turn in the same interaction`() {
+        val controller = controller()
+        controller.onWake()
+        val listening = controller.snapshot.value
+        val next = controller.beginCapture()
+        controller.openCapture(next)
+        assertTrue(controller.confirmTurn(next, AdmissionEvidence.LOCAL_ASR))
+        val thinking = controller.snapshot.value
+        controller.onFollowUpExpired(listening.interactionId!!, listening)
+        assertEquals(thinking, controller.snapshot.value)
+    }
+
     @Test fun `capture and vad candidate do not replace current dialogue turn`() {
         val controller = controller()
         controller.onWake()

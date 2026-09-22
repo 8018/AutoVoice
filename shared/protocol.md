@@ -119,7 +119,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sessionId` | string | 会话 ID |
-| `selectionId` | string | 候选列表 ID；关闭时可为空 |
+| `selectionId` | string | 候选列表 ID；新客户端关闭时保留原 ID（兼容旧关闭空值） |
 | `taskId` | string | 客户端任务 ID |
 | `taskRevision` | integer | 任务版本，拦截旧列表的迟到事件 |
 | `interactionId` | string | 连续交互 ID |
@@ -127,6 +127,26 @@
 
 服务端只使用与当前连接上已发布任务完全匹配的列表。理解出“第二个”或取消只产生提议，
 不删除列表；客户端采用并结束任务后发送精确关闭。
+
+服务端领域层按确切 selectionId 删除：close(A) 不得删除已准备但尚未采用的 B。
+只有 `adoptExact` 成功才登记连接上下文；失败不覆盖此前已采用的上下文。
+
+### 3.1c navigation_context_result（task_dialog_v1 下行）
+
+回显 `taskId / taskRevision / interactionId / selectionId`，`status` 为
+`ACCEPTED`、`CLOSED` 或 `CONTEXT_MISSING`。客户端将结构化缺失交给任务监听器，
+仅结束完全匹配的 WAITING_INPUT 任务；旧回执不清新列表，已执行动作不撤销、不重试。
+`audio_start` 带非空任务引用但上下文已失效时也返回该回执及关联 segmentId 的
+`error(code=CONTEXT_MISSING)`，不启动该段业务处理。
+
+现代候选 offer 在 slots 标记 `taskDialogVersion=1`。其后导航提议 slots 增加
+`navigationOperation=select|cancel|start_new`；有原任务时附带原任务的
+`taskId / taskRevision / interactionId`。select 还必须精确匹配 selectionId、candidateId 和坐标；
+start_new 是新检索结果，携带原任务引用用于条件替换，但不携带旧 selectionId/candidateId。
+该分类由服务端模型结果入口与确定性选择入口生成，不相信模型的 source 或任务身份字段。
+客户端对现代列表拒绝缺少 operation/任务引用的选择；旧 offer 保留 selectionId 兼容路径。
+升级顺序为服务端再客户端；新客户端连接旧服务器仍按旧 offer 协议工作，但不能获得新的
+start_new/缺失回执能力，不应宣称混合版本已具备完整任务闭环。
 
 ### 3.2 audio_start
 

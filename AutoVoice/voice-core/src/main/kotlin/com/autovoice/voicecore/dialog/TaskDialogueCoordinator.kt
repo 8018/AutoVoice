@@ -41,14 +41,16 @@ data class TaskEnd(val identity: TaskIdentity, val reason: TaskEndReason)
  * UI actions and semantic results cannot change a replacement task.
  *
  * This component does not interpret text, arbitrate semantics, execute business actions or own the
- * interaction state machine. Callers serialize entry events through their existing application
- * event boundary.
+ * interaction state machine. State mutations and their effects share one FIFO boundary, including
+ * timer callbacks and reentrant observers; effects never hold the internal state lock.
  */
 class TaskDialogueCoordinator<T : Any>(
     private val newTaskId: () -> String = { UUID.randomUUID().toString() },
     private val onChanged: (DialogueTask<T>?, TaskEnd?) -> Unit = { _, _ -> },
 ) {
     private val lock = Any()
+    private val effects = ArrayDeque<() -> Unit>()
+    private var draining = false
     private var revision = 0L
 
     @Volatile
@@ -61,9 +63,9 @@ class TaskDialogueCoordinator<T : Any>(
         originTurnId: String,
         expectation: InputExpectation,
         context: T,
-    ): DialogueTask<T> {
+    ): DialogueTask<T> = mutate {
         require(interactionId.isNotBlank() && domain.isNotBlank() && originTurnId.isNotBlank())
-        val (replaced, task) = synchronized(lock) {
+        val (replaced, task) = run {
             val old = active?.let { TaskEnd(it.identity, TaskEndReason.REPLACED) }
             val next = DialogueTask(
                 identity = TaskIdentity(interactionId, newTaskId(), ++revision),
@@ -77,9 +79,9 @@ class TaskDialogueCoordinator<T : Any>(
             old to next
         }
         // Effects are deliberately emitted outside the state lock and remain FIFO.
-        replaced?.let { onChanged(null, it) }
-        onChanged(task, null)
-        return task
+        replaced?.let { end -> effects.add { onChanged(null, end) } }
+        effects.add { onChanged(task, null) }
+        task
     }
 
     /** First valid claimant wins; later voice/click results see EXECUTING and are rejected. */
@@ -87,57 +89,82 @@ class TaskDialogueCoordinator<T : Any>(
         identity: TaskIdentity,
         accepts: (T) -> Boolean = { true },
         update: (T) -> T = { it },
-    ): DialogueTask<T>? {
-        val next = synchronized(lock) {
+    ): DialogueTask<T>? = mutate {
+        val next = run {
             val current = active?.takeIf {
                 it.identity == identity && it.status == TaskStatus.WAITING_INPUT
-            } ?: return null
-            if (!accepts(current.context)) return null
+            } ?: return@mutate null
+            if (!accepts(current.context)) return@mutate null
             current.copy(
                 status = TaskStatus.EXECUTING,
                 expectation = null,
                 context = update(current.context),
             ).also { active = it }
         }
-        onChanged(next, null)
-        return next
+        effects.add { onChanged(next, null) }
+        next
     }
 
-    fun finish(identity: TaskIdentity, reason: TaskEndReason): Boolean {
-        val end = synchronized(lock) {
-            val current = active?.takeIf { it.identity == identity } ?: return false
+    fun finish(identity: TaskIdentity, reason: TaskEndReason): Boolean = mutate {
+        val end = run {
+            val current = active?.takeIf { it.identity == identity } ?: return@mutate false
             active = null
             TaskEnd(current.identity, reason)
         }
-        onChanged(null, end)
-        return true
+        effects.add { onChanged(null, end) }
+        true
     }
 
-    fun finishWaiting(identity: TaskIdentity, reason: TaskEndReason): Boolean {
-        val end = synchronized(lock) {
+    fun finishWaiting(identity: TaskIdentity, reason: TaskEndReason): Boolean = mutate {
+        val end = run {
             val current = active?.takeIf {
                 it.identity == identity && it.status == TaskStatus.WAITING_INPUT
-            } ?: return false
+            } ?: return@mutate false
             active = null
             TaskEnd(current.identity, reason)
         }
-        onChanged(null, end)
-        return true
+        effects.add { onChanged(null, end) }
+        true
     }
 
-    fun abortActive(reason: TaskEndReason = TaskEndReason.ABORTED): Boolean {
-        val end = synchronized(lock) {
-            val current = active ?: return false
+    fun abortActive(reason: TaskEndReason = TaskEndReason.ABORTED): Boolean = mutate {
+        val end = run {
+            val current = active ?: return@mutate false
             active = null
             TaskEnd(current.identity, reason)
         }
-        onChanged(null, end)
-        return true
+        effects.add { onChanged(null, end) }
+        true
     }
 
     fun waiting(domain: String? = null): DialogueTask<T>? = synchronized(lock) {
         active?.takeIf {
             it.status == TaskStatus.WAITING_INPUT && (domain == null || it.domain == domain)
         }
+    }
+
+    private fun <R> mutate(block: () -> R): R {
+        var startDrain = false
+        val result = synchronized(lock) {
+            block().also {
+                if (!draining && effects.isNotEmpty()) {
+                    draining = true
+                    startDrain = true
+                }
+            }
+        }
+        if (startDrain) {
+            var failure: Throwable? = null
+            while (true) {
+                val effect = synchronized(lock) {
+                    if (effects.isEmpty()) { draining = false; null } else effects.removeFirst()
+                } ?: break
+                // Finish draining even when one observer fails; later state projections must not
+                // remain stranded. Surface the first failure to the initiating caller afterwards.
+                try { effect() } catch (error: Throwable) { if (failure == null) failure = error }
+            }
+            failure?.let { throw it }
+        }
+        return result
     }
 }

@@ -99,7 +99,7 @@ internal class GatewayCloudRunner(
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) {
         val sid = sessionId
-        if (!readyReceived || sid.isBlank()) return
+        if (!readyReceived || sid.isBlank() || client.connectionState.value != GatewayConnectionState.READY) return
         protocol.navigationSelection(sid, context)
     }
 
@@ -137,7 +137,16 @@ internal class GatewayCloudRunner(
     private val liveUpload = AtomicReference<LiveUpload?>(null)
 
     /** 由 [VoiceEngineFactory.create] 在 engine 装配完成后绑定到候选协调器。 */
-    lateinit var onCloudUnavailable: () -> Unit
+    var onCloudUnavailable: () -> Unit = {}
+    var onNavigationContextMissing: (NavigationTaskContextRef) -> Unit = {}
+
+    private val navigationListener = bridge.register(setOf("navigation_context_result"),
+        NavigationContextListener { onNavigationContextMissing(it) })
+    // Observe transport loss even when no recognition request is running (e.g. a displayed list).
+    private val connectionObserver = observeConnectionLoss(scope, client.connectionState) {
+        readyReceived = false
+        onCloudUnavailable()
+    }
 
     /**
      * B5：收到云端 pending 帧的回调（由 [VoiceEngineFactory.create] 装配后绑定 →
@@ -242,6 +251,8 @@ internal class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        connectionObserver.cancel()
+        navigationListener.unregister()
         liveUpload.getAndSet(null)?.let {
             it.chunks.close(CancellationException("gateway runner closed"))
             it.reply.cancel()

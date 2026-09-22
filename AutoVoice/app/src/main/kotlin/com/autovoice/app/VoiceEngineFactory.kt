@@ -257,6 +257,9 @@ internal object VoiceEngineFactory {
             // navigation selection after reconnect; the user must make a fresh request.
             navigation?.abortPendingTask()
         }
+        cloudRunner.onNavigationContextMissing = { ref ->
+            if (navigation?.session?.contextMissing(ref) == true) onReplyText("地点选择已失效，请重新搜索")
+        }
         // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
         cloudRunner.onPendingReceived = { turnId ->
             onDeviceArbiter.submitPending(turnId)
