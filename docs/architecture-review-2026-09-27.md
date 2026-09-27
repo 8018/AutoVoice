@@ -208,3 +208,4 @@ GatewayClient 不依赖业务意图，仲裁不引用会话状态机。无需先
 - #123–#126 已依次合入 `dev`（最终提交 `cb307a3`）；最终 dev CI 成功，自动部署日志确认同一 SHA 已部署到 dev。此事实不代表生产部署或真机验收。
 - #126 已为 Realtime `chat_start`、下行事件和 `chat_finish` 增加可选 `chatId`，服务端丢弃已关闭会话回调，客户端拒绝带旧 ID 的消息。§6 F1 中“协议未给闲聊回复携带代次”只适用于 #125 基线；混用旧服务端时无 ID 的兼容消息仍不能彻底隔离。
 - F3/F6 的剩余收敛在 `codex/chat-mode-lifecycle-2026-09-27` 分支继续实施，当前结构见 [current-architecture.md](current-architecture.md)。
+- #127 已合入 `dev`，将闲聊业务模式归于应用 DM，并提取闲聊/导航网关通道；后续普通业务语音通道在独立分支抽取并增加 WebSocket 协议回归。服务端聚合类仍待单独处理。
