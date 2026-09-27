@@ -135,28 +135,28 @@
       "title": "chat_start (client -> server)",
       "properties": {
         "type": { "const": "chat_start" },
-        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" }, "chatId": { "type": "string", "minLength": 1 } } }
       }
     },
     {
       "title": "chat_ready (server -> client)",
       "properties": {
         "type": { "const": "chat_ready" },
-        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" }, "chatId": { "type": "string", "minLength": 1 } } }
       }
     },
     {
       "title": "chat_finish (client -> server)",
       "properties": {
         "type": { "const": "chat_finish" },
-        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" }, "chatId": { "type": "string", "minLength": 1 } } }
       }
     },
     {
       "title": "chat_speech_started (server -> client)",
       "properties": {
         "type": { "const": "chat_speech_started" },
-        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } }
+        "payload": { "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" }, "chatId": { "type": "string", "minLength": 1 } } }
       }
     },
     {
@@ -215,7 +215,9 @@
             "sessionId": { "type": "string" },
             "segmentId": { "type": "string" },
             "text": { "type": "string" },
-            "isFinal": { "type": "boolean" }
+            "isFinal": { "type": "boolean" },
+            "chat": { "type": "boolean" },
+            "chatId": { "type": "string", "minLength": 1 }
           }
         }
       }
@@ -231,7 +233,8 @@
             "segmentId": { "type": "string" },
             "text": { "type": "string", "description": "截至当前的累计回答文本" },
             "isFinal": { "type": "boolean" },
-            "chat": { "type": "boolean" }
+            "chat": { "type": "boolean" },
+            "chatId": { "type": "string", "minLength": 1 }
           }
         }
       }
@@ -308,7 +311,8 @@
             "sampleRate": { "type": "integer", "minimum": 1 },
             "channels": { "type": "integer", "minimum": 1 },
             "encoding": { "type": "string", "const": "pcm_s16le" },
-            "chat": { "type": "boolean", "description": "true 表示长连接 Realtime 闲聊回答" }
+            "chat": { "type": "boolean", "description": "true 表示长连接 Realtime 闲聊回答" },
+            "chatId": { "type": "string", "minLength": 1, "description": "Realtime 闲聊会话身份；chat=true 时由新版服务端回显" }
           }
         }
       }
@@ -325,7 +329,8 @@
             "speakText": { "type": "string" },
             "asrText": { "type": "string", "description": "用户输入语音的最终识别文本" },
             "intent": { "$ref": "intent.schema.json" },
-            "chat": { "type": "boolean" }
+            "chat": { "type": "boolean" },
+            "chatId": { "type": "string", "minLength": 1 }
           }
         }
       }
@@ -371,7 +376,8 @@
             "sessionId": { "type": "string" },
             "code": { "type": "string" },
             "message": { "type": "string" },
-            "segmentId": { "type": "string" }
+            "segmentId": { "type": "string" },
+            "chatId": { "type": "string", "minLength": 1 }
           }
         }
       }

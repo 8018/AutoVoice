@@ -195,7 +195,12 @@ internal class GatewayBridge(
     private val pendingReplies = ConcurrentHashMap<String, PendingSlot<Reply>>()
     private val pendingTts = ConcurrentHashMap<String, PendingSlot<AudioReply>>()
     private val activeStream = AtomicReference<ActiveStream?>(null)
-    private val chatReady = Channel<Unit>(Channel.CONFLATED)
+    private sealed interface ChatReadyEvent {
+        data class Ready(val chatId: String) : ChatReadyEvent
+        data class Failed(val chatId: String, val error: GatewayRemoteException) : ChatReadyEvent
+    }
+    private val chatReady = Channel<ChatReadyEvent>(Channel.CONFLATED)
+    private val activeChatId = AtomicReference<String?>(null)
 
     /** TTS response listener is independent from ASR/NLU; error is intentionally multi-cast. */
     private inner class CloudTtsListener : MessageListener {
@@ -236,7 +241,9 @@ internal class GatewayBridge(
         dispatcher.register(chatListener.messageTypes, chatListener)
         dispatcher.register(audioListener.messageTypes, audioListener)
         scope.launch {
-            client.messages.collect(dispatcher::dispatch)
+            client.messages.collect { message ->
+                if (!isStaleChatMessage(message)) dispatcher.dispatch(message)
+            }
         }
     }
 
@@ -278,12 +285,29 @@ internal class GatewayBridge(
         }
     }
 
-    suspend fun awaitChatReady() {
-        withTimeoutOrNull(8_000) { chatReady.receive() }
+    fun beginChat(chatId: String) {
+        require(chatId.isNotBlank())
+        finishChat()
+        activeChatId.set(chatId)
+    }
+
+    suspend fun awaitChatReady(chatId: String) {
+        withTimeoutOrNull(8_000) {
+            while (true) {
+                val received = chatReady.receive()
+                when (received) {
+                    is ChatReadyEvent.Ready ->
+                        if (received.chatId.isBlank() || received.chatId == chatId) break
+                    is ChatReadyEvent.Failed ->
+                        if (received.chatId.isBlank() || received.chatId == chatId) throw received.error
+                }
+            }
+        }
             ?: throw GatewayException("chat_ready timeout")
     }
 
     fun finishChat() {
+        activeChatId.set(null)
         activeStream.getAndSet(null)?.let { stream ->
             val stopped = CancellationException("realtime chat finished")
             stream.chunks.close(stopped)
@@ -349,7 +373,9 @@ internal class GatewayBridge(
 
     private fun handleChat(msg: GatewayMessage) {
         when (msg.type) {
-            "chat_ready" -> chatReady.trySend(Unit)
+            "chat_ready" -> chatReady.trySend(ChatReadyEvent.Ready(
+                msg.payload.get("chatId")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
+            ))
             "chat_speech_started" -> {
                 activeStream.getAndSet(null)?.let { stream ->
                     val interrupted = CancellationException("user speech started")
@@ -362,6 +388,18 @@ internal class GatewayBridge(
         }
     }
 
+    /** Old servers omit chatId; tagged frames from a new server must match the current chat. */
+    private fun isStaleChatMessage(message: GatewayMessage): Boolean {
+        val chat = message.type == "chat_ready" || message.type == "chat_speech_started" ||
+            message.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true ||
+            (message.type == "error" && message.payload.get("code")
+                ?.takeIf { it.isJsonPrimitive }?.asString?.startsWith("CHAT_") == true)
+        if (!chat) return false
+        val currentId = activeChatId.get() ?: return true
+        val messageId = message.payload.get("chatId")?.takeIf { it.isJsonPrimitive }?.asString
+        return !messageId.isNullOrBlank() && messageId != currentId
+    }
+
     private fun handleTtsResponse(msg: GatewayMessage) {
         val slot = findSlot(msg.payload, pendingTts) ?: return
         if (!isForSlot(msg.payload, slot)) return
@@ -372,9 +410,13 @@ internal class GatewayBridge(
         val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
         val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
         val error = GatewayRemoteException(code, "$message [$code]")
-        if (code == "CHAT_STREAM_FAILED" || code == "CHAT_STREAM_CLOSED") {
-            finishChat()
-            onChatFailure()
+        if (code.startsWith("CHAT_")) {
+            val chatId = msg.payload.get("chatId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+            chatReady.trySend(ChatReadyEvent.Failed(chatId, error))
+            if (code == "CHAT_STREAM_FAILED" || code == "CHAT_STREAM_CLOSED") {
+                finishChat()
+                onChatFailure()
+            }
             return
         }
         val messageSegment = msg.payload.get("segmentId")
@@ -393,6 +435,7 @@ internal class GatewayBridge(
 
     private fun handleTtsError(msg: GatewayMessage) {
         val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
+        if (code.startsWith("CHAT_")) return
         val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
         val error = GatewayRemoteException(code, "$message [$code]")
         val segmentId = msg.payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString

@@ -146,8 +146,9 @@ class GatewayBridgeTest {
         )
         try {
             client.connect()
+            bridge.beginChat("chat-test")
             gateway.sendText("""{"type":"chat_ready","payload":{"sessionId":"srv-sess-1"}}""")
-            bridge.awaitChatReady()
+            bridge.awaitChatReady("chat-test")
             gateway.sendText(
                 """{"type":"audio_reply_start","payload":{"segmentId":"chat-1","mime":"audio/pcm","sampleRate":24000,"channels":1,"encoding":"pcm_s16le","chat":true}}""",
             )
@@ -161,6 +162,105 @@ class GatewayBridgeTest {
             gateway.sendText("""{"type":"chat_speech_started","payload":{"sessionId":"srv-sess-1"}}""")
             assertTrue(speechStarted.await(2, TimeUnit.SECONDS))
             assertTrue(reply.completion.isCancelled || reply.completion.isCompleted)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `realtime chat ignores tagged frames from a previous generation`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val replies = Channel<StreamingAudioReply>(Channel.BUFFERED)
+        val recognized = Channel<String>(Channel.BUFFERED)
+        val speechStarted = CountDownLatch(1)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onChatReply = { replies.trySend(it) },
+            onAsrResult = { text, _, _ -> recognized.trySend(text) },
+            onChatSpeechStarted = { speechStarted.countDown() },
+        )
+        try {
+            client.connect()
+            bridge.beginChat("chat-new")
+            gateway.sendText("""{"type":"chat_ready","payload":{"sessionId":"srv-sess-1","chatId":"chat-old"}}""")
+            gateway.sendText("""{"type":"chat_ready","payload":{"sessionId":"srv-sess-1","chatId":"chat-new"}}""")
+            bridge.awaitChatReady("chat-new")
+
+            gateway.sendText("""{"type":"asr_partial","payload":{"chat":true,"chatId":"chat-old","text":"旧识别","isFinal":true}}""")
+            gateway.sendText("""{"type":"chat_speech_started","payload":{"sessionId":"srv-sess-1","chatId":"chat-old"}}""")
+            gateway.sendText("""{"type":"error","payload":{"code":"CHAT_STREAM_CLOSED","message":"old stream closed","chatId":"chat-old"}}""")
+            gateway.sendText("""{"type":"audio_reply_start","payload":{"segmentId":"old-segment","mime":"audio/pcm","sampleRate":24000,"channels":1,"encoding":"pcm_s16le","chat":true,"chatId":"chat-old"}}""")
+            gateway.sendText("""{"type":"audio_reply_start","payload":{"segmentId":"new-segment","mime":"audio/pcm","sampleRate":24000,"channels":1,"encoding":"pcm_s16le","chat":true,"chatId":"chat-new"}}""")
+            val reply = kotlinx.coroutines.withTimeout(2_000) { replies.receive() }
+            assertEquals(24_000, reply.sampleRate)
+            assertTrue(replies.tryReceive().isFailure)
+            assertTrue(recognized.tryReceive().isFailure)
+            assertEquals(1L, speechStarted.count)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `realtime chat connection failure unblocks the matching ready wait`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val bridge = GatewayBridge(client, DecisionSink {}, bridgeScope)
+        try {
+            client.connect()
+            bridge.beginChat("chat-new")
+            gateway.sendText("""{"type":"error","payload":{"code":"CHAT_CONNECT_FAILED","message":"provider failed","chatId":"chat-old"}}""")
+            gateway.sendText("""{"type":"error","payload":{"code":"CHAT_CONNECT_FAILED","message":"provider failed","chatId":"chat-new"}}""")
+            val thrown = try {
+                kotlinx.coroutines.withTimeout(2_000) { bridge.awaitChatReady("chat-new") }
+                fail("matching chat failure should unblock the ready wait")
+            } catch (error: GatewayRemoteException) {
+                error
+            }
+            assertEquals("CHAT_CONNECT_FAILED", thrown.code)
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `realtime chat stream closing before ready fails immediately`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val failed = CountDownLatch(1)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onChatFailure = { failed.countDown() },
+        )
+        try {
+            client.connect()
+            bridge.beginChat("chat-opening")
+            gateway.sendText("""{"type":"error","payload":{"code":"CHAT_STREAM_FAILED","message":"upstream closed","chatId":"chat-opening"}}""")
+            val thrown = try {
+                kotlinx.coroutines.withTimeout(2_000) { bridge.awaitChatReady("chat-opening") }
+                fail("closed opening stream should fail before the ready timeout")
+            } catch (error: GatewayRemoteException) {
+                error
+            }
+            assertEquals("CHAT_STREAM_FAILED", thrown.code)
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
         } finally {
             bridgeScope.cancel()
             gateway.closeAll(client, okHttp)
@@ -389,7 +489,7 @@ class GatewayBridgeTest {
         val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
         val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val recognized = Channel<Triple<String, Boolean, String>>(Channel.BUFFERED)
-        GatewayBridge(
+        val bridge = GatewayBridge(
             client = client,
             sink = DecisionSink {},
             scope = bridgeScope,
@@ -399,6 +499,7 @@ class GatewayBridgeTest {
         )
         try {
             client.connect()
+            bridge.beginChat("chat-test")
             gateway.sendText(
                 """{"type":"asr_partial","payload":{"text":"今天天气","isFinal":true,"chat":true}}""",
             )

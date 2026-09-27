@@ -396,8 +396,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
             case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
-            case "chat_start" -> st.realtimeChat.start();
-            case "chat_finish" -> st.realtimeChat.finish();
+            case "chat_start" -> st.realtimeChat.start(stringValue(castPayload(msg).get("chatId")));
+            case "chat_finish" -> st.realtimeChat.finish(stringValue(castPayload(msg).get("chatId")));
             default -> {
                 // ready/decision/reply/error/bye/tts_response 为服务端消息，客户端不应发送，忽略
             }

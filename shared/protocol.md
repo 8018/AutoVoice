@@ -269,12 +269,20 @@ start_new/缺失回执能力，不应宣称混合版本已具备完整任务闭�
 ### 3.7 Realtime 闲聊上行
 
 业务链识别到“陪我聊会天”并下发 `conversation/enter_chat` 后，客户端发送
-`chat_start {sessionId}`。服务端连接 `qwen3.5-omni-plus-realtime` 并回 `chat_ready`；从此客户端
+`chat_start {sessionId, chatId}`（`chatId` 是每次建立长会话时新生成的 UUID）。服务端连接
+`qwen3.5-omni-plus-realtime` 并回 `chat_ready {sessionId, chatId}`；从此客户端
 把 16kHz/mono/PCM s16le 麦克风块持续作为二进制帧上送，不经过端侧 ASR/NLU、本地命令识别、
 云端 ASR 或云端离线命令仲裁，也不按本地 VAD 切段。播放模型回答期间仍继续上送。
 
-退出时发送 `chat_finish {sessionId}`；服务端同时支持 Realtime 模型的 `exit_chat` Function Call，
+退出时发送 `chat_finish {sessionId, chatId}`；服务端同时支持 Realtime 模型的 `exit_chat` Function Call，
 其 `conversation/exit_chat` 意图会使客户端自动发送 `chat_finish`。
+
+服务端在该长会话产生的 `chat_speech_started`、闲聊 ASR/回复字幕、
+`audio_reply_start`/`audio_reply_end` 和 `CHAT_*` 错误中回显同一 `chatId`。
+客户端只处理与当前 `chatId` 匹配的带标识消息；服务端在会话结束或被新会话替换后
+丢弃旧上游回调，旧 `chat_finish` 不得关闭新会话。为兼容旧端，`chatId` 暂为可选：
+旧服务端不回显时客户端接受无标识消息，因而不能保证跨会话的迟到消息隔离；
+升级顺序应先服务端后客户端，稳定后可将该字段收紧为必填。
 
 ### 3.8 端云退出当前对话
 
@@ -572,6 +580,7 @@ LLM 工具循环（多轮工具调用）耗时可能超过端侧本地等待窗�
 
 该三段由 S2S 后端产生。业务域首轮的 `audio_reply_start` 参与端侧仲裁；Realtime 闲聊回答携带
 `chat=true`，不依赖普通话语 reply slot，也不再进入端侧或云端仲裁。
+新版 Realtime 闲聊帧同时携带 `chatId`，普通业务域 S2S 帧不需要该字段。
 随后零到多个 WebSocket 二进制帧是同一 `segmentId` 的 PCM，最后以 `audio_reply_end` 收敛。
 文本帧与二进制帧共用连接，因此同一连接同一时刻只允许一个活动的下行音频流。
 

@@ -73,9 +73,14 @@ internal class GatewayProtocolSender(
         mapOf("sessionId" to sessionId, "durationMs" to segmentBytes * 1000 / (2L * sampleRate)),
     )
 
-    fun chatStart(sessionId: String) = channel.send("chat_start", mapOf("sessionId" to sessionId))
+    fun chatStart(sessionId: String, chatId: String) = channel.send(
+        "chat_start", mapOf("sessionId" to sessionId, "chatId" to chatId),
+    )
     fun chatAudio(pcm: ByteArray) = channel.send(pcm)
-    fun chatFinish(sessionId: String) = channel.send("chat_finish", mapOf("sessionId" to sessionId))
+    fun chatFinish(sessionId: String, chatId: String?) = channel.send(
+        "chat_finish", mapOf("sessionId" to sessionId) +
+            (chatId?.let { mapOf("chatId" to it) } ?: emptyMap()),
+    )
 
     fun cancelTurn(segmentId: String, reason: String = "device_local_won") = channel.send(
         "cancel_turn",

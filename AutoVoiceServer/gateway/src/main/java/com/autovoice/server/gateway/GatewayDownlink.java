@@ -107,9 +107,15 @@ final class GatewayDownlink {
 
     void sendError(WebSocketSession session, SessionContext context,
                    String code, String message, String segmentId) {
+        sendError(session, context, code, message, segmentId, null);
+    }
+
+    void sendError(WebSocketSession session, SessionContext context,
+                   String code, String message, String segmentId, String chatId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (context != null) payload.put("sessionId", context.sessionId());
         if (segmentId != null) payload.put("segmentId", segmentId);
+        if (chatId != null) payload.put("chatId", chatId);
         payload.put("code", code);
         payload.put("message", message);
         send(session, "error", payload);
