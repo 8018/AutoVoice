@@ -7,6 +7,25 @@ import org.junit.jupiter.api.Test
 
 class AppDialogueManagerTest {
     @Test
+    fun `chat domain changes once and rejected capture change does not publish mode`() {
+        val applied = mutableListOf<Boolean>()
+        var allow = false
+        val manager = AppDialogueManager({ "interaction" }, {}, { true }) { enabled ->
+            applied += enabled
+            allow
+        }
+        assertFalse(manager.setChatMode(true))
+        assertFalse(manager.isChatMode)
+        allow = true
+        assertTrue(manager.setChatMode(true))
+        assertTrue(manager.isChatMode)
+        assertFalse(manager.setChatMode(true))
+        assertTrue(manager.setChatMode(false))
+        assertFalse(manager.isChatMode)
+        assertEquals(listOf(true, true, false), applied)
+    }
+
+    @Test
     fun `publishes and revokes the exact navigation context on task close`() {
         val contexts = mutableListOf<NavigationTaskContextRef>()
         val manager = AppDialogueManager({ "interaction" }, {}, { true })

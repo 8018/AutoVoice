@@ -184,6 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 true
             }.getOrDefault(false)
         },
+        applyChatMode = { enabled -> recordingCoordinator.setChatMode(enabled) },
     )
 
     /**
@@ -285,7 +286,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun setChatMode(enabled: Boolean) {
-        if (!recordingCoordinator.setChatMode(enabled)) return
+        if (!dialogueManager.setChatMode(enabled)) return
         _uiState.update {
             it.copy(
                 chatMode = enabled,
@@ -306,7 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode) return
         val config = loadConfig(mode)
-        if (recordingCoordinator.isChatLocked) setChatMode(false)
+        if (dialogueManager.isChatMode) setChatMode(false)
         else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
         recordingCoordinator.reconfigureCapture {

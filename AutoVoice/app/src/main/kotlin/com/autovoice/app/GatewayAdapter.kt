@@ -20,13 +20,11 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.SendChannel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -66,7 +64,7 @@ internal class GatewayCloudRunner(
         ),
     )
     private val protocol = GatewayProtocolSender(client)
-    private val bridge = GatewayBridge(
+    private val bridge: GatewayBridge = GatewayBridge(
         client,
         sink,
         scope,
@@ -75,25 +73,22 @@ internal class GatewayCloudRunner(
         { text, final, turnId -> onAsrResult(text, final, turnId) },
         { turnId -> onAsrTurnEstablished(turnId) },
         { text, final, turnId -> handleReplyText(text, final, turnId) },
-        { reply ->
-            if (realtimeChatDesired && realtimeChatReady) {
-                onRealtimeReply(
-                    RealtimePlaybackToken(realtimeGeneration.get(), UUID.randomUUID().toString()),
-                    reply,
-                )
-            }
-        },
+        { reply -> realtimeChatChannel.onReply(reply) },
         { onRealtimeSpeechStarted() },
-        { onRealtimeStreamFailed() },
+        { realtimeChatChannel.onStreamFailed() },
     )
+    private val realtimeChatChannel: GatewayRealtimeChatChannel by lazy {
+        GatewayRealtimeChatChannel(client, bridge, protocol, scope, ::ensureReady, { sessionId }) {
+                token, reply -> onRealtimeReply(token, reply)
+        }
+    }
     private val ttsTransport = GatewayTtsTransport(bridge, protocol, ::ensureReady)
+    private val navigationChannel = GatewayNavigationContextChannel(
+        bridge, protocol, client, { readyReceived }, { sessionId }, { onNavigationContextMissing(it) },
+    )
 
     /** D05b:采用确认上行;ready 前忽略。 */
-    fun sendNavigationSelectionStart(context: NavigationTaskContextRef) {
-        val sid = sessionId
-        if (!readyReceived || sid.isBlank() || client.connectionState.value != GatewayConnectionState.READY) return
-        protocol.navigationSelection(sid, context)
-    }
+    fun sendNavigationSelectionStart(context: NavigationTaskContextRef) = navigationChannel.publish(context)
 
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
 
@@ -106,16 +101,6 @@ internal class GatewayCloudRunner(
 
     @Volatile
     private var sessionId = ""
-
-    @Volatile
-    private var realtimeChatReady = false
-
-    @Volatile
-    private var realtimeChatDesired = false
-
-    private val realtimeReconnectRunning = AtomicBoolean(false)
-    private val realtimeGeneration = AtomicLong(0)
-    private val realtimeChatId = AtomicReference<String?>(null)
 
     private data class LiveUpload(
         val utteranceId: String,
@@ -134,15 +119,10 @@ internal class GatewayCloudRunner(
     var onCloudUnavailable: () -> Unit = {}
     var onNavigationContextMissing: (NavigationTaskContextRef) -> Unit = {}
 
-    private val navigationListener = bridge.register(setOf("navigation_context_result"),
-        NavigationContextListener { onNavigationContextMissing(it) })
     // Observe transport loss even when no recognition request is running (e.g. a displayed list).
     private val connectionObserver = observeConnectionLoss(scope, client.connectionState) {
         readyReceived = false
-        if (realtimeChatDesired) {
-            bridge.finishChat()
-            onRealtimeStreamFailed()
-        }
+        realtimeChatChannel.onTransportLost()
         onCloudUnavailable()
     }
 
@@ -170,32 +150,10 @@ internal class GatewayCloudRunner(
     var onRealtimeReply: (RealtimePlaybackToken, StreamingAudioReply) -> Unit = { _, _ -> }
 
     fun isCurrentRealtimeOutput(token: RealtimePlaybackToken): Boolean =
-        realtimeChatDesired && realtimeGeneration.get() == token.generation
+        realtimeChatChannel.isCurrentOutput(token)
 
     @Volatile
     var onRealtimeSpeechStarted: () -> Unit = {}
-
-    private fun onRealtimeStreamFailed() {
-        realtimeGeneration.incrementAndGet() // invalidate in-flight replies from the failed stream
-        realtimeChatReady = false
-        realtimeChatId.set(null)
-        if (!realtimeChatDesired || !realtimeReconnectRunning.compareAndSet(false, true)) return
-        scope.launch {
-            try {
-                var delayMs = 500L
-                repeat(3) {
-                    delay(delayMs)
-                    if (!realtimeChatDesired) return@launch
-                    val recovered = runCatching { connectRealtimeChat() }.isSuccess
-                    if (recovered) return@launch
-                    delayMs *= 2
-                }
-                Log.w("GatewayCloudRunner", "realtime chat reconnect exhausted")
-            } finally {
-                realtimeReconnectRunning.set(false)
-            }
-        }
-    }
 
     /**
      * 回复字幕属于云端语义输出，必须等端侧仲裁确认云端胜出；确认后立即发布已缓存的
@@ -255,7 +213,7 @@ internal class GatewayCloudRunner(
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
         connectionObserver.cancel()
-        navigationListener.unregister()
+        navigationChannel.close()
         liveUpload.getAndSet(null)?.let {
             it.chunks.close(CancellationException("gateway runner closed"))
             it.reply.cancel()
@@ -402,47 +360,11 @@ internal class GatewayCloudRunner(
         }
     }
 
-    override suspend fun startRealtimeChat() {
-        realtimeChatDesired = true
-        connectRealtimeChat()
-    }
+    override suspend fun startRealtimeChat() = realtimeChatChannel.startRealtimeChat()
 
-    private suspend fun connectRealtimeChat() {
-        realtimeGeneration.incrementAndGet()
-        realtimeChatReady = false
-        ensureReady()
-        val chatId = UUID.randomUUID().toString()
-        realtimeChatId.set(chatId)
-        bridge.beginChat(chatId)
-        try {
-            protocol.chatStart(sessionId, chatId)
-            bridge.awaitChatReady(chatId)
-            realtimeChatReady = true
-        } catch (failure: Exception) {
-            if (realtimeChatId.compareAndSet(chatId, null)) {
-                if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
-                    runCatching { protocol.chatFinish(sessionId, chatId) }
-                }
-                bridge.finishChat()
-            }
-            throw failure
-        }
-    }
+    override fun appendRealtimeAudio(pcm: ByteArray) = realtimeChatChannel.appendRealtimeAudio(pcm)
 
-    override fun appendRealtimeAudio(pcm: ByteArray) {
-        if (realtimeChatReady && pcm.isNotEmpty()) protocol.chatAudio(pcm)
-    }
-
-    override fun finishRealtimeChat() {
-        realtimeGeneration.incrementAndGet()
-        realtimeChatDesired = false
-        realtimeChatReady = false
-        val chatId = realtimeChatId.getAndSet(null)
-        if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
-            runCatching { protocol.chatFinish(sessionId, chatId) }
-        }
-        bridge.finishChat()
-    }
+    override fun finishRealtimeChat() = realtimeChatChannel.finishRealtimeChat()
 
     override suspend fun run(segment: ByteArray): Reply =
         run(segment, utteranceIdProvider())
