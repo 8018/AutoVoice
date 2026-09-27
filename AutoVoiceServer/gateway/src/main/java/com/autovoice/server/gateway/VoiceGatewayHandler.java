@@ -32,7 +32,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -44,10 +43,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -95,17 +91,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     static final long DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
     /** D10b:每连接下行字节预算(未完成发送的累计上限),防慢客户端无界堆积。 */
     static final long DEFAULT_DOWNLINK_BUDGET_BYTES = 4L * 1024 * 1024;
-    /** D10b:TTS 请求文本长度上限(字符),防超长文本占用合成与下行。 */
-    static final int DEFAULT_MAX_TTS_CHARS = 500;
-    private static final int DEFAULT_TTS_WORKERS = 4;
-    private static final int DEFAULT_TTS_QUEUE_CAPACITY = 64;
     private static final long TURN_CACHE_TTL_MS = TimeUnit.MINUTES.toMillis(2);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final Logger LOG = LoggerFactory.getLogger(VoiceGatewayHandler.class);
 
     private final OnlineSpeechProvider online;
-    private final TtsProvider tts;
+    private final GatewayTtsEndpoint ttsEndpoint;
     private final OfflineCommandService offline;
     private final SessionRegistry registry;
     /** D05a:输出准入后的导航候选提交点(默认 NONE,测试与旧装配不感知)。 */
@@ -143,17 +135,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         t.setDaemon(true);
         return t;
     });
-
-    /** TTS 是阻塞 HTTP 调用：从 WS 收包线程移到有界池，队列满时快速失败。 */
-    private final ExecutorService ttsExecutor = new ThreadPoolExecutor(
-            DEFAULT_TTS_WORKERS, DEFAULT_TTS_WORKERS, 0L, TimeUnit.MILLISECONDS,
-            new LinkedBlockingQueue<>(DEFAULT_TTS_QUEUE_CAPACITY),
-            r -> {
-                Thread t = new Thread(r, "gateway-tts");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.AbortPolicy());
 
     /** 链路事件记录器（Task 4 插桩，注入各连接 SegmentPipeline；telemetry 禁用时是 Noop）。 */
     private final TelemetryRecorder recorder;
@@ -257,7 +238,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 : connectionQuota;
         this.helloDeadlineMs = helloDeadlineMs < 1 ? DEFAULT_HELLO_DEADLINE_MS : helloDeadlineMs;
         this.online = online;
-        this.tts = tts;
+        this.ttsEndpoint = new GatewayTtsEndpoint(tts, downlink);
         this.offline = offline;
         this.registry = registry;
         this.safetyTimeoutMs = safetyTimeoutMs;
@@ -393,7 +374,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
-            case "tts_request" -> onTtsRequest(session, st, castPayload(msg));
+            case "tts_request" -> ttsEndpoint.request(session, st.ctx, st.downlinkBudget, castPayload(msg));
             case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
             case "chat_start" -> st.realtimeChat.start(stringValue(castPayload(msg).get("chatId")));
@@ -1005,64 +986,6 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             implements ConnectionTurnCoordinator.WorkIdentity {}
 
 
-    /**
-     * tts_request：独立 TTS 链路（与识别/仲裁解耦，协议 v1.1 §4.5）——要求已握手；
-     * 同步合成文本 → 下发 {@code tts_response}{mime, dataBase64, text, segmentId}；
-     * 合成失败 → error(TTS_FAILED)，不关连接（与音频链路错误语义一致）。
-     */
-    private void onTtsRequest(WebSocketSession session, ConnectionState st, Map<String, Object> payload) {
-        if (st.ctx == null) {
-            return; // 未收到合法 hello 前不处理（与音频链路一致）
-        }
-        String text = String.valueOf(payload.get("text"));
-        String ttsSegmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
-        if (text.length() > DEFAULT_MAX_TTS_CHARS) {
-            // D10b:超长文本明确拒绝(不排队、不合成),避免占用合成与下行资源
-            downlink.sendError(session, st.ctx, "TTS_TEXT_TOO_LONG",
-                    "tts text exceeds " + DEFAULT_MAX_TTS_CHARS + " chars", ttsSegmentId);
-            return;
-        }
-        // 链路插桩（Task 5）：tts_request 的 utteranceId（GatewayCodec 白名单，Task 2）透传合成链，缺省 ""
-        String utteranceId = payload.get("utteranceId") != null ? String.valueOf(payload.get("utteranceId")) : "";
-        try {
-            ttsExecutor.execute(() -> synthesizeAndSend(session, st, text, ttsSegmentId, utteranceId));
-        } catch (RejectedExecutionException e) {
-            downlink.sendError(session, st.ctx, "TTS_BUSY", "tts queue is full", ttsSegmentId);
-        }
-    }
-
-    private void synthesizeAndSend(WebSocketSession session, ConnectionState st, String text,
-                                   String ttsSegmentId, String utteranceId) {
-        try {
-            Reply reply = tts.synthesize(text, st.ctx, utteranceId);
-            if (!"audio".equals(reply.kind()) || reply.data() == null || reply.data().length == 0) {
-                throw new IllegalStateException("tts returned non-audio reply: kind=" + reply.kind());
-            }
-            // D10b:下行预算——慢客户端超出预算时明确失败,不无界堆积
-            byte[] audio = reply.data();
-            if (!st.downlinkBudget.tryReserve(audio.length)) {
-                downlink.sendError(session, st.ctx, "DOWNLINK_OVERLOADED",
-                        "downlink budget exhausted", ttsSegmentId);
-                return;
-            }
-            try {
-                Map<String, Object> out = new LinkedHashMap<>();
-                out.put("mime", reply.mime());
-                out.put("dataBase64", Base64.getEncoder().encodeToString(audio));
-                out.put("text", text);
-                if (ttsSegmentId != null) {
-                    out.put("segmentId", ttsSegmentId);
-                }
-                downlink.send(session, "tts_response", out);
-            } finally {
-                st.downlinkBudget.release(audio.length);
-            }
-        } catch (Exception e) {
-            downlink.sendError(session, st.ctx, "TTS_FAILED",
-                    "tts failed: " + e.getMessage(), ttsSegmentId);
-        }
-    }
-
     /** 解码失败时粗判错误码：hello 消息非法 → BAD_HELLO，其余 → INTERNAL。 */
     private static String errorCodeOf(String raw) {
         try {
@@ -1161,7 +1084,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         connections.clear();
         completedTurns.clear();
         activeConnections.set(0);
-        ttsExecutor.shutdownNow();
+        ttsEndpoint.close();
         scheduler.shutdownNow();
     }
 }

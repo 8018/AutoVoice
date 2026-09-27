@@ -342,8 +342,8 @@ class VoiceEngineTest {
         engine.onTurnSegment(segment)
 
         withTimeout(2_000) {
-            engine.conversation.snapshot.first {
-                decisions.isNotEmpty() && it.state == DialogueState.DORMANT
+            while (decisions.isEmpty() || engine.conversation.snapshot.value.state != DialogueState.DORMANT) {
+                delay(10)
             }
         }
         assertEquals("local_command_won", decisions.single().reason)
@@ -366,8 +366,8 @@ class VoiceEngineTest {
         engine.onCloudSegment(segment)
         engine.onTurnSegment(segment)
         withTimeout(2_000) {
-            engine.conversation.snapshot.first {
-                decisions.isNotEmpty() && it.state == DialogueState.DORMANT
+            while (decisions.isEmpty() || engine.conversation.snapshot.value.state != DialogueState.DORMANT) {
+                delay(10)
             }
         }
         delay(150)
