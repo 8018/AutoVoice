@@ -10,9 +10,23 @@ internal class AppDialogueManager(
     interactionIdProvider: (String) -> String,
     private val onNavigation: (NavigationSnapshot) -> Unit,
     launchNavigation: (String) -> Boolean,
+    private val applyChatMode: (Boolean) -> Boolean = { true },
 ) {
     private var sendContext: (NavigationTaskContextRef) -> Unit = {}
     private var publishedContext: NavigationTaskContextRef? = null
+    /** Business-mode ownership; capture and transport keep their own physical readiness state. */
+    @Volatile private var chatMode = false
+
+    val isChatMode: Boolean get() = chatMode
+
+    /** Enter/exit the chat domain once; do not publish a mode the capture layer rejected. */
+    @Synchronized
+    fun setChatMode(enabled: Boolean): Boolean {
+        if (chatMode == enabled) return false
+        if (!applyChatMode(enabled)) return false
+        chatMode = enabled
+        return true
+    }
 
     val navigationSession = NavigationSession(interactionIdProvider) { snapshot ->
         onNavigation(snapshot)
@@ -55,7 +69,10 @@ internal class AppDialogueManager(
 
     fun abortPendingTask() = navigationExecutor.abortPendingTask()
 
-    fun close() = navigationSession.abortSelection(TaskEndReason.ABORTED)
+    fun close() {
+        setChatMode(false)
+        navigationSession.abortSelection(TaskEndReason.ABORTED)
+    }
 
     /** UI selection uses the same task identity and atomic claim path as voice selection. */
     fun selectCandidate(candidate: NavigationExecutor.NavigationCandidate, turnId: String) {
