@@ -13,6 +13,7 @@ class RuleNluProviderTest {
             assertEquals("exit_dialogue", intent.intent)
             assertTrue(intent.isImmediateLocalCommand())
         }
+        assertEquals("exit_dialogue", RuleNluProvider.understand(" 退出 对话。 ").intent)
         assertTrue(RuleNluProvider.understand("退出导航后回家").isUnknown())
     }
 

@@ -6,6 +6,7 @@ import java.util.List;
 public final class VehicleAgentTools {
     public static final String CAR_CONTROL = "car_control";
     public static final String NAVIGATE = "navigate";
+    public static final String EXIT_DIALOGUE = "exit_dialogue";
 
     private static final String CAR_SCHEMA = """
             {"type":"object","properties":{
@@ -33,6 +34,10 @@ public final class VehicleAgentTools {
                 new FunctionTool(NAVIGATE,
                         "打开导航页面；多地点时仅展示路线预览，最终目的地填主字段，之前各站按顺序填 waypoints",
                         NAVIGATE_SCHEMA,
+                        ToolExecutionTraits.APPROVED_COMMIT),
+                new FunctionTool(EXIT_DIALOGUE,
+                        "仅当用户明确要求退出或结束当前语音对话时调用；不要用于退出导航或其他业务",
+                        "{\"type\":\"object\",\"properties\":{}}",
                         ToolExecutionTraits.APPROVED_COMMIT));
     }
 }

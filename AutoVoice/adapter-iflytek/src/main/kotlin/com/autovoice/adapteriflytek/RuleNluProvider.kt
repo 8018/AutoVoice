@@ -52,6 +52,10 @@ object RuleNluProvider {
         "结束对话",
         "退出当前对话",
         "结束当前对话",
+        "退出会话",
+        "结束会话",
+        "退出当前会话",
+        "结束当前会话",
     )
 
     /**
@@ -59,7 +63,7 @@ object RuleNluProvider {
      * 领域：首个命中的领域别名；意图：首个命中的意图规则；均未命中 → [Intent.unknown]([SOURCE])。
      */
     fun understand(command: String): Intent {
-        if (command.trim() in EXIT_COMMANDS) {
+        if (normalizeControlPhrase(command) in EXIT_COMMANDS) {
             return Intent(
                 schemaVersion = "1.0",
                 domain = "conversation",
@@ -92,4 +96,9 @@ object RuleNluProvider {
             source = SOURCE,
         )
     }
+
+    /** SDK output may contain spaces or sentence punctuation; keep matching exact after normalization. */
+    private fun normalizeControlPhrase(command: String): String = command
+        .lowercase()
+        .replace(Regex("[\\s，。！？、,.!?;；:：]"), "")
 }

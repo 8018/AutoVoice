@@ -52,6 +52,21 @@ class HybridBusinessChatSpeechProviderTest {
     }
 
     @Test
+    void businessCloudNluExitBypassesLlmAndS2s() throws Exception {
+        AtomicInteger llmCalls = new AtomicInteger();
+        AtomicInteger chatCalls = new AtomicInteger();
+        HybridBusinessChatSpeechProvider provider = provider(
+                List.of("退出 当前 对话。"), llmCalls, chatCalls);
+
+        OnlineSpeechResult result = turn(provider, "u-exit");
+
+        assertEquals("conversation", result.reply().intent().domain());
+        assertEquals("exit_dialogue", result.reply().intent().intent());
+        assertEquals(0, llmCalls.get());
+        assertEquals(0, chatCalls.get());
+    }
+
+    @Test
     void explicitPhraseEntersPersistentChatAndExitReturnsToBusiness() throws Exception {
         AtomicInteger llmCalls = new AtomicInteger();
         AtomicInteger chatCalls = new AtomicInteger();

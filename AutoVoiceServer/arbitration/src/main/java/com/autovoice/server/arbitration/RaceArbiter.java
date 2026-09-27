@@ -96,7 +96,7 @@ public final class RaceArbiter {
 
     private void onOffline(Turn turn, OfflineCommandHit hit, Throwable error) {
         turn.offlineResolved = true;
-        if (error != null || hit == null || !isAirConControl(hit.intent())) {
+        if (error != null || hit == null || !isPriorityOfflineCommand(hit.intent())) {
             if (!turn.llmFuture.isDone()) {
                 onEvent(turn.utteranceId, CloudArbiterEvent.pending(ROUTE_LLM, turn.segmentId));
             }
@@ -230,7 +230,8 @@ public final class RaceArbiter {
                 .thenApply(ArbiterDecision::reply);
     }
 
-    private static boolean isAirConControl(Intent intent) {
+    private static boolean isPriorityOfflineCommand(Intent intent) {
+        if ("conversation".equals(intent.domain()) && "exit_dialogue".equals(intent.intent())) return true;
         if (!"climate".equals(intent.domain())) return false;
         return "power_on".equals(intent.intent())
                 || "power_off".equals(intent.intent())

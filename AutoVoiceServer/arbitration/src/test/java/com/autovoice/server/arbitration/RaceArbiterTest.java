@@ -169,6 +169,20 @@ class RaceArbiterTest {
     }
 
     @Test
+    void offlineDialogueExitWinsWithoutWaitingForLlmAndDoesNotCancelProducer() {
+        Intent exit = Intent.of("1.0", "conversation", "exit_dialogue", Map.of(), 1.0,
+                "cloud.nlu.dialogue-control", null);
+        CompletableFuture<Reply> online = new CompletableFuture<>();
+        ArbiterDecision decision = arbiter.decide(CompletableFuture.completedFuture(
+                new OfflineCommandHit("退出", exit)), online, ctx, "exit-turn").join();
+        assertEquals("offline_won", decision.reason());
+        assertEquals("exit_dialogue", decision.reply().intent().intent());
+        assertFalse(online.isDone());
+        online.complete(Reply.ofText("迟到回复"));
+        assertEquals(1, log.size());
+    }
+
+    @Test
     void nonAirconOfflineHitDefersToLlm() {
         // 非空调命中（window/misc）按未命中处理：不发 received 事件、不参与胜出，
         // 离线已完成 → LLM 到达即胜出（不花宽限期），reason = llm_reply

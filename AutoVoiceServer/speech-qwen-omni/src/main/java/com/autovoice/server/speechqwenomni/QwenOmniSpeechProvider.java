@@ -259,6 +259,7 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
             ToolCall qwenCall = new ToolCall(call.id(), call.name(), call.argumentsJson());
             if (VehicleAgentTools.CAR_CONTROL.equals(call.name())
                     || VehicleAgentTools.NAVIGATE.equals(call.name())
+                    || VehicleAgentTools.EXIT_DIALOGUE.equals(call.name())
                     || EXIT_CHAT_TOOL.equals(call.name())) {
                 terminalIntent.set(parseTerminal(qwenCall));
                 return "Action validated. Reply briefly in the user's spoken language.";
@@ -616,6 +617,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
 
     private static Intent parseTerminal(ToolCall call) throws IOException {
         JsonNode args = MAPPER.readTree(call.arguments);
+        if (VehicleAgentTools.EXIT_DIALOGUE.equals(call.name)) {
+            return Intent.of("1.0", "conversation", "exit_dialogue", Map.of(), 1.0,
+                    "qwen-omni.exit-dialogue", call.arguments);
+        }
         if (EXIT_CHAT_TOOL.equals(call.name)) {
             return Intent.of("1.0", "conversation", "exit_chat", Map.of(), 1.0,
                     "qwen-omni.exit-chat", call.arguments);

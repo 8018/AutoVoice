@@ -463,6 +463,10 @@ internal class RecordingCoordinator(
 
     private fun onFollowUpSpeechDetected() {
         if (!foreground || recording || chatLocked) return
+        // Audio callbacks are queued onto the coordinator scope. The dialogue may have
+        // exited before this callback runs; a stale VAD signal must not reopen capture.
+        if (dialogueSnapshot.state != DialogueState.FOLLOW_UP_LISTENING &&
+            dialogueSnapshot.state != DialogueState.AWAKE) return
         onLog("延时聆听检测到人声，建立临时 capture")
         startTurn(fromWake = true, includeBargeInPreRoll = true)
     }

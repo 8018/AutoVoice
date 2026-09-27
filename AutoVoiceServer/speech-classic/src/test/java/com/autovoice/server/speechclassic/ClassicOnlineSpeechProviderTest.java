@@ -70,6 +70,26 @@ class ClassicOnlineSpeechProviderTest {
     }
 
     @Test
+    void cloudNluExitBypassesBusinessLlm() throws Exception {
+        AtomicBoolean llmCalled = new AtomicBoolean();
+        ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
+                (pcm, ctx) -> "退出当前对话。",
+                (text, ctx) -> {
+                    llmCalled.set(true);
+                    return CompletableFuture.completedFuture(Reply.ofText("不应调用"));
+                });
+
+        OnlineSpeechResult result = provider.process(new byte[]{1},
+                new SessionContext("s1", "zh-CN", Map.of()), "u-exit")
+                .get(1, TimeUnit.SECONDS);
+
+        assertFalse(llmCalled.get());
+        assertEquals("conversation", result.reply().intent().domain());
+        assertEquals("exit_dialogue", result.reply().intent().intent());
+        assertEquals("退出当前对话。", result.asrText());
+    }
+
+    @Test
     void streamingFinishUsesProviderDeadlineAndReleasesSession() {
         AtomicBoolean cancelled = new AtomicBoolean();
         StreamingAsrProvider asr = new StreamingAsrProvider() {
