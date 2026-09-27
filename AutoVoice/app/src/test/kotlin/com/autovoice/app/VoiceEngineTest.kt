@@ -2,6 +2,7 @@ package com.autovoice.app
 
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.tts.TtsPlaybackDriver
+import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.TtsSynthesizer
 import com.autovoice.tts.createTtsOutput
 import com.autovoice.app.telemetry.TelemetryClient
@@ -970,6 +971,19 @@ class VoiceEngineTest {
         withTimeout(2_000) {
             engine.conversation.snapshot.first { it.state == DialogueState.FOLLOW_UP_LISTENING }
         }
+    }
+
+    @Test
+    fun `realtime playback lifecycle does not change ordinary dialogue phase`() = runBlocking {
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { awaitCancellation() },
+            cloud = CloudRunner { awaitCancellation() },
+        )
+        val before = engine.conversation.onWake()
+        engine.onPlaybackLifecycle("chat:1:reply", PlaybackStage.STARTED)
+        engine.onPlaybackLifecycle("chat:1:reply", PlaybackStage.COMPLETED)
+        assertEquals(before, engine.conversation.snapshot.value)
     }
 
     @Test

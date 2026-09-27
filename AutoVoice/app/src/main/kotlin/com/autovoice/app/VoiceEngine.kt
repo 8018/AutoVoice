@@ -194,7 +194,8 @@ class VoiceEngine(
 
     /** Called only by :tts after playback identity validation. */
     internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) {
-        if (turnId.isBlank()) return
+        // Realtime chat has its own playback owner and must not mutate the ordinary turn state.
+        if (turnId.isBlank() || turnId.startsWith("chat:")) return
         when (stage) {
             PlaybackStage.STARTED -> conversation.onPlaybackStarted(turnId)
             PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(turnId)
