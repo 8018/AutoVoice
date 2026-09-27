@@ -115,6 +115,7 @@ internal class GatewayCloudRunner(
 
     private val realtimeReconnectRunning = AtomicBoolean(false)
     private val realtimeGeneration = AtomicLong(0)
+    private val realtimeChatId = AtomicReference<String?>(null)
 
     private data class LiveUpload(
         val utteranceId: String,
@@ -177,6 +178,7 @@ internal class GatewayCloudRunner(
     private fun onRealtimeStreamFailed() {
         realtimeGeneration.incrementAndGet() // invalidate in-flight replies from the failed stream
         realtimeChatReady = false
+        realtimeChatId.set(null)
         if (!realtimeChatDesired || !realtimeReconnectRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -409,9 +411,22 @@ internal class GatewayCloudRunner(
         realtimeGeneration.incrementAndGet()
         realtimeChatReady = false
         ensureReady()
-        protocol.chatStart(sessionId)
-        bridge.awaitChatReady()
-        realtimeChatReady = true
+        val chatId = UUID.randomUUID().toString()
+        realtimeChatId.set(chatId)
+        bridge.beginChat(chatId)
+        try {
+            protocol.chatStart(sessionId, chatId)
+            bridge.awaitChatReady(chatId)
+            realtimeChatReady = true
+        } catch (failure: Exception) {
+            if (realtimeChatId.compareAndSet(chatId, null)) {
+                if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
+                    runCatching { protocol.chatFinish(sessionId, chatId) }
+                }
+                bridge.finishChat()
+            }
+            throw failure
+        }
     }
 
     override fun appendRealtimeAudio(pcm: ByteArray) {
@@ -422,8 +437,9 @@ internal class GatewayCloudRunner(
         realtimeGeneration.incrementAndGet()
         realtimeChatDesired = false
         realtimeChatReady = false
+        val chatId = realtimeChatId.getAndSet(null)
         if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
-            runCatching { protocol.chatFinish(sessionId) }
+            runCatching { protocol.chatFinish(sessionId, chatId) }
         }
         bridge.finishChat()
     }

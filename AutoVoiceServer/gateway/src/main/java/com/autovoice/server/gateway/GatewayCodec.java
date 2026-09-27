@@ -51,22 +51,22 @@ public final class GatewayCodec {
             Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
-            Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal")),
-            Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat")),
+            Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal", "chat", "chatId")),
+            Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat", "chatId")),
             Map.entry("pending", Set.of("segmentId", "text")),
             Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText", "actionId", "actionExpiresAtMs")),
-            Map.entry("error", Set.of("sessionId", "code", "message", "segmentId")),
+            Map.entry("error", Set.of("sessionId", "code", "message", "segmentId", "chatId")),
             Map.entry("bye", Set.of("sessionId", "reason")),
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),
             Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")),
             Map.entry("cancel_turn", Set.of("segmentId", "reason")),
             Map.entry("turn_commit", Set.of("segmentId", "utteranceId")),
-            Map.entry("audio_reply_start", Set.of("segmentId", "mime", "sampleRate", "channels", "encoding", "chat")),
-            Map.entry("audio_reply_end", Set.of("segmentId", "speakText", "intent", "asrText", "chat")),
-            Map.entry("chat_start", Set.of("sessionId")),
-            Map.entry("chat_ready", Set.of("sessionId")),
-            Map.entry("chat_finish", Set.of("sessionId")),
-            Map.entry("chat_speech_started", Set.of("sessionId")));
+            Map.entry("audio_reply_start", Set.of("segmentId", "mime", "sampleRate", "channels", "encoding", "chat", "chatId")),
+            Map.entry("audio_reply_end", Set.of("segmentId", "speakText", "intent", "asrText", "chat", "chatId")),
+            Map.entry("chat_start", Set.of("sessionId", "chatId")),
+            Map.entry("chat_ready", Set.of("sessionId", "chatId")),
+            Map.entry("chat_finish", Set.of("sessionId", "chatId")),
+            Map.entry("chat_speech_started", Set.of("sessionId", "chatId")));
 
     /** 按 protocol.md §3 校验的消息必需字段（hello 不含 sessionId：客户端不预生成，服务端采纳）。
      *  tts_response 虽是 S→C 消息，与 reply 一样按下行 schema 校验必需字段。 */

@@ -222,6 +222,58 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void oldRealtimeCallbacksAndFinishCannotAffectNewChat() throws Exception {
+        List<RealtimeChatSink> sinks = Collections.synchronizedList(new ArrayList<>());
+        class RealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                sinks.add(sink);
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { }
+                };
+            }
+            @Override public String id() { return "realtime-generation-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new RealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        assertEquals("chat-a", awaitType(socket, "chat_ready").path("payload").path("chatId").asText());
+        RealtimeChatSink old = sinks.get(0);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        socket.sent.clear();
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-b\"}}"));
+        assertEquals("chat-b", awaitType(socket, "chat_ready").path("payload").path("chatId").asText());
+        RealtimeChatSink current = sinks.get(1);
+        socket.sent.clear();
+
+        old.onUserSpeechStarted();
+        old.onUserTranscript("旧会话", true);
+        old.onStart(24_000, 1, "pcm_s16le");
+        old.onChunk(new byte[]{1});
+        old.onReplyText("旧回复", true);
+        old.onComplete("旧回复", null, "");
+        old.onSessionClosed(null);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        assertTrue(socket.sent.isEmpty(), "旧会话不得下发帧，也不得关闭新会话");
+
+        current.onStart(24_000, 1, "pcm_s16le");
+        current.onComplete("新回复", null, "");
+        assertEquals("chat-b", awaitType(socket, "audio_reply_start").path("payload").path("chatId").asText());
+        assertEquals("chat-b", awaitType(socket, "audio_reply_end").path("payload").path("chatId").asText());
+        handler.close();
+    }
+
+    @Test
     void chatFinishWhileOpeningClosesLateSessionWithoutSendingReady() throws Exception {
         CountDownLatch opening = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -262,6 +314,37 @@ class VoiceGatewayHandlerTest {
         assertTrue(closed.await(1, TimeUnit.SECONDS));
         assertFalse(socket.sent.stream().map(VoiceGatewayHandlerTest::parse)
                 .anyMatch(message -> "chat_ready".equals(message.path("type").asText())));
+        handler.close();
+    }
+
+    @Test
+    void realtimeSessionClosedDuringOpenReportsMatchingChatFailure() throws Exception {
+        class ClosingRealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                sink.onSessionClosed(new IllegalStateException("upstream closed while opening"));
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { }
+                };
+            }
+            @Override public String id() { return "realtime-early-close-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new ClosingRealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        socket.sent.clear();
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-opening\"}}"));
+
+        JsonNode error = awaitType(socket, "error").path("payload");
+        assertEquals("CHAT_STREAM_FAILED", error.path("code").asText());
+        assertEquals("chat-opening", error.path("chatId").asText());
+        assertNull(findTextFrame(socket, "chat_ready"));
         handler.close();
     }
 

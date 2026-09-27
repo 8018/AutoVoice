@@ -41,6 +41,17 @@ class GatewayCodecTest {
     }
 
     @Test
+    void realtimeChatIdentitySurvivesEncoding() {
+        for (String type : new String[]{"chat_ready", "chat_speech_started", "asr_partial",
+                "reply_partial", "audio_reply_start", "audio_reply_end", "error"}) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("chatId", "chat-1");
+            JsonNode encoded = read(GatewayCodec.encode(type, payload));
+            assertEquals("chat-1", encoded.path("payload").path("chatId").asText(), type);
+        }
+    }
+
+    @Test
     void supportedMessageTypesMatchSchemaEnum() {
         JsonNode values = read(TestFixtures.read("gateway-messages.schema.json"))
                 .at("/properties/type/enum");
