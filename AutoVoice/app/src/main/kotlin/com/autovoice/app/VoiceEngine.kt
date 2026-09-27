@@ -195,7 +195,9 @@ class VoiceEngine(
 
     fun onWake() { conversation.onWake() }
 
-    fun onFollowUpExpired(interactionId: String) { conversation.onFollowUpExpired(interactionId) }
+    fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null) {
+        conversation.onFollowUpExpired(interactionId, expected)
+    }
 
     fun resetDialogue() { conversation.reset() }
 

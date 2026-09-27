@@ -16,9 +16,16 @@ internal class GatewayProtocolSender(
 ) {
     private var segmentBytes = 0L
 
-    fun navigationSelection(sessionId: String, selectionId: String) = channel.send(
+    fun navigationSelection(sessionId: String, context: NavigationTaskContextRef) = channel.send(
         "navigation_selection_start",
-        mapOf("sessionId" to sessionId, "selectionId" to selectionId),
+        mapOf(
+            "sessionId" to sessionId,
+            "selectionId" to context.selectionId,
+            "taskId" to context.taskId,
+            "taskRevision" to context.revision,
+            "interactionId" to context.interactionId,
+            "active" to context.active,
+        ),
     )
 
     fun audioStart(
@@ -28,7 +35,7 @@ internal class GatewayProtocolSender(
         latitude: Double? = null,
         longitude: Double? = null,
         attempt: Int = 0,
-        navigationSelectionId: String? = null,
+        navigationContext: NavigationTaskContextRef? = null,
     ) {
         val payload = linkedMapOf<String, Any?>(
             "sessionId" to sessionId,
@@ -36,6 +43,9 @@ internal class GatewayProtocolSender(
             "channels" to channels,
             "encoding" to encoding,
             "attempt" to attempt,
+            // Presence tells a new server not to reuse server-side dialogue state after reconnect.
+            // Old clients omit this field and keep the legacy selectionId-only behaviour.
+            "taskDialogVersion" to 1,
         )
         segmentId?.let { payload["segmentId"] = it }
         utteranceId?.let { payload["utteranceId"] = it }
@@ -43,7 +53,12 @@ internal class GatewayProtocolSender(
             payload["latitude"] = latitude
             payload["longitude"] = longitude
         }
-        navigationSelectionId?.let { payload["navigationSelectionId"] = it }
+        navigationContext?.let {
+            payload["navigationSelectionId"] = it.selectionId
+            payload["navigationTaskId"] = it.taskId
+            payload["navigationTaskRevision"] = it.revision
+            payload["navigationInteractionId"] = it.interactionId
+        }
         channel.send("audio_start", payload)
         segmentBytes = 0
     }
@@ -77,5 +92,18 @@ internal class GatewayProtocolSender(
         segmentId?.let { payload["segmentId"] = it }
         utteranceId?.let { payload["utteranceId"] = it }
         channel.send("tts_request", payload)
+    }
+}
+
+internal data class NavigationTaskContextRef(
+    val taskId: String,
+    val revision: Long,
+    val interactionId: String,
+    val selectionId: String,
+    val active: Boolean = true,
+) {
+    init {
+        require(taskId.isNotBlank() && revision > 0 && interactionId.isNotBlank())
+        if (active) require(selectionId.isNotBlank())
     }
 }

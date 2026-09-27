@@ -1,5 +1,6 @@
 package com.autovoice.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,6 +39,7 @@ fun VoiceScreen(
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
     onDismissNavigationCandidates: () -> Unit,
+    onSelectNavigationCandidate: (com.autovoice.app.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -124,6 +126,7 @@ fun VoiceScreen(
         NavigationCandidateDialog(
             candidates = state.navigationCandidates,
             onDismissRequest = onDismissNavigationCandidates,
+            onSelect = onSelectNavigationCandidate,
         )
     }
 }
@@ -132,6 +135,7 @@ fun VoiceScreen(
 private fun NavigationCandidateDialog(
     candidates: List<com.autovoice.app.NavigationExecutor.NavigationCandidate>,
     onDismissRequest: () -> Unit,
+    onSelect: (com.autovoice.app.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismissRequest,
@@ -143,7 +147,7 @@ private fun NavigationCandidateDialog(
             ) {
                 candidates.forEachIndexed { index, candidate ->
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(candidate) },
                         shape = MaterialTheme.shapes.small,
                         color = MaterialTheme.colorScheme.surfaceVariant,
                     ) {

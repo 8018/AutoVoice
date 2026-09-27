@@ -18,6 +18,7 @@ class AppBusinessHandler(
     override fun handle(command: BusinessCommand): BusinessResult {
         val intent = command.intent
         if (intent.domain == "conversation") {
+            navigation?.abortPendingTask()
             return when (intent.intent) {
                 "enter_chat" -> BusinessResult.applied().also { onConversationMode(true) }
                 "exit_chat" -> BusinessResult.applied().also { onConversationMode(false) }
@@ -27,8 +28,9 @@ class AppBusinessHandler(
         var appliedText: String? = null
         val result = actionGateway.execute(command.turnId) {
             if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
-                navigation?.execute(intent) == true
+                navigation?.execute(intent, command.turnId) == true
             } else {
+                navigation?.abortPendingTask()
                 appliedText = vehicle.apply(intent)
                 appliedText != null
             }

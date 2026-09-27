@@ -82,7 +82,7 @@ class RecordingCoordinatorTest {
 
         val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
         pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, hasNavigationCandidates = false)
+        coordinator.onDialogueState(waiting, taskDirective = null)
         assertTrue(capture.followUpEnabled)
 
         advanceTimeBy(999)
@@ -91,6 +91,28 @@ class RecordingCoordinatorTest {
         advanceTimeBy(1)
         runCurrent()
         assertEquals(listOf("interaction"), pipeline.expiredInteractions)
+        assertEquals(listOf<Long?>(null), pipeline.expiredTaskRevisions)
+    }
+
+    @Test fun `task listening directive controls window and preserves revision`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+
+        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting, TaskListeningDirective(revision = 7, listenWindowMs = 2_000))
+
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertTrue(pipeline.expiredInteractions.isEmpty())
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(listOf("interaction"), pipeline.expiredInteractions)
+        assertEquals(listOf<Long?>(7), pipeline.expiredTaskRevisions)
     }
 
     @Test fun `capture start failure rolls back pipeline and reports permission`() = runTest {
@@ -127,7 +149,7 @@ class RecordingCoordinatorTest {
 
         assertFalse(wake.armed)
         assertTrue(states.last().vadUnavailable)
-        coordinator.onDialogueState(DialogueSnapshot(), hasNavigationCandidates = false)
+        coordinator.onDialogueState(DialogueSnapshot(), taskDirective = null)
         runCurrent()
         assertTrue(capture.monitoring)
         assertTrue(wake.armed)
@@ -150,7 +172,6 @@ class RecordingCoordinatorTest {
         timing = RecordingTiming(
             wakeTurnTimeoutMs = 5_000,
             followUpListenMs = 1_000,
-            navigationFollowUpListenMs = 2_000,
             maxInteractionMs = 10_000,
         ),
         ioDispatcher = StandardTestDispatcher(testScheduler),
@@ -213,6 +234,7 @@ class RecordingCoordinatorTest {
         var finishRealtime = 0
         var dialogueResets = 0
         val expiredInteractions = mutableListOf<String>()
+        val expiredTaskRevisions = mutableListOf<Long?>()
 
         override fun onWake() { events += "wake" }
         override fun onListeningStart(interruptPlayback: Boolean) { events += "listening:$interruptPlayback" }
@@ -227,7 +249,10 @@ class RecordingCoordinatorTest {
         override fun appendRealtimeChatAudio(block: ByteArray) { realtimeBlocks += block }
         override fun startRealtimeChat() { startRealtime++ }
         override fun finishRealtimeChat() { finishRealtime++ }
-        override fun onFollowUpExpired(interactionId: String) { expiredInteractions += interactionId }
+        override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) {
+            expiredInteractions += interactionId
+            expiredTaskRevisions += taskRevision
+        }
         override fun resetDialogue() {
             dialogueResets++
             dialogueSnapshot = DialogueSnapshot()

@@ -375,10 +375,18 @@ class GatewayCodecTest {
         audio.put("utteranceId", "utt-1");
         audio.put("latitude", 30.2741);
         audio.put("longitude", 120.1551);
+        audio.put("taskDialogVersion", 1);
+        audio.put("navigationTaskId", "task-1");
+        audio.put("navigationTaskRevision", 2L);
+        audio.put("navigationInteractionId", "interaction-1");
         JsonNode ap = read(GatewayCodec.encode("audio_start", audio)).get("payload");
         assertEquals("utt-1", ap.get("utteranceId").asText());
         assertEquals(30.2741, ap.get("latitude").asDouble(), 0.000001);
         assertEquals(120.1551, ap.get("longitude").asDouble(), 0.000001);
+        assertEquals(1, ap.get("taskDialogVersion").asInt());
+        assertEquals("task-1", ap.get("navigationTaskId").asText());
+        assertEquals(2L, ap.get("navigationTaskRevision").asLong());
+        assertEquals("interaction-1", ap.get("navigationInteractionId").asText());
 
         Map<String, Object> tts = new LinkedHashMap<>();
         tts.put("text", "打开空调");
