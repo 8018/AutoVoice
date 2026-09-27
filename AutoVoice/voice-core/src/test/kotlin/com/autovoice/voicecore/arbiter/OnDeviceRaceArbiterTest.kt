@@ -80,6 +80,25 @@ class OnDeviceRaceArbiterTest {
     }
 
     @Test
+    fun `late event remains attributed to the submitting turn`() = runBlocking {
+        val tagged = CopyOnWriteArrayList<Pair<String, OnDeviceArbiterEvent>>()
+        val outputs = Channel<ArbitrationOutput>(Channel.UNLIMITED)
+        OnDeviceRaceArbiter(
+            sink = DecisionSink {},
+            onTurnEvent = { id, event -> tagged += id to event },
+        ).use { arbiter ->
+            arbiter.openTurn("old") { outputs.trySend(it) }
+            arbiter.submitCloud("old", TextReply("old reply"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+            arbiter.openTurn("new") { outputs.trySend(it) }
+            arbiter.submitLocal("old", nlu(windowIntent()))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.AlreadyOutput)
+            assertEquals("old", tagged.last().first)
+            assertEquals(OnDeviceArbiterEvent.Lost("local", "cloud_already_won"), tagged.last().second)
+        }
+    }
+
+    @Test
     fun `observer failures do not kill arbitration or block winner delivery`() = runBlocking {
         val outputs = Channel<ArbitrationOutput>(Channel.UNLIMITED)
         val failures = CopyOnWriteArrayList<Throwable>()

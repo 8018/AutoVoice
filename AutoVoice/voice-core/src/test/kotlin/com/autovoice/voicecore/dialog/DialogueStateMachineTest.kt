@@ -81,6 +81,16 @@ class DialogueStateMachineTest {
     }
 
     @Test
+    fun `silent business completion leaves responding without a playback event`() {
+        val interaction = machine.onWake().interactionId!!
+        machine.onSpeechCommitted("turn")
+        machine.onFinalSemantic("turn")
+        assertEquals(DialogueState.FOLLOW_UP_LISTENING, machine.onOutputSkipped("turn").state)
+        assertEquals(DialogueState.FOLLOW_UP_LISTENING, machine.onOutputSkipped("old").state)
+        assertEquals(DialogueState.DORMANT, machine.onFollowUpExpired(interaction).state)
+    }
+
+    @Test
     fun `state machine checks current turn downstream of arbitration`() {
         machine.onSpeechCommitted("turn")
         assertEquals(false, machine.isCurrentTurn("old"))

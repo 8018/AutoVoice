@@ -75,6 +75,7 @@ internal object VoiceEngineFactory {
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
         bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
+        onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
     ): VoiceEngine {
         cfg.validateForRuntime()
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -86,7 +87,8 @@ internal object VoiceEngineFactory {
             okHttp = OkHttpClient(),
             baseUrl = cfg.cloud.telemetry?.url ?: telemetryBaseUrl(cfg.cloud.gatewayUrl),
             deviceId = cfg.cloud.deviceId,
-            scope = scope,
+            // Diagnostic close-out must survive VoiceEngine.close() cancelling its own scope.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
             enabled = cfg.cloud.telemetry?.enabled ?: false,
             clock = { System.currentTimeMillis() + clockOffsetProvider.get().invoke() },
         )
@@ -160,6 +162,7 @@ internal object VoiceEngineFactory {
             },
             scope = scope,
             isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
+            isCurrentRealtime = cloudRunner::isCurrentRealtimeOutput,
             events = TtsEventSink { stage, level, payload ->
                 val turnId = payload["turnId"] as? String ?: ""
                 telemetry.recordFor(turnId, stage, level, payload - "turnId")
@@ -187,24 +190,24 @@ internal object VoiceEngineFactory {
             cloudWaitMs = cfg.cloud.waitMs,
             clock = System::currentTimeMillis,
             sink = telemetrySink,
-            onEvent = { event ->
+            onTurnEvent = { turnId, event ->
                 when (event) {
-                    is OnDeviceArbiterEvent.Received -> telemetry.record(
+                    is OnDeviceArbiterEvent.Received -> telemetry.recordFor(turnId,
                         TelemetryStages.DEVICE_ARBITER_RECEIVED,
                         "info",
                         mapOf("route" to event.route),
                     )
-                    is OnDeviceArbiterEvent.Won -> telemetry.record(
+                    is OnDeviceArbiterEvent.Won -> telemetry.recordFor(turnId,
                         TelemetryStages.DEVICE_ARBITER_WON,
                         "info",
                         mapOf("route" to event.route, "reason" to event.reason),
                     )
-                    is OnDeviceArbiterEvent.Lost -> telemetry.record(
+                    is OnDeviceArbiterEvent.Lost -> telemetry.recordFor(turnId,
                         TelemetryStages.DEVICE_ARBITER_LOST,
                         "warn",
                         mapOf("route" to event.route, "reason" to event.reason),
                     )
-                    is OnDeviceArbiterEvent.Pending -> telemetry.record(
+                    is OnDeviceArbiterEvent.Pending -> telemetry.recordFor(turnId,
                         TelemetryStages.DEVICE_ARBITER_PENDING,
                         "info",
                         mapOf("route" to event.route, "reason" to "llm_pending"),
@@ -256,7 +259,7 @@ internal object VoiceEngineFactory {
             engine.candidates.onCloudUnavailable()
             // A transport break ends the local task. We intentionally do not resume or replay a
             // navigation selection after reconnect; the user must make a fresh request.
-            navigation?.abortPendingTask()
+            onNavigationTransportReset()
         }
         cloudRunner.onNavigationContextMissing = { ref ->
             if (navigation?.session?.contextMissing(ref) == true) onReplyText("地点选择已失效，请重新搜索")
@@ -273,7 +276,7 @@ internal object VoiceEngineFactory {
         // A ready frame establishes a new transport generation. Task-dialog state is deliberately
         // not resumed across it, even when the logical server session itself was resumed.
         cloudRunner.onSessionRecovery = { _, _ ->
-            navigation?.abortPendingTask()
+            onNavigationTransportReset()
         }
         // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
         bindNavigationAdoptionSender { context ->

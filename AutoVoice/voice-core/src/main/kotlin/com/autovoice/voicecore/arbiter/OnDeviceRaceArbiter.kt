@@ -64,6 +64,7 @@ class OnDeviceRaceArbiter(
     private val clock: () -> Long = System::currentTimeMillis,
     private val sink: DecisionSink,
     private val onEvent: (OnDeviceArbiterEvent) -> Unit = {},
+    private val onTurnEvent: (String, OnDeviceArbiterEvent) -> Unit = { _, _ -> },
     private val pendingWaitMs: Long = 50_000,
     private val emissionLedger: SemanticEmissionLedger = SemanticEmissionLedger(),
     retainedTurns: Int = 64,
@@ -225,7 +226,7 @@ class OnDeviceRaceArbiter(
     private fun onPending(turnId: String) {
         val now = monotonicMs()
         val state = stateFor(turnId, now)
-        emitEvent(OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
+        emitEvent(turnId, OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
         state.cloudDeadlineMs = now + pendingWaitMs
         state.generation += 1
         if (state.heldLocal != null) scheduleRelease(turnId, state)
@@ -269,10 +270,11 @@ class OnDeviceRaceArbiter(
     /** Single actor thread: queue order itself is the atomicity boundary. */
     private fun dispatch(candidate: ReadyCandidate) {
         val state = stateFor(candidate.turnId, monotonicMs())
-        emitEvent(OnDeviceArbiterEvent.Received(candidate.route.wire))
+        emitEvent(candidate.turnId, OnDeviceArbiterEvent.Received(candidate.route.wire))
 
         state.winner?.let { winner ->
             emitEvent(
+                candidate.turnId,
                 OnDeviceArbiterEvent.Lost(
                     candidate.route.wire,
                     if (winner == Route.CLOUD) "cloud_already_won" else "command_already_won",
@@ -283,13 +285,13 @@ class OnDeviceRaceArbiter(
         }
 
         if (candidate is ReadyCandidate.LocalCandidate && candidate.nlu.intent.isUnknown()) {
-            emitEvent(OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
+            emitEvent(candidate.turnId, OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
             emitOutput(state, ArbitrationOutput.UnknownLocal)
             return
         }
 
         if (emissionLedger.tryEmit(candidate.turnId) != SemanticEmissionResult.ACCEPTED) {
-            emitEvent(OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
+            emitEvent(candidate.turnId, OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
             emitOutput(state, ArbitrationOutput.AlreadyOutput)
             return
         }
@@ -297,7 +299,7 @@ class OnDeviceRaceArbiter(
         state.winner = candidate.route
         when (candidate) {
             is ReadyCandidate.CloudCandidate -> {
-                emitEvent(OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
+                emitEvent(candidate.turnId, OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
                 recordDecision(decision(candidate.turnId, Route.CLOUD.wire, "cloud_won"))
                 emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Cloud(candidate.reply)))
             }
@@ -308,7 +310,7 @@ class OnDeviceRaceArbiter(
                     candidate.decisionReason == "cloud_timeout_use_local" -> "cloud_timeout"
                     else -> candidate.decisionReason
                 }
-                emitEvent(OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
+                emitEvent(candidate.turnId, OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
                 recordDecision(decision(candidate.turnId, Route.LOCAL.wire, candidate.decisionReason))
                 emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Local(candidate.nlu)))
             }
@@ -338,7 +340,10 @@ class OnDeviceRaceArbiter(
 
     private fun monotonicMs(): Long = System.nanoTime() / 1_000_000L
 
-    private fun emitEvent(event: OnDeviceArbiterEvent) = isolate { onEvent(event) }
+    private fun emitEvent(turnId: String, event: OnDeviceArbiterEvent) {
+        isolate { onTurnEvent(turnId, event) }
+        isolate { onEvent(event) }
+    }
 
     private fun recordDecision(entry: DecisionEntry) = isolate { sink.onDecision(entry) }
 

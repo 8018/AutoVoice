@@ -6,6 +6,7 @@ import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
 import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.TtsOutput
+import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Reply
@@ -170,6 +171,7 @@ class VoiceEngine(
      * （生产装配每次重建引擎时新建专属 scope，不复用 viewModelScope）。
      */
     fun close() {
+        telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
         tts.stop()
         dialogueTimeoutJob?.cancel()
@@ -183,6 +185,7 @@ class VoiceEngine(
 
     /** Ends the current interaction locally. Candidate producers may finish, but become stale. */
     fun exitCurrentDialogue() {
+        telemetry.finishOpenRounds("dialogue_exited")
         tts.stop()
         dialogueTimeoutJob?.cancel()
         dialogueTimeoutJob = null
@@ -191,7 +194,8 @@ class VoiceEngine(
 
     /** Called only by :tts after playback identity validation. */
     internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) {
-        if (turnId.isBlank()) return
+        // Realtime chat has its own playback owner and must not mutate the ordinary turn state.
+        if (turnId.isBlank() || turnId.startsWith("chat:")) return
         when (stage) {
             PlaybackStage.STARTED -> conversation.onPlaybackStarted(turnId)
             PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(turnId)
@@ -201,13 +205,22 @@ class VoiceEngine(
 
     fun onForeground() = onForeground.invoke()
 
-    fun onWake() { conversation.onWake() }
+    fun onWake() {
+        telemetry.finishOpenRounds("new_interaction")
+        conversation.onWake()
+    }
 
     fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null) {
         conversation.onFollowUpExpired(interactionId, expected)
+        if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
+            telemetry.finishOpenRounds("listening_expired")
+        }
     }
 
-    fun resetDialogue() { conversation.reset() }
+    fun resetDialogue() {
+        telemetry.finishOpenRounds("dialogue_reset")
+        conversation.reset()
+    }
 
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
@@ -342,8 +355,8 @@ class VoiceEngine(
         realtimeChat?.finishRealtimeChat()
     }
 
-    internal fun playRealtimeChatReply(reply: StreamingAudioReply) {
-        responses.dispatchRealtime(reply)
+    internal fun playRealtimeChatReply(token: RealtimePlaybackToken, reply: StreamingAudioReply) {
+        responses.dispatchRealtime(token, reply)
     }
 
     /** 16k 单声道 16bit PCM 字节数 → 毫秒（与 AudioRecorder/TtsPlayer 同口径：32000B/s）。 */
@@ -351,8 +364,9 @@ class VoiceEngine(
 
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
-        conversation.rejectCapture(currentUtteranceId)
-        candidates.cancelCapture(currentUtteranceId)
+        val id = currentUtteranceId
+        conversation.rejectCapture(id)
+        if (candidates.cancelCapture(id)) telemetry.end(id, "capture_rejected")
     }
 
     // ------------------------------------------------------------------ 结果路由
@@ -389,12 +403,15 @@ class VoiceEngine(
             return
         }
         conversation.onFinalSemantic(utteranceId)
-        when (winner) {
+        val outcome = when (winner) {
             is RaceWinner.Cloud -> {
                 onCloudWon(utteranceId)
                 responses.dispatchCloud(utteranceId, winner.reply)
             }
             is RaceWinner.Local -> responses.dispatchLocal(utteranceId, winner.nlu)
+        }
+        if (outcome == ResponseDispatcher.Outcome.NO_OUTPUT) {
+            conversation.onOutputSkipped(utteranceId)
         }
         // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
         setCloudPending(utteranceId, false)
@@ -415,6 +432,7 @@ class VoiceEngine(
             dialogueTimeoutJob = scope.launch {
                 delay(thinkingTimeoutMs)
                 conversation.onThinkingExpired(turnId)
+                if (!conversation.isCurrentTurn(turnId)) telemetry.end(turnId, "thinking_expired")
             }
         }
     }

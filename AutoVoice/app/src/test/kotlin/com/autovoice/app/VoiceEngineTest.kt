@@ -2,6 +2,7 @@ package com.autovoice.app
 
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.tts.TtsPlaybackDriver
+import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.TtsSynthesizer
 import com.autovoice.tts.createTtsOutput
 import com.autovoice.app.telemetry.TelemetryClient
@@ -951,6 +952,38 @@ class VoiceEngineTest {
         // 没有 ASR/有效语义证据时对话状态从未建立 turn；候选层不伪造超时或失败播报。
         assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
         assertEquals(emptyList<String>(), ttsRequests)
+    }
+
+    @Test
+    fun `adopted local business failure without speech enters follow up instead of sticking responding`() = runBlocking {
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner {
+                Intent("1.0", "navigation", "navigate", emptyMap(), 0.9, "test")
+            },
+            cloud = CloudRunner { delay(1_000); TextReply("late") },
+            cloudWaitMs = 40,
+        )
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first { it.state == DialogueState.FOLLOW_UP_LISTENING }
+        }
+    }
+
+    @Test
+    fun `realtime playback lifecycle does not change ordinary dialogue phase`() = runBlocking {
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { awaitCancellation() },
+            cloud = CloudRunner { awaitCancellation() },
+        )
+        val before = engine.conversation.onWake()
+        engine.onPlaybackLifecycle("chat:1:reply", PlaybackStage.STARTED)
+        engine.onPlaybackLifecycle("chat:1:reply", PlaybackStage.COMPLETED)
+        assertEquals(before, engine.conversation.snapshot.value)
     }
 
     @Test

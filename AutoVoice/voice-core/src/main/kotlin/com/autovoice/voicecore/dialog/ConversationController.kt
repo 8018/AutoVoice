@@ -155,6 +155,11 @@ class ConversationController(
         dialogue.onPlaybackEnded(turnId).also { next -> queue.add { onState(next) } }
     }
 
+    /** Business completed without requesting audio; playback cannot drive the next state. */
+    fun onOutputSkipped(turnId: String): DialogueSnapshot = mutate { queue ->
+        dialogue.onOutputSkipped(turnId).also { next -> queue.add { onState(next) } }
+    }
+
     fun isCurrentTurn(turnId: String): Boolean = synchronized(lock) {
         dialogue.isCurrentTurn(turnId)
     }
