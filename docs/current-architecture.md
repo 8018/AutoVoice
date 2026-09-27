@@ -8,7 +8,7 @@
 
 `AppDialogueManager` 负责导航任务、候选选择、延时聆听 revision、后台及连接变化的任务收口；`MainViewModel` 只转发 UI/录音事件并投影状态。普通会话状态仍由 `ConversationController` 管理，导航多轮状态仍由 `NavigationSession` 管理，二者不是同一个状态机。
 
-`GatewayClient` 仅负责连接与原始消息；`GatewayProtocolSender` 负责编码上行；`GatewayBridge` 按消息类型将下行交给 ASR/NLU、音频、TTS、闲聊监听者。`GatewayTtsTransport` 单独管理 TTS 请求超时，回复槽仍由 Bridge 对账，复用同一通道。闲聊输出使用 `RealtimePlaybackToken(generation,responseId)`，不伪造普通 turnId；退出或重连会使已分发的旧 generation 输出失效。协议目前未给闲聊回复携带 chat generation；新会话开始后才抵达的旧回复仍需服务端/协议端到端身份才能可靠识别。
+`GatewayClient` 仅负责连接与原始消息；`GatewayProtocolSender` 负责编码上行；独立文件中的 `GatewayBridge` 按消息类型将下行交给 ASR/NLU、音频、TTS、闲聊监听者。`GatewayTtsTransport` 单独管理 TTS 请求超时，回复槽仍由 Bridge 对账，复用同一通道。闲聊输出使用 `RealtimePlaybackToken(generation,responseId)`，不伪造普通 turnId；退出或重连会使已分发的旧 generation 输出失效。协议目前未给闲聊回复携带 chat generation；新会话开始后才抵达的旧回复仍需服务端/协议端到端身份才能可靠识别。
 
 `TtsOutput` 内部持有合成、缓存、播放身份。业务输出与播放完成分开：未请求播放的业务结果通过 `onOutputSkipped` 从 RESPONDING 进入延时聆听，播放结果则由 TTS 生命周期驱动。
 
