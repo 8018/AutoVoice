@@ -14,14 +14,7 @@ import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.CloudRunner
-import com.autovoice.voicecore.session.CloudRequestFailedException
-import com.autovoice.voicecore.session.CloudUnavailableException
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.SendChannel
@@ -29,15 +22,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** 云端音频分块大小（gateway 协议 16KB/帧）。 */
-private const val CLOUD_CHUNK_BYTES = 16_384
-
-/** About four seconds of 16 kHz PCM; overflow fails the turn instead of growing without limit. */
-private const val LIVE_UPLOAD_QUEUE_CAPACITY = 128
-
 /**
- * 云端链路实现（GatewayClient 装配）：首次/故障后重连 → 分块发送 PCM（16KB/帧）→
- * 收 reply。网关 decision 事件（type=decision）透传进 [DecisionSink]（UI 决策日志）。
+ * Shared gateway composition root: transport/session readiness and typed business channels.
+ * Ordinary PCM upload, realtime chat, navigation context and TTS have independent owners.
  *
  * 故障语义（Task 15 M1 裁定）：ready 前失败（连接/重试耗尽）→ 抛 [CloudUnavailableException]
  * 且不 latch；ready 后失败（发送中断/收包错误）→ 先调 [onCloudUnavailable] latch
@@ -86,6 +73,14 @@ internal class GatewayCloudRunner(
     private val navigationChannel = GatewayNavigationContextChannel(
         bridge, protocol, client, { readyReceived }, { sessionId }, { onNavigationContextMissing(it) },
     )
+    private val businessSpeech = GatewayBusinessSpeechChannel(
+        client, bridge, protocol, scope, ::ensureReady, { sessionId },
+        locationProvider, navigationContextProvider, ::onSpeechTransportFailure,
+        { turnId ->
+            pendingReplyText.remove(turnId)
+            releasedReplyTurns.remove(turnId)
+        },
+    )
 
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) = navigationChannel.publish(context)
@@ -101,19 +96,6 @@ internal class GatewayCloudRunner(
 
     @Volatile
     private var sessionId = ""
-
-    private data class LiveUpload(
-        val utteranceId: String,
-        val navigationContext: NavigationTaskContextRef?,
-        val segmentId: String = UUID.randomUUID().toString(),
-        val chunks: Channel<ByteArray> = Channel(LIVE_UPLOAD_QUEUE_CAPACITY),
-        val reply: CompletableDeferred<Reply> = CompletableDeferred(),
-        val admitted: AtomicBoolean = AtomicBoolean(false),
-        val audioStarted: AtomicBoolean = AtomicBoolean(false),
-        val commitSent: AtomicBoolean = AtomicBoolean(false),
-    )
-
-    private val liveUpload = AtomicReference<LiveUpload?>(null)
 
     /** 由 [VoiceEngineFactory.create] 在 engine 装配完成后绑定到候选协调器。 */
     var onCloudUnavailable: () -> Unit = {}
@@ -186,8 +168,9 @@ internal class GatewayCloudRunner(
      * 当前话语 utteranceId 读取器（T6）：由 [VoiceEngineFactory.create] 在 engine 装配完成后
      * 绑定到 `engine.currentUtteranceId`；空串时发帧不携带 utteranceId（服务端视为未提供）。
      */
-    @Volatile
-    var utteranceIdProvider: () -> String = { "" }
+    var utteranceIdProvider: () -> String
+        get() = businessSpeech.utteranceIdProvider
+        set(value) { businessSpeech.utteranceIdProvider = value }
 
     /**
      * ready 回执的 sessionId 回调（T6 评审 C1）：由 [VoiceEngineFactory.create] 绑定到
@@ -214,10 +197,7 @@ internal class GatewayCloudRunner(
     fun close() {
         connectionObserver.cancel()
         navigationChannel.close()
-        liveUpload.getAndSet(null)?.let {
-            it.chunks.close(CancellationException("gateway runner closed"))
-            it.reply.cancel()
-        }
+        businessSpeech.close()
         finishRealtimeChat()
         client.disconnect()
     }
@@ -248,116 +228,26 @@ internal class GatewayCloudRunner(
     }
 
     override fun beginStreamingTurn(utteranceId: String) {
-        if (!cfg.enabled || utteranceId.isBlank()) return
-        val upload = LiveUpload(utteranceId, navigationContextProvider())
-        while (true) {
-            val previous = liveUpload.get()
-            // 同一按钮轮可能包含多个 VAD 段；它们属于同一条业务音频流。
-            if (previous?.utteranceId == utteranceId) return
-            if (liveUpload.compareAndSet(previous, upload)) {
-                previous?.chunks?.close(CancellationException("superseded by new streaming turn"))
-                previous?.reply?.cancel()
-                break
-            }
-        }
-        scope.launch { executeLiveUpload(upload) }
+        if (cfg.enabled) businessSpeech.beginStreamingTurn(utteranceId)
     }
 
-    override fun appendStreamingAudio(pcm: ByteArray) {
-        if (pcm.isEmpty()) return
-        val upload = liveUpload.get() ?: return
-        val result = upload.chunks.trySend(pcm.copyOf())
-        if (result.isFailure && !result.isClosed) {
-            val overflow = CloudRequestFailedException("streaming audio queue overflow")
-            upload.chunks.close(overflow)
-            upload.reply.completeExceptionally(overflow)
-        }
-    }
+    override fun appendStreamingAudio(pcm: ByteArray) = businessSpeech.appendStreamingAudio(pcm)
+    override fun finishStreamingTurn(utteranceId: String) = businessSpeech.finishStreamingTurn(utteranceId)
+    override fun cancelStreamingTurn(utteranceId: String) = businessSpeech.cancelStreamingTurn(utteranceId)
+    override fun commitStreamingTurn(utteranceId: String) = businessSpeech.commitStreamingTurn(utteranceId)
 
-    override fun finishStreamingTurn(utteranceId: String) {
-        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.chunks?.close()
-    }
-
-    override fun cancelStreamingTurn(utteranceId: String) {
-        val upload = liveUpload.get()?.takeIf { it.utteranceId == utteranceId } ?: return
-        if (!liveUpload.compareAndSet(upload, null)) return
-        upload.chunks.cancel(CancellationException("streaming turn discarded"))
-        upload.reply.cancel()
-        if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
-            runCatching { protocol.cancelTurn(upload.segmentId) }
-        }
-        bridge.cancelStream(upload.segmentId)
-    }
-
-    override fun commitStreamingTurn(utteranceId: String) {
-        val upload = liveUpload.get()?.takeIf { it.utteranceId == utteranceId } ?: return
-        upload.admitted.set(true)
-        sendCommitIfReady(upload)
-    }
-
-    /** Admission may beat connect/audio_start; persist it and send exactly once after start. */
-    private fun sendCommitIfReady(upload: LiveUpload) {
-        if (!upload.admitted.get() || !upload.audioStarted.get()) return
-        if (sessionId.isBlank() || client.connectionState.value != GatewayConnectionState.READY) return
-        if (!upload.commitSent.compareAndSet(false, true)) return
-        runCatching { protocol.commitTurn(upload.segmentId, upload.utteranceId) }
-            .onFailure {
-                upload.commitSent.set(false)
-                Log.w("GatewayCloudRunner", "turn commit send failed", it)
-            }
-    }
-
-    private suspend fun executeLiveUpload(upload: LiveUpload) {
-        val slot = bridge.newReplySlot(upload.segmentId, upload.utteranceId)
-        try {
-            ensureReady()
-            val location = locationProvider()
-            protocol.audioStart(
-                sessionId,
-                upload.segmentId,
-                upload.utteranceId,
-                location?.first,
-                location?.second,
-                navigationContext = upload.navigationContext,
+    private fun onSpeechTransportFailure(error: Throwable, streaming: Boolean) {
+        readyReceived = false
+        sessionId = ""
+        client.disconnect()
+        if (!streaming) {
+            val details = mutableMapOf<String, Any?>(
+                "message" to (error.message ?: "unknown"), "turnRetried" to false,
             )
-            upload.audioStarted.set(true)
-            sendCommitIfReady(upload)
-            for (chunk in upload.chunks) protocol.audioChunk(chunk)
-            protocol.audioEnd(sessionId)
-            upload.reply.complete(slot.await())
-        } catch (cancelled: CancellationException) {
-            if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
-                runCatching { protocol.cancelTurn(upload.segmentId) }
-            }
-            bridge.cancelStream(upload.segmentId)
-            upload.reply.cancel(cancelled)
-        } catch (error: GatewayRemoteException) {
-            if (error.code == "CONNECTION_FAILED" || error.code == "CONNECTION_CLOSED") {
-                readyReceived = false
-                sessionId = ""
-                client.disconnect()
-                onCloudUnavailable()
-            }
-            upload.reply.completeExceptionally(
-                if (error.code == "CONNECTION_FAILED" || error.code == "CONNECTION_CLOSED") {
-                    CloudUnavailableException("流式云端链路故障：${error.message}", error)
-                } else {
-                    CloudRequestFailedException("流式云端请求失败（${error.code}）：${error.message}", error)
-                },
-            )
-        } catch (error: GatewayException) {
-            readyReceived = false
-            sessionId = ""
-            client.disconnect()
-            onCloudUnavailable()
-            upload.reply.completeExceptionally(
-                CloudUnavailableException("流式云端链路故障：${error.message}", error),
-            )
-        } catch (error: CloudRequestFailedException) {
-            upload.reply.completeExceptionally(error)
-        } finally {
-            bridge.clearReplySlot(slot)
+            if (error is GatewayRemoteException) details["code"] = error.code
+            onConnectionEvent(TelemetryStages.WS_RECONNECT_FAILED, "error", details)
         }
+        onCloudUnavailable()
     }
 
     override suspend fun startRealtimeChat() = realtimeChatChannel.startRealtimeChat()
@@ -366,84 +256,10 @@ internal class GatewayCloudRunner(
 
     override fun finishRealtimeChat() = realtimeChatChannel.finishRealtimeChat()
 
-    override suspend fun run(segment: ByteArray): Reply =
-        run(segment, utteranceIdProvider())
+    override suspend fun run(segment: ByteArray): Reply = businessSpeech.run(segment)
 
-    override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
-        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.let { upload ->
-            upload.chunks.close()
-            return try {
-                upload.reply.await()
-            } finally {
-                liveUpload.compareAndSet(upload, null)
-            }
-        }
-        pendingReplyText.remove(utteranceId)
-        releasedReplyTurns.remove(utteranceId)
-        // 每轮话语唯一 ID：先于发送注册，reply/error 凭它关联到本话语（丢弃上一轮迟到的消息）
-        val segmentId = UUID.randomUUID().toString()
-        val navigationContext = navigationContextProvider()
-        val replySlot = bridge.newReplySlot(segmentId, utteranceId)
-        try {
-            // ensureReady may establish a connection before this turn starts. Once audio_start has
-            // been attempted, a transport failure ends the turn; its PCM is never retransmitted.
-            ensureReady()
-            val location = locationProvider()
-            protocol.audioStart(
-                sessionId,
-                segmentId,
-                utteranceId.takeIf { it.isNotBlank() },
-                location?.first,
-                location?.second,
-                0,
-                navigationContext = navigationContext,
-            )
-            var offset = 0
-            while (offset < segment.size) {
-                val end = minOf(offset + CLOUD_CHUNK_BYTES, segment.size)
-                protocol.audioChunk(segment.copyOfRange(offset, end))
-                offset = end
-            }
-            protocol.audioEnd(sessionId)
-            return replySlot.await()
-        } catch (e: GatewayRemoteException) {
-            pendingReplyText.remove(utteranceId)
-            if (e.code == "CONNECTION_FAILED" || e.code == "CONNECTION_CLOSED") {
-                readyReceived = false
-                sessionId = ""
-                client.disconnect()
-                onConnectionEvent(
-                    TelemetryStages.WS_RECONNECT_FAILED,
-                    "error",
-                    mapOf("code" to e.code, "message" to (e.message ?: "unknown"),
-                        "turnRetried" to false),
-                )
-                onCloudUnavailable()
-                throw CloudUnavailableException("云端链路故障，本轮已结束：${e.message}", e)
-            }
-            throw CloudRequestFailedException("云端请求失败（${e.code}）：${e.message}", e)
-        } catch (e: GatewayException) {
-            readyReceived = false
-            sessionId = ""
-            client.disconnect()
-            pendingReplyText.remove(utteranceId)
-            onConnectionEvent(
-                TelemetryStages.WS_RECONNECT_FAILED,
-                "error",
-                mapOf("message" to (e.message ?: "unknown"), "turnRetried" to false),
-            )
-            onCloudUnavailable()
-            throw CloudUnavailableException("云端链路故障，本轮已结束：${e.message}", e)
-        } catch (e: CancellationException) {
-            releasedReplyTurns.remove(utteranceId)
-            pendingReplyText.remove(utteranceId)
-            runCatching { protocol.cancelTurn(segmentId) }
-            bridge.cancelStream(segmentId)
-            throw e
-        } finally {
-            bridge.clearReplySlot(replySlot)
-        }
-    }
+    override suspend fun run(segment: ByteArray, utteranceId: String): Reply =
+        businessSpeech.run(segment, utteranceId)
 
     /**
      * 独立 TTS 播报（A3，TTS 解耦）：发 tts_request 等 tts_response，5s 超时返回 null

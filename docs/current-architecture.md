@@ -1,6 +1,6 @@
 # 当前架构入口
 
-本页对应 `codex/chat-mode-lifecycle-2026-09-27` 开发分支，基于已合入 `dev` 的 `cb307a3`；不是 main 或生产部署声明。`dev` 基线 CI 和自动部署已通过，本分支改动仍需单独验收。
+本页对应 `codex/business-speech-channel-2026-09-27` 开发分支；#123–#127 已合入 `dev`，本分支的普通业务语音通道抽取尚未合并或部署。不是 main 或生产部署声明。
 
 ## 边界
 
@@ -10,11 +10,13 @@
 
 `GatewayClient` 仅负责连接与原始消息；`GatewayProtocolSender` 负责编码上行；`GatewayBridge` 按消息类型将下行交给 ASR/NLU、音频、TTS、闲聊监听者。`GatewayTtsTransport` 单独管理 TTS 请求超时；`GatewayNavigationContextChannel` 管导航上下文发布和缺失反馈；`GatewayRealtimeChatChannel` 管闲聊连接、重连和输出代次。它们复用同一 WebSocket。闲聊输出使用 `RealtimePlaybackToken(generation,responseId)`，不伪造普通 turnId。新版端云协议还回显 `chatId`，客户端拒绝带旧 `chatId` 的迟到回复；旧服务端不回显时仍走兼容路径，不保证同等隔离。
 
+`GatewayBusinessSpeechChannel` 管普通业务话语的分块上传、回复槽与取消/提交；`GatewayCloudRunner` 仅装配共享连接及这些业务通道。普通话语传输失败后结束本轮，不重放 PCM。普通业务与闲聊通道不共享轮次状态。
+
 `TtsOutput` 内部持有合成、缓存、播放身份。业务输出与播放完成分开：未请求播放的业务结果通过 `onOutputSkipped` 从 RESPONDING 进入延时聆听，播放结果则由 TTS 生命周期驱动。
 
 ## 当前约束
 
 - 断线结束当前操作；不重放音频、不补执行，不使用持久化动作账本保证恢复。
 - 导航上下文随任务身份撤销；重连不恢复待选任务。
-- `dev` 基线 `cb307a3` 已通过 CI 并自动部署；本分支尚未部署。真机、真实 SDK、付费模型与故障/容量场景仍需单独验收，不可把单测通过等同于生产发布。
-- `GatewayBridge` 和服务端 `VoiceGatewayHandler` 仍是通信聚合点；进一步按业务边界拆分需保持协议兼容并分批验收。
+- `cb307a3` 基线已通过 CI 并自动部署到 dev；#127 已合并，本分支尚未部署。真机、真实 SDK、付费模型与故障/容量场景仍需单独验收，不可把单测通过等同于生产发布。
+- `GatewayBridge` 和服务端 `VoiceGatewayHandler` 仍是下行分发/服务端接线聚合点；进一步拆分需保持协议兼容并分批验收。
