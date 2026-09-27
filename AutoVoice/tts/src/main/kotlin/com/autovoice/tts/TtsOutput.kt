@@ -16,6 +16,12 @@ data class PlaybackIdentity(val turnId: String, val playbackId: String = UUID.ra
     fun payload(): Map<String, Any?> = mapOf("turnId" to turnId, "playbackId" to playbackId)
 }
 
+/** Realtime chat uses a session generation, not the ordinary dialogue turn ID. */
+data class RealtimePlaybackToken(val generation: Long, val responseId: String) {
+    init { require(generation > 0 && responseId.isNotBlank()) }
+    val playbackOwner: String get() = "chat:$generation:$responseId"
+}
+
 enum class PlaybackStage(val wire: String) {
     STARTED("start"), COMPLETED("completed"), FAILED("failed"), INTERRUPTED("interrupted")
 }
@@ -39,6 +45,8 @@ interface TtsOutput {
     fun speak(turnId: String, text: String)
     fun play(turnId: String, reply: AudioReply)
     fun playStream(turnId: String, reply: StreamingAudioReply, onComplete: (AudioStreamEnd) -> Unit)
+    fun playRealtimeStream(token: RealtimePlaybackToken, reply: StreamingAudioReply,
+                           onComplete: (AudioStreamEnd) -> Unit)
     fun stop()
     fun acceptPlaybackEvent(stage: String, level: String, payload: Map<String, Any?>)
 }
@@ -49,6 +57,7 @@ fun createTtsOutput(
     driver: TtsPlaybackDriver,
     scope: CoroutineScope,
     isCurrentTurn: (String) -> Boolean,
+    isCurrentRealtime: (RealtimePlaybackToken) -> Boolean = { false },
     events: TtsEventSink = TtsEventSink { _, _, _ -> },
     onPlaybackStage: (PlaybackIdentity, PlaybackStage) -> Unit = { _, _ -> },
     onEmptyOutput: (String) -> Unit = {},
@@ -56,7 +65,7 @@ fun createTtsOutput(
     val service = createTtsService(synthesizer, cacheDir, events)
     return DefaultTtsOutput(
         service, PlaybackCoordinator(driver, events, onPlaybackStage), scope,
-        isCurrentTurn, events, onEmptyOutput,
+        isCurrentTurn, isCurrentRealtime, events, onEmptyOutput,
     )
 }
 
@@ -65,6 +74,7 @@ private class DefaultTtsOutput(
     private val playback: PlaybackCoordinator,
     private val scope: CoroutineScope,
     private val isCurrentTurn: (String) -> Boolean,
+    private val isCurrentRealtime: (RealtimePlaybackToken) -> Boolean,
     private val events: TtsEventSink,
     private val onEmptyOutput: (String) -> Unit,
 ) : TtsOutput {
@@ -88,10 +98,23 @@ private class DefaultTtsOutput(
         turnId: String,
         reply: StreamingAudioReply,
         onComplete: (AudioStreamEnd) -> Unit,
+    ) = playStreamOwned(turnId, reply, { isCurrentTurn(turnId) }, onComplete)
+
+    override fun playRealtimeStream(
+        token: RealtimePlaybackToken,
+        reply: StreamingAudioReply,
+        onComplete: (AudioStreamEnd) -> Unit,
+    ) = playStreamOwned(token.playbackOwner, reply, { isCurrentRealtime(token) }, onComplete)
+
+    private fun playStreamOwned(
+        ownerId: String,
+        reply: StreamingAudioReply,
+        isActive: () -> Boolean,
+        onComplete: (AudioStreamEnd) -> Unit,
     ) {
         scope.launch {
-            if (!isCurrentTurn(turnId)) return@launch
-            val identity = playback.prepare(turnId)
+            if (!isActive()) return@launch
+            val identity = playback.prepare(ownerId)
             val playing = launch { playback.playStream(identity, reply) }
             val end = try {
                 reply.completion.await()
@@ -106,7 +129,7 @@ private class DefaultTtsOutput(
                 playing.join()
                 return@launch
             }
-            if (isCurrentTurn(turnId)) onComplete(end)
+            if (isActive()) onComplete(end)
             playing.join()
         }
     }

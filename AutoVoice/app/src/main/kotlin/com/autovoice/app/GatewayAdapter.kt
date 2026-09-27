@@ -18,6 +18,7 @@ import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.AudioStreamEnd
+import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudRequestFailedException
@@ -27,6 +28,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -91,10 +93,18 @@ internal class GatewayCloudRunner(
         { text, final, turnId -> onAsrResult(text, final, turnId) },
         { turnId -> onAsrTurnEstablished(turnId) },
         { text, final, turnId -> handleReplyText(text, final, turnId) },
-        { reply -> onRealtimeReply(reply) },
+        { reply ->
+            if (realtimeChatDesired && realtimeChatReady) {
+                onRealtimeReply(
+                    RealtimePlaybackToken(realtimeGeneration.get(), UUID.randomUUID().toString()),
+                    reply,
+                )
+            }
+        },
         { onRealtimeSpeechStarted() },
         { onRealtimeStreamFailed() },
     )
+    private val ttsTransport = GatewayTtsTransport(bridge, protocol, ::ensureReady)
 
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) {
@@ -122,6 +132,7 @@ internal class GatewayCloudRunner(
     private var realtimeChatDesired = false
 
     private val realtimeReconnectRunning = AtomicBoolean(false)
+    private val realtimeGeneration = AtomicLong(0)
 
     private data class LiveUpload(
         val utteranceId: String,
@@ -145,6 +156,10 @@ internal class GatewayCloudRunner(
     // Observe transport loss even when no recognition request is running (e.g. a displayed list).
     private val connectionObserver = observeConnectionLoss(scope, client.connectionState) {
         readyReceived = false
+        if (realtimeChatDesired) {
+            bridge.finishChat()
+            onRealtimeStreamFailed()
+        }
         onCloudUnavailable()
     }
 
@@ -169,12 +184,16 @@ internal class GatewayCloudRunner(
     var onReplyText: (String, Boolean) -> Unit = { _, _ -> }
 
     @Volatile
-    var onRealtimeReply: (StreamingAudioReply) -> Unit = {}
+    var onRealtimeReply: (RealtimePlaybackToken, StreamingAudioReply) -> Unit = { _, _ -> }
+
+    fun isCurrentRealtimeOutput(token: RealtimePlaybackToken): Boolean =
+        realtimeChatDesired && realtimeGeneration.get() == token.generation
 
     @Volatile
     var onRealtimeSpeechStarted: () -> Unit = {}
 
     private fun onRealtimeStreamFailed() {
+        realtimeGeneration.incrementAndGet() // invalidate in-flight replies from the failed stream
         realtimeChatReady = false
         if (!realtimeChatDesired || !realtimeReconnectRunning.compareAndSet(false, true)) return
         scope.launch {
@@ -405,6 +424,7 @@ internal class GatewayCloudRunner(
     }
 
     private suspend fun connectRealtimeChat() {
+        realtimeGeneration.incrementAndGet()
         realtimeChatReady = false
         ensureReady()
         protocol.chatStart(sessionId)
@@ -417,6 +437,7 @@ internal class GatewayCloudRunner(
     }
 
     override fun finishRealtimeChat() {
+        realtimeGeneration.incrementAndGet()
         realtimeChatDesired = false
         realtimeChatReady = false
         if (sessionId.isNotBlank() && client.connectionState.value == GatewayConnectionState.READY) {
@@ -513,26 +534,9 @@ internal class GatewayCloudRunner(
     override suspend fun request(text: String): AudioReply? =
         request(text, utteranceIdProvider())
 
-    override suspend fun request(text: String, utteranceId: String): AudioReply? {
-        val ttsId = UUID.randomUUID().toString()
-        val ttsSlot = bridge.newTtsSlot(ttsId, utteranceId)
-        return try {
-            withTimeoutOrNull(TTS_TIMEOUT_MS) {
-                ensureReady()
-                // T6：关联当前话语 utteranceId（空串不发送，保持旧协议形态）
-                protocol.tts(text, ttsId, utteranceId.takeIf { it.isNotBlank() })
-                ttsSlot.await()
-            }
-        } catch (e: GatewayException) {
-            null // 连接未就绪等发送失败：本次播报直接兜底
-        } finally {
-            bridge.clearTtsSlot(ttsSlot)
-        }
-    }
+    override suspend fun request(text: String, utteranceId: String): AudioReply? =
+        ttsTransport.request(text, utteranceId)
 }
-
-/** 独立 TTS 请求超时（A3）：超过即放弃合成音频，本次播报静默（记失败事件）。 */
-private const val TTS_TIMEOUT_MS = 5_000L
 
 private class PendingSlot<T>(
     val segmentId: String,

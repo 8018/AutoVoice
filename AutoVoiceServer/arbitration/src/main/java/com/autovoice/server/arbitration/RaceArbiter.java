@@ -185,6 +185,7 @@ public final class RaceArbiter {
     }
 
     private void drainMessages() {
+        boolean ownsDrain = true;
         try {
             do {
                 Runnable message;
@@ -196,12 +197,18 @@ public final class RaceArbiter {
                     }
                 }
                 draining.set(false);
+                ownsDrain = false;
                 // A producer may enqueue between poll()==null and draining=false.
-            } while (!messages.isEmpty() && draining.compareAndSet(false, true));
+                if (messages.isEmpty() || !draining.compareAndSet(false, true)) return;
+                ownsDrain = true;
+            } while (true);
         } finally {
-            draining.set(false);
-            if (!messages.isEmpty() && draining.compareAndSet(false, true)) {
-                scheduler.execute(this::drainMessages);
+            // A released drain no longer owns this flag: another consumer may already be running.
+            if (ownsDrain) {
+                draining.set(false);
+                if (!messages.isEmpty() && draining.compareAndSet(false, true)) {
+                    scheduler.execute(this::drainMessages);
+                }
             }
         }
     }

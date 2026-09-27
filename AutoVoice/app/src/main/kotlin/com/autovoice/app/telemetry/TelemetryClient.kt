@@ -55,6 +55,10 @@ class TelemetryClient(
     @Synchronized
     fun begin(utteranceId: String) {
         if (!enabled) return
+        if (utteranceId.isBlank()) return
+        if (rounds.size >= MAX_OPEN_ROUNDS && utteranceId !in rounds) {
+            end(rounds.keys.first(), "capacity_evicted")
+        }
         rounds[utteranceId] = CurrentRound(utteranceId, clock(), mutableListOf())
         activeUtteranceId = utteranceId
     }
@@ -92,9 +96,10 @@ class TelemetryClient(
 
     /** 收包并 POST /api/telemetry/round（异步；utteranceId 与 begin 不一致时不收）。 */
     @Synchronized
-    fun end(utteranceId: String) {
+    fun end(utteranceId: String, reason: String? = null) {
         if (!enabled) return
         val round = rounds.remove(utteranceId) ?: return
+        if (reason != null) round.events.add(eventJson("turn_finished", "info", mapOf("reason" to reason)))
         if (activeUtteranceId == utteranceId) {
             activeUtteranceId = rounds.keys.lastOrNull().orEmpty()
         }
@@ -109,6 +114,12 @@ class TelemetryClient(
                 .put("endMs", clock())
                 .put("events", JSONArray(round.events)),
         )
+    }
+
+    @Synchronized
+    fun finishOpenRounds(reason: String) {
+        if (!enabled) return
+        rounds.keys.toList().forEach { end(it, reason) }
     }
 
     /** 单独上传 VAD 后 PCM（multipart：utteranceId + <id>.pcm，异步）。 */
@@ -176,5 +187,6 @@ class TelemetryClient(
 
     companion object {
         private const val TAG = "TelemetryClient"
+        private const val MAX_OPEN_ROUNDS = 64
     }
 }

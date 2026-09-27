@@ -18,7 +18,6 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.LocalConfig
 import com.autovoice.voicecore.MockConfig
-import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
@@ -170,37 +169,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
         _uiState.update { it.copy(locationHint = hint) }
     }
-    private var navigationAdoptionSender: (NavigationTaskContextRef) -> Unit = {}
-    private var publishedNavigationContext: NavigationTaskContextRef? = null
-    private val navigationSession = NavigationSession(
+    private val dialogueManager = AppDialogueManager(
         interactionIdProvider = { turnId ->
             engine.conversation.snapshot.value.takeIf { it.turnId == turnId }?.interactionId
                 ?: "interaction:$turnId"
         },
-    ) { snapshot ->
-        _uiState.update { it.copy(navigation = snapshot) }
-        val next = if (snapshot.taskId != null && snapshot.interactionId != null &&
-            !snapshot.selectionId.isNullOrBlank()
-        ) {
-            NavigationTaskContextRef(
-                snapshot.taskId,
-                snapshot.candidateVersion,
-                snapshot.interactionId,
-                snapshot.selectionId,
-            )
-        } else null
-        if (next != null && next != publishedNavigationContext) {
-            publishedNavigationContext = next
-            navigationAdoptionSender(next)
-        } else if (next == null) {
-            publishedNavigationContext?.let { previous ->
-                navigationAdoptionSender(previous.copy(active = false))
-            }
-            publishedNavigationContext = null
-        }
-    }
-    private val navigationExecutor by lazy {
-        NavigationExecutor(session = navigationSession) { uri ->
+        onNavigation = { snapshot -> _uiState.update { it.copy(navigation = snapshot) } },
+        launchNavigation = { uri ->
             runCatching {
                 getApplication<Application>().startActivity(
                     AndroidIntent(AndroidIntent.ACTION_VIEW, Uri.parse(uri))
@@ -208,8 +183,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 true
             }.getOrDefault(false)
-        }
-    }
+        },
+    )
 
     /**
      * 用户主动关闭候选框时，同时结束本次导航追问窗口。
@@ -217,44 +192,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun dismissNavigationCandidates() {
         val interactionId = engine.conversation.snapshot.value.interactionId
-        clearNavigationCandidates()
+        dialogueManager.dismissSelection()
         interactionId?.let(engine::onFollowUpExpired)
     }
 
     /** UI and voice selection converge on NavigationSession.claimSelection; first claimant wins. */
     fun selectNavigationCandidate(candidate: NavigationExecutor.NavigationCandidate) {
-        val snapshot = navigationSession.snapshot
-        val selectionId = snapshot.selectionId ?: return
-        val intent = Intent(
-            schemaVersion = "1.0",
-            domain = NavigationExecutor.DOMAIN_NAVIGATION,
-            intent = NavigationExecutor.INTENT_NAVIGATE,
-            slots = mapOf(
-                "navigationOperation" to SlotValue.StringValue("select"),
-                "taskId" to SlotValue.StringValue(snapshot.taskId ?: return),
-                "taskRevision" to SlotValue.Number(snapshot.candidateVersion.toDouble()),
-                "interactionId" to SlotValue.StringValue(snapshot.interactionId ?: return),
-                "selectionId" to SlotValue.StringValue(selectionId),
-                "candidateId" to SlotValue.StringValue(candidate.candidateId),
-                NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(candidate.poiname),
-                NavigationExecutor.SLOT_LAT to SlotValue.Number(candidate.lat),
-                NavigationExecutor.SLOT_LON to SlotValue.Number(candidate.lon),
-            ),
-            confidence = 1.0,
-            source = "ui.navigation_candidate",
-        )
-        navigationExecutor.execute(intent, engine.conversation.snapshot.value.turnId ?: "ui-navigation")
-    }
-
-    private fun clearNavigationCandidates() {
-        navigationSession.cancelSelection()
+        dialogueManager.selectCandidate(candidate, engine.conversation.snapshot.value.turnId ?: "ui-navigation")
     }
 
     private fun onFollowUpExpired(interactionId: String, taskRevision: Long?) {
         // RecordingCoordinator 的旧定时器可能在新一轮开始后才恢复执行；旧轮不能关闭
         // 新一轮候选框。当前轮的延时聆听结束时，候选框与服务端选择态一起撤销。
         if (engine.conversation.snapshot.value.interactionId != interactionId) return
-        if (taskRevision != null && !navigationSession.expire(taskRevision)) return
+        if (!dialogueManager.onFollowUpExpired(taskRevision)) return
         engine.onFollowUpExpired(interactionId)
     }
 
@@ -302,7 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onBackground() {
         vehicleContext.stopRefresh()
-        navigationExecutor.abortPendingTask()
+        dialogueManager.abortPendingTask()
         recordingCoordinator.onBackground()
         Log.i(TAG, "App 进入后台：共享麦克风已停止，IVW 会话已暂停")
     }
@@ -312,18 +263,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearPermissionHint() = onAudioPermissionGranted()
 
     private fun handleDialogueState(snapshot: DialogueSnapshot) {
-        navigationSession.onDialogueState(snapshot)
+        dialogueManager.onDialogueState(snapshot)
         val state = dialogueToUiPhase(snapshot.state)
         _uiState.update { it.copy(sessionState = state) }
         recordingCoordinator.onDialogueState(
             snapshot,
-            navigationSession.activeIdentity()?.let { identity ->
-                TaskListeningDirective(
-                    revision = identity.revision,
-                    listenWindowMs = navigationSession.activeExpectation()?.listenWindowMs
-                        ?: return@let null,
-                )
-            },
+            dialogueManager.listeningDirective(),
         )
     }
 
@@ -370,17 +315,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine = buildEngine(config)
         recordingCoordinator.onDialogueState(
             engine.conversation.snapshot.value,
-            navigationSession.activeIdentity()?.let { identity ->
-                TaskListeningDirective(
-                    revision = identity.revision,
-                    listenWindowMs = navigationSession.activeExpectation()?.listenWindowMs
-                        ?: return@let null,
-                )
-            },
+            dialogueManager.listeningDirective(),
         )
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
-        navigationSession.cancelSelection()
+        dialogueManager.dismissSelection()
         _uiState.update { it.copy(mode = mode) }
     }
 
@@ -466,11 +405,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) =
                 this@MainViewModel.onFollowUpExpired(interactionId, taskRevision)
             override fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
-                if (taskRevision != null && navigationSession.activeIdentity()?.revision != taskRevision) return
+                if (taskRevision != null && !dialogueManager.matchesTaskRevision(taskRevision)) return
                 expected.interactionId?.let { engine.onFollowUpExpired(it, expected) }
             }
             override fun resetDialogue() {
-                navigationExecutor.abortPendingTask()
+                dialogueManager.abortPendingTask()
                 engine.resetDialogue()
             }
         },
@@ -529,7 +468,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             vehicleContext = vehicleContext,
             // 导航执行（spec §4.2）：applicationContext + NEW_TASK 拉起高德 App；
             // 未安装/无处理 Activity 时 runCatching 吞掉异常返回 false（记 skipped）
-            navigation = navigationExecutor,
+            navigation = dialogueManager.navigationExecutor,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onVehicleApplied = { _uiState.update { it.copy(vehicle = VehicleUiState.from(vehicleState)) } },
             onLocalRecognized = { text -> _uiState.update { it.copy(lastRecognizedText = text) } },
@@ -540,7 +479,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onDialogueState = ::handleDialogueState,
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
             onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
-            bindNavigationAdoptionSender = { navigationAdoptionSender = it },
+            bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
+            onNavigationTransportReset = dialogueManager::abortPendingTask,
         )
         return engine
     }
@@ -623,7 +563,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         vehicleContext.stopRefresh()
-        navigationSession.abortSelection(com.autovoice.voicecore.dialog.TaskEndReason.ABORTED)
+        dialogueManager.close()
         recordingCoordinator.close()
         engine.close() // 断开网关 + 取消引擎作用域（Task 21）
         ttsPlayer.release()

@@ -73,6 +73,14 @@ class DialogueStateMachine(
         it.copy(state = DialogueState.FOLLOW_UP_LISTENING)
     }
 
+    /** A silent business result still ends RESPONDING and opens the normal follow-up window. */
+    @Synchronized
+    fun onOutputSkipped(turnId: String): DialogueSnapshot {
+        val current = _snapshot.value
+        if (current.turnId != turnId || current.state != DialogueState.RESPONDING) return current
+        return update(current.copy(state = DialogueState.FOLLOW_UP_LISTENING))
+    }
+
     @Synchronized
     fun onFollowUpExpired(interactionId: String): DialogueSnapshot {
         val current = _snapshot.value

@@ -175,6 +175,28 @@ class TelemetryClientTest {
         )
     }
 
+    @Test
+    fun `abandoned overlapping rounds close with their own identity and reason`() {
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(MockResponse().setResponseCode(200))
+        val client = client()
+        client.begin("old")
+        client.begin("new")
+        client.recordFor("old", "late-old-event", "warn", emptyMap())
+        client.finishOpenRounds("dialogue_reset")
+
+        val bodies = List(2) {
+            JSONObject(server.takeRequest(5, TimeUnit.SECONDS)!!.body.readUtf8())
+        }.associateBy { it.getString("utteranceId") }
+        assertEquals(2, bodies.size)
+        assertEquals("late-old-event", bodies.getValue("old").getJSONArray("events").getJSONObject(0).getString("stage"))
+        for (body in bodies.values) {
+            val events = body.getJSONArray("events")
+            assertEquals("dialogue_reset", events.getJSONObject(events.length() - 1)
+                .getJSONObject("payload").getString("reason"))
+        }
+    }
+
     /**
      * T7 评审 C1：轮已关闭（current=null）后的迟到事件 → 直接 POST 单事件到
      * /api/telemetry/events（服务端按 utterance_id 汇合到已有 round，不新建轮）。
