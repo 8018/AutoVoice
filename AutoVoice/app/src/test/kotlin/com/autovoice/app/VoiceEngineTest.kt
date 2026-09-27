@@ -7,6 +7,7 @@ import com.autovoice.tts.createTtsOutput
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AudioReply
+import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AudioStreamEnd
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.CloudConfig
@@ -160,6 +161,16 @@ class VoiceEngineTest {
             source = "test.local",
         )
 
+    private fun exitDialogueIntent(): Intent =
+        Intent(
+            schemaVersion = "1.0",
+            domain = "conversation",
+            intent = "exit_dialogue",
+            slots = emptyMap(),
+            confidence = 1.0,
+            source = "rule.nlu",
+        )
+
     private fun setTempIntent(temperature: Double): Intent =
         Intent(
             schemaVersion = "1.0",
@@ -290,7 +301,11 @@ class VoiceEngineTest {
             local = local,
             cloud = cloud,
             tts = output,
-            business = AppBusinessHandler(vehicle, navigation),
+            business = AppBusinessHandler(
+                vehicle,
+                navigation,
+                onExitDialogue = { engineRef?.exitCurrentDialogue() },
+            ),
             scope = scope,
             debugBuild = debugBuild,
             thinkingTimeoutMs = 500,
@@ -307,6 +322,57 @@ class VoiceEngineTest {
             }
         }
         return engine to vehicle
+    }
+
+    @Test
+    fun `local exit wins immediately and returns current dialogue to dormant`() = runBlocking {
+        val decisions = java.util.concurrent.CopyOnWriteArrayList<DecisionEntry>()
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { exitDialogueIntent() },
+            cloud = CloudRunner { delay(1_000); TextReply("不应胜出") },
+            cloudWaitMs = 10_000,
+            sink = DecisionSink(decisions::add),
+        )
+
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first {
+                decisions.isNotEmpty() && it.state == DialogueState.DORMANT
+            }
+        }
+        assertEquals("local_command_won", decisions.single().reason)
+        assertEquals("local", decisions.single().route)
+    }
+
+    @Test
+    fun `cloud exit returns dialogue to dormant without playing confirmation`() = runBlocking {
+        val decisions = java.util.concurrent.CopyOnWriteArrayList<DecisionEntry>()
+        val spoken = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { delay(100); Intent.unknown("test.local") },
+            cloud = CloudRunner { ActionReply(exitDialogueIntent(), "已退出") },
+            sink = DecisionSink(decisions::add),
+            tts = TtsRequester { spoken += it; null },
+        )
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first {
+                decisions.isNotEmpty() && it.state == DialogueState.DORMANT
+            }
+        }
+        delay(150)
+        assertEquals("cloud_won", decisions.single().reason)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertTrue(spoken.isEmpty())
     }
 
     @Test

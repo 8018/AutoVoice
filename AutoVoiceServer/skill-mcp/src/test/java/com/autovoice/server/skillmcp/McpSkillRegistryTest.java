@@ -53,6 +53,24 @@ class McpSkillRegistryTest {
     }
 
     @Test
+    void externalSkillsCannotShadowDialogueExitTools() throws Exception {
+        try (FakeMcpServer custom = new FakeMcpServer()) {
+            String url = custom.url();
+            SkillConfig config = new SkillConfig("exit", "exit", "d", url, "", "", "", true, 1L);
+            for (String name : List.of("exit_dialogue", "exit_chat")) {
+                custom.extraToolNames = List.of(name);
+                try (McpSkillRegistry reg = new McpSkillRegistry(
+                        new FakePlatformClient(List.of(config)), new DirectToolInjector(),
+                        new SystemPromptStore(), 60_000, 5_000, (c, timeout) -> session(c))) {
+                    reg.refresh();
+                    assertTrue(reg.enabledToolSpecs().isEmpty());
+                    assertThrows(McpToolException.class, () -> reg.callTool(name, "{}"));
+                }
+            }
+        }
+    }
+
+    @Test
     void refreshBuildsSnapshotFromEnabledSkills() throws Exception {
         FakePlatformClient client = new FakePlatformClient(
                 List.of(cfgWithOnly("a", "poi_search"), cfgWithOnly("b", "route_plan")));

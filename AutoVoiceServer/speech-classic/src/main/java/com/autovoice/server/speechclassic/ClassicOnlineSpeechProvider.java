@@ -2,6 +2,7 @@ package com.autovoice.server.speechclassic;
 
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.DialogueControlNlu;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
@@ -9,6 +10,7 @@ import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
+import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.StreamingAsrProvider;
 import com.autovoice.server.contracts.StreamingAsrSession;
@@ -87,8 +89,12 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
 
     private CompletableFuture<OnlineSpeechResult> completeFromText(
             String text, SessionContext context, String utteranceId) {
-        CompletableFuture<com.autovoice.server.contracts.Reply> source = navigationDialog.complete(
-                context, text, () -> llm.chat(text, context, utteranceId));
+        CompletableFuture<com.autovoice.server.contracts.Reply> source = DialogueControlNlu
+                .understand(text)
+                .map(intent -> CompletableFuture.completedFuture(
+                        Reply.ofAction(intent, "好的，已退出当前对话")))
+                .orElseGet(() -> navigationDialog.complete(
+                        context, text, () -> llm.chat(text, context, utteranceId)));
         CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
             @Override
             public boolean cancel(boolean mayInterruptIfRunning) {

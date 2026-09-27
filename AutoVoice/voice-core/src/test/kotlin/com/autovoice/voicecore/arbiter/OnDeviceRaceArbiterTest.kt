@@ -27,6 +27,11 @@ class OnDeviceRaceArbiterTest {
         slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
     )
 
+    private fun exitIntent() = Intent(
+        schemaVersion = "1.0", domain = "conversation", intent = "exit_dialogue",
+        slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
+    )
+
     private fun nlu(intent: Intent, text: String? = null) = NluResult(intent, text)
 
     private data class Harness(
@@ -139,6 +144,17 @@ class OnDeviceRaceArbiterTest {
             val local = winner.value as RaceWinner.Local
             assertEquals("打开车窗", local.recognizedText)
             assertEquals("local_command_won", h.decisions.single().reason)
+        }
+    }
+
+    @Test
+    fun `local dialogue exit enters FIFO immediately`() = runBlocking {
+        harness(cloudWaitMs = 10_000).use { h ->
+            h.arbiter.submitLocal("turn-1", nlu(exitIntent(), "退出对话"))
+            val winner = h.next() as ArbitrationOutput.Winner
+            assertEquals(exitIntent(), (winner.value as RaceWinner.Local).intent)
+            assertEquals("local_command_won", h.decisions.single().reason)
+            assertEquals(OnDeviceArbiterEvent.Won("local", "local_command"), h.events[1])
         }
     }
 

@@ -1,6 +1,7 @@
 package com.autovoice.server.speechqwenomni;
 
 import com.autovoice.server.contracts.AsrProvider;
+import com.autovoice.server.contracts.DialogueControlNlu;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineAsrSink;
@@ -202,6 +203,11 @@ public final class HybridBusinessChatSpeechProvider
                                                          OnlineAudioSink audioSink) {
         String key = context == null || context.sessionId() == null ? "" : context.sessionId();
         String normalized = normalize(transcript);
+        var dialogueControl = DialogueControlNlu.understand(transcript);
+        if (dialogueControl.isPresent()) {
+            return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                    Reply.ofAction(dialogueControl.get(), "好的，已退出当前对话"), transcript));
+        }
         if (isExit(normalized) && chatSessions.remove(key) != null) {
             return CompletableFuture.completedFuture(
                     new OnlineSpeechResult(Reply.ofText(EXIT_CHAT_REPLY), transcript));

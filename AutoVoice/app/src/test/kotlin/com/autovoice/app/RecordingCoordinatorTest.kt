@@ -94,6 +94,51 @@ class RecordingCoordinatorTest {
         assertEquals(listOf<Long?>(null), pipeline.expiredTaskRevisions)
     }
 
+    @Test fun `queued follow up detection cannot reopen capture after dialogue exit`() = runTest {
+        val capture = FakeCapture()
+        val wake = FakeWakeWord()
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, wake, pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting, null)
+        capture.detectFollowUp = {
+            // Detection was already in flight when the exit semantic reset the dialogue.
+            pipeline.dialogueSnapshot = DialogueSnapshot()
+            coordinator.onDialogueState(pipeline.dialogueSnapshot, null)
+            true
+        }
+        capture.raw.emit(byteArrayOf(1, 2))
+        runCurrent()
+
+        assertFalse(coordinator.isRecording)
+        assertFalse(capture.followUpEnabled)
+        assertTrue(capture.startPreRoll.isEmpty())
+        assertTrue(wake.armed)
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertTrue(pipeline.expiredInteractions.isEmpty())
+    }
+
+    @Test fun `follow up detection still starts capture while dialogue is listening`() = runTest {
+        val capture = FakeCapture().apply { detectFollowUp = { true } }
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting, null)
+        capture.raw.emit(byteArrayOf(1, 2))
+        runCurrent()
+        assertTrue(coordinator.isRecording)
+        assertEquals(listOf(true), capture.startPreRoll)
+    }
+
     @Test fun `task listening directive controls window and preserves revision`() = runTest {
         val capture = FakeCapture()
         val pipeline = FakePipeline()
@@ -192,6 +237,7 @@ class RecordingCoordinatorTest {
         var monitoring = false
         var followUpEnabled = false
         var bargeInListening = false
+        var detectFollowUp: () -> Boolean = { false }
         val startPreRoll = mutableListOf<Boolean>()
 
         override fun startMonitoring(): Boolean { monitoring = true; return true }
@@ -199,7 +245,7 @@ class RecordingCoordinatorTest {
         override fun setOpenMicBargeInListening(enabled: Boolean) { bargeInListening = enabled }
         override fun setFollowUpListening(enabled: Boolean) { followUpEnabled = enabled }
         override fun detectOpenMicBargeIn(block: ByteArray) = false
-        override fun detectFollowUpSpeech(block: ByteArray) = false
+        override fun detectFollowUpSpeech(block: ByteArray) = detectFollowUp()
         override fun start(includeBargeInPreRoll: Boolean): Boolean {
             startPreRoll += includeBargeInPreRoll
             return startResult

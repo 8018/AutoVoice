@@ -79,13 +79,14 @@ class DeepSeekLlmProviderTest {
         assertNotNull(req.getHeader("Content-Type"));
         assertTrue(req.getHeader("Content-Type").startsWith("application/json"));
 
-        // 请求体：model=deepseek-chat + system+user 两条消息（system prompt 逐字用 brief 原文）
+        // 请求体：平台 prompt 后追加不可配置的本地会话控制约束。
         JsonNode body = mapper.readTree(req.getBody().readUtf8());
         assertEquals("deepseek-chat", body.path("model").asText());
         assertTrue(body.path("messages").isArray());
         assertEquals(2, body.path("messages").size());
         assertEquals("system", body.path("messages").get(0).path("role").asText());
-        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT,
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT
+                        + DeepSeekLlmProvider.DIALOGUE_CONTROL_POLICY,
                 body.path("messages").get(0).path("content").asText());
         assertEquals("user", body.path("messages").get(1).path("role").asText());
         assertEquals(USER_TEXT, body.path("messages").get(1).path("content").asText());
@@ -138,14 +139,34 @@ class DeepSeekLlmProviderTest {
         assertEquals("llm.navigate", reply.intent().source());
         assertEquals("好的，已为您规划去杭州东站的导航", reply.speakText());
 
-        // 请求体必须携带两个终局工具（car_control + navigate）
+        // 请求体必须携带三个终局工具（car_control + navigate + exit_dialogue）
         RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
         JsonNode body = mapper.readTree(req.getBody().readUtf8());
         JsonNode tools = body.path("tools");
         assertTrue(tools.isArray());
-        assertEquals(2, tools.size());
+        assertEquals(3, tools.size());
         assertEquals("car_control", tools.get(0).path("function").path("name").asText());
         assertEquals("navigate", tools.get(1).path("function").path("name").asText());
+        assertEquals("exit_dialogue", tools.get(2).path("function").path("name").asText());
+    }
+
+    @Test
+    void chatParsesExitDialogueToolIntoConversationAction() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,"
+                        + "\"tool_calls\":[{\"id\":\"call-exit\",\"type\":\"function\","
+                        + "\"function\":{\"name\":\"exit_dialogue\",\"arguments\":\"{}\"}}]}}]}"));
+
+        Reply reply = provider.chat("结束当前对话", ctx("s-exit")).get(5, TimeUnit.SECONDS);
+
+        assertEquals("action", reply.kind());
+        assertEquals("conversation", reply.intent().domain());
+        assertEquals("exit_dialogue", reply.intent().intent());
+        assertEquals("llm.exit-dialogue", reply.intent().source());
+        JsonNode request = mapper.readTree(server.takeRequest(5, TimeUnit.SECONDS).getBody().readUtf8());
+        assertTrue(request.path("messages").get(0).path("content").asText().contains("exit_dialogue"));
     }
 
     @Test
@@ -260,7 +281,8 @@ class DeepSeekLlmProviderTest {
         DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
                 server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, () -> custom);
         p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
-        assertEquals(custom, capturedSystemContent());
+        assertEquals(custom + DeepSeekLlmProvider.DIALOGUE_CONTROL_POLICY,
+                capturedSystemContent());
     }
 
     @Test
@@ -272,7 +294,8 @@ class DeepSeekLlmProviderTest {
         DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
                 server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, () -> "  ");
         p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
-        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT, capturedSystemContent());
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT
+                + DeepSeekLlmProvider.DIALOGUE_CONTROL_POLICY, capturedSystemContent());
     }
 
     @Test
@@ -284,7 +307,8 @@ class DeepSeekLlmProviderTest {
         DeepSeekLlmProvider p = new DeepSeekLlmProvider(new OkHttpClient(), API_KEY,
                 server.url("/chat/completions").toString(), (utt, e) -> {}, null, 0, null, null);
         p.chat(USER_TEXT, ctx("s1")).get(5, TimeUnit.SECONDS);
-        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT, capturedSystemContent());
+        assertEquals(DeepSeekLlmProvider.DEFAULT_SYSTEM_PROMPT
+                + DeepSeekLlmProvider.DIALOGUE_CONTROL_POLICY, capturedSystemContent());
     }
 
     private static SessionContext ctx(String sessionId) {

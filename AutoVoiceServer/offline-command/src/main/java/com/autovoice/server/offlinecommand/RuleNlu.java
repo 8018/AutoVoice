@@ -1,6 +1,7 @@
 package com.autovoice.server.offlinecommand;
 
 import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.DialogueControlNlu;
 import com.autovoice.server.contracts.SlotValue;
 
 import java.util.LinkedHashMap;
@@ -66,6 +67,9 @@ public final class RuleNlu {
      * 领域：首个命中的领域别名；意图：首个命中的意图规则；均未命中 → {@link Intent#unknown(String)}。
      */
     public static Intent understand(String command) {
+        var dialogueControl = DialogueControlNlu.understand(command);
+        if (dialogueControl.isPresent()) return dialogueControl.get();
+
         String domain = DOMAIN_ALIASES.entrySet().stream()
                 .filter(e -> command.contains(e.getKey()))
                 .map(Map.Entry::getValue)

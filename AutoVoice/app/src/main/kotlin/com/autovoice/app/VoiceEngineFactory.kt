@@ -181,6 +181,7 @@ internal object VoiceEngineFactory {
             navigation = navigation,
             onVehicleApplied = onVehicleApplied,
             onConversationMode = onConversationMode,
+            onExitDialogue = { engineRef?.exitCurrentDialogue() },
         )
         val onDeviceArbiter = OnDeviceRaceArbiter(
             cloudWaitMs = cfg.cloud.waitMs,

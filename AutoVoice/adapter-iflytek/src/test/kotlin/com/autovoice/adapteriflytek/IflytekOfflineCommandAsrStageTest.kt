@@ -31,6 +31,7 @@ class IflytekOfflineCommandAsrStageTest {
         assertTrue(words.contains("关闭空调"))
         assertTrue(words.contains("打开车窗"))
         assertTrue(words.contains("关闭车窗"))
+        assertTrue(words.containsAll(RuleNluProvider.EXIT_COMMANDS))
         // 温度枚举范围包含 16..30 度
         assertTrue(words.contains("空调调到24度"))
     }
@@ -41,6 +42,7 @@ class IflytekOfflineCommandAsrStageTest {
         assertTrue(content.startsWith("#FSA 1.0;\r\n"), "FSA 头格式与 demo 资源一致")
         assertTrue(content.contains("\r\n<esr>:"), "命令词行前缀")
         assertTrue(content.contains("打开空调|关闭空调"), "命令词按 | 分隔")
+        assertTrue(content.contains("退出对话"), "退出对话必须进入离线 FSA")
         assertTrue(content.endsWith(";\r\n"), "文件以分号结尾")
         // 引擎侧 FSA 为 GBK 编码（与 SDK 归档 resource/CNENESR/fsa/cn_fsa.txt 一致），保证编码可逆
         val gbk = Charset.forName("GBK")
