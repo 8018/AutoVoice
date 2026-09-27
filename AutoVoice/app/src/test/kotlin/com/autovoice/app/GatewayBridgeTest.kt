@@ -236,6 +236,38 @@ class GatewayBridgeTest {
     }
 
     @Test
+    fun `realtime chat stream closing before ready fails immediately`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val failed = CountDownLatch(1)
+        val bridge = GatewayBridge(
+            client = client,
+            sink = DecisionSink {},
+            scope = bridgeScope,
+            onChatFailure = { failed.countDown() },
+        )
+        try {
+            client.connect()
+            bridge.beginChat("chat-opening")
+            gateway.sendText("""{"type":"error","payload":{"code":"CHAT_STREAM_FAILED","message":"upstream closed","chatId":"chat-opening"}}""")
+            val thrown = try {
+                kotlinx.coroutines.withTimeout(2_000) { bridge.awaitChatReady("chat-opening") }
+                fail("closed opening stream should fail before the ready timeout")
+            } catch (error: GatewayRemoteException) {
+                error
+            }
+            assertEquals("CHAT_STREAM_FAILED", thrown.code)
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+        } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
     fun `matching reply completes the slot`() = runBlocking {
         val gateway = FakeGatewayServer()
         gateway.start()

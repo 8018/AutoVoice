@@ -410,14 +410,13 @@ internal class GatewayBridge(
         val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
         val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
         val error = GatewayRemoteException(code, "$message [$code]")
-        if (code == "CHAT_CONNECT_FAILED" || code == "CHAT_UNSUPPORTED") {
+        if (code.startsWith("CHAT_")) {
             val chatId = msg.payload.get("chatId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
             chatReady.trySend(ChatReadyEvent.Failed(chatId, error))
-            return
-        }
-        if (code == "CHAT_STREAM_FAILED" || code == "CHAT_STREAM_CLOSED") {
-            finishChat()
-            onChatFailure()
+            if (code == "CHAT_STREAM_FAILED" || code == "CHAT_STREAM_CLOSED") {
+                finishChat()
+                onChatFailure()
+            }
             return
         }
         val messageSegment = msg.payload.get("segmentId")
