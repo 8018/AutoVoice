@@ -134,11 +134,18 @@ jobs:
 
           retry_ssh_operation 5 30 "Create dev staging directory" \
             ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
-          retry_ssh_operation 3 180 "Upload dev release" \
+          # A single timeout for all three jars (about 100 MB) repeatedly expired on 2026-09-27.
+          # Bound and retry each immutable artifact separately so a slow transfer does not restart
+          # already-uploaded jars, and the failed artifact is visible in the job log.
+          for artifact in \
+            AutoVoiceServer/app/build/libs/app.jar \
+            AutoVoiceServer/tts-server/build/libs/tts-server.jar \
+            AutoVoiceServer/skill-manager/build/libs/skill-manager.jar; do
+            retry_ssh_operation 2 180 "Upload $(basename "$artifact")" \
+              scp "${SCP_ARGS[@]}" "$artifact" "$TARGET:$STAGING_DIR/"
+          done
+          retry_ssh_operation 2 30 "Upload dev deployment scripts" \
             scp "${SCP_ARGS[@]}" \
-              AutoVoiceServer/app/build/libs/app.jar \
-              AutoVoiceServer/tts-server/build/libs/tts-server.jar \
-              AutoVoiceServer/skill-manager/build/libs/skill-manager.jar \
               AutoVoiceServer/deploy/deploy-release.sh \
               AutoVoiceServer/deploy/install-resource-guards.sh \
               "$TARGET:$STAGING_DIR/"
