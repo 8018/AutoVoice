@@ -5,14 +5,13 @@ import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
-import com.autovoice.voicecore.AsrEngine
+import com.autovoice.voiceengine.AsrModule
+import com.autovoice.voiceengine.NluModule
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
-import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.NluResult
-import com.autovoice.voicecore.SpeechRouteModules
 import com.autovoice.voicecore.session.LocalChainRunner
 import kotlinx.coroutines.CancellationException
 
@@ -20,18 +19,18 @@ private const val LOCAL_SPEECH_TAG = "LocalSpeechEngines"
 
 /** VoiceEngine-owned local route: ASR output is immediate; only NLU enters arbitration. */
 internal class LocalSpeechChain(
-    override val asr: AsrEngine,
-    override val nlu: NluEngine<NluResult>,
+    private val asrModule: AsrModule,
+    private val nluModule: NluModule,
     private val onRecognized: (String, String) -> Unit,
     private val onTurnEstablished: (String) -> Unit,
     private val telemetry: TelemetryClient,
-) : LocalChainRunner, SpeechRouteModules<NluResult> {
+) : LocalChainRunner {
     override suspend fun run(segment: ByteArray): NluResult = run(segment, "")
 
     override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
         val startMs = System.currentTimeMillis()
         return try {
-            val asrResult = asr.recognize(utteranceId, segment, object : AsrSink {
+            val asrResult = asrModule.recognizeLocal(utteranceId, segment, object : AsrSink {
                 override fun onTurnEstablished() = onTurnEstablished(utteranceId)
 
                 override fun onTranscript(result: AsrResult) {
@@ -45,7 +44,7 @@ internal class LocalSpeechChain(
                     }
                 }
             })
-            val result = nlu.understand(utteranceId, segment, asrResult)
+            val result = nluModule.understandLocal(utteranceId, segment, asrResult)
             val intent = result.intent
             Log.i(LOCAL_SPEECH_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
             telemetry.record(

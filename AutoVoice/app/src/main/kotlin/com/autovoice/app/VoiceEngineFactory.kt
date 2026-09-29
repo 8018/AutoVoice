@@ -10,6 +10,8 @@ import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.voiceengine.local.LocalAsrEngine
 import com.autovoice.voiceengine.local.LocalNluEngine
 import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.AsrModule
+import com.autovoice.voiceengine.NluModule
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
@@ -117,6 +119,8 @@ internal object VoiceEngineFactory {
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
         var engineRef: VoiceEngine? = null
         val recognitionGate = RecognitionGate()
+        val asrModule = AsrModule()
+        val nluModule = NluModule()
         val cloudRunner = GatewayCloudRunner(
             cfg.cloud, telemetrySink, scope, pendingSignals,
             locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
@@ -136,6 +140,8 @@ internal object VoiceEngineFactory {
                 }
             },
             recognitionGate = recognitionGate,
+            asrModule = asrModule,
+            nluModule = nluModule,
         )
         cloudRunner.onAsrResult = { text, _, turnId ->
             if (text.isNotBlank()) {
@@ -237,6 +243,8 @@ internal object VoiceEngineFactory {
                 { turnId -> engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR) },
                 offlineStageRef,
                 telemetry,
+                asrModule,
+                nluModule,
             ),
             cloud = cloudRunner,
             tts = ttsOutput,
@@ -321,6 +329,8 @@ internal object VoiceEngineFactory {
         offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
         /** T7 插桩：local_asr 事件（识别文本/意图/耗时；enabled=false 时 no-op）。 */
         telemetry: TelemetryClient,
+        asrModule: AsrModule,
+        nluModule: NluModule,
     ): LocalChainRunner {
         val offlineStage = if (cfg.local.asr == "iflytek.offline") {
             // 凭据来自 local.properties（BuildConfig 注入，不入库）
@@ -356,9 +366,11 @@ internal object VoiceEngineFactory {
             )
             else -> error("unsupported local.nlu '${cfg.local.nlu}'")
         }
+        asrModule.bindLocal(LocalAsrEngine())
+        nluModule.bindLocal(nlu)
         return LocalSpeechChain(
-            asr = LocalAsrEngine(),
-            nlu = nlu,
+            asrModule = asrModule,
+            nluModule = nluModule,
             onRecognized = onLocalRecognized,
             onTurnEstablished = onLocalTurnEstablished,
             telemetry = telemetry,
