@@ -2,8 +2,8 @@ package com.autovoice.app
 
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.SlotValue
-import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.dialog.TaskEndReason
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.TaskEndReason
 
 /** Application-level task coordination. Recognition, arbitration and transport remain outside. */
 internal class AppDialogueManager(

@@ -1,8 +1,8 @@
 package com.autovoice.app
 
 import com.autovoice.audiofrontend.vad.VadEvent
-import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.DialogueState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -82,7 +82,7 @@ internal data class RecordingTiming(
 )
 
 /** Opaque task listening policy. The recorder executes it without knowing the business domain. */
-internal typealias TaskListeningDirective = com.autovoice.voicecore.dialog.TaskListeningDirective
+internal typealias TaskListeningDirective = com.autovoice.voicebusiness.dialog.TaskListeningDirective
 
 /**
  * Owns the microphone-use lifecycle, not dialogue state, ASR/NLU, arbitration or playback.
@@ -119,7 +119,7 @@ internal class RecordingCoordinator(
     private var wakeSetupJob: Job? = null
     private var wakeTurnTimeoutJob: Job? = null
     private var taskListeningDirective: TaskListeningDirective? = null
-    private val listening = com.autovoice.voicecore.dialog.DialogueListeningController(
+    private val listening = com.autovoice.voicebusiness.dialog.DialogueListeningController(
         scope, elapsedRealtimeMs, { pipeline.dialogueSnapshot },
         { expected, revision ->
             capture.setFollowUpListening(false)

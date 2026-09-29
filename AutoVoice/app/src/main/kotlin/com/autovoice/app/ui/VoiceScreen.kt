@@ -2,25 +2,30 @@ package com.autovoice.app.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -29,10 +34,7 @@ import com.autovoice.app.DemoMode
 import com.autovoice.app.UiState
 import com.autovoice.app.VoiceUiPhase
 
-/**
- * 主屏（Task 19）：会话状态头 + 车辆面板 + 决策日志 + 设置区。
- * 所有状态来自 [UiState] StateFlow，交互经回调进 ViewModel。
- */
+/** 语音交互首页。设置是二级页面，首页只展示真实状态与已有操作。 */
 @Composable
 fun VoiceScreen(
     state: UiState,
@@ -41,82 +43,50 @@ fun VoiceScreen(
     onDismissNavigationCandidates: () -> Unit,
     onSelectNavigationCandidate: (com.autovoice.app.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .systemBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Header(state.sessionState, state.cloudPending)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = when {
-                state.chatMode -> "闲聊中：持续聆听，可随时打断；说“退出闲聊”结束"
-                state.recording -> "正在聆听命令…"
-                state.wakeListening && state.openMicBargeInAvailable ->
-                    "等待唤醒；播报时可直接说话打断"
-                state.wakeListening -> "正在等待唤醒：你好飞飞"
-                state.wakeError != null && state.openMicBargeInAvailable ->
-                    "唤醒词不可用；播报时仍可直接说话打断"
-                state.wakeError != null -> "唤醒未启用：${state.wakeError}"
-                else -> "唤醒初始化中…"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (state.wakeError == null) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.error
-            },
+        Header(
+            sessionState = state.sessionState,
+            cloudPending = state.cloudPending,
+            settingsOpen = settingsOpen,
+            onToggleSettings = { settingsOpen = !settingsOpen },
         )
-        Spacer(Modifier.height(12.dp))
-        VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
-        state.locationHint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (state.navigation.trip != null) {
+        if (settingsOpen) {
+            SettingsSection(
+                mode = state.mode,
+                weakNetwork = state.weakNetwork,
+                onModeChange = onModeChange,
+                onWeakNetworkChange = onWeakNetworkChange,
+            )
+        } else {
             Text(
-                text = when (state.navigation.handoff) {
-                    com.autovoice.app.NavigationHandoff.OPENING -> "正在打开高德…"
-                    com.autovoice.app.NavigationHandoff.ACCEPTED -> "已交给高德：${state.navigation.trip.destination.name}（行程请在高德中管理）"
-                    com.autovoice.app.NavigationHandoff.FAILED -> "未能打开高德，请确认已安装高德地图"
-                    else -> ""
+                text = "车辆概览",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            VehiclePanel(state.vehicle, Modifier.fillMaxWidth())
+            state.locationHint?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            InteractionHeadline(state)
+            ConversationCard(state)
+            NavigationStatus(state)
+            WakeGuidance(state)
+        }
+        if (state.permissionHint || state.vadUnavailable || state.wakeError != null) {
+            Text(
+                text = when {
+                    state.permissionHint -> "需要录音权限，请在系统弹窗中允许麦克风访问。"
+                    state.vadUnavailable -> "语音检测不可用，语音控制暂时失效。"
+                    else -> "唤醒不可用：${state.wakeError}"
                 },
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-        // Task 53 对话区：识别 + 回复各占一半主空间（仲裁结果只进 logcat，不再上屏）
-        // Task 61：识别卡片标题行带竞速胜出徽标（端侧胜出 / 云端胜出，null = 尚无结果不显示）
-        AsrResultCard(
-            title = "识别",
-            text = state.lastRecognizedText,
-            winner = state.lastWinner,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        )
-        Spacer(Modifier.height(12.dp))
-        AsrResultCard(
-            title = "回复",
-            text = state.lastReplyText,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        )
-        Spacer(Modifier.height(12.dp))
-        SettingsSection(
-            mode = state.mode,
-            weakNetwork = state.weakNetwork,
-            onModeChange = onModeChange,
-            onWeakNetworkChange = onWeakNetworkChange,
-        )
-        if (state.permissionHint) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "需要录音权限才能使用语音控制，请在系统弹窗中允许",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        if (state.vadUnavailable) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "语音检测不可用（模型加载失败），语音控制失效",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -127,6 +97,87 @@ fun VoiceScreen(
             candidates = state.navigationCandidates,
             onDismissRequest = onDismissNavigationCandidates,
             onSelect = onSelectNavigationCandidate,
+        )
+    }
+}
+
+@Composable
+private fun InteractionHeadline(state: UiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = if (state.chatMode) "陪你聊会天" else when (state.sessionState) {
+                VoiceUiPhase.IDLE -> "你好，飞飞在这里"
+                VoiceUiPhase.LISTENING -> "我在听，请说"
+                VoiceUiPhase.UNDERSTANDING -> "正在理解你的意思"
+                VoiceUiPhase.EXECUTING -> "正在为你处理"
+                VoiceUiPhase.SPEAKING -> "正在回复你"
+            },
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = when {
+                state.chatMode -> "闲聊模式持续聆听；说“退出闲聊”返回普通指令。"
+                state.recording -> "正在接收语音。"
+                state.wakeListening && state.openMicBargeInAvailable -> "说“你好飞飞”唤醒；播报时也可直接说话打断。"
+                state.wakeListening -> "说“你好飞飞”开始。"
+                else -> "语音能力正在准备。"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ConversationCard(state: UiState) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("最近一次对话", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                state.lastReplyText?.takeIf { it.isNotBlank() } ?: "唤醒后，我会在这里回复你。",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            state.lastRecognizedText?.takeIf { it.isNotBlank() }?.let { recognized ->
+                Text(
+                    "你说：$recognized",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            state.lastWinner?.let { winner ->
+                Text("${winner}胜出", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavigationStatus(state: UiState) {
+    val trip = state.navigation.trip ?: return
+    val status = when (state.navigation.handoff) {
+        com.autovoice.app.NavigationHandoff.OPENING -> "正在打开高德…"
+        com.autovoice.app.NavigationHandoff.ACCEPTED -> "已交给高德：${trip.destination.name}"
+        com.autovoice.app.NavigationHandoff.FAILED -> "未能打开高德，请确认已安装高德地图。"
+        else -> "目的地：${trip.destination.name}"
+    }
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+        Text(status, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun WakeGuidance(state: UiState) {
+    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Text(
+            if (state.chatMode) "持续聆听中" else if (state.wakeListening) "你好飞飞 · 随时可以说" else "等待语音就绪",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
         )
     }
 }
@@ -179,90 +230,43 @@ private fun NavigationCandidateDialog(
     )
 }
 
-/**
- * 对话区卡片（Task 53）：识别/回复各一张，垂直平分主空间，等宽上下对齐。
- * [winner]（Task 61）：竞速胜出方徽标文本（"端侧"/"云端"，由 ViewModel 映射），
- * 非 null 时在标题行右侧显示「XX胜出」小徽标。
- */
 @Composable
-private fun AsrResultCard(
-    title: String,
-    text: String?,
-    modifier: Modifier = Modifier,
-    winner: String? = null,
+private fun Header(
+    sessionState: VoiceUiPhase,
+    cloudPending: Boolean,
+    settingsOpen: Boolean,
+    onToggleSettings: () -> Unit,
 ) {
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.primaryContainer,
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                    modifier = Modifier.weight(1f),
-                )
-                if (winner != null) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                    ) {
-                        Text(
-                            text = "${winner}胜出",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = text ?: "(${title}内容待更新)",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-        }
-    }
-}
-
-@Composable
-private fun Header(sessionState: VoiceUiPhase, cloudPending: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "AutoVoice 语音车控 Demo",
+            text = if (settingsOpen) "设置" else "AutoVoice",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
-        Surface(
-            shape = CircleShape,
-            color = if (sessionState == VoiceUiPhase.IDLE) {
-                MaterialTheme.colorScheme.surfaceVariant
-            } else {
-                MaterialTheme.colorScheme.primaryContainer
-            },
-        ) {
-            Text(
-                // B5：云端 LLM 处理中占位 → "处理中…"徽标（不动对话状态机，
-                // pending 期间仍是 UNDERSTANDING；仅 UI 状态，无执行无播报）
-                text = if (cloudPending && sessionState == VoiceUiPhase.UNDERSTANDING) {
-                    "处理中…"
+        if (!settingsOpen) {
+            Surface(
+                shape = CircleShape,
+                color = if (sessionState == VoiceUiPhase.IDLE) {
+                    MaterialTheme.colorScheme.surfaceVariant
                 } else {
-                    sessionState.displayName()
+                    MaterialTheme.colorScheme.primaryContainer
                 },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
+            ) {
+                Text(
+                    text = if (cloudPending && sessionState == VoiceUiPhase.UNDERSTANDING) "处理中…"
+                    else sessionState.displayName(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
         }
+        TextButton(onClick = onToggleSettings) { Text(if (settingsOpen) "返回" else "设置") }
     }
 }
 
@@ -273,12 +277,17 @@ private fun SettingsSection(
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
 ) {
-    Surface(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, tonalElevation = 1.dp) {
-        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "设置",
-                style = MaterialTheme.typography.titleSmall,
+                text = "识别模式",
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                "在线模式可使用云端语音服务；离线模式仅使用本地能力。切换模式会重建语音连接。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
@@ -301,6 +310,11 @@ private fun SettingsSection(
                 )
                 Switch(checked = weakNetwork, onCheckedChange = onWeakNetworkChange)
             }
+            Text(
+                "弱网模拟仅供调试，正常使用请保持关闭。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

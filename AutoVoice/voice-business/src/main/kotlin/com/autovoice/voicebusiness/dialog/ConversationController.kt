@@ -1,4 +1,4 @@
-package com.autovoice.voicecore.dialog
+package com.autovoice.voicebusiness.dialog
 
 import java.util.UUID
 import kotlinx.coroutines.flow.StateFlow

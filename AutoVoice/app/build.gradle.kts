@@ -94,6 +94,7 @@ dependencies {
     implementation(project(":gateway-client"))
     implementation(project(":message-dispatch"))
     implementation(project(":business-core"))
+    implementation(project(":voice-business"))
     implementation(project(":tts"))
     implementation(project(":audio-frontend"))
     implementation(project(":adapter-iflytek"))

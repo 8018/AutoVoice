@@ -132,7 +132,8 @@ jobs:
         run: |
           node ../shared/verify-jacoco-coverage.mjs 70 \
             voice-core/build/reports/jacoco/test/jacocoTestReport.xml \
-            gateway-client/build/reports/jacoco/test/jacocoTestReport.xml
+            gateway-client/build/reports/jacoco/test/jacocoTestReport.xml \
+            voice-business/build/reports/jacoco/test/jacocoTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 25 \
             app/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 70 \

@@ -1,4 +1,4 @@
-package com.autovoice.voicecore.dialog
+package com.autovoice.voicebusiness.dialog
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse

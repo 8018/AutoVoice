@@ -1,4 +1,4 @@
-package com.autovoice.voicecore.dialog
+package com.autovoice.voicebusiness.dialog
 
 /** 能把临时 VAD capture 晋升为真实对话轮的证据。 */
 enum class AdmissionEvidence {

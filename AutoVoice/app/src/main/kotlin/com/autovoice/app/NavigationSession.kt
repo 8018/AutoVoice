@@ -1,12 +1,12 @@
 package com.autovoice.app
 
-import com.autovoice.voicecore.dialog.DialogueTask
-import com.autovoice.voicecore.dialog.InputExpectation
-import com.autovoice.voicecore.dialog.TaskDialogueCoordinator
-import com.autovoice.voicecore.dialog.TaskEnd
-import com.autovoice.voicecore.dialog.TaskEndReason
-import com.autovoice.voicecore.dialog.TaskIdentity
-import com.autovoice.voicecore.dialog.TaskStatus
+import com.autovoice.voicebusiness.dialog.DialogueTask
+import com.autovoice.voicebusiness.dialog.InputExpectation
+import com.autovoice.voicebusiness.dialog.TaskDialogueCoordinator
+import com.autovoice.voicebusiness.dialog.TaskEnd
+import com.autovoice.voicebusiness.dialog.TaskEndReason
+import com.autovoice.voicebusiness.dialog.TaskIdentity
+import com.autovoice.voicebusiness.dialog.TaskStatus
 
 /** A handoff records an accepted launch, not active guidance in the other application. */
 data class NavigationTarget(val name: String, val latitude: Double, val longitude: Double) {
@@ -125,9 +125,9 @@ class NavigationSession(
     }
 
     /** Interaction validity belongs to DM, never to arbitration or navigation execution. */
-    @Synchronized fun onDialogueState(state: com.autovoice.voicecore.dialog.DialogueSnapshot) {
+    @Synchronized fun onDialogueState(state: com.autovoice.voicebusiness.dialog.DialogueSnapshot) {
         val task = tasks.waiting(DOMAIN) ?: return
-        if (state.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT ||
+        if (state.state == com.autovoice.voicebusiness.dialog.DialogueState.DORMANT ||
             task.identity.interactionId != state.interactionId) {
             tasks.finishWaiting(task.identity, TaskEndReason.ABORTED)
         }
