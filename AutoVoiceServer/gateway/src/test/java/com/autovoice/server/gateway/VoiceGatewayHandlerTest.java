@@ -791,12 +791,11 @@ class VoiceGatewayHandlerTest {
 
     @Test
     void helloDeadlineEnforcementClosesAndRestoresQuotaDeterministically() throws Exception {
-        // 不依赖调度计时(CI 负载下调度延迟不可控):截止设为 1ms,过期后由测试显式触发。
-        // 生产路径的调度触发属实现细节,此处断言的是"截止检查"这一行为契约本身。
+        // 调度器可能在 open() 返回前执行 1ms 截止检查；不能断言此刻配额仍被占用。
+        // 显式再触发一次，验证截止与重复触发最终均归还配额。
         var quota = new com.autovoice.server.contracts.ConnectionQuota(4);
         VoiceGatewayHandler h = quotaHandler(quota, 1);
         StubSession silent = open(h);
-        assertEquals(1, quota.activeFor(""), "建连即占用匿名配额");
         Thread.sleep(10); // 确保截止已过期(确定性:检查基于墙钟比较)
 
         h.enforceHelloDeadline(silent);
