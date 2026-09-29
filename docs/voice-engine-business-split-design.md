@@ -862,6 +862,8 @@ Telemetry 按事件产生方归属，不作为跨模块反向依赖理由。统�
 
 P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engine` 输入代次门禁：初始关闭，唤醒开启，业务回到 DORMANT 后关闭；新音频上行和候选提交检查许可，已完成输入的 NLU 不按当前许可作废。App 仍是过渡接线，完整模块化和所有异步队列/SDK 二次校验尚未完成。
 
+业务迁移的下一段把 `AppDialogueManager`、`NavigationSession`、`NavigationExecutor`、导航候选规则与任务上下文移入 `voice-business/navigation`。App 仅注入高德打开器、订阅快照与发送任务上下文；纯业务模块拥有独立导航用例，并单独执行 70% 行覆盖率门禁。
+
 这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
 关键设计约束检查表（未勾选项仍属待办）：

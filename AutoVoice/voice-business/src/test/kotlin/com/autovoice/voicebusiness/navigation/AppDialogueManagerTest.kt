@@ -1,4 +1,4 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness.navigation
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse

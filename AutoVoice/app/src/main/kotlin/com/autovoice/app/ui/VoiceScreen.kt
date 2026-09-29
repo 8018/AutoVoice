@@ -41,7 +41,7 @@ fun VoiceScreen(
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
     onDismissNavigationCandidates: () -> Unit,
-    onSelectNavigationCandidate: (com.autovoice.app.NavigationExecutor.NavigationCandidate) -> Unit,
+    onSelectNavigationCandidate: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     Column(
@@ -161,9 +161,9 @@ private fun ConversationCard(state: UiState) {
 private fun NavigationStatus(state: UiState) {
     val trip = state.navigation.trip ?: return
     val status = when (state.navigation.handoff) {
-        com.autovoice.app.NavigationHandoff.OPENING -> "正在打开高德…"
-        com.autovoice.app.NavigationHandoff.ACCEPTED -> "已交给高德：${trip.destination.name}"
-        com.autovoice.app.NavigationHandoff.FAILED -> "未能打开高德，请确认已安装高德地图。"
+        com.autovoice.voicebusiness.navigation.NavigationHandoff.OPENING -> "正在打开高德…"
+        com.autovoice.voicebusiness.navigation.NavigationHandoff.ACCEPTED -> "已交给高德：${trip.destination.name}"
+        com.autovoice.voicebusiness.navigation.NavigationHandoff.FAILED -> "未能打开高德，请确认已安装高德地图。"
         else -> "目的地：${trip.destination.name}"
     }
     Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
@@ -184,9 +184,9 @@ private fun WakeGuidance(state: UiState) {
 
 @Composable
 private fun NavigationCandidateDialog(
-    candidates: List<com.autovoice.app.NavigationExecutor.NavigationCandidate>,
+    candidates: List<com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate>,
     onDismissRequest: () -> Unit,
-    onSelect: (com.autovoice.app.NavigationExecutor.NavigationCandidate) -> Unit,
+    onSelect: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismissRequest,

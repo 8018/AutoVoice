@@ -1,4 +1,4 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness.navigation
 
 import com.autovoice.voicebusiness.dialog.DialogueTask
 import com.autovoice.voicebusiness.dialog.InputExpectation
@@ -117,7 +117,7 @@ class NavigationSession(
         ?.let { tasks.finishWaiting(it.identity, reason) } ?: false
 
     /** Only the exact failed context is closed; late protocol errors cannot close a new list. */
-    @Synchronized internal fun contextMissing(ref: NavigationTaskContextRef): Boolean {
+    @Synchronized fun contextMissing(ref: NavigationTaskContextRef): Boolean {
         val task = tasks.waiting(DOMAIN) ?: return false
         if (task.identity != TaskIdentity(ref.interactionId, ref.taskId, ref.revision) ||
             task.context.selectionId != ref.selectionId) return false

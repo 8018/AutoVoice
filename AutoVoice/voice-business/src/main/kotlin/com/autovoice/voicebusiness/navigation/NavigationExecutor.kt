@@ -1,4 +1,4 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness.navigation
 
 import com.autovoice.voicecore.Intent
 import java.net.URLEncoder
