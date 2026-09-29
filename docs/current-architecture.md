@@ -8,7 +8,7 @@
 
 `AppDialogueManager` 负责导航任务、候选选择、延时聆听 revision、后台及连接变化的任务收口，并拥有进入/退出闲聊域的业务决定；`MainViewModel` 只转发事件并投影状态。`RecordingCoordinator` 的锁域标记只决定麦克风路由，`GatewayRealtimeChatChannel` 的 desired/ready 与 generation 只表示上游传输事实。普通会话状态仍由 `ConversationController` 管理，导航多轮状态仍由 `NavigationSession` 管理，三者不是同一个状态机。
 
-`GatewayClient` 仅负责连接与原始消息；`GatewayProtocolSender` 负责编码上行；`GatewayBridge` 负责按类型分发下行、请求槽与音频流关联，不再构造 ASR/NLU 引擎。`CloudAsrEngine`、`CloudNluEngine` 作为 VoiceEngine 云端候选链的模块向桥注册各自的消息类型，并与本地模块共用 `AsrEngine` / `NluEngine<Result>` 契约。云端两个模块共享一次音频上行；ASR 增量识别直接输出，NLU 语义进入仲裁。`GatewayTtsTransport` 单独管理 TTS 请求超时；`GatewayNavigationContextChannel` 管导航上下文发布和缺失反馈；`GatewayRealtimeChatChannel` 管闲聊连接、重连和输出代次。它们复用同一 WebSocket。闲聊输出使用 `RealtimePlaybackToken(generation,responseId)`，不伪造普通 turnId。新版端云协议还回显 `chatId`，客户端拒绝带旧 `chatId` 的迟到回复；旧服务端不回显时仍走兼容路径，不保证同等隔离。
+`GatewayClient` 仅负责连接与原始消息，依赖 `GatewaySocketTransport`；`OkHttpGatewaySocketTransport` 封装实际 WebSocket，Retrofit 只用于 REST 遥测。`GatewayProtocolSender` 负责编码上行；`GatewayBridge` 负责按类型分发下行、请求槽与音频流关联，不再构造 ASR/NLU 引擎。`CloudAsrEngine`、`CloudNluEngine` 作为 VoiceEngine 云端候选链的模块向桥注册各自的消息类型，并与本地模块共用 `AsrEngine` / `NluEngine<Result>` 契约。云端两个模块共享一次音频上行；ASR 增量识别直接输出，NLU 语义进入仲裁。`GatewayTtsTransport` 单独管理 TTS 请求超时；`GatewayNavigationContextChannel` 管导航上下文发布和缺失反馈；`GatewayRealtimeChatChannel` 管闲聊连接、重连和输出代次。它们复用同一 WebSocket。闲聊输出使用 `RealtimePlaybackToken(generation,responseId)`，不伪造普通 turnId。新版端云协议还回显 `chatId`，客户端拒绝带旧 `chatId` 的迟到回复；旧服务端不回显时仍走兼容路径，不保证同等隔离。
 
 `GatewayBusinessSpeechChannel` 管普通业务话语的分块上传、回复槽与取消/提交；`GatewayCloudRunner` 仅装配共享连接及这些业务通道。普通话语传输失败后结束本轮，不重放 PCM。普通业务与闲聊通道不共享轮次状态。
 

@@ -6,13 +6,9 @@ import com.google.gson.JsonObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 
 /**
- * OkHttp WebSocketListener → [MutableSharedFlow] 桥接（Task 15）。
+ * WebSocket transport events → [MutableSharedFlow] 桥接（Task 15）。
  *
  * 职责：
  *  - 文本帧解析为 [GatewayMessage]（统一信封 `{"type":..., "payload":{...}}`）后 tryEmit 进事件流；
@@ -29,20 +25,20 @@ class GatewayListener(
     private val events: MutableSharedFlow<GatewayMessage>,
     private val gson: Gson = Gson(),
     private val ready: CompletableDeferred<GatewayMessage>,
-    private val onDisconnected: (WebSocket) -> Boolean,
+    private val onDisconnected: (GatewaySocket) -> Boolean,
     private val onSessionContextInvalidated: () -> Unit = {},
-) : WebSocketListener() {
+) : GatewaySocketListener {
 
     /** D02b：会话级错误码——存储的 sessionId/resumeToken 已失效,须清除后全新握手。 */
     companion object {
         private val SESSION_LEVEL_ERRORS = setOf("SESSION_EXPIRED", "SESSION_RECOVER_DENIED")
     }
 
-    override fun onMessage(webSocket: WebSocket, text: String) {
+    override fun onText(socket: GatewaySocket, text: String) {
         val msg = parseFrame(text)
         val emitted = msg ?: errorFrame("BAD_FRAME", "unparseable frame: $text")
         // Preserve protocol ordering and never drop S2S PCM when the consumer is slower
-        // than OkHttp's callback thread. Backpressure here naturally pauses socket reads.
+        // than the transport callback thread. Backpressure here naturally pauses socket reads.
         runBlocking { events.emit(emitted) }
         if (emitted.type == "ready") {
             // connect 等待方可能已超时/取消：complete 返回 false 时忽略即可
@@ -60,31 +56,31 @@ class GatewayListener(
         }
     }
 
-    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+    override fun onBinary(socket: GatewaySocket, bytes: ByteArray) {
         runBlocking {
-            events.emit(GatewayMessage("audio_reply_chunk", JsonObject(), bytes.toByteArray()))
+            events.emit(GatewayMessage("audio_reply_chunk", JsonObject(), bytes))
         }
     }
 
-    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-        if (onDisconnected(webSocket)) {
-            events.tryEmit(errorFrame("CONNECTION_FAILED", t.message ?: "websocket failure"))
+    override fun onFailure(socket: GatewaySocket, error: Throwable) {
+        if (onDisconnected(socket)) {
+            events.tryEmit(errorFrame("CONNECTION_FAILED", error.message ?: "websocket failure"))
         }
-        ready.completeExceptionally(t)
+        ready.completeExceptionally(error)
     }
 
-    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+    override fun onClosing(socket: GatewaySocket, code: Int, reason: String) {
         // 收到 peer close 后连接已不可再发送；不能等 onClosed 才清状态，否则未主动回 close
         // 的 listener 会永久保留一条“看似 READY”的死连接。
-        if (onDisconnected(webSocket)) {
+        if (onDisconnected(socket)) {
             events.tryEmit(errorFrame("CONNECTION_CLOSED", "code=$code reason=$reason"))
         }
         ready.completeExceptionally(GatewayException("connection closing before ready: code=$code $reason"))
-        webSocket.close(code, reason)
+        socket.close(code, reason)
     }
 
-    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-        if (onDisconnected(webSocket)) {
+    override fun onClosed(socket: GatewaySocket, code: Int, reason: String) {
+        if (onDisconnected(socket)) {
             events.tryEmit(errorFrame("CONNECTION_CLOSED", "code=$code reason=$reason"))
         }
         ready.completeExceptionally(GatewayException("connection closed before ready: code=$code $reason"))

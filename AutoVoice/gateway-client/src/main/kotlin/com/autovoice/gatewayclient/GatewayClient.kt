@@ -15,10 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.WebSocket
-import okio.ByteString.Companion.toByteString
 
 /**
  * 网关连接失败（重试耗尽 / 等待 ready 超时 / 传输错误）时抛出。
@@ -49,7 +45,7 @@ enum class GatewayConnectionState {
  */
 class GatewayClient(
     private val url: String,
-    private val okHttp: OkHttpClient,
+    private val transport: GatewaySocketTransport,
     private val gson: Gson = Gson(),
     private val connectTimeoutMs: Long = 5_000,
     private val backoffBaseMs: Long = 1_000,
@@ -83,7 +79,7 @@ class GatewayClient(
     private val connectMutex = Mutex()
 
     @Volatile
-    private var webSocket: WebSocket? = null
+    private var webSocket: GatewaySocket? = null
 
     /**
      * 设备端与服务器墙钟偏移（ms）：ready 携带 serverTime 时按
@@ -124,7 +120,7 @@ class GatewayClient(
     /** Transport-only binary send API; framing semantics belong to the protocol layer. */
     fun send(bytes: ByteArray) {
         val ws = webSocket ?: throw GatewayException("not connected")
-        if (!ws.send(bytes.toByteString())) throw GatewayException("send binary frame failed: websocket not open")
+        if (!ws.send(bytes)) throw GatewayException("send binary frame failed: websocket not open")
     }
 
     /**
@@ -171,16 +167,13 @@ class GatewayClient(
     private suspend fun doConnect() {
         val ready = CompletableDeferred<GatewayMessage>()
         val ws = try {
-            okHttp.newWebSocket(
-                Request.Builder().url(url).build(),
-                GatewayListener(events, gson, ready, ::markDisconnected, ::clearSessionContext),
-            )
+            transport.open(url, GatewayListener(events, gson, ready, ::markDisconnected, ::clearSessionContext))
         } catch (e: Exception) {
             throw GatewayException("cannot open websocket to $url: ${e.message}", e)
         }
         webSocket = ws
         try {
-            // open 后立即发 hello（OkHttp 排队到握手完成后发出）；ready 回执由 listener 完成
+            // open 后立即发 hello（传输层排队到握手完成后发出）；ready 回执由 listener 完成
             val t0 = System.currentTimeMillis()
             ws.send(helloFrame())
             val readyMsg = withTimeoutOrNull(connectTimeoutMs) { ready.await() }
@@ -206,7 +199,7 @@ class GatewayClient(
     }
 
     /** 只允许当前连接改变状态；旧连接迟到的 close/failure 不得击穿新连接。 */
-    private fun markDisconnected(socket: WebSocket): Boolean {
+    private fun markDisconnected(socket: GatewaySocket): Boolean {
         if (webSocket !== socket) return false
         webSocket = null
         mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
