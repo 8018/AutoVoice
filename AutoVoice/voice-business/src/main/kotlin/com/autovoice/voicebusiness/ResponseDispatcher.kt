@@ -1,7 +1,5 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness
 
-import com.autovoice.app.telemetry.TelemetryClient
-import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessCommand
 import com.autovoice.business.BusinessHandler
 import com.autovoice.business.BusinessResult
@@ -16,10 +14,11 @@ import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.TextReply
 
 /** Routes an accepted semantic result to UI, business execution and speech output. */
-internal class ResponseDispatcher(
+class ResponseDispatcher(
     private val output: TtsOutput,
     private val business: BusinessHandler,
-    private val telemetry: TelemetryClient,
+    private val onExecution: (String, Intent, BusinessResult) -> Unit = { _, _, _ -> },
+    private val onFailure: (String) -> Unit = {},
     private val isCurrentTurn: (String) -> Boolean,
     private val onRecognized: (String?) -> Unit,
     private val onReplyText: (String) -> Unit,
@@ -86,7 +85,7 @@ internal class ResponseDispatcher(
     }
 
     fun dispatchFailure(turnId: String) {
-        telemetry.recordFor(turnId, TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
+        onFailure(turnId)
         output.speak(turnId, FALLBACK_PHRASE)
     }
 
@@ -122,19 +121,8 @@ internal class ResponseDispatcher(
         intent: Intent,
         result: BusinessResult,
     ) {
-        telemetry.recordFor(
-            turnId,
-            TelemetryStages.EXECUTE,
-            "info",
-            mapOf(
-                "intent" to intentSummary(intent),
-                "result" to result.status.name.lowercase(),
-                "speakText" to (result.speakText ?: ""),
-            ),
-        )
+        onExecution(turnId, intent, result)
     }
-
-    private fun intentSummary(intent: Intent): String = "${intent.domain}/${intent.intent}"
 
     companion object {
         private const val FALLBACK_PHRASE = "网络开小差了，请稍后再试"

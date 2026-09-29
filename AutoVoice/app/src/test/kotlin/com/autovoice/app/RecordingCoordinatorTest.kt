@@ -1,8 +1,8 @@
 package com.autovoice.app
 
 import com.autovoice.audiofrontend.vad.VadEvent
-import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.DialogueState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.StandardTestDispatcher

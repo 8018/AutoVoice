@@ -36,7 +36,7 @@ class NavigationSessionTest {
         session.offer(candidates, "new", "t2")
         session.finishHandoff(token, true)
         assertEquals("new", session.snapshot.selectionId)
-        assertEquals(com.autovoice.voicecore.dialog.TaskStatus.WAITING_INPUT, session.snapshot.taskStatus)
+        assertEquals(com.autovoice.voicebusiness.dialog.TaskStatus.WAITING_INPUT, session.snapshot.taskStatus)
     }
 
     private fun identity(session: NavigationSession, operation: String) = session.snapshot.let {
@@ -67,13 +67,13 @@ class NavigationSessionTest {
         val session = NavigationSession(interactionIdProvider = { "i" })
         val candidates = listOf(NavigationExecutor.NavigationCandidate("airport", 30.0, 104.0, candidateId = "a"))
         session.offer(candidates, "s", "t")
-        session.onDialogueState(com.autovoice.voicecore.dialog.DialogueSnapshot())
+        session.onDialogueState(com.autovoice.voicebusiness.dialog.DialogueSnapshot())
         assertTrue(session.snapshot.candidates.isEmpty())
         session.offer(candidates, "s2", "t2")
         assertNotNull(session.claimSelection("s2", "a"))
         assertFalse(session.abortSelection())
-        session.onDialogueState(com.autovoice.voicecore.dialog.DialogueSnapshot())
-        assertEquals(com.autovoice.voicecore.dialog.TaskStatus.EXECUTING, session.snapshot.taskStatus)
+        session.onDialogueState(com.autovoice.voicebusiness.dialog.DialogueSnapshot())
+        assertEquals(com.autovoice.voicebusiness.dialog.TaskStatus.EXECUTING, session.snapshot.taskStatus)
     }
 
     @Test fun `missing context only ends matching list and late error preserves replacement`() {

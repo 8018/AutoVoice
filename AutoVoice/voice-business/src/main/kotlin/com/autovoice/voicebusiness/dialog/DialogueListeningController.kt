@@ -1,4 +1,4 @@
-package com.autovoice.voicecore.dialog
+package com.autovoice.voicebusiness.dialog
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job

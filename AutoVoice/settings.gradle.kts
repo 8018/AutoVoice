@@ -16,6 +16,7 @@ include(
     ":gateway-client",
     ":message-dispatch",
     ":business-core",
+    ":voice-business",
     ":tts",
     ":audio-frontend",
     ":adapter-iflytek",

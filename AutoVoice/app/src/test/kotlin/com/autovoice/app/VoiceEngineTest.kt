@@ -27,8 +27,8 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
-import com.autovoice.voicecore.dialog.DialogueState
-import com.autovoice.voicecore.dialog.AdmissionEvidence
+import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.AdmissionEvidence
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

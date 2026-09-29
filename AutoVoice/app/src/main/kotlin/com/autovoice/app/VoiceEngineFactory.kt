@@ -11,8 +11,8 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.dialog.AdmissionEvidence
-import com.autovoice.voicecore.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.AdmissionEvidence
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.validateForRuntime
 import com.autovoice.tts.TtsEventSink

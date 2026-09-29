@@ -86,7 +86,7 @@ class NavigationExecutor(
         if (operation == "start_new") {
             if (selectionId != null || candidateId != null) return false
             if (pending.taskId != null && !session.abortSelection(
-                    com.autovoice.voicecore.dialog.TaskEndReason.REPLACED, pending.identity())) return false
+                    com.autovoice.voicebusiness.dialog.TaskEndReason.REPLACED, pending.identity())) return false
         } else if (selectionId != null || candidateId != null || pending.selectionId != null) {
             if (selectionId == null || selectionId != pending.selectionId || candidateId.isNullOrBlank()) return false
             val candidate = dialoguePolicy.matchSelection(
@@ -97,9 +97,9 @@ class NavigationExecutor(
                 waypoints.isNotEmpty(),
             ) ?: return false
             if (session.claimSelection(selectionId, candidateId, pending.identity()) != candidate) return false
-        } else if (pending.taskStatus == com.autovoice.voicecore.dialog.TaskStatus.WAITING_INPUT) {
+        } else if (pending.taskStatus == com.autovoice.voicebusiness.dialog.TaskStatus.WAITING_INPUT) {
             // A fully resolved navigation intent without candidate identity is a fresh request.
-            session.abortSelection(com.autovoice.voicecore.dialog.TaskEndReason.REPLACED)
+            session.abortSelection(com.autovoice.voicebusiness.dialog.TaskEndReason.REPLACED)
         }
         val uri = if (waypoints.isEmpty()) buildNaviUri(poiname, lat, lon)
             else buildRoutePlanUri(poiname, lat, lon, waypoints)
@@ -116,9 +116,9 @@ class NavigationExecutor(
         onCandidates(emptyList())
     }
 
-    private fun NavigationSnapshot.identity(): com.autovoice.voicecore.dialog.TaskIdentity? =
+    private fun NavigationSnapshot.identity(): com.autovoice.voicebusiness.dialog.TaskIdentity? =
         if (taskId != null && interactionId != null)
-            com.autovoice.voicecore.dialog.TaskIdentity(interactionId, taskId, candidateVersion) else null
+            com.autovoice.voicebusiness.dialog.TaskIdentity(interactionId, taskId, candidateVersion) else null
 
     private fun parseCandidates(json: String): List<NavigationCandidate>? =
         runCatching {
