@@ -9,11 +9,9 @@ import com.autovoice.messaging.MessageDispatcher
 import com.autovoice.messaging.MessageListener
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AudioStreamEnd
-import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.arbiter.DecisionSink
 import com.google.gson.JsonObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -21,7 +19,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -31,87 +28,11 @@ private const val GATEWAY_BRIDGE_TAG = "GatewayBridge"
 /** Gateway application error, distinct from a transport disconnect. */
 internal class GatewayRemoteException(val code: String, message: String) : GatewayException(message)
 
-private class PendingSlot<T>(
+internal class PendingSlot<T>(
     val segmentId: String,
     val utteranceId: String,
     val deferred: CompletableDeferred<T>,
 )
-
-/** Cloud ASR owns transcript and turn-establishment messages, independent of semantic replies. */
-private class CloudAsrEngine(
-    private val pendingReplies: ConcurrentHashMap<String, PendingSlot<Reply>>,
-    private val onAsrResult: (String, Boolean, String) -> Unit,
-    private val onAsrTurnEstablished: (String) -> Unit,
-) : MessageListener {
-    val messageTypes = setOf("asr_turn_started", "asr_partial")
-
-    override fun onMessage(message: GatewayMessage) {
-        when (message.type) {
-            "asr_turn_started" -> {
-                val slot = findSlot(message.payload, pendingReplies) ?: return
-                if (!isForSlot(message.payload, slot)) return
-                onAsrTurnEstablished(slot.utteranceId)
-            }
-            "asr_partial" -> {
-                if (message.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
-                    val text = message.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
-                    val final = message.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-                    onAsrResult(text, final, "")
-                    return
-                }
-                val slot = findSlot(message.payload, pendingReplies) ?: return
-                if (!isForSlot(message.payload, slot)) return
-                val text = message.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
-                val final = message.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-                onAsrResult(text, final, slot.utteranceId)
-            }
-        }
-    }
-}
-
-/** Cloud NLU owns semantic, pending and decision messages; ASR text never enters this engine. */
-private class CloudNluEngine(
-    private val pendingReplies: ConcurrentHashMap<String, PendingSlot<Reply>>,
-    private val parser: GatewayPayloadParser,
-    private val sink: DecisionSink,
-    private val pendingSignals: SendChannel<Unit>,
-    private val onPendingReceived: (String) -> Unit,
-    private val onReplyText: (String, Boolean, String) -> Unit,
-    private val onError: (GatewayMessage) -> Unit,
-) : MessageListener {
-    val messageTypes = setOf("decision", "reply_partial", "reply", "pending", "error")
-
-    override fun onMessage(message: GatewayMessage) {
-        when (message.type) {
-            "decision" -> parseDecision(message.payload)?.let(sink::onDecision)
-            "reply_partial" -> {
-                if (message.payload.get("chat")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
-                    val text = message.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
-                    val final = message.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-                    onReplyText(text, final, "")
-                    return
-                }
-                val slot = findSlot(message.payload, pendingReplies) ?: return
-                if (!isForSlot(message.payload, slot)) return
-                val text = message.payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: return
-                val final = message.payload.get("isFinal")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-                onReplyText(text, final, slot.utteranceId)
-            }
-            "reply" -> {
-                val slot = findSlot(message.payload, pendingReplies) ?: return
-                if (!isForSlot(message.payload, slot)) return
-                parser.reply(message.payload)?.let { slot.deferred.complete(it) }
-            }
-            "pending" -> {
-                val slot = findSlot(message.payload, pendingReplies) ?: return
-                if (!isForSlot(message.payload, slot)) return
-                pendingSignals.trySend(Unit)
-                onPendingReceived(slot.utteranceId)
-            }
-            "error" -> onError(message)
-        }
-    }
-}
 
 /** Correlate an inbound message with one request slot; missing id is accepted only if unambiguous. */
 private fun <T> findSlot(
@@ -136,43 +57,22 @@ private fun isForSlot(payload: JsonObject, slot: PendingSlot<*>): Boolean {
     return true
 }
 
-private fun parseDecision(payload: JsonObject): DecisionEntry? {
-    val arbiter = payload.get("arbiter")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
-    val route = payload.get("route")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
-    val reason = payload.get("reason")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
-    val utteranceId = payload.get("utteranceId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
-    val timestampMs = payload.get("timestampMs")?.takeIf { it.isJsonPrimitive }?.asLong
-        ?: System.currentTimeMillis()
-    return DecisionEntry(arbiter, route, reason, utteranceId, timestampMs)
-}
-
 /**
  * 网关事件桥：构造时一次性订阅 [GatewayClient.messages]（SharedFlow replay=1），
- * 把 decision 事件透传进 sink、reply 事件投递到当前话语的等待槽、
- * error 事件让等待中的回复立即失败（提前暴露故障，不必等仲裁超时）。
+ * 按消息类型分发；ASR/NLU 模块由 VoiceEngine 的云端候选链装配并分别注册。
+ * 桥只保留协议请求槽及音频流关联；错误由对应监听器通知等待槽快速失败。
  *
  * 消息关联（protocol.md §3.2）：reply / error 按 payload 中的 `segmentId` 与当前话语的等待槽对账——
  * 携带的 segmentId 与本轮不一致（上一轮迟到的消息）→ 丢弃并 Log.d；未携带 segmentId（服务端
  * 合成的传输错误 / 旧版服务端）→ 无法对账，按当前槽处理（保留快速失败语义）。同一时刻至多一个
- * 等待槽，跨轮消息天然按 segmentId 隔离。
+ * 等待槽；多个重叠等待槽按 segmentId 隔离。
  *
  * TTS 槽（A3）：tts_response 走独立的 [pendingTts] 槽，与话语 reply 槽互不干扰
  * （tts 播报与话语回复是两条独立时间线），各自按 segmentId 对账。
  */
 internal class GatewayBridge(
     private val client: GatewayClient,
-    private val sink: DecisionSink,
     scope: CoroutineScope,
-    /** B5：云端 pending 占位信号（LLM 处理中）→ 延后本地普通语义入队。 */
-    private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
-    /** B5：pending 帧已对账通过的回调（装配方绑定 → UI"处理中…"状态）。 */
-    private val onPendingReceived: (String) -> Unit = {},
-    /** ASR/PGS partial/final，按 segmentId 对账后立即交 UI。 */
-    private val onAsrResult: (String, Boolean, String) -> Unit = { _, _, _ -> },
-    /** ASR/AEC 确认新话语，按 segmentId 对账后交给本地状态机。 */
-    private val onAsrTurnEstablished: (String) -> Unit = {},
-    /** 回答文本 partial/final，按 segmentId 对账后立即交 UI。 */
-    private val onReplyText: (String, Boolean, String) -> Unit = { _, _, _ -> },
     /** Realtime 闲聊是长会话，模型回答不依赖普通话语 reply slot。 */
     private val onChatReply: (StreamingAudioReply) -> Unit = {},
     /** 模型语义 VAD 检测到用户开口：只截断播放，连续上行不停止。 */
@@ -222,21 +122,9 @@ internal class GatewayBridge(
     }
 
     init {
-        val asrEngine = CloudAsrEngine(pendingReplies, onAsrResult, onAsrTurnEstablished)
-        val nluEngine = CloudNluEngine(
-            pendingReplies,
-            parser,
-            sink,
-            pendingSignals,
-            onPendingReceived,
-            onReplyText,
-            ::handleNluError,
-        )
         val ttsListener = CloudTtsListener()
         val chatListener = RealtimeChatListener()
         val audioListener = CloudAudioReplyListener()
-        dispatcher.register(asrEngine.messageTypes, asrEngine)
-        dispatcher.register(nluEngine.messageTypes, nluEngine)
         dispatcher.register(ttsListener.messageTypes, ttsListener)
         dispatcher.register(chatListener.messageTypes, chatListener)
         dispatcher.register(audioListener.messageTypes, audioListener)
@@ -250,6 +138,10 @@ internal class GatewayBridge(
     /** Additional observers may subscribe without becoming part of the gateway transport. */
     fun register(types: Set<String>, listener: MessageListener): ListenerRegistration =
         dispatcher.register(types, listener)
+
+    /** Protocol-level request correlation; semantic interpretation belongs to cloud speech engines. */
+    internal fun replySlot(payload: JsonObject): PendingSlot<Reply>? =
+        findSlot(payload, pendingReplies)?.takeIf { isForSlot(payload, it) }
 
     /** 注册当前话语的回复等待槽（先于发送注册，避免 reply 先到被丢）。 */
     fun newReplySlot(segmentId: String, utteranceId: String = ""): CompletableDeferred<Reply> {
@@ -406,7 +298,7 @@ internal class GatewayBridge(
         parser.tts(msg.payload)?.let { slot.deferred.complete(it) }
     }
 
-    private fun handleNluError(msg: GatewayMessage) {
+    internal fun handleSpeechError(msg: GatewayMessage) {
         val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
         val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
         val error = GatewayRemoteException(code, "$message [$code]")

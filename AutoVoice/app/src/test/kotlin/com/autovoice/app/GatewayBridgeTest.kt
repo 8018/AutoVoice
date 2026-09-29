@@ -2,6 +2,9 @@ package com.autovoice.app
 
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException
+import com.autovoice.gatewayclient.GatewayPayloadParser
+import com.autovoice.voicecore.AsrResult
+import com.autovoice.voicecore.AsrSink
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.DecisionSink
@@ -14,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -476,6 +480,50 @@ class GatewayBridgeTest {
             )
             assertEquals("turn-1", established.receive())
         } finally {
+            bridgeScope.cancel()
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
+    @Test
+    fun `voice owned cloud engines share one request while ASR publishes before NLU`() = runBlocking {
+        val gateway = FakeGatewayServer()
+        gateway.start()
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val bridge = GatewayBridge(client, bridgeScope)
+        val recognized = Channel<AsrResult>(Channel.BUFFERED)
+        var requests = 0
+        val asr = CloudAsrEngine(bridge, { _, _, _ -> }, {}).also { it.register() }
+        val nlu = CloudNluEngine(
+            bridge, GatewayPayloadParser(), DecisionSink {}, Channel(Channel.BUFFERED), {},
+            { _, _, _ -> },
+            { _, _ ->
+                requests++
+                bridge.newReplySlot("seg-1", "turn-1").await()
+            },
+        ).also { it.register() }
+        try {
+            client.connect()
+            asr.recognize("turn-1", byteArrayOf(1, 2), object : AsrSink {
+                override fun onTranscript(result: AsrResult) { recognized.trySend(result) }
+                override fun onTurnEstablished() = Unit
+            })
+            val semantic = async { nlu.understand("turn-1", byteArrayOf(1, 2), null) }
+            repeat(50) {
+                if (requests == 1) return@repeat
+                delay(10)
+            }
+            assertEquals(1, requests)
+            gateway.sendText(partialFrame("asr_partial", "seg-1", "导航到机场", false))
+            assertEquals(AsrResult("导航到机场", false), recognized.receive())
+            assertFalse(semantic.isCompleted, "ASR partial must not complete the NLU candidate")
+            gateway.sendText(replyFrame("seg-1", "好的"))
+            assertEquals("好的", (semantic.await() as TextReply).text)
+            assertEquals(1, requests, "ASR and NLU must not each start a cloud request")
+        } finally {
+            asr.release("turn-1")
             bridgeScope.cancel()
             gateway.closeAll(client, okHttp)
         }
