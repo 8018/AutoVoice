@@ -45,11 +45,6 @@ class VoiceBusinessService(
     private val output = tts
     private var thinkingJob: Job? = null
     private var thinkingTimerTurnId: String? = null
-    /** A queued capture callback after exit/expiry must not reopen recognition without a new wake. */
-    @Volatile private var requiresWake = false
-    /** Existing direct VoiceEngine tests can start a first capture without a preceding wake. */
-    @Volatile private var legacyFirstCapture = true
-
     val conversation = ConversationController(
         onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
@@ -71,16 +66,13 @@ class VoiceBusinessService(
 
     fun onWake() {
         finishOpenRounds("new_interaction")
-        requiresWake = false
-        legacyFirstCapture = false
         recognition?.startRecognition()
         conversation.onWake()
     }
 
     fun onCaptureStarted(interruptPlayback: Boolean) {
-        // Production paths are enabled by wake. Do not override an explicit stopRecognition just
-        // because a queued capture or VAD callback arrives later.
-        if (legacyFirstCapture && !requiresWake) recognition?.startRecognition()
+        // Capturing audio is not an interaction entry point. Manual input explicitly calls onWake
+        // first; a queued capture/VAD callback must never open recognition on its own.
         if (interruptPlayback) output.stop(PlaybackInterruptionReason.NEW_TURN)
     }
 
@@ -181,7 +173,6 @@ class VoiceBusinessService(
     private fun onConversationState(snapshot: DialogueSnapshot) {
         onDialogueState(snapshot)
         if (snapshot.state == DialogueState.DORMANT) {
-            requiresWake = true
             recognition?.stopRecognition()
         }
         if (snapshot.state == DialogueState.PROCESSING) {

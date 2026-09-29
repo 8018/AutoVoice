@@ -868,7 +868,7 @@ P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engi
 
 本地识别实现也迁入 `voice-engine/local`：`LocalAsrEngine` 如实报告 2C SDK 无独立 ASR 文本，`LocalNluEngine` 接收厂商命令识别和规则语义的注入端口，不直接依赖 Android 或讯飞适配包；App 组合根仍负责选择真实/显式 fake SDK、注入规则解析和遥测。端云实现现在都在引擎模块，但统一 `AsrModule`/`NluModule` 编排与 SDK 队列二次门禁仍是待办。
 
-DM 准入边界补强：`DialogueStateMachine.onSpeechCommitted` 不再从 `DORMANT` 隐式创建 interaction；`ConversationController.confirmTurn` 在消费 ASR/NLU 证据前先拒绝休眠态。唤醒仍是现有显式建交互入口，迟到的识别证据不能在 reset/过期后重启对话。文本显式入口尚未实施，届时必须通过统一的 `beginInteraction` 建立交互，不能重新放开 `onSpeechCommitted` 的隐式路径。
+DM 准入边界补强：`DialogueStateMachine.onSpeechCommitted` 不再从 `DORMANT` 隐式创建 interaction；`ConversationController.confirmTurn` 在消费 ASR/NLU 证据前先拒绝休眠态。首次录音自动开启识别的旧兼容旁路已移除，录音开始本身不是显式建交互入口；生产按键和唤醒入口先调用 `onWake()`。迟到的识别证据不能在 reset/过期后重启对话。文本显式入口尚未实施，届时必须通过统一的 `beginInteraction` 建立交互，不能重新放开 `onSpeechCommitted` 的隐式路径。
 
 这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
