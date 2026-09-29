@@ -27,6 +27,11 @@ enum class PlaybackStage(val wire: String) {
     STARTED("start"), COMPLETED("completed"), FAILED("failed"), INTERRUPTED("interrupted")
 }
 
+enum class PlaybackInterruptionReason(val wire: String) {
+    NEW_TURN("new_turn"), STOP_ONLY("stop_only"), INTERACTION_CLOSED("interaction_closed"),
+    REPLACED_OUTPUT("replaced_output"), DRIVER_INTERRUPTED("driver_interrupted"),
+}
+
 /** Android/audio-platform adapter. Generation, cache and playback coordination stay in :tts. */
 fun interface TtsPlaybackDriver {
     fun play(reply: AudioReply, identity: PlaybackIdentity)
@@ -48,7 +53,7 @@ interface TtsOutput {
     fun playStream(turnId: String, reply: StreamingAudioReply, onComplete: (AudioStreamEnd) -> Unit)
     fun playRealtimeStream(token: RealtimePlaybackToken, reply: StreamingAudioReply,
                            onComplete: (AudioStreamEnd) -> Unit)
-    fun stop()
+    fun stop(reason: PlaybackInterruptionReason = PlaybackInterruptionReason.STOP_ONLY)
     fun acceptPlaybackEvent(stage: String, level: String, payload: Map<String, Any?>)
 }
 
@@ -154,7 +159,7 @@ private class DefaultTtsOutput(
         }
     }
 
-    override fun stop() = playback.stop()
+    override fun stop(reason: PlaybackInterruptionReason) = playback.stop(reason)
 
     override fun acceptPlaybackEvent(stage: String, level: String, payload: Map<String, Any?>) =
         playback.accept(stage, level, payload)
@@ -194,7 +199,10 @@ private class PlaybackCoordinator(
             }
             previous.third?.cancel()
             if (previous.first != null) driver.stop()
-            if (previous.first != null && previous.second) emit(previous.first!!, PlaybackStage.INTERRUPTED, "warn")
+            if (previous.first != null && previous.second) emit(
+                previous.first!!, PlaybackStage.INTERRUPTED, "warn",
+                previous.first!!.payload() + ("reason" to PlaybackInterruptionReason.REPLACED_OUTPUT.wire),
+            )
         }
         return next
     }
@@ -287,10 +295,13 @@ private class PlaybackCoordinator(
             }
             identity to kind
         }
-        emit(event.first, event.second, level, payload)
+        val normalized = if (event.second == PlaybackStage.INTERRUPTED && "reason" !in payload) {
+            payload + ("reason" to PlaybackInterruptionReason.DRIVER_INTERRUPTED.wire)
+        } else payload
+        emit(event.first, event.second, level, normalized)
     }
 
-    fun stop() {
+    fun stop(reason: PlaybackInterruptionReason) {
         synchronized(driverLock) {
             val previous = synchronized(this) {
                 val value = Triple(current, started, streamJob)
@@ -305,7 +316,10 @@ private class PlaybackCoordinator(
             }
             previous.third?.cancel()
             driver.stop()
-            if (previous.first != null && previous.second) emit(previous.first!!, PlaybackStage.INTERRUPTED, "warn")
+            if (previous.first != null && previous.second) emit(
+                previous.first!!, PlaybackStage.INTERRUPTED, "warn",
+                previous.first!!.payload() + ("reason" to reason.wire),
+            )
         }
     }
 

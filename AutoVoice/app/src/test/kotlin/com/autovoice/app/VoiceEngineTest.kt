@@ -93,6 +93,25 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `explicit stop playback settles current reply but keeps interaction listening`() = runBlocking {
+        val engine = engine(
+            scope = this,
+            local = LocalChainRunner { awaitCancellation() },
+            cloud = CloudRunner { awaitCancellation() },
+        ).first
+        engine.onWake()
+        engine.onListeningStart()
+        val turnId = engine.conversation.captureId
+        engine.conversation.openCapture(turnId)
+        engine.conversation.confirmTurn(turnId, AdmissionEvidence.LOCAL_SEMANTIC)
+        engine.conversation.onFinalSemantic(turnId)
+        engine.conversation.onPlaybackStarted(turnId)
+        engine.stopPlayback()
+        assertEquals(DialogueState.LISTENING, engine.conversation.snapshot.value.state)
+        assertNull(engine.conversation.snapshot.value.turnId)
+    }
+
+    @Test
     fun `vad candidate keeps playback until semantic admission creates a new turn`() = runBlocking {
         var stops = 0
         val player = object : AudioPlayer {

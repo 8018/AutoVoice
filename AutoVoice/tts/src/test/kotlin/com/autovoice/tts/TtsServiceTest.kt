@@ -16,6 +16,30 @@ import org.junit.jupiter.api.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class TtsServiceTest {
     @Test
+    fun `interruption event carries caller reason`() = runTest {
+        val events = mutableListOf<Pair<String, Map<String, Any?>>>()
+        lateinit var output: TtsOutput
+        output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> null },
+            cacheDir = null,
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: AudioReply, identity: PlaybackIdentity) {
+                    output.acceptPlaybackEvent("start", "info", identity.payload())
+                }
+            },
+            scope = this,
+            isCurrentTurn = { true },
+            events = TtsEventSink { event, _, payload -> events += event to payload },
+        )
+        output.play("turn", AudioReply("audio/pcm", byteArrayOf(1), "hello"))
+        output.stop(PlaybackInterruptionReason.NEW_TURN)
+        assertEquals(
+            PlaybackInterruptionReason.NEW_TURN.wire,
+            events.last { it.first == "tts_play_interrupted" }.second["reason"],
+        )
+    }
+
+    @Test
     fun `output that never starts fails within preparation deadline`() = runTest {
         val stages = mutableListOf<PlaybackStage>()
         val output = createTtsOutput(
