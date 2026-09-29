@@ -864,9 +864,11 @@ P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engi
 
 业务迁移的下一段把 `AppDialogueManager`、`NavigationSession`、`NavigationExecutor`、导航候选规则与任务上下文移入 `voice-business/navigation`。App 仅注入高德打开器、订阅快照与发送任务上下文；纯业务模块拥有独立导航用例，并单独执行 70% 行覆盖率门禁。
 
-云端识别实现迁移的第一段把 `CloudAsrEngine`、`CloudNluEngine` 移入 `voice-engine/cloud`，以只暴露消息订阅和已关联回复槽的 `CloudSpeechBridge` 端口对接 App 内的网关桥。云端 ASR/PGS 事件、pending、decision、最终语义与错误的独立模块测试覆盖率超过 70%；音频上传仍由原共享通道负责，ASR 不另起第二次请求。下一步仍需将本地实现和统一的 AsrModule/NluModule、请求级门禁迁入引擎模块。
+云端识别实现迁移的第一段把 `CloudAsrEngine`、`CloudNluEngine` 移入 `voice-engine/cloud`，以只暴露消息订阅和已关联回复槽的 `CloudSpeechBridge` 端口对接 App 内的网关桥。云端 ASR/PGS 事件、pending、decision、最终语义与错误的独立模块测试覆盖率超过 70%；音频上传仍由原共享通道负责，ASR 不另起第二次请求。
 
-本地识别实现也迁入 `voice-engine/local`：`LocalAsrEngine` 如实报告 2C SDK 无独立 ASR 文本，`LocalNluEngine` 接收厂商命令识别和规则语义的注入端口，不直接依赖 Android 或讯飞适配包；App 组合根仍负责选择真实/显式 fake SDK、注入规则解析和遥测。端云实现现在都在引擎模块，但统一 `AsrModule`/`NluModule` 编排与 SDK 队列二次门禁仍是待办。
+本地识别实现也迁入 `voice-engine/local`：`LocalAsrEngine` 如实报告 2C SDK 无独立 ASR 文本，`LocalNluEngine` 接收厂商命令识别和规则语义的注入端口，不直接依赖 Android 或讯飞适配包；App 组合根仍负责选择真实/显式 fake SDK、注入规则解析和遥测。
+
+能力聚合的第一段在 `voice-engine` 新增同一实例的 `AsrModule` 和 `NluModule`：本地/云端实现由组合根各绑定一次，普通端云候选及云端流式 ASR 的调用都经这两个能力入口；端云结果类型和共享音频上行、仲裁行为不变。当前模块还只是路由与生命周期聚合，尚未接管 Frontend、SDK 有界输入队列和所有请求级许可，因此第 6、7 节的完整模块职责仍属待办。
 
 DM 准入边界补强：`DialogueStateMachine.onSpeechCommitted` 不再从 `DORMANT` 隐式创建 interaction；`ConversationController.confirmTurn` 在消费 ASR/NLU 证据前先拒绝休眠态。首次录音自动开启识别的旧兼容旁路已移除，录音开始本身不是显式建交互入口；生产按键和唤醒入口先调用 `onWake()`。迟到的识别证据不能在 reset/过期后重启对话。文本显式入口尚未实施，届时必须通过统一的 `beginInteraction` 建立交互，不能重新放开 `onSpeechCommitted` 的隐式路径。
 

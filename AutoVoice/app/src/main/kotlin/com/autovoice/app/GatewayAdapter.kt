@@ -2,6 +2,8 @@ package com.autovoice.app
 import com.autovoice.voiceengine.cloud.CloudAsrEngine
 import com.autovoice.voiceengine.cloud.CloudNluEngine
 import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.AsrModule
+import com.autovoice.voiceengine.NluModule
 import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.util.Log
@@ -15,12 +17,9 @@ import com.autovoice.gatewayclient.GatewayPayloadParser
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
-import com.autovoice.voicecore.AsrEngine
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.Reply
-import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.SpeechRouteModules
 import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.CloudRunner
@@ -50,7 +49,9 @@ internal class GatewayCloudRunner(
     private val locationProvider: () -> Pair<Double, Double>? = { null },
     private val navigationContextProvider: () -> NavigationTaskContextRef? = { null },
     private val recognitionGate: RecognitionGate,
-) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner, SpeechRouteModules<Reply> {
+    private val asrModule: AsrModule,
+    private val nluModule: NluModule,
+) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClientFactory.create(
         url = cfg.gatewayUrl,
@@ -86,8 +87,10 @@ internal class GatewayCloudRunner(
         { segment, turnId -> businessSpeech.run(segment, turnId) },
     )
     private val speechRegistrations = listOf(cloudAsr.register(), cloudNlu.register())
-    override val asr: AsrEngine get() = cloudAsr
-    override val nlu: NluEngine<Reply> get() = cloudNlu
+    init {
+        asrModule.bindCloud(cloudAsr, cloudAsr::release, cloudAsr::close)
+        nluModule.bindCloud(cloudNlu)
+    }
     private val realtimeChatChannel: GatewayRealtimeChatChannel by lazy {
         GatewayRealtimeChatChannel(client, bridge, protocol, scope, ::ensureReady, { sessionId }) {
                 token, reply -> onRealtimeReply(token, reply)
@@ -222,7 +225,7 @@ internal class GatewayCloudRunner(
     fun close() {
         connectionObserver.cancel()
         speechRegistrations.forEach { it.unregister() }
-        cloudAsr.close()
+        asrModule.closeCloud()
         navigationChannel.close()
         businessSpeech.close()
         finishRealtimeChat()
@@ -256,7 +259,7 @@ internal class GatewayCloudRunner(
 
     override fun beginStreamingTurn(utteranceId: String) {
         if (cfg.enabled) {
-            cloudAsr.recognize(utteranceId, byteArrayOf(), asrSink(utteranceId))
+            asrModule.recognizeCloud(utteranceId, byteArrayOf(), asrSink(utteranceId))
             businessSpeech.beginStreamingTurn(utteranceId)
         }
     }
@@ -265,7 +268,7 @@ internal class GatewayCloudRunner(
     override fun finishStreamingTurn(utteranceId: String) = businessSpeech.finishStreamingTurn(utteranceId)
     override fun cancelStreamingTurn(utteranceId: String) {
         businessSpeech.cancelStreamingTurn(utteranceId)
-        cloudAsr.release(utteranceId)
+        asrModule.releaseCloud(utteranceId)
     }
     override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
         if (!businessSpeech.isInputFinalized(utteranceId)) cancelStreamingTurn(utteranceId)
@@ -295,11 +298,11 @@ internal class GatewayCloudRunner(
     override suspend fun run(segment: ByteArray): Reply = run(segment, utteranceIdProvider())
 
     override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
-        cloudAsr.recognize(utteranceId, segment, asrSink(utteranceId))
+        asrModule.recognizeCloud(utteranceId, segment, asrSink(utteranceId))
         return try {
-            cloudNlu.understand(utteranceId, segment, null)
+            nluModule.understandCloud(utteranceId, segment, null)
         } finally {
-            cloudAsr.release(utteranceId)
+            asrModule.releaseCloud(utteranceId)
         }
     }
 
