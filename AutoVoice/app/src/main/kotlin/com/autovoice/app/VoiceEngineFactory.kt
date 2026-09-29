@@ -3,19 +3,11 @@ package com.autovoice.app
 import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
-import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
-import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
-import com.autovoice.voicecore.AsrResult
-import com.autovoice.voicecore.AsrSink
-import com.autovoice.voicecore.AsrEngine
 import com.autovoice.voicecore.DemoConfig
-import com.autovoice.voicecore.Intent
-import com.autovoice.voicecore.NluResult
-import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
@@ -342,76 +334,20 @@ internal object VoiceEngineFactory {
                 }
             }
         }
-        // 当前端侧 SDK 是 2C 命令词（文本+语义同源），不是通用 ASR；因此不能冒充
-        // ASR 提前上屏。demo-full 的独立 ASR 来自云端 asr_partial；后续接入本地 PGS
-        // 时只需替换本 stage，仲裁与 NLU 均无需改动。
-        val localAsrEngine = AsrEngine { _, _ -> null }
-        val localNluEngine = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> NluEngine { segment, _ ->
-                val command = try {
-                    recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
-                } catch (t: Throwable) {
-                    Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", t)
-                    null
-                }
-                val intent = RuleNluProvider.understand(command.orEmpty())
-                // 2C 的文本属于 NLU 候选：不提前显示，只有该候选胜出时才覆盖识别框。
-                NluResult(intent = intent, recognizedText = command)
+        // 2C 文本只随 NLU 候选返回；LocalAsrEngine 不伪造独立 ASR 输出。
+        val nlu = when (cfg.local.nlu) {
+            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(cfg.local.asr) { segment ->
+                offlineStage?.recognize(segment)
             }
             else -> error("unsupported local.nlu '${cfg.local.nlu}'")
         }
-        return object : LocalChainRunner {
-            override suspend fun run(segment: ByteArray): NluResult = run(segment, "")
-
-            override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
-                val startMs = System.currentTimeMillis()
-                return try {
-                    val asrResult = localAsrEngine.recognize(segment, object : AsrSink {
-                        override fun onTurnEstablished() {
-                            onLocalTurnEstablished(utteranceId)
-                        }
-
-                        override fun onTranscript(result: AsrResult) {
-                            // 不等待 NLU、更不等待仲裁；PGS partial/final 都即时更新识别框。
-                            if (result.text.isNotBlank()) {
-                                onLocalRecognized(utteranceId, result.text)
-                                telemetry.record(
-                                    TelemetryStages.LOCAL_ASR,
-                                    "info",
-                                    mapOf("text" to result.text, "isFinal" to result.isFinal),
-                                )
-                            }
-                        }
-                    })
-                    val nluResult = localNluEngine.understand(segment, asrResult)
-                    val intent = nluResult.intent
-                    Log.i(FACTORY_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
-                    // ASR 与 NLU 分阶段落库；2C 自带文本归 NLU，不伪装成 ASR。
-                    telemetry.record(
-                        TelemetryStages.LOCAL_NLU,
-                        "info",
-                        mapOf(
-                            "text" to (nluResult.recognizedText ?: ""),
-                            "intent" to "${intent.domain}/${intent.intent}",
-                            "durationMs" to (System.currentTimeMillis() - startMs),
-                        ),
-                    )
-                    nluResult
-                } catch (t: Throwable) {
-                    // 本地链绝不抛出：任何 SDK 异常 → unknown 意图（不执行、不播报）
-                    Log.w(FACTORY_TAG, "本地链路异常，降级 unknown 意图", t)
-                    telemetry.record(
-                        TelemetryStages.LOCAL_NLU,
-                        "warn",
-                        mapOf(
-                            "intent" to "unknown/vehicle",
-                            "durationMs" to (System.currentTimeMillis() - startMs),
-                        ),
-                    )
-                    NluResult(Intent.unknown("vehicle"))
-                }
-            }
-        }
+        return LocalSpeechChain(
+            asr = LocalAsrEngine(),
+            nlu = nlu,
+            onRecognized = onLocalRecognized,
+            onTurnEstablished = onLocalTurnEstablished,
+            telemetry = telemetry,
+        )
     }
 
     /** ConnectivityManager 网络检查：active network 非空即认为网络可用。 */
@@ -426,19 +362,4 @@ internal object VoiceEngineFactory {
         return active != null
     }
 
-}
-
-/** Production failures remain failures; the deterministic fake is an explicit demo provider only. */
-internal fun recognizeLocalCommand(
-    configuredAsr: String,
-    segment: ByteArray,
-    offline: () -> String?,
-): String? = when (configuredAsr) {
-    DemoConfig.LOCAL_ASR_IFLYTEK -> try {
-        offline()
-    } catch (error: IllegalStateException) {
-        if (error.message?.contains(IflytekOfflineCommandAsrStage.NOT_CONFIGURED_MSG) == true) null else throw error
-    }
-    DemoConfig.LOCAL_ASR_FAKE -> FakeCommandAsrProvider.recognize(segment)
-    else -> throw IllegalArgumentException("unsupported local.asr '$configuredAsr'")
 }

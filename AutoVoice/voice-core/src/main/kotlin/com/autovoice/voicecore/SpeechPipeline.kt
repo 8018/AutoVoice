@@ -26,12 +26,16 @@ interface AsrSink {
     }
 }
 
-/** ASR 原子引擎：PCM → 0..n 个识别结果；本地与云端实现遵循同一输出语义。 */
+/**
+ * ASR 能力：为一轮输入建立独立识别输出。实现可以同步返回最终文本，也可以在返回后继续
+ * 经 [sink] 推送 PGS/云端流式结果。云端实现只订阅已共享上传的音频轮，绝不再次上传 PCM。
+ * [turnId] 是请求相关 ID，不表示会话状态机已采用该轮。
+ */
 fun interface AsrEngine {
-    suspend fun recognize(segment: ByteArray, sink: AsrSink): AsrResult?
+    fun recognize(turnId: String, segment: ByteArray, sink: AsrSink): AsrResult?
 }
 
-/** Source-compatible migration name. New composition code must depend on [AsrEngine]. */
+/** Legacy migration name. New composition code must depend on [AsrEngine]. */
 @Deprecated("Use AsrEngine")
 typealias AsrStage = AsrEngine
 
@@ -45,13 +49,20 @@ data class NluResult(
 )
 
 /**
- * NLU 阶段：PCM + 可选最终 ASR 文本 → 语义候选。
- * 传统 NLU 使用 asr.text；2C 命令词引擎可直接消费 PCM 并在结果中携带 recognizedText。
+ * NLU 阶段：话语输入 + 可选最终 ASR 文本 → 语义候选。
+ * 端侧返回 [NluResult]；云端返回保留音频、动作及文本的 Reply。二者在 VoiceEngine
+ * 的候选链中组合，均须经仲裁与会话准入后才进入业务处理。
  */
-fun interface NluEngine {
-    suspend fun understand(segment: ByteArray, asr: AsrResult?): NluResult
+fun interface NluEngine<out Result> {
+    suspend fun understand(turnId: String, segment: ByteArray, asr: AsrResult?): Result
 }
 
-/** Source-compatible migration name. New composition code must depend on [NluEngine]. */
+/** One VoiceEngine candidate route is explicitly composed from independent ASR and NLU modules. */
+interface SpeechRouteModules<out Result> {
+    val asr: AsrEngine
+    val nlu: NluEngine<Result>
+}
+
+/** Legacy local NLU migration name. New composition code must depend on [NluEngine]. */
 @Deprecated("Use NluEngine")
-typealias NluStage = NluEngine
+typealias NluStage = NluEngine<NluResult>

@@ -19,14 +19,16 @@ BusinessHandler (:business-core)
 
 GatewayCloudRunner
       |-- GatewayProtocolSender（audio/chat/tts/turn 协议）
-      |-- GatewayBridge -> MessageDispatcher（按 type 多播）
-      |                    `-- GatewayPayloadParser（无状态解析）
+      |-- GatewayBridge -> MessageDispatcher（按 type 多播、请求槽/音频流关联）
+      |-- CloudAsrEngine / CloudNluEngine（语音模块，向 Bridge 注册监听）
+      |-- GatewayPayloadParser（无状态解析）
       `-- GatewayClient（WebSocket 通道）
           `-- GatewayConnectionPolicy（心跳/超时/重连）
 
-Local semantic pipeline                 Cloud semantic pipeline
-  |-- local AsrEngine                     |-- CloudAsrEngine (typed listener)
-  `-- local NluEngine                     `-- CloudNluEngine (typed listener)
+VoiceEngine 中的语音候选链
+  |-- LocalSpeechChain: LocalAsrEngine + LocalNluEngine
+  `-- GatewayCloudRunner: CloudAsrEngine + CloudNluEngine
+       `-- 二者共享同一轮 GatewayBusinessSpeechChannel 音频上行
 ```
 
 ## 边界约束
@@ -41,8 +43,12 @@ Local semantic pipeline                 Cloud semantic pipeline
    车辆状态或具体业务 SDK。
 6. `TtsOutput` 是播报、已有音频播放、流式播放、停止和播放事件的唯一入口。缓存 key、磁盘格式、
    命中策略、生成实现和播放身份协调均不向调用方暴露；Android 只实现底层播放 driver。
-7. ASR 与 NLU 是两个独立引擎。端侧按 `local AsrEngine -> local NluEngine` 组合；云端 ASR 与
-   云端 NLU 分别注册自己消费的消息类型，ASR 文本不经过语义仲裁。
+7. ASR 与 NLU 是两个独立引擎，端云候选链均实现 `SpeechRouteModules<Result>`，持有
+   `voice-core` 的共同 `AsrEngine` / `NluEngine<Result>` 契约。端侧按 ASR → NLU 组合；
+   云端 ASR 订阅本轮识别事件，云端 NLU 等待共享上行的
+   语义结果，不能重复上传音频，也不能为了等 ASR final 阻塞 NLU。ASR 文本不经过语义仲裁。
+   当前端侧 2C SDK 不提供独立 ASR，因此 `LocalAsrEngine` 不伪造文本；2C 文本随 NLU
+   候选输出，只有胜出后才能覆盖识别框。
 8. 仲裁器是进程级常驻的 FIFO 消息流水线，不拥有会话生命周期、不识别“当前轮”。
    它只记录每个 `turnId` 是否已输出语义；当前轮和状态有效性由会话状态机判断。
 9. 端侧云端语义与本地车窗语义可立即入队；本地普通语义在云端优先窗口内留在
