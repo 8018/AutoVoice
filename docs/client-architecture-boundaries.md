@@ -23,6 +23,8 @@ GatewayCloudRunner
       |-- CloudAsrEngine / CloudNluEngine（语音模块，向 Bridge 注册监听）
       |-- GatewayPayloadParser（无状态解析）
       `-- GatewayClient（WebSocket 通道）
+          |-- GatewaySocketTransport（传输接口）
+          |    `-- OkHttpGatewaySocketTransport（WebSocket 实现）
           `-- GatewayConnectionPolicy（心跳/超时/重连）
 
 VoiceEngine 中的语音候选链
@@ -33,7 +35,9 @@ VoiceEngine 中的语音候选链
 
 ## 边界约束
 
-1. `GatewayClient` 只管理连接、原始文本/二进制帧收发和连接状态。不得新增
+1. `GatewayClient` 只管理连接、原始文本/二进制帧收发和连接状态，依赖
+   `GatewaySocketTransport` 而不是直接调用 OkHttp。生产适配器用 OkHttp WebSocket；
+   Retrofit 只用于遥测等 REST 请求，不承载双向 WebSocket 帧。不得新增
    `sendAudioStart`、`sendTtsRequest` 等业务方法。
 2. 上行协议命令统一放在 `GatewayProtocolSender`。连接失败结束当前轮，音频不得自动重放。
 3. 下行消息必须先经 `MessageDispatcher`。监听器注册时声明消息类型；一个类型允许多个监听器，
