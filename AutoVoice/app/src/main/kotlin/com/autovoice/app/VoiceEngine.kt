@@ -4,6 +4,7 @@ import android.util.Log
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
+import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.voicebusiness.VoiceBusinessService
 import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.TtsOutput
@@ -112,12 +113,17 @@ class VoiceEngine(
     /** 只管理采集资源事实与候选生产，不拥有对话状态。 */
     val candidates: CandidateCoordinator
 
+    /** Input permit is invalidated by stopRecognition; completed NLU output is intentionally not gated here. */
+    private val recognitionGate = RecognitionGate()
+    @Volatile private var capturePermit: RecognitionGate.InputPermit? = null
+
     /** Transitional application facade: dialogue and response policy are owned by :voice-business. */
     private val voiceBusiness = VoiceBusinessService(
         tts = tts,
         business = business,
         scope = scope,
         thinkingTimeoutMs = thinkingTimeoutMs,
+        recognition = recognitionGate,
         onExecution = { turnId, intent, result ->
             telemetry.recordFor(
                 turnId,
@@ -170,6 +176,8 @@ class VoiceEngine(
      * （生产装配每次重建引擎时新建专属 scope，不复用 viewModelScope）。
      */
     fun close() {
+        recognitionGate.stopRecognition()
+        capturePermit = null
         telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
         voiceBusiness.close()
@@ -191,6 +199,15 @@ class VoiceEngine(
     fun onForeground() = onForeground.invoke()
 
     fun onWake() = voiceBusiness.onWake()
+
+    /** Business controls new-input admission independently of capture and completed NLU work. */
+    fun stopRecognition() {
+        recognitionGate.stopRecognition()
+        capturePermit = null
+        cancelStreamingCloudAudio()
+    }
+
+    val recognitionEnabled: Boolean get() = recognitionGate.recognitionEnabled
 
     fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null) =
         voiceBusiness.onFollowUpExpired(interactionId, expected)
@@ -215,6 +232,7 @@ class VoiceEngine(
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
         voiceBusiness.onCaptureStarted(interruptPlayback)
+        capturePermit = recognitionGate.admitInput()
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -243,6 +261,7 @@ class VoiceEngine(
      * 守卫：非录音中（LISTENING）的杂散 SpeechStart 忽略。
      */
     fun onVadStart() {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (!candidates.isCapturing(currentUtteranceId)) return
         awaitingVadStart = false
         conversation.openCapture(currentUtteranceId)
@@ -255,17 +274,19 @@ class VoiceEngine(
      * [onVadStart] 配对；无话语时静默跳过——防杂散事件）。
      */
     fun onVadEnd() {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (currentUtteranceId.isBlank() || awaitingVadStart) return
         telemetry.record(TelemetryStages.VAD_END, "info", emptyMap())
     }
 
     fun appendStreamingCloudAudio(pcm: ByteArray) {
-        if (pcm.isNotEmpty()) streamingCloud?.appendStreamingAudio(pcm)
+        if (pcm.isNotEmpty() && recognitionGate.accepts(capturePermit)) streamingCloud?.appendStreamingAudio(pcm)
     }
 
     /** 按钮抬手时 VAD 可能尚未产生 SpeechEnd，显式收口，幂等。 */
     fun finishStreamingCloudAudio() {
-        streamingCloud?.finishStreamingTurn(currentUtteranceId)
+        if (recognitionGate.accepts(capturePermit)) streamingCloud?.finishStreamingTurn(currentUtteranceId)
+        else streamingCloud?.cancelStreamingTurn(currentUtteranceId)
     }
 
     /** VAD 误报/过短录音不形成业务轮时，撤销已经预先打开的实时上行。 */
@@ -280,6 +301,7 @@ class VoiceEngine(
      * T7：累加本轮 VAD 聚合统计（段数/总时长，随 onTurnSegment 的 vad 事件上报）。
      */
     fun onCloudSegment(segment: ByteArray) {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (candidates.appendCloudSegment(currentUtteranceId, segment)) {
             turnSegmentCount += 1
             turnSegmentsTotalMs += durationMs(segment.size)
@@ -294,6 +316,10 @@ class VoiceEngine(
      * （T6），最后启动双路竞速收敛。
     */
     fun onTurnSegment(segment: ByteArray) {
+        if (!recognitionGate.accepts(capturePermit)) {
+            candidates.cancelCapture(currentUtteranceId)
+            return
+        }
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
         // Capture-level endpoint may precede ASR admission; the gate retains that fact.
@@ -326,6 +352,7 @@ class VoiceEngine(
     }
 
     fun appendRealtimeChatAudio(pcm: ByteArray) {
+        if (!recognitionGate.recognitionEnabled) return
         runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
             .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
     }
@@ -344,6 +371,7 @@ class VoiceEngine(
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
         val id = currentUtteranceId
+        capturePermit = null
         conversation.rejectCapture(id)
         if (candidates.cancelCapture(id)) telemetry.end(id, "capture_rejected")
     }

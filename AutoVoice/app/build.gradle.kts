@@ -91,6 +91,7 @@ kotlin {
 
 dependencies {
     implementation(project(":voice-core"))
+    implementation(project(":voice-engine"))
     implementation(project(":gateway-client"))
     implementation(project(":message-dispatch"))
     implementation(project(":business-core"))

@@ -6,6 +6,7 @@ kotlin { jvmToolchain(21) }
 
 dependencies {
     implementation(project(":voice-core"))
+    implementation(project(":voice-engine-api"))
     implementation(project(":business-core"))
     implementation(project(":tts"))
     implementation(libs.coroutines.core)
