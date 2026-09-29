@@ -310,6 +310,10 @@ class AudioRecorder(
         return segments
     }
 
+    override fun finishProcessedAudio(): ByteArray = synchronized(turnProcessingLock) {
+        frontend.finishProcessedAudio()
+    }
+
     /**
      * 结束本轮收集（幂等）。若唤醒监听仍启用，只关闭 VAD/RNNoise 分支，底层
      * AudioRecord 与原始 PCM 流保持不变；否则释放麦克风。

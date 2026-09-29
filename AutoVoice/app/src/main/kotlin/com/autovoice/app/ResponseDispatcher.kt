@@ -6,6 +6,7 @@ import com.autovoice.business.BusinessCommand
 import com.autovoice.business.BusinessHandler
 import com.autovoice.business.BusinessResult
 import com.autovoice.tts.TtsOutput
+import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.ActionReply
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.Intent
@@ -23,49 +24,65 @@ internal class ResponseDispatcher(
     private val onRecognized: (String?) -> Unit,
     private val onReplyText: (String) -> Unit,
 ) {
-    fun dispatchCloud(turnId: String, reply: Reply) {
-        if (!isCurrentTurn(turnId)) return
+    enum class Outcome { OUTPUT_REQUESTED, NO_OUTPUT, STALE }
+
+    fun dispatchCloud(turnId: String, reply: Reply): Outcome {
+        if (!isCurrentTurn(turnId)) return Outcome.STALE
         if (reply.asrText.isNotBlank()) onRecognized(reply.asrText)
-        when (reply) {
+        return when (reply) {
             is AudioReply -> {
                 val result = reply.intent?.let { execute(turnId, it) }
                     ?: BusinessResult.applied()
                 if (result.status == BusinessResult.Status.APPLIED) {
                     if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
                     output.play(turnId, reply)
+                    Outcome.OUTPUT_REQUESTED
                 } else if (result.status == BusinessResult.Status.FAILED) {
                     reportExecutionFailure(turnId)
-                }
+                    Outcome.OUTPUT_REQUESTED
+                } else Outcome.NO_OUTPUT
             }
-            is StreamingAudioReply -> output.playStream(turnId, reply) { end ->
-                if (end.speakText.isNotBlank()) onReplyText(end.speakText)
-                if (end.asrText.isNotBlank()) onRecognized(end.asrText)
-                end.intent?.let { execute(turnId, it) }
+            is StreamingAudioReply -> {
+                output.playStream(turnId, reply) { end ->
+                    if (end.speakText.isNotBlank()) onReplyText(end.speakText)
+                    if (end.asrText.isNotBlank()) onRecognized(end.asrText)
+                    end.intent?.let { execute(turnId, it) }
+                }
+                Outcome.OUTPUT_REQUESTED
             }
             is TextReply -> {
                 if (reply.text.isNotBlank()) onReplyText(reply.text)
-                output.speak(turnId, reply.text)
+                if (reply.text.isBlank()) Outcome.NO_OUTPUT else {
+                    output.speak(turnId, reply.text)
+                    Outcome.OUTPUT_REQUESTED
+                }
             }
             is ActionReply -> {
                 when (execute(turnId, reply.intent).status) {
                     BusinessResult.Status.APPLIED -> {
                         if (reply.speakText.isNotBlank()) onReplyText(reply.speakText)
-                        output.speak(turnId, reply.speakText)
+                        if (reply.speakText.isBlank()) Outcome.NO_OUTPUT else {
+                            output.speak(turnId, reply.speakText)
+                            Outcome.OUTPUT_REQUESTED
+                        }
                     }
-                    BusinessResult.Status.FAILED -> reportExecutionFailure(turnId)
-                    else -> Unit
+                    BusinessResult.Status.FAILED -> {
+                        reportExecutionFailure(turnId)
+                        Outcome.OUTPUT_REQUESTED
+                    }
+                    else -> Outcome.NO_OUTPUT
                 }
             }
         }
     }
 
-    fun dispatchLocal(turnId: String, nlu: NluResult) {
+    fun dispatchLocal(turnId: String, nlu: NluResult): Outcome {
         nlu.recognizedText?.takeIf(String::isNotBlank)?.let(onRecognized)
         val result = execute(turnId, nlu.intent)
-        val applied = result.speakText.takeIf { result.status == BusinessResult.Status.APPLIED }
-        applied?.let {
-            output.speak(turnId, it)
-        }
+        val applied = result.speakText?.takeIf { result.status == BusinessResult.Status.APPLIED && it.isNotBlank() }
+            ?: return Outcome.NO_OUTPUT
+        output.speak(turnId, applied)
+        return Outcome.OUTPUT_REQUESTED
     }
 
     fun dispatchFailure(turnId: String) {
@@ -73,8 +90,8 @@ internal class ResponseDispatcher(
         output.speak(turnId, FALLBACK_PHRASE)
     }
 
-    fun dispatchRealtime(reply: StreamingAudioReply) {
-        output.playStream("", reply) { end ->
+    fun dispatchRealtime(token: RealtimePlaybackToken, reply: StreamingAudioReply) {
+        output.playRealtimeStream(token, reply) { end ->
             if (end.speakText.isNotBlank()) onReplyText(end.speakText)
             end.intent?.takeIf { it.domain == "conversation" }?.let {
                 business.handle(BusinessCommand("realtime", it))

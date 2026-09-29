@@ -50,7 +50,7 @@ public final class McpSkillRegistry implements AutoCloseable {
         return snapshot.sessions();
     }
     /** 不可被外部 skill 覆盖的内置终局工具。 */
-    private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate",
+    private static final Set<String> RESERVED_TOOL_NAMES = Set.of("car_control", "navigate", "exit_dialogue", "exit_chat",
             NavigationToolFacade.NAME, SelectorToolInjector.GET, SelectorToolInjector.EXECUTE);
     /** 刷新时原子替换的域内唯一工具路由；不同模型域可安全复用同一工具名。 */
     private Map<String, McpToolSession> toolOwners() {

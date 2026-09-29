@@ -98,11 +98,19 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
             "你是车载语音助手。车控必须调用 car_control；导航必须先取得坐标再调用 navigate。"
                     + "其他回答简短自然，不超过两句。";
 
+    /** Platform prompt may change, but the local lifecycle control contract is non-configurable. */
+    static final String DIALOGUE_CONTROL_POLICY =
+            "\n用户明确要求退出或结束当前语音对话时必须调用 exit_dialogue；"
+                    + "不要用它退出导航或其他业务。";
+
     /** 车控 skill：结构化语义由模型以工具调用产出（skill 定义见 {@link #defaultTools()}）。 */
     static final String TOOL_NAME = VehicleAgentTools.CAR_CONTROL;
 
     /** 导航 skill：目的地由模型以工具调用产出（spec §4.2）。 */
     static final String NAVIGATE_TOOL_NAME = VehicleAgentTools.NAVIGATE;
+
+    /** 退出当前普通语音对话；由客户端会话状态机执行，不关闭应用。 */
+    static final String EXIT_DIALOGUE_TOOL_NAME = VehicleAgentTools.EXIT_DIALOGUE;
 
     /** intent.source 值：LLM 工具调用产出的意图。 */
     static final String INTENT_SOURCE = "llm.car_control";
@@ -442,11 +450,12 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         return Reply.ofText(content.asText());
     }
 
-    /** tool_calls 中任一 function.name 是终局工具（car_control / navigate）。 */
+    /** tool_calls 中任一 function.name 是终局工具（car_control / navigate / exit_dialogue）。 */
     private static boolean isTerminalTool(JsonNode toolCalls) {
         for (JsonNode tc : toolCalls) {
             String name = tc.path("function").path("name").asText("");
-            if (TOOL_NAME.equals(name) || NAVIGATE_TOOL_NAME.equals(name)) {
+            if (TOOL_NAME.equals(name) || NAVIGATE_TOOL_NAME.equals(name)
+                    || EXIT_DIALOGUE_TOOL_NAME.equals(name)) {
                 return true;
             }
         }
@@ -466,6 +475,11 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
             }
             if (NAVIGATE_TOOL_NAME.equals(name)) {
                 return navigateReply(arguments);
+            }
+            if (EXIT_DIALOGUE_TOOL_NAME.equals(name)) {
+                Intent intent = Intent.of("1.0", "conversation", "exit_dialogue", Map.of(), 1.0,
+                        "llm.exit-dialogue", arguments);
+                return Reply.ofAction(intent, "好的，已退出当前对话");
             }
         }
         throw new LlmException("deepseek llm called unexpected tool: "
@@ -551,6 +565,9 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         String prompt = systemPrompt == null ? null : systemPrompt.get();
         if (prompt == null || prompt.isBlank()) {
             prompt = DEFAULT_SYSTEM_PROMPT;
+        }
+        if (enabledTools.stream().anyMatch(t -> EXIT_DIALOGUE_TOOL_NAME.equals(t.name()))) {
+            prompt += DIALOGUE_CONTROL_POLICY;
         }
         boolean hasResolver = enabledTools.stream()
                 .anyMatch(t -> "resolve_navigation".equals(t.name()));

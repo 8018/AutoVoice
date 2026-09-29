@@ -408,6 +408,7 @@ class IflytekOfflineCommandAsrStage(
             for (t in 16..30) add("空调调到${t}度")
             add("打开车窗")
             add("关闭车窗")
+            addAll(RuleNluProvider.EXIT_COMMANDS)
         }
 
         /** 生成 FSA 命令词文件内容（格式与 SDK 归档 resource/CNENESR/fsa/cn_fsa.txt 逐字一致）。 */

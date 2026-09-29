@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -84,10 +85,12 @@ class AliyunTtsProviderTest {
     void synthesizesWavOverWebSocket() throws Exception {
         // run-task 是 WS 文本帧（握手后发送），在 server 端 listener 中捕获校验
         List<String> receivedFrames = new CopyOnWriteArrayList<>();
+        CountDownLatch runTaskReceived = new CountDownLatch(1);
         server.enqueue(new MockResponse().withWebSocketUpgrade(new ServerListener() {
             @Override
             public void onMessage(@NotNull WebSocket ws, @NotNull String message) {
                 receivedFrames.add(message);
+                runTaskReceived.countDown();
             }
 
             @Override
@@ -114,6 +117,7 @@ class AliyunTtsProviderTest {
         assertEquals("websocket", req.getHeader("Upgrade"));
 
         // run-task 帧完整 schema
+        assertTrue(runTaskReceived.await(5, TimeUnit.SECONDS), "等待服务端异步收到 run-task 帧");
         assertEquals(1, receivedFrames.size(), "连接建立后应恰好发送一帧 run-task");
         JsonNode runTask = mapper.readTree(receivedFrames.get(0));
         JsonNode header = runTask.path("header");

@@ -100,28 +100,27 @@ class SileroVad private constructor(
         for (i in samples.indices) waveform[i + 64] = samples[i] / 32768.0f
         context = waveform.copyOfRange(512, 576) // 更新 context：拼接窗口尾部 64 samples
 
-        val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(waveform), longArrayOf(1L, 576L))
-        val stateTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(state), longArrayOf(2L, 1L, 128L))
-        // sr：int64 scalar（[] shape），等价于 python 侧的 np.array(16000, dtype=np.int64)
-        val srTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(16000L)), longArrayOf())
-
-        val result = session.run(
-            mapOf(
-                inputName to inputTensor,
-                stateName to stateTensor,
-                srName to srTensor,
-            ),
-        )
-        try {
-            val prob = (result.get(outputName).get() as OnnxTensor).floatBuffer.get(0)
-            if (prob > maxProbability) maxProbability = prob
-            val stateN = (result.get(stateNName).get() as OnnxTensor).floatBuffer
-            val next = FloatArray(stateN.remaining())
-            stateN.get(next)
-            state = next
-            return prob
-        } finally {
-            result.close()
+        OnnxTensor.createTensor(env, FloatBuffer.wrap(waveform), longArrayOf(1L, 576L)).use { inputTensor ->
+            OnnxTensor.createTensor(env, FloatBuffer.wrap(state), longArrayOf(2L, 1L, 128L)).use { stateTensor ->
+                // sr：int64 scalar（[] shape），等价于 python 侧的 np.array(16000, dtype=np.int64)
+                OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(16000L)), longArrayOf()).use { srTensor ->
+                    session.run(
+                        mapOf(
+                            inputName to inputTensor,
+                            stateName to stateTensor,
+                            srName to srTensor,
+                        ),
+                    ).use { result ->
+                        val prob = (result.get(outputName).get() as OnnxTensor).floatBuffer.get(0)
+                        if (prob > maxProbability) maxProbability = prob
+                        val stateN = (result.get(stateNName).get() as OnnxTensor).floatBuffer
+                        val next = FloatArray(stateN.remaining())
+                        stateN.get(next)
+                        state = next
+                        return prob
+                    }
+                }
+            }
         }
     }
 
@@ -132,11 +131,11 @@ class SileroVad private constructor(
 
     private companion object {
         fun createSession(modelBytes: ByteArray): OrtSession {
-            val options = OrtSession.SessionOptions().apply {
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                setIntraOpNumThreads(1)
+            OrtSession.SessionOptions().use { options ->
+                options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                options.setIntraOpNumThreads(1)
+                return OrtEnvironment.getEnvironment().createSession(modelBytes, options)
             }
-            return OrtEnvironment.getEnvironment().createSession(modelBytes, options)
         }
 
         fun resolveName(names: Set<String>, fallbackIndex: Int, preferred: String): String =

@@ -19,34 +19,48 @@ BusinessHandler (:business-core)
 
 GatewayCloudRunner
       |-- GatewayProtocolSender（audio/chat/tts/turn 协议）
-      |-- GatewayBridge -> MessageDispatcher（按 type 多播）
-      |                    `-- GatewayPayloadParser（无状态解析）
+      |-- GatewayBridge -> MessageDispatcher（按 type 多播、请求槽/音频流关联）
+      |-- CloudAsrEngine / CloudNluEngine（语音模块，向 Bridge 注册监听）
+      |-- GatewayPayloadParser（无状态解析）
       `-- GatewayClient（WebSocket 通道）
+          |-- GatewaySocketTransport（传输接口）
+          |    `-- OkHttpGatewaySocketTransport（WebSocket 实现）
           `-- GatewayConnectionPolicy（心跳/超时/重连）
 
-Local semantic pipeline                 Cloud semantic pipeline
-  |-- local AsrEngine                     |-- CloudAsrEngine (typed listener)
-  `-- local NluEngine                     `-- CloudNluEngine (typed listener)
+VoiceEngine 中的语音候选链
+  |-- LocalSpeechChain: LocalAsrEngine + LocalNluEngine
+  `-- GatewayCloudRunner: CloudAsrEngine + CloudNluEngine
+       `-- 二者共享同一轮 GatewayBusinessSpeechChannel 音频上行
 ```
 
 ## 边界约束
 
-1. `GatewayClient` 只管理连接、原始文本/二进制帧收发和连接状态。不得新增
+1. `GatewayClient` 只管理连接、原始文本/二进制帧收发和连接状态，依赖
+   `GatewaySocketTransport` 而不是直接调用 OkHttp。生产适配器用 OkHttp WebSocket；
+   Retrofit 只用于遥测等 REST 请求，不承载双向 WebSocket 帧。不得新增
    `sendAudioStart`、`sendTtsRequest` 等业务方法。
 2. 上行协议命令统一放在 `GatewayProtocolSender`。连接失败结束当前轮，音频不得自动重放。
 3. 下行消息必须先经 `MessageDispatcher`。监听器注册时声明消息类型；一个类型允许多个监听器，
-   注销一个监听器不得影响其他监听器。
+   注销或单个监听器异常不得影响其他监听器，也不得终止传输收包协程。
 4. `GatewayPayloadParser` 只解析协议，不持有连接、轮次或 UI 状态。
 5. `VoiceEngine` 只负责采集准入、状态机、仲裁和把胜出结果交给 `BusinessHandler`；不得依赖导航、
    车辆状态或具体业务 SDK。
 6. `TtsOutput` 是播报、已有音频播放、流式播放、停止和播放事件的唯一入口。缓存 key、磁盘格式、
    命中策略、生成实现和播放身份协调均不向调用方暴露；Android 只实现底层播放 driver。
-7. ASR 与 NLU 是两个独立引擎。端侧按 `local AsrEngine -> local NluEngine` 组合；云端 ASR 与
-   云端 NLU 分别注册自己消费的消息类型，ASR 文本不经过语义仲裁。
+7. ASR 与 NLU 是两个独立引擎，端云候选链均实现 `SpeechRouteModules<Result>`，持有
+   `voice-core` 的共同 `AsrEngine` / `NluEngine<Result>` 契约。端侧按 ASR → NLU 组合；
+   云端 ASR 订阅本轮识别事件，云端 NLU 等待共享上行的
+   语义结果，不能重复上传音频，也不能为了等 ASR final 阻塞 NLU。ASR 文本不经过语义仲裁。
+   当前端侧 2C SDK 不提供独立 ASR，因此 `LocalAsrEngine` 不伪造文本；2C 文本随 NLU
+   候选输出，只有胜出后才能覆盖识别框。
 8. 仲裁器是进程级常驻的 FIFO 消息流水线，不拥有会话生命周期、不识别“当前轮”。
    它只记录每个 `turnId` 是否已输出语义；当前轮和状态有效性由会话状态机判断。
 9. 端侧云端语义与本地车窗语义可立即入队；本地普通语义在云端优先窗口内留在
    入队门外。一旦进入就绪队列，按消息到达顺序处理，首个合格候选胜出。
+10. 音频上下行队列和仲裁控制队列必须有上限。达到上限时明确失败当前请求，
+    不允许无界增长，也不允许静默丢弃中间音频。
+11. 采集块（512 samples）与 RNNoise 帧（480 samples）是两个独立网格；前端必须跨块缓存并
+    在停录时补齐处理尾帧、再截回原长，保证输入输出样本数一致。
 
 ## 新业务接入
 

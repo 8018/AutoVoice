@@ -52,7 +52,7 @@ class AudioFrontendEngineTest {
 
         assertEquals(listOf("vad:reset", "vad:feed"), calls)
         assertNull(result.vadEvent)
-        assertEquals(960, result.processedPcm.size)
+        assertEquals(1024, result.processedPcm.size)
     }
 
     @Test
@@ -60,6 +60,33 @@ class AudioFrontendEngineTest {
         val frontend = LocalAudioFrontendEngine(null, FakeProcessor(mutableListOf()), false)
         val error = runCatching { frontend.process(ByteArray(100)) }.exceptionOrNull()
         assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun `rnnoise framing preserves every sample across capture block boundaries`() {
+        val frontend = LocalAudioFrontendEngine(null, FakeProcessor(mutableListOf()), true)
+        frontend.startTurn()
+
+        val emitted = buildList {
+            repeat(15) { add(frontend.process(pcmBlock()).processedPcm) }
+            add(frontend.finishProcessedAudio())
+        }
+
+        assertEquals(15 * 1024, emitted.sumOf(ByteArray::size))
+        assertTrue(emitted.last().isEmpty(), "15 capture blocks align to 16 RNNoise frames")
+    }
+
+    @Test
+    fun `rnnoise tail is padded for processing then truncated to original length`() {
+        val frontend = LocalAudioFrontendEngine(null, FakeProcessor(mutableListOf()), true)
+        frontend.startTurn()
+
+        val first = frontend.process(pcmBlock()).processedPcm
+        val tail = frontend.finishProcessedAudio()
+
+        assertEquals(960, first.size)
+        assertEquals(64, tail.size)
+        assertEquals(1024, first.size + tail.size)
     }
 
     private fun pcmBlock(): ByteArray = ByteArray(1024).also { block ->

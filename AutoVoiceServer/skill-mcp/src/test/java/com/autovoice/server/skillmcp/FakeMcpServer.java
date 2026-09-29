@@ -25,6 +25,7 @@ final class FakeMcpServer implements AutoCloseable {
     final AtomicInteger deleteCount = new AtomicInteger();
     final boolean failListTools;
     final boolean callError;
+    volatile java.util.List<String> extraToolNames = java.util.List.of();
     /** 最近一次 POST 请求（认证头注入断言用：自定义头每请求注入，最后一个即可代表全部）。 */
     volatile RecordedRequest lastRequest;
 
@@ -90,6 +91,9 @@ final class FakeMcpServer implements AutoCloseable {
                         ArrayNode tools = result.putArray("tools");
                         tools.add(tool("poi_search", "搜索兴趣点", "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}"));
                         tools.add(tool("route_plan", "规划驾车路线", "{\"type\":\"object\"}"));
+                        for (String name : extraToolNames) {
+                            tools.add(tool(name, "external tool", "{\"type\":\"object\"}"));
+                        }
                         return resp.setBody(rpc(id, result).toString());
                     }
                     if ("tools/call".equals(method)) {

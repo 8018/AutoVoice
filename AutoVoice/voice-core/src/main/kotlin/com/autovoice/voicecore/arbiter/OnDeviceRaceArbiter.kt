@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -54,7 +55,7 @@ enum class LocalAdmission {
  * per-turn single-output ledger and event ordering. The arbiter deliberately does not know which
  * turn is current and has no per-call/round lifecycle. Dialogue validity is checked downstream.
  *
- * The ready queue contains only eligible semantics: cloud and local window commands enter
+ * The ready queue contains only eligible semantics: cloud and local hard-rule commands enter
  * immediately; ordinary local semantics are held before the queue until the cloud window opens;
  * pending moves that release time without changing already queued messages.
  */
@@ -63,12 +64,14 @@ class OnDeviceRaceArbiter(
     private val clock: () -> Long = System::currentTimeMillis,
     private val sink: DecisionSink,
     private val onEvent: (OnDeviceArbiterEvent) -> Unit = {},
+    private val onTurnEvent: (String, OnDeviceArbiterEvent) -> Unit = { _, _ -> },
     private val pendingWaitMs: Long = 50_000,
     private val emissionLedger: SemanticEmissionLedger = SemanticEmissionLedger(),
     retainedTurns: Int = 64,
+    private val onPipelineFailure: (Throwable) -> Unit = {},
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val inbox = Channel<Message>(Channel.UNLIMITED)
+    private val inbox = Channel<Message>(INBOX_CAPACITY)
     private val states = LinkedHashMap<String, TurnState>()
     private val retainedTurns = retainedTurns.also { require(it > 0) }
     private val actor: Job = scope.launch { consume() }
@@ -101,7 +104,7 @@ class OnDeviceRaceArbiter(
         data class LocalCandidate(
             override val turnId: String,
             val nlu: NluResult,
-            val directWindow: Boolean,
+            val directLocal: Boolean,
             val decisionReason: String,
         ) : ReadyCandidate {
             override val route = Route.LOCAL
@@ -148,13 +151,19 @@ class OnDeviceRaceArbiter(
 
     private suspend fun consume() {
         for (message in inbox) {
-            when (message) {
-                is Message.Open -> onOpen(message)
-                is Message.Cloud -> dispatch(ReadyCandidate.CloudCandidate(message.turnId, message.reply))
-                is Message.Local -> onLocal(message)
-                is Message.Pending -> onPending(message.turnId)
-                is Message.CloudUnavailable -> onCloudUnavailable(message)
-                is Message.ReleaseLocal -> onReleaseLocal(message)
+            try {
+                when (message) {
+                    is Message.Open -> onOpen(message)
+                    is Message.Cloud -> dispatch(ReadyCandidate.CloudCandidate(message.turnId, message.reply))
+                    is Message.Local -> onLocal(message)
+                    is Message.Pending -> onPending(message.turnId)
+                    is Message.CloudUnavailable -> onCloudUnavailable(message)
+                    is Message.ReleaseLocal -> onReleaseLocal(message)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                reportFailure(failure)
             }
         }
     }
@@ -174,22 +183,22 @@ class OnDeviceRaceArbiter(
         val now = monotonicMs()
         val state = stateFor(message.turnId, now)
         val immediateReason = state.immediateLocalReason
-        val window = message.nlu.intent.isWindowPower()
+        val immediateLocal = message.nlu.intent.isImmediateLocalCommand()
         when {
             message.admission == LocalAdmission.IMMEDIATE || immediateReason != null -> dispatch(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = false,
+                    directLocal = false,
                     decisionReason = immediateReason ?: message.immediateReason,
                 ),
             )
 
-            window -> dispatch(
+            immediateLocal -> dispatch(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = now < state.cloudDeadlineMs,
+                    directLocal = now < state.cloudDeadlineMs,
                     decisionReason = if (now < state.cloudDeadlineMs) {
                         "local_command_won"
                     } else {
@@ -202,7 +211,7 @@ class OnDeviceRaceArbiter(
                 ReadyCandidate.LocalCandidate(
                     message.turnId,
                     message.nlu,
-                    directWindow = false,
+                    directLocal = false,
                     decisionReason = "cloud_timeout_use_local",
                 ),
             )
@@ -217,7 +226,7 @@ class OnDeviceRaceArbiter(
     private fun onPending(turnId: String) {
         val now = monotonicMs()
         val state = stateFor(turnId, now)
-        onEvent(OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
+        emitEvent(turnId, OnDeviceArbiterEvent.Pending(Route.CLOUD.wire))
         state.cloudDeadlineMs = now + pendingWaitMs
         state.generation += 1
         if (state.heldLocal != null) scheduleRelease(turnId, state)
@@ -232,7 +241,7 @@ class OnDeviceRaceArbiter(
             ReadyCandidate.LocalCandidate(
                 message.turnId,
                 held.nlu,
-                directWindow = false,
+                directLocal = false,
                 decisionReason = message.reason,
             ),
         )
@@ -252,7 +261,7 @@ class OnDeviceRaceArbiter(
             ReadyCandidate.LocalCandidate(
                 message.turnId,
                 held.nlu,
-                directWindow = false,
+                directLocal = false,
                 decisionReason = "cloud_timeout_use_local",
             ),
         )
@@ -261,48 +270,49 @@ class OnDeviceRaceArbiter(
     /** Single actor thread: queue order itself is the atomicity boundary. */
     private fun dispatch(candidate: ReadyCandidate) {
         val state = stateFor(candidate.turnId, monotonicMs())
-        onEvent(OnDeviceArbiterEvent.Received(candidate.route.wire))
+        emitEvent(candidate.turnId, OnDeviceArbiterEvent.Received(candidate.route.wire))
 
         state.winner?.let { winner ->
-            onEvent(
+            emitEvent(
+                candidate.turnId,
                 OnDeviceArbiterEvent.Lost(
                     candidate.route.wire,
                     if (winner == Route.CLOUD) "cloud_already_won" else "command_already_won",
                 ),
             )
-            state.output(ArbitrationOutput.AlreadyOutput)
+            emitOutput(state, ArbitrationOutput.AlreadyOutput)
             return
         }
 
         if (candidate is ReadyCandidate.LocalCandidate && candidate.nlu.intent.isUnknown()) {
-            onEvent(OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
-            state.output(ArbitrationOutput.UnknownLocal)
+            emitEvent(candidate.turnId, OnDeviceArbiterEvent.Lost(Route.LOCAL.wire, "unknown_intent"))
+            emitOutput(state, ArbitrationOutput.UnknownLocal)
             return
         }
 
         if (emissionLedger.tryEmit(candidate.turnId) != SemanticEmissionResult.ACCEPTED) {
-            onEvent(OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
-            state.output(ArbitrationOutput.AlreadyOutput)
+            emitEvent(candidate.turnId, OnDeviceArbiterEvent.Lost(candidate.route.wire, "turn_already_output"))
+            emitOutput(state, ArbitrationOutput.AlreadyOutput)
             return
         }
 
         state.winner = candidate.route
         when (candidate) {
             is ReadyCandidate.CloudCandidate -> {
-                onEvent(OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
-                sink.onDecision(decision(candidate.turnId, Route.CLOUD.wire, "cloud_won"))
-                state.output(ArbitrationOutput.Winner(RaceWinner.Cloud(candidate.reply)))
+                emitEvent(candidate.turnId, OnDeviceArbiterEvent.Won(Route.CLOUD.wire, "priority"))
+                recordDecision(decision(candidate.turnId, Route.CLOUD.wire, "cloud_won"))
+                emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Cloud(candidate.reply)))
             }
 
             is ReadyCandidate.LocalCandidate -> {
                 val eventReason = when {
-                    candidate.directWindow -> "local_command"
+                    candidate.directLocal -> "local_command"
                     candidate.decisionReason == "cloud_timeout_use_local" -> "cloud_timeout"
                     else -> candidate.decisionReason
                 }
-                onEvent(OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
-                sink.onDecision(decision(candidate.turnId, Route.LOCAL.wire, candidate.decisionReason))
-                state.output(ArbitrationOutput.Winner(RaceWinner.Local(candidate.nlu)))
+                emitEvent(candidate.turnId, OnDeviceArbiterEvent.Won(Route.LOCAL.wire, eventReason))
+                recordDecision(decision(candidate.turnId, Route.LOCAL.wire, candidate.decisionReason))
+                emitOutput(state, ArbitrationOutput.Winner(RaceWinner.Local(candidate.nlu)))
             }
         }
     }
@@ -330,6 +340,29 @@ class OnDeviceRaceArbiter(
 
     private fun monotonicMs(): Long = System.nanoTime() / 1_000_000L
 
+    private fun emitEvent(turnId: String, event: OnDeviceArbiterEvent) {
+        isolate { onTurnEvent(turnId, event) }
+        isolate { onEvent(event) }
+    }
+
+    private fun recordDecision(entry: DecisionEntry) = isolate { sink.onDecision(entry) }
+
+    private fun emitOutput(state: TurnState, output: ArbitrationOutput) = isolate { state.output(output) }
+
+    private inline fun isolate(block: () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            reportFailure(failure)
+        }
+    }
+
+    private fun reportFailure(failure: Throwable) {
+        runCatching { onPipelineFailure(failure) }
+    }
+
     private fun decision(turnId: String, route: String, reason: String): DecisionEntry =
         DecisionEntry("on-device", route, reason, turnId, clock())
 
@@ -337,5 +370,10 @@ class OnDeviceRaceArbiter(
         inbox.close()
         actor.cancel()
         scope.cancel()
+    }
+
+    private companion object {
+        /** Control messages are low-volume; overflow is explicit at the producer via getOrThrow. */
+        const val INBOX_CAPACITY = 256
     }
 }

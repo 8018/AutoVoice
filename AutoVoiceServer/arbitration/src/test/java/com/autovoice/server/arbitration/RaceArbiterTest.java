@@ -99,6 +99,25 @@ class RaceArbiterTest {
         }
     }
 
+    @Test
+    void observerFailuresDoNotBlockWinnerOrLaterTurns() {
+        RaceArbiter isolated = new RaceArbiter(SAFETY, GRACE, sched,
+                entry -> { throw new IllegalStateException("sink failed"); },
+                (uid, event) -> { throw new IllegalStateException("event failed"); });
+
+        ArbiterDecision first = isolated.decide(
+                CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("first")),
+                ctx, "turn-1").join();
+        ArbiterDecision second = isolated.decide(
+                CompletableFuture.completedFuture(null),
+                CompletableFuture.completedFuture(Reply.ofText("second")),
+                ctx, "turn-2").join();
+
+        assertEquals("first", first.reply().text());
+        assertEquals("second", second.reply().text());
+    }
+
     // ------------------------------------------------------------ offline 胜出
 
     @Test
@@ -147,6 +166,20 @@ class RaceArbiterTest {
         assertEquals("set_temperature", d.reply().intent().intent());
         assertEquals(1, log.size());
         assertEquals("nlu-traditional", log.get(0).route());
+    }
+
+    @Test
+    void offlineDialogueExitWinsWithoutWaitingForLlmAndDoesNotCancelProducer() {
+        Intent exit = Intent.of("1.0", "conversation", "exit_dialogue", Map.of(), 1.0,
+                "cloud.nlu.dialogue-control", null);
+        CompletableFuture<Reply> online = new CompletableFuture<>();
+        ArbiterDecision decision = arbiter.decide(CompletableFuture.completedFuture(
+                new OfflineCommandHit("退出", exit)), online, ctx, "exit-turn").join();
+        assertEquals("offline_won", decision.reason());
+        assertEquals("exit_dialogue", decision.reply().intent().intent());
+        assertFalse(online.isDone());
+        online.complete(Reply.ofText("迟到回复"));
+        assertEquals(1, log.size());
     }
 
     @Test

@@ -19,9 +19,11 @@ object GatewayClientFactory {
         policy: GatewayConnectionPolicy = GatewayConnectionPolicy(),
     ): GatewayClient = GatewayClient(
         url = url,
-        okHttp = OkHttpClient.Builder()
-            .pingInterval(policy.pingIntervalMs, TimeUnit.MILLISECONDS)
-            .build(),
+        transport = OkHttpGatewaySocketTransport(
+            OkHttpClient.Builder()
+                .pingInterval(policy.pingIntervalMs, TimeUnit.MILLISECONDS)
+                .build(),
+        ),
         deviceId = deviceId,
         authToken = authToken,
         connectTimeoutMs = policy.connectTimeoutMs,

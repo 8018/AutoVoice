@@ -68,6 +68,14 @@ class RuleNluTest {
     }
 
     @Test
+    void dialogueExitUsesSharedCloudNluWithoutSubstringCapture() {
+        Intent exit = RuleNlu.understand("退出 当前 对话。");
+        assertEquals("conversation", exit.domain());
+        assertEquals("exit_dialogue", exit.intent());
+        assertTrue(RuleNlu.understand("退出导航后回家").isUnknown());
+    }
+
+    @Test
     void intentRuleOrderTemperatureBeforePower() {
         // 关键词"调到"命中 set_temperature；"打开"不在文本中，顺序不影响本例
         Intent i = RuleNlu.understand("空调调到20度");

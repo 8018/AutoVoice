@@ -222,6 +222,58 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void oldRealtimeCallbacksAndFinishCannotAffectNewChat() throws Exception {
+        List<RealtimeChatSink> sinks = Collections.synchronizedList(new ArrayList<>());
+        class RealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                sinks.add(sink);
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { }
+                };
+            }
+            @Override public String id() { return "realtime-generation-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new RealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        assertEquals("chat-a", awaitType(socket, "chat_ready").path("payload").path("chatId").asText());
+        RealtimeChatSink old = sinks.get(0);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        socket.sent.clear();
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-b\"}}"));
+        assertEquals("chat-b", awaitType(socket, "chat_ready").path("payload").path("chatId").asText());
+        RealtimeChatSink current = sinks.get(1);
+        socket.sent.clear();
+
+        old.onUserSpeechStarted();
+        old.onUserTranscript("旧会话", true);
+        old.onStart(24_000, 1, "pcm_s16le");
+        old.onChunk(new byte[]{1});
+        old.onReplyText("旧回复", true);
+        old.onComplete("旧回复", null, "");
+        old.onSessionClosed(null);
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_finish\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-a\"}}"));
+        assertTrue(socket.sent.isEmpty(), "旧会话不得下发帧，也不得关闭新会话");
+
+        current.onStart(24_000, 1, "pcm_s16le");
+        current.onComplete("新回复", null, "");
+        assertEquals("chat-b", awaitType(socket, "audio_reply_start").path("payload").path("chatId").asText());
+        assertEquals("chat-b", awaitType(socket, "audio_reply_end").path("payload").path("chatId").asText());
+        handler.close();
+    }
+
+    @Test
     void chatFinishWhileOpeningClosesLateSessionWithoutSendingReady() throws Exception {
         CountDownLatch opening = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -262,6 +314,37 @@ class VoiceGatewayHandlerTest {
         assertTrue(closed.await(1, TimeUnit.SECONDS));
         assertFalse(socket.sent.stream().map(VoiceGatewayHandlerTest::parse)
                 .anyMatch(message -> "chat_ready".equals(message.path("type").asText())));
+        handler.close();
+    }
+
+    @Test
+    void realtimeSessionClosedDuringOpenReportsMatchingChatFailure() throws Exception {
+        class ClosingRealtimeOnline implements OnlineSpeechProvider, RealtimeChatProvider {
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("unused"), ""));
+            }
+            @Override public RealtimeChatSession openRealtimeChat(SessionContext ctx, RealtimeChatSink sink) {
+                sink.onSessionClosed(new IllegalStateException("upstream closed while opening"));
+                return new RealtimeChatSession() {
+                    @Override public void appendAudio(byte[] pcm) { }
+                    @Override public void close() { }
+                };
+            }
+            @Override public String id() { return "realtime-early-close-test"; }
+        }
+        VoiceGatewayHandler handler = new VoiceGatewayHandler(
+                new ClosingRealtimeOnline(), ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        StubSession socket = open(handler);
+        String sid = handshake(handler, socket);
+        socket.sent.clear();
+        handler.handleMessage(socket, new TextMessage(
+                "{\"type\":\"chat_start\",\"payload\":{\"sessionId\":\"" + sid + "\",\"chatId\":\"chat-opening\"}}"));
+
+        JsonNode error = awaitType(socket, "error").path("payload");
+        assertEquals("CHAT_STREAM_FAILED", error.path("code").asText());
+        assertEquals("chat-opening", error.path("chatId").asText());
+        assertNull(findTextFrame(socket, "chat_ready"));
         handler.close();
     }
 
@@ -770,6 +853,48 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void exactClosePreservesPendingListAndMissingAdoptionDoesNotReplaceActiveContext() throws Exception {
+        var dialog = new NavigationDialogService();
+        VoiceGatewayHandler h = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr("第一个"),
+                        (text, context) -> CompletableFuture.completedFuture(Reply.ofText("unused")), dialog), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            var ctx = registry.get(sid);
+            Reply a = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, a);
+            String aId = (String) a.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            Reply b = dialog.prepare(ctx, chooseCandidatesReply());
+            dialog.commit(ctx, b);
+            String bId = (String) b.intent().slots().get("selectionId").value();
+            sendTaskContext(h, s, sid, "a", 1, aId, false);
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "b", 2, bId, true);
+            assertEquals("ACCEPTED", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            assertTrue(dialog.hasAdopted(ctx, bId));
+            synchronized (s.sent) { s.sent.clear(); }
+            sendTaskContext(h, s, sid, "missing", 3, "missing-list", true);
+            assertEquals("CONTEXT_MISSING", awaitType(s, "navigation_context_result").path("payload").path("status").asText());
+            // Failed adoption never updates the connection's active identity.
+            sendTaskContext(h, s, sid, "b", 2, bId, false);
+            assertFalse(dialog.hasAdopted(ctx, bId));
+        } finally { h.close(); }
+    }
+
+    private static void sendTaskContext(VoiceGatewayHandler h, StubSession s, String sid,
+                                        String taskId, long revision, String selectionId, boolean active) throws Exception {
+        h.handleMessage(s, new TextMessage(new ObjectMapper().writeValueAsString(Map.of(
+                "type", "navigation_selection_start", "payload", Map.of(
+                        "sessionId", sid, "taskId", taskId, "taskRevision", revision,
+                        "interactionId", "interaction", "selectionId", selectionId, "active", active)))));
+    }
+
+    @Test
     void navigationSelectionStartAdoptsAndRevokesCandidates() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =
                 new com.autovoice.server.navigation.NavigationDialogService();
@@ -789,19 +914,42 @@ class VoiceGatewayHandlerTest {
         String selectionId = offer.path("payload").path("intent").path("slots")
                 .path("selectionId").path("value").asText();
 
-        // 客户端实际展示列表后显式采用。
+        // 客户端实际展示列表后，用精确任务上下文显式采用。
         h.handleMessage(s, new TextMessage(
                 "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
-                        + sid + "\",\"selectionId\":\"" + selectionId + "\"}}"));
-        // 采用后,带 navigationSelectionId 的二轮语音能选中
+                        + sid + "\",\"selectionId\":\"" + selectionId
+                        + "\",\"taskId\":\"task-new\",\"taskRevision\":2,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":true}}"));
+        // 旧任务的迟到关闭不得撤销新任务。
+        h.handleMessage(s, new TextMessage(
+                "{\"type\":\"navigation_selection_start\",\"payload\":{\"sessionId\":\""
+                        + sid + "\",\"selectionId\":\"\",\"taskId\":\"task-old\",\"taskRevision\":1,"
+                        + "\"interactionId\":\"interaction-1\",\"active\":false}}"));
+        // 采用后，只有完全匹配的任务上下文才能用于二轮选择。
         synchronized (s.sent) { s.sent.clear(); }
         transcript.set("第一个");
         h.handleMessage(s, new TextMessage(audioStart(sid, "select")
-                .replace("\"encoding\":", "\"navigationSelectionId\":\"" + selectionId + "\",\"encoding\":")));
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,"
+                        + "\"navigationSelectionId\":\"" + selectionId + "\","
+                        + "\"navigationTaskId\":\"task-new\",\"navigationTaskRevision\":2,"
+                        + "\"navigationInteractionId\":\"interaction-1\",\"encoding\":")));
         h.handleMessage(s, new BinaryMessage(new byte[]{3, 4}));
         h.handleMessage(s, new TextMessage(audioEnd(sid)));
         JsonNode selected = awaitType(s, "reply").path("payload").path("intent");
         assertEquals("navigate", selected.path("intent").asText());
+        assertEquals("task-new", selected.path("slots").path("taskId").path("value").asText());
+        assertEquals(2, selected.path("slots").path("taskRevision").path("value").asInt());
+        assertEquals("select", selected.path("slots").path("navigationOperation").path("value").asText());
+
+        // task_dialog_v1 without an exact identity must not fall back to the session's recent list.
+        synchronized (s.sent) { s.sent.clear(); }
+        h.handleMessage(s, new TextMessage(audioStart(sid, "missing-context")
+                .replace("\"encoding\":", "\"taskDialogVersion\":1,\"encoding\":")));
+        h.handleMessage(s, new BinaryMessage(new byte[]{5, 6}));
+        h.handleMessage(s, new TextMessage(audioEnd(sid)));
+        JsonNode rejected = awaitType(s, "reply").path("payload");
+        assertEquals("text", rejected.path("kind").asText());
+        assertFalse(rejected.has("intent"));
     }
 
     @Test

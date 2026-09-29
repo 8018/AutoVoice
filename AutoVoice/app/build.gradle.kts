@@ -104,14 +104,15 @@ dependencies {
     implementation(libs.coroutines.core)
     // 装配 GatewayClient 需要 okhttp 类型；网关 decision 事件解析需要 gson（Task 20）
     implementation(libs.okhttp)
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.gson)
     implementation(libs.gson)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     // 桥接对账测试：MockWebServer 假扮网关推送 reply/error（Task 20 fix round）
     testImplementation(libs.mockwebserver)
-    // TelemetryClient JVM 单测（T6）：真实 org.json（mockable android.jar 的 JSONObject 是桩，
-    // put 返回 null）；testImplementation 仅单测生效，真机运行时仍用系统自带 org.json
+    // TelemetryClient JVM 单测使用 JSONObject 检查请求体；mockable android.jar 的 org.json 是桩。
     testImplementation(libs.orgjson)
 
     // 真机 instrumented 测试（Task 48：Silero VAD 真机验证，确定性 wav 输入不走麦克风）

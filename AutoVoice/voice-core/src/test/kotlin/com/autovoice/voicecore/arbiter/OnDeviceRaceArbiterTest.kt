@@ -27,6 +27,11 @@ class OnDeviceRaceArbiterTest {
         slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
     )
 
+    private fun exitIntent() = Intent(
+        schemaVersion = "1.0", domain = "conversation", intent = "exit_dialogue",
+        slots = emptyMap(), confidence = 1.0, source = "rule.nlu",
+    )
+
     private fun nlu(intent: Intent, text: String? = null) = NluResult(intent, text)
 
     private data class Harness(
@@ -75,6 +80,46 @@ class OnDeviceRaceArbiterTest {
     }
 
     @Test
+    fun `late event remains attributed to the submitting turn`() = runBlocking {
+        val tagged = CopyOnWriteArrayList<Pair<String, OnDeviceArbiterEvent>>()
+        val outputs = Channel<ArbitrationOutput>(Channel.UNLIMITED)
+        OnDeviceRaceArbiter(
+            sink = DecisionSink {},
+            onTurnEvent = { id, event -> tagged += id to event },
+        ).use { arbiter ->
+            arbiter.openTurn("old") { outputs.trySend(it) }
+            arbiter.submitCloud("old", TextReply("old reply"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+            arbiter.openTurn("new") { outputs.trySend(it) }
+            arbiter.submitLocal("old", nlu(windowIntent()))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.AlreadyOutput)
+            assertEquals("old", tagged.last().first)
+            assertEquals(OnDeviceArbiterEvent.Lost("local", "cloud_already_won"), tagged.last().second)
+        }
+    }
+
+    @Test
+    fun `observer failures do not kill arbitration or block winner delivery`() = runBlocking {
+        val outputs = Channel<ArbitrationOutput>(Channel.UNLIMITED)
+        val failures = CopyOnWriteArrayList<Throwable>()
+        val arbiter = OnDeviceRaceArbiter(
+            sink = DecisionSink { error("decision sink failed") },
+            onEvent = { error("event sink failed") },
+            onPipelineFailure = failures::add,
+        )
+        arbiter.use {
+            arbiter.openTurn("turn-1") { outputs.trySend(it) }
+            arbiter.submitCloud("turn-1", TextReply("first"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+
+            arbiter.openTurn("turn-2") { outputs.trySend(it) }
+            arbiter.submitCloud("turn-2", TextReply("second"))
+            assertTrue(withTimeout(1_000) { outputs.receive() } is ArbitrationOutput.Winner)
+            assertTrue(failures.size >= 4)
+        }
+    }
+
+    @Test
     fun `ordinary local stays outside FIFO until cloud window opens`() = runBlocking {
         harness(cloudWaitMs = 100).use { h ->
             h.arbiter.submitLocal("turn-1", nlu(normalIntent()))
@@ -118,6 +163,17 @@ class OnDeviceRaceArbiterTest {
             val local = winner.value as RaceWinner.Local
             assertEquals("打开车窗", local.recognizedText)
             assertEquals("local_command_won", h.decisions.single().reason)
+        }
+    }
+
+    @Test
+    fun `local dialogue exit enters FIFO immediately`() = runBlocking {
+        harness(cloudWaitMs = 10_000).use { h ->
+            h.arbiter.submitLocal("turn-1", nlu(exitIntent(), "退出对话"))
+            val winner = h.next() as ArbitrationOutput.Winner
+            assertEquals(exitIntent(), (winner.value as RaceWinner.Local).intent)
+            assertEquals("local_command_won", h.decisions.single().reason)
+            assertEquals(OnDeviceArbiterEvent.Won("local", "local_command"), h.events[1])
         }
     }
 

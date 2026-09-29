@@ -6,6 +6,97 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class NavigationSessionTest {
+    @Test fun `modern selection requires identity and atomic claim checks expected task`() {
+        var launches = 0
+        val executor = NavigationExecutor { launches++; true }
+        val offer = choose("""[{"candidateId":"a","poiname":"机场","lat":30.3,"lon":104.4}]""")
+            .let { it.copy(slots = it.slots + mapOf("selectionId" to SlotValue.StringValue("s"),
+                "taskDialogVersion" to SlotValue.Number(1.0))) }
+        assertTrue(executor.execute(offer))
+        val old = executor.session.activeIdentity()!!
+        val selection = navigate().let { it.copy(slots = it.slots + mapOf(
+            "selectionId" to SlotValue.StringValue("s"), "candidateId" to SlotValue.StringValue("a"))) }
+        assertFalse(executor.execute(selection))
+        assertTrue(executor.execute(offer))
+        assertNull(executor.session.claimSelection("s", "a", old))
+        assertFalse(executor.session.cancelSelection("s", old))
+        assertFalse(executor.session.abortSelection(expected = old))
+        assertTrue(executor.execute(selection.copy(slots = selection.slots + identity(executor.session, "select"))))
+        assertEquals(1, launches)
+        assertFalse(executor.execute(navigate().let { it.copy(slots = it.slots +
+            ("navigationOperation" to SlotValue.StringValue("select"))) }))
+    }
+
+    @Test fun `late handoff result cannot complete replacement task`() {
+        val session = NavigationSession()
+        val candidates = listOf(NavigationExecutor.NavigationCandidate("airport", 30.0, 104.0, candidateId = "a"))
+        session.offer(candidates, "s", "t")
+        session.claimSelection("s", "a")
+        val token = session.beginHandoff(NavigationTrip(NavigationTarget("airport", 30.0, 104.0)))
+        session.offer(candidates, "new", "t2")
+        session.finishHandoff(token, true)
+        assertEquals("new", session.snapshot.selectionId)
+        assertEquals(com.autovoice.voicecore.dialog.TaskStatus.WAITING_INPUT, session.snapshot.taskStatus)
+    }
+
+    private fun identity(session: NavigationSession, operation: String) = session.snapshot.let {
+        mapOf("navigationOperation" to SlotValue.StringValue(operation),
+            "taskId" to SlotValue.StringValue(it.taskId!!),
+            "taskRevision" to SlotValue.Number(it.candidateVersion.toDouble()),
+            "interactionId" to SlotValue.StringValue(it.interactionId!!))
+    }
+
+    @Test fun `explicit fresh navigation replaces a modern list but stale result cannot replace new task`() {
+        val launched = mutableListOf<String>()
+        val executor = NavigationExecutor { launched += it; true }
+        val offered = choose("""[{"candidateId":"a","poiname":"机场","lat":30.3,"lon":104.4}]""").let { it.copy(slots = it.slots + mapOf(
+            "selectionId" to SlotValue.StringValue("list"), "taskDialogVersion" to SlotValue.Number(1.0))) }
+        executor.execute(offered)
+        val old = identity(executor.session, "start_new")
+        executor.execute(offered)
+        assertFalse(executor.execute(navigate().let { it.copy(slots = it.slots + old) }))
+        assertFalse(executor.execute(navigate()))
+        val action = navigate().let { it.copy(slots = it.slots + identity(executor.session, "start_new")) }
+        assertTrue(executor.execute(action))
+        assertTrue(executor.session.snapshot.candidates.isEmpty())
+        assertEquals(1, launched.size)
+        assertFalse(executor.execute(action))
+    }
+
+    @Test fun `dormant clears waiting task but connection loss cannot revoke claimed handoff`() {
+        val session = NavigationSession(interactionIdProvider = { "i" })
+        val candidates = listOf(NavigationExecutor.NavigationCandidate("airport", 30.0, 104.0, candidateId = "a"))
+        session.offer(candidates, "s", "t")
+        session.onDialogueState(com.autovoice.voicecore.dialog.DialogueSnapshot())
+        assertTrue(session.snapshot.candidates.isEmpty())
+        session.offer(candidates, "s2", "t2")
+        assertNotNull(session.claimSelection("s2", "a"))
+        assertFalse(session.abortSelection())
+        session.onDialogueState(com.autovoice.voicecore.dialog.DialogueSnapshot())
+        assertEquals(com.autovoice.voicecore.dialog.TaskStatus.EXECUTING, session.snapshot.taskStatus)
+    }
+
+    @Test fun `missing context only ends matching list and late error preserves replacement`() {
+        val session = NavigationSession()
+        val candidates = listOf(NavigationExecutor.NavigationCandidate("airport", 30.0, 104.0, candidateId = "a"))
+        session.offer(candidates, "s", "t")
+        val old = session.snapshot.let { NavigationTaskContextRef(it.taskId!!, it.candidateVersion, it.interactionId!!, "s") }
+        session.offer(candidates, "s2", "t2")
+        assertFalse(session.contextMissing(old))
+        val ref = session.snapshot.let { NavigationTaskContextRef(it.taskId!!, it.candidateVersion, it.interactionId!!, "s2") }
+        val listener = NavigationContextListener { session.contextMissing(it) }
+        val payload = com.google.gson.JsonObject().apply {
+            addProperty("taskId", ref.taskId); addProperty("taskRevision", ref.revision)
+            addProperty("interactionId", ref.interactionId); addProperty("selectionId", ref.selectionId)
+            addProperty("status", "ACCEPTED")
+        }
+        listener.onMessage(com.autovoice.voicecore.GatewayMessage("navigation_context_result", payload))
+        assertEquals("s2", session.snapshot.selectionId)
+        payload.addProperty("status", "CONTEXT_MISSING")
+        listener.onMessage(com.autovoice.voicecore.GatewayMessage("navigation_context_result", payload))
+        assertTrue(session.snapshot.candidates.isEmpty())
+    }
+
     @Test fun `shared airport selection produces exact amap destination URI`() {
         val fixture = javaClass.getResourceAsStream("/navigation-selection-scenario.json")!!.bufferedReader().use {
             com.google.gson.JsonParser.parseReader(it).asJsonObject

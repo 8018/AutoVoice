@@ -104,4 +104,17 @@ class ResponseDispatcherTest {
             .dispatchCloud("t1", AudioReply("audio/wav", byteArrayOf(1), speakText = "  "))
         assertEquals(emptyList<String>(), texts)
     }
+
+    @Test
+    fun `silent local business result is reported as no output`() {
+        val dispatcher = dispatcher {}
+        val result = dispatcher.dispatchLocal(
+            "t1",
+            com.autovoice.voicecore.NluResult(
+                Intent("1.0", "navigation", "navigate", emptyMap(), 0.9, "protocol"),
+                "导航去机场",
+            ),
+        )
+        assertEquals(ResponseDispatcher.Outcome.NO_OUTPUT, result)
+    }
 }

@@ -40,6 +40,8 @@ interface AudioFrontendEngine : AutoCloseable {
 
     fun startTurn()
     fun process(block: ByteArray): AudioFrontendFrame
+    /** Flushes the sub-frame tail while preserving the exact input sample count. */
+    fun finishProcessedAudio(): ByteArray
     fun finishSegments(): List<ByteArray>
 }
 
@@ -84,6 +86,7 @@ internal class LocalAudioFrontendEngine(
     private val denoiser: FrontendSignalProcessor,
     private val denoiseEnabled: Boolean,
 ) : AudioFrontendEngine {
+    private var pendingSamples = ShortArray(0)
     override val vadAvailable: Boolean get() = segmenter != null
 
     override val diagnostics: AudioFrontendDiagnostics
@@ -98,6 +101,7 @@ internal class LocalAudioFrontendEngine(
         } ?: AudioFrontendDiagnostics()
 
     override fun startTurn() {
+        pendingSamples = ShortArray(0)
         segmenter?.resetForTurn()
     }
 
@@ -106,9 +110,30 @@ internal class LocalAudioFrontendEngine(
             "audio frontend expects $INPUT_BLOCK_BYTES-byte PCM16 blocks, got ${block.size}"
         }
         val vadEvent = segmenter?.feed(block)
-        val input = pcm16BytesToShorts(block).copyOfRange(0, RnnoiseProcessor.FRAME_SIZE)
-        val output = if (denoiseEnabled) denoiser.process(input) else input
+        if (!denoiseEnabled) return AudioFrontendFrame(block.copyOf(), vadEvent)
+
+        pendingSamples = pendingSamples + pcm16BytesToShorts(block)
+        val completeFrames = pendingSamples.size / RnnoiseProcessor.FRAME_SIZE
+        val output = ShortArray(completeFrames * RnnoiseProcessor.FRAME_SIZE)
+        var consumed = 0
+        repeat(completeFrames) {
+            val frame = pendingSamples.copyOfRange(consumed, consumed + RnnoiseProcessor.FRAME_SIZE)
+            denoiser.process(frame).copyInto(output, consumed)
+            consumed += RnnoiseProcessor.FRAME_SIZE
+        }
+        pendingSamples = pendingSamples.copyOfRange(consumed, pendingSamples.size)
         return AudioFrontendFrame(pcm16ShortsToBytes(output), vadEvent)
+    }
+
+    override fun finishProcessedAudio(): ByteArray {
+        if (!denoiseEnabled || pendingSamples.isEmpty()) {
+            pendingSamples = ShortArray(0)
+            return ByteArray(0)
+        }
+        val sampleCount = pendingSamples.size
+        val padded = pendingSamples.copyOf(RnnoiseProcessor.FRAME_SIZE)
+        pendingSamples = ShortArray(0)
+        return pcm16ShortsToBytes(denoiser.process(padded).copyOf(sampleCount))
     }
 
     override fun finishSegments(): List<ByteArray> = segmenter?.finish() ?: emptyList()

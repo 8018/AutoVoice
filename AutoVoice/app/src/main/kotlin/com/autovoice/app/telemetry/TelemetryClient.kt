@@ -1,16 +1,7 @@
 package com.autovoice.app.telemetry
 
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * 链路数据上报客户端（数据平台一期）：事件包按"轮"聚合——[begin] 开启一轮（携带
@@ -24,15 +15,14 @@ import org.json.JSONObject
  * POST；轮已关闭 / 跨轮 → 直接异步 POST 单事件到 /api/telemetry/events（Task 3 服务端
  * 端点，body {utteranceId, events[]}，按 utterance_id 汇合到已有 round，不新建轮）。
  *
- * 线程安全：begin/record/recordFor/end 由装配方在多个协程（主线程 / 仲裁器 / 网关桥 /
- * 播放线程）调用，内部 @Synchronized 串行；HTTP 发送切 Dispatchers.IO，end 先把
- * current 置 null 再异步上传（不重复收包，也不阻塞调用方）。
+ * 线程安全：begin/record/recordFor/end 由多个协程调用，内部 @Synchronized 串行；
+ * 收包后仅向有界上传器入队，不在调用线程做 HTTP。JSON 上传保持入队顺序。
  */
 class TelemetryClient(
-    private val okHttp: OkHttpClient,
-    private val baseUrl: String,
+    okHttp: OkHttpClient,
+    baseUrl: String,
     private val deviceId: String?,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
     private val enabled: Boolean = true,
     /**
      * 打戳时钟（时钟同步）：默认设备墙钟；装配方可注入 `{ 设备时间 + 网关握手估算的时钟偏移 }`
@@ -40,21 +30,32 @@ class TelemetryClient(
      */
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    private val uploader = if (enabled) {
+        TelemetryUploadDispatcher(scope, RetrofitTelemetryTransport(okHttp, baseUrl))
+    } else {
+        null
+    }
+
     /** barge-in 允许旧轮候选与新轮重叠，因此 telemetry 也按 utteranceId 并发持有。 */
     private val rounds = LinkedHashMap<String, CurrentRound>()
     private var activeUtteranceId: String = ""
     private var sessionId: String = ""
+    private var closed = false
 
     @Synchronized
     fun onSessionId(id: String) {
-        if (!enabled) return
+        if (!enabled || closed) return
         sessionId = id
     }
 
     /** 开启一轮新话语的事件包；同 utteranceId 的 [end] 才会收包。 */
     @Synchronized
     fun begin(utteranceId: String) {
-        if (!enabled) return
+        if (!enabled || closed) return
+        if (utteranceId.isBlank()) return
+        if (rounds.size >= MAX_OPEN_ROUNDS && utteranceId !in rounds) {
+            end(rounds.keys.first(), "capacity_evicted")
+        }
         rounds[utteranceId] = CurrentRound(utteranceId, clock(), mutableListOf())
         activeUtteranceId = utteranceId
     }
@@ -62,9 +63,9 @@ class TelemetryClient(
     /** 追加一条事件到当前轮（未 [begin] 时丢弃，防御）。 */
     @Synchronized
     fun record(stage: String, level: String, payload: Map<String, Any?>) {
-        if (!enabled) return
+        if (!enabled || closed) return
         val round = rounds[activeUtteranceId] ?: return
-        round.events.add(eventJson(stage, level, payload))
+        round.events.add(event(stage, level, payload))
     }
 
     /**
@@ -75,106 +76,71 @@ class TelemetryClient(
      */
     @Synchronized
     fun recordFor(utteranceId: String, stage: String, level: String, payload: Map<String, Any?>) {
-        if (!enabled) return
+        if (!enabled || closed) return
         val round = rounds[utteranceId]
         if (round != null) {
-            round.events.add(eventJson(stage, level, payload))
+            round.events.add(event(stage, level, payload))
             return
         }
         // 轮已关闭/跨轮：单事件直传（events 数组与 round 事件同构 {stage,tsMs,level,payload}）
-        postJson(
-            "/api/telemetry/events",
-            JSONObject()
-                .put("utteranceId", utteranceId)
-                .put("events", JSONArray(listOf(eventJson(stage, level, payload)))),
-        )
+        uploader?.postEvents(TelemetryEventBatch(utteranceId, listOf(event(stage, level, payload))))
     }
 
     /** 收包并 POST /api/telemetry/round（异步；utteranceId 与 begin 不一致时不收）。 */
     @Synchronized
-    fun end(utteranceId: String) {
-        if (!enabled) return
+    fun end(utteranceId: String, reason: String? = null) {
+        if (!enabled || closed) return
         val round = rounds.remove(utteranceId) ?: return
+        if (reason != null) round.events.add(event("turn_finished", "info", mapOf("reason" to reason)))
         if (activeUtteranceId == utteranceId) {
             activeUtteranceId = rounds.keys.lastOrNull().orEmpty()
         }
-        postJson(
-            "/api/telemetry/round",
-            JSONObject()
-                .put("utteranceId", round.utteranceId)
-                .put("sessionId", sessionId)
-                .put("deviceId", deviceId ?: "")
-                .put("source", "button")
-                .put("startMs", round.startMs)
-                .put("endMs", clock())
-                .put("events", JSONArray(round.events)),
-        )
+        uploader?.postRound(TelemetryRoundPayload(
+            utteranceId = round.utteranceId,
+            sessionId = sessionId,
+            deviceId = deviceId ?: "",
+            source = "button",
+            startMs = round.startMs,
+            endMs = clock(),
+            events = round.events.toList(),
+        ))
     }
 
-    /** 单独上传 VAD 后 PCM（multipart：utteranceId + <id>.pcm，异步）。 */
+    @Synchronized
+    fun finishOpenRounds(reason: String) {
+        if (!enabled || closed) return
+        rounds.keys.toList().forEach { end(it, reason) }
+    }
+
+    /** No new uploads after close; queued telemetry is allowed to finish independently of VoiceEngine. */
+    @Synchronized
+    fun close() {
+        if (closed) return
+        finishOpenRounds("client_closed")
+        closed = true
+        rounds.clear()
+        activeUtteranceId = ""
+        uploader?.close()
+    }
+
+    /** 单独上传 VAD 后 PCM（multipart：utteranceId + deviceId + <id>.pcm，异步）。 */
     @Synchronized
     fun uploadAudio(utteranceId: String, pcm: ByteArray) {
-        if (!enabled) return
-        scope.launch(Dispatchers.IO) {
-            try {
-                val body = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("utteranceId", utteranceId)
-                    .addFormDataPart(
-                        "file",
-                        "$utteranceId.pcm",
-                        pcm.toRequestBody("application/octet-stream".toMediaType()),
-                    )
-                    .build()
-                val req = Request.Builder()
-                    .url("$baseUrl/api/telemetry/audio")
-                    .post(body)
-                    .build()
-                okHttp.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        Log.w(TAG, "telemetry audio upload failed: http ${resp.code}")
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "telemetry audio upload failed", t)
-            }
-        }
+        if (!enabled || closed) return
+        uploader?.postAudio(utteranceId, deviceId, pcm)
     }
 
-    /** 单条事件 JSON（round events 与 /events 直传同构：{stage,tsMs,level,payload}）。 */
-    private fun eventJson(stage: String, level: String, payload: Map<String, Any?>): JSONObject =
-        JSONObject()
-            .put("stage", stage)
-            .put("tsMs", clock())
-            .put("level", level)
-            .put("payload", JSONObject(payload))
-
-    /** POST JSON 到数据平台（异步；失败静默 Log.w，绝不抛）。 */
-    private fun postJson(path: String, body: JSONObject) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val req = Request.Builder()
-                    .url("$baseUrl$path")
-                    .post(body.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-                okHttp.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        Log.w(TAG, "telemetry $path upload failed: http ${resp.code}")
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "telemetry $path upload failed", t)
-            }
-        }
-    }
+    /** Capture immutable values before the upload leaves the caller's thread. */
+    private fun event(stage: String, level: String, payload: Map<String, Any?>): TelemetryEventPayload =
+        TelemetryEventPayload(stage, clock(), level, payload.toMap())
 
     private class CurrentRound(
         val utteranceId: String,
         val startMs: Long,
-        val events: MutableList<JSONObject>,
+        val events: MutableList<TelemetryEventPayload>,
     )
 
     companion object {
-        private const val TAG = "TelemetryClient"
+        private const val MAX_OPEN_ROUNDS = 64
     }
 }

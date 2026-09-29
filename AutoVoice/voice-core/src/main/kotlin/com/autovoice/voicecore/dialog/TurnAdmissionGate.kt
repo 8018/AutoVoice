@@ -18,12 +18,16 @@ data class AdmittedTurn(val turnId: String, val evidence: AdmissionEvidence)
 class TurnAdmissionGate {
     private var pendingCaptureId: String? = null
     private var admitted: AdmittedTurn? = null
+    private var finalizedCaptureId: String? = null
+    private val retired = ArrayDeque<String>()
 
     @Synchronized
     fun open(captureId: String) {
+        if (captureId in retired) return
         if (pendingCaptureId == captureId) return
         pendingCaptureId = captureId
         admitted = null
+        finalizedCaptureId = null
     }
 
     @Synchronized
@@ -42,7 +46,35 @@ class TurnAdmissionGate {
     fun reject(captureId: String): Boolean {
         if (pendingCaptureId != captureId || admitted != null) return false
         pendingCaptureId = null
+        finalizedCaptureId = null
         return true
+    }
+
+    /** The endpoint can precede ASR admission. Retain it until the candidate is admitted. */
+    @Synchronized
+    fun finalizeInput(captureId: String): Boolean {
+        if (pendingCaptureId != captureId) return false
+        if (finalizedCaptureId == captureId) return false
+        finalizedCaptureId = captureId
+        return true
+    }
+
+    @Synchronized
+    fun isInputFinalized(captureId: String): Boolean = finalizedCaptureId == captureId
+
+    /** A settled response cannot be re-admitted by a delayed ASR or semantic callback. */
+    @Synchronized
+    fun retire(captureId: String) {
+        if (captureId.isBlank()) return
+        if (captureId !in retired) {
+            retired.addLast(captureId)
+            if (retired.size > 64) retired.removeFirst()
+        }
+        if (pendingCaptureId == captureId) {
+            pendingCaptureId = null
+            admitted = null
+            finalizedCaptureId = null
+        }
     }
 
     @Synchronized
@@ -55,6 +87,7 @@ class TurnAdmissionGate {
     fun reset() {
         pendingCaptureId = null
         admitted = null
+        finalizedCaptureId = null
     }
 
     private fun confirm(captureId: String, source: AdmissionEvidence): AdmittedTurn? {
