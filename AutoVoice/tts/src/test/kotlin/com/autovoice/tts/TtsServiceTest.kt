@@ -4,14 +4,112 @@ import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AudioStreamEnd
 import com.autovoice.voicecore.StreamingAudioReply
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TtsServiceTest {
+    @Test
+    fun `output that never starts fails within preparation deadline`() = runTest {
+        val stages = mutableListOf<PlaybackStage>()
+        val output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> null },
+            cacheDir = null,
+            driver = TtsPlaybackDriver { _, _ -> },
+            scope = this,
+            isCurrentTurn = { true },
+            onPlaybackStage = { _, stage -> stages += stage },
+            prepareTimeoutMs = 100,
+        )
+        output.play("turn", AudioReply("audio/pcm", byteArrayOf(1), "hi"))
+        advanceTimeBy(99); runCurrent()
+        assertTrue(stages.isEmpty())
+        advanceTimeBy(1); runCurrent()
+        assertEquals(listOf(PlaybackStage.FAILED), stages)
+    }
+
+    @Test
+    fun `synthesis exception settles output as failed`() = runTest {
+        val stages = mutableListOf<PlaybackStage>()
+        val output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> throw IllegalStateException("network failed") },
+            cacheDir = null,
+            driver = TtsPlaybackDriver { _, _ -> },
+            scope = this,
+            isCurrentTurn = { true },
+            onPlaybackStage = { _, stage -> stages += stage },
+        )
+        output.speak("turn", "hello")
+        runCurrent()
+        assertEquals(listOf(PlaybackStage.FAILED), stages)
+    }
+
+    @Test
+    fun `stream playback completion waits for semantic completion before settling`() = runTest {
+        val stages = mutableListOf<PlaybackStage>()
+        val order = mutableListOf<String>()
+        val end = CompletableDeferred<AudioStreamEnd>()
+        lateinit var output: TtsOutput
+        output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> null },
+            cacheDir = null,
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: AudioReply, identity: PlaybackIdentity) = Unit
+                override suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) {
+                    output.acceptPlaybackEvent("start", "info", identity.payload())
+                    output.acceptPlaybackEvent("completed", "info", identity.payload())
+                }
+            },
+            scope = this,
+            isCurrentTurn = { true },
+            onPlaybackStage = { _, stage -> stages += stage; order += stage.name },
+        )
+        val chunks = Channel<ByteArray>(1).apply { close() }
+        output.playStream("turn", StreamingAudioReply("audio/pcm", 24_000, 1, "pcm_s16le", chunks, end)) {
+            order += "semantic"
+        }
+        runCurrent()
+        assertEquals(listOf(PlaybackStage.STARTED), stages)
+        end.complete(AudioStreamEnd("done", null, ""))
+        runCurrent()
+        assertEquals(listOf("STARTED", "semantic", "COMPLETED"), order)
+    }
+
+    @Test
+    fun `stream failure overrides early playback completion`() = runTest {
+        val stages = mutableListOf<PlaybackStage>()
+        val end = CompletableDeferred<AudioStreamEnd>()
+        lateinit var output: TtsOutput
+        output = createTtsOutput(
+            synthesizer = TtsSynthesizer { _, _ -> null },
+            cacheDir = null,
+            driver = object : TtsPlaybackDriver {
+                override fun play(reply: AudioReply, identity: PlaybackIdentity) = Unit
+                override suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) {
+                    output.acceptPlaybackEvent("start", "info", identity.payload())
+                    output.acceptPlaybackEvent("completed", "info", identity.payload())
+                }
+            },
+            scope = this,
+            isCurrentTurn = { true },
+            onPlaybackStage = { _, stage -> stages += stage },
+        )
+        val chunks = Channel<ByteArray>(1).apply { close() }
+        output.playStream("turn", StreamingAudioReply("audio/pcm", 24_000, 1, "pcm_s16le", chunks, end)) {
+            throw AssertionError("failed stream must not apply semantic end")
+        }
+        runCurrent()
+        end.completeExceptionally(IllegalStateException("stream failed"))
+        runCurrent()
+        assertEquals(listOf(PlaybackStage.STARTED, PlaybackStage.FAILED), stages)
+    }
+
     @Test
     fun `realtime stream plays only for its active chat generation and completes control`() = runTest {
         var generation = 1L

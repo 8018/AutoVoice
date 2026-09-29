@@ -275,11 +275,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun dialogueToUiPhase(state: DialogueState): VoiceUiPhase = when (state) {
         DialogueState.DORMANT -> VoiceUiPhase.IDLE
-        DialogueState.AWAKE,
-        DialogueState.FOLLOW_UP_LISTENING,
-        -> VoiceUiPhase.LISTENING
-        DialogueState.THINKING,
-        DialogueState.SEMANTIC_PROCESSING,
+        DialogueState.LISTENING -> VoiceUiPhase.LISTENING
+        DialogueState.PROCESSING,
         DialogueState.RESPONDING,
         -> VoiceUiPhase.UNDERSTANDING
         DialogueState.SPEAKING -> VoiceUiPhase.SPEAKING
@@ -405,6 +402,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun finishRealtimeChat() = engine.finishRealtimeChat()
             override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) =
                 this@MainViewModel.onFollowUpExpired(interactionId, taskRevision)
+            override fun onInteractionExpired(interactionId: String) {
+                if (engine.conversation.snapshot.value.interactionId != interactionId) return
+                dialogueManager.abortPendingTask()
+                engine.onInteractionExpired(interactionId)
+            }
             override fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
                 if (taskRevision != null && !dialogueManager.matchesTaskRevision(taskRevision)) return
                 expected.interactionId?.let { engine.onFollowUpExpired(it, expected) }

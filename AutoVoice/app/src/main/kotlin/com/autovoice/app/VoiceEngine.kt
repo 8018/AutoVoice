@@ -118,6 +118,7 @@ class VoiceEngine(
     private var turnSegmentsTotalMs = 0L
 
     private var dialogueTimeoutJob: Job? = null
+    private var thinkingTimerTurnId: String? = null
 
     /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
     @Volatile
@@ -215,6 +216,15 @@ class VoiceEngine(
         conversation.onFollowUpExpired(interactionId, expected)
         if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
             telemetry.finishOpenRounds("listening_expired")
+        }
+    }
+
+    fun onInteractionExpired(interactionId: String) {
+        if (conversation.snapshot.value.interactionId != interactionId) return
+        conversation.onInteractionExpired(interactionId)
+        if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
+            telemetry.finishOpenRounds("interaction_expired")
+            tts.stop()
         }
     }
 
@@ -320,6 +330,8 @@ class VoiceEngine(
     fun onTurnSegment(segment: ByteArray) {
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
+        // Capture-level endpoint may precede ASR admission; the gate retains that fact.
+        conversation.onInputFinalized(captureId)
         if (!hadCapture) {
             telemetry.begin(captureId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
@@ -403,7 +415,10 @@ class VoiceEngine(
             telemetry.end(utteranceId)
             return
         }
-        conversation.onFinalSemantic(utteranceId)
+        if (!conversation.onFinalSemantic(utteranceId)) {
+            telemetry.end(utteranceId, "semantic_not_adopted")
+            return
+        }
         val outcome = when (winner) {
             is RaceWinner.Cloud -> {
                 onCloudWon(utteranceId)
@@ -425,16 +440,20 @@ class VoiceEngine(
 
     private fun onConversationState(snapshot: DialogueSnapshot) {
         onDialogueState(snapshot)
-        dialogueTimeoutJob?.cancel()
-        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.THINKING ||
-            snapshot.state == com.autovoice.voicecore.dialog.DialogueState.SEMANTIC_PROCESSING
-        ) {
+        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.PROCESSING) {
             val turnId = snapshot.turnId ?: return
+            if (thinkingTimerTurnId == turnId) return
+            dialogueTimeoutJob?.cancel()
+            thinkingTimerTurnId = turnId
             dialogueTimeoutJob = scope.launch {
                 delay(thinkingTimeoutMs)
                 conversation.onThinkingExpired(turnId)
                 if (!conversation.isCurrentTurn(turnId)) telemetry.end(turnId, "thinking_expired")
             }
+        } else {
+            dialogueTimeoutJob?.cancel()
+            dialogueTimeoutJob = null
+            thinkingTimerTurnId = null
         }
     }
 

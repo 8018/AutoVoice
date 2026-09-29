@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 data class PlaybackIdentity(val turnId: String, val playbackId: String = UUID.randomUUID().toString()) {
@@ -61,10 +62,11 @@ fun createTtsOutput(
     events: TtsEventSink = TtsEventSink { _, _, _ -> },
     onPlaybackStage: (PlaybackIdentity, PlaybackStage) -> Unit = { _, _ -> },
     onEmptyOutput: (String) -> Unit = {},
+    prepareTimeoutMs: Long = 15_000,
 ): TtsOutput {
     val service = createTtsService(synthesizer, cacheDir, events)
     return DefaultTtsOutput(
-        service, PlaybackCoordinator(driver, events, onPlaybackStage), scope,
+        service, PlaybackCoordinator(driver, events, onPlaybackStage, scope, prepareTimeoutMs), scope,
         isCurrentTurn, isCurrentRealtime, events, onEmptyOutput,
     )
 }
@@ -84,9 +86,18 @@ private class DefaultTtsOutput(
         events.emit("tts_play_request", "info", mapOf("turnId" to turnId, "text" to text))
         val identity = playback.prepare(turnId)
         scope.launch {
-            if (!isCurrentTurn(turnId)) return@launch
-            service.audioFor(text, turnId)?.let { if (isCurrentTurn(turnId)) playback.play(identity, it) }
-                ?: playback.failed(identity, IllegalStateException("TTS synthesis failed"))
+            if (!isCurrentTurn(turnId)) return@launch playback.abandon(identity)
+            try {
+                val audio = service.audioFor(text, turnId)
+                if (!isCurrentTurn(turnId)) playback.abandon(identity)
+                else if (audio != null) playback.play(identity, audio)
+                else playback.failed(identity, IllegalStateException("TTS synthesis failed"))
+            } catch (cancelled: CancellationException) {
+                playback.abandon(identity)
+                throw cancelled
+            } catch (error: Throwable) {
+                playback.failed(identity, error)
+            }
         }
     }
 
@@ -115,6 +126,7 @@ private class DefaultTtsOutput(
         scope.launch {
             if (!isActive()) return@launch
             val identity = playback.prepare(ownerId)
+            playback.markStreamPending(identity)
             val playing = launch { playback.playStream(identity, reply) }
             val end = try {
                 reply.completion.await()
@@ -124,12 +136,20 @@ private class DefaultTtsOutput(
                 // completion is the semantic end of a streaming response. Some playback drivers
                 // consume chunks without awaiting it, so this failure must explicitly close the
                 // playback identity and dialogue state instead of relying on the driver to fail.
-                playback.failed(identity, error)
+                playback.streamFailed(identity, error)
                 playing.cancel()
                 playing.join()
                 return@launch
             }
-            if (isActive()) onComplete(end)
+            try {
+                if (isActive()) onComplete(end)
+                playback.streamCompleted(identity)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                playback.streamFailed(identity, error)
+                playing.cancel()
+            }
             playing.join()
         }
     }
@@ -144,10 +164,15 @@ private class PlaybackCoordinator(
     private val driver: TtsPlaybackDriver,
     private val events: TtsEventSink,
     private val stageListener: (PlaybackIdentity, PlaybackStage) -> Unit,
+    private val scope: CoroutineScope,
+    private val prepareTimeoutMs: Long,
 ) {
     private var current: PlaybackIdentity? = null
     private var started = false
     private var streamJob: Job? = null
+    private var preparationWatchdog: Job? = null
+    private var streamCompletionPending = false
+    private var bufferedStreamEnd: Pair<PlaybackStage, String>? = null
     private val driverLock = Any()
 
     fun prepare(turnId: String): PlaybackIdentity {
@@ -155,9 +180,16 @@ private class PlaybackCoordinator(
         synchronized(driverLock) {
             val previous = synchronized(this) {
                 val value = Triple(current, started, streamJob)
+                preparationWatchdog?.cancel()
                 current = next
                 started = false
                 streamJob = null
+                streamCompletionPending = false
+                bufferedStreamEnd = null
+                preparationWatchdog = scope.launch {
+                    delay(prepareTimeoutMs)
+                    failed(next, IllegalStateException("playback did not start within ${prepareTimeoutMs}ms"))
+                }
                 value
             }
             previous.third?.cancel()
@@ -199,6 +231,39 @@ private class PlaybackCoordinator(
     fun failed(identity: PlaybackIdentity, error: Throwable) =
         accept("failed", "error", identity.payload() + ("error" to error.toString()))
 
+    fun markStreamPending(identity: PlaybackIdentity) = synchronized(this) {
+        if (current == identity) streamCompletionPending = true
+    }
+
+    fun abandon(identity: PlaybackIdentity) = synchronized(this) {
+        if (current != identity) return
+        current = null
+        started = false
+        streamCompletionPending = false
+        bufferedStreamEnd = null
+        preparationWatchdog?.cancel()
+        preparationWatchdog = null
+    }
+
+    /** A playback completion may precede the semantic end frame; release it only afterwards. */
+    fun streamCompleted(identity: PlaybackIdentity) {
+        val buffered = synchronized(this) {
+            if (current != identity) return
+            streamCompletionPending = false
+            bufferedStreamEnd.also { bufferedStreamEnd = null }
+        }
+        if (buffered != null) accept(buffered.first.wire, buffered.second, identity.payload())
+    }
+
+    fun streamFailed(identity: PlaybackIdentity, error: Throwable) {
+        synchronized(this) {
+            if (current != identity) return
+            streamCompletionPending = false
+            bufferedStreamEnd = null
+        }
+        failed(identity, error)
+    }
+
     fun accept(stage: String, level: String, payload: Map<String, Any?>) {
         val event = synchronized(this) {
             val identity = current ?: return
@@ -207,9 +272,18 @@ private class PlaybackCoordinator(
             if (kind == PlaybackStage.STARTED) {
                 if (started) return
                 started = true
+                preparationWatchdog?.cancel()
+                preparationWatchdog = null
+            } else if (kind == PlaybackStage.COMPLETED && streamCompletionPending) {
+                if (bufferedStreamEnd == null) bufferedStreamEnd = kind to level
+                return
             } else {
                 current = null
                 started = false
+                preparationWatchdog?.cancel()
+                preparationWatchdog = null
+                streamCompletionPending = false
+                bufferedStreamEnd = null
             }
             identity to kind
         }
@@ -223,6 +297,10 @@ private class PlaybackCoordinator(
                 current = null
                 started = false
                 streamJob = null
+                preparationWatchdog?.cancel()
+                preparationWatchdog = null
+                streamCompletionPending = false
+                bufferedStreamEnd = null
                 value
             }
             previous.third?.cancel()

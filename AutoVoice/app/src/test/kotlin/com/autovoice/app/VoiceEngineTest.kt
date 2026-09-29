@@ -28,6 +28,7 @@ import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.dialog.DialogueState
+import com.autovoice.voicecore.dialog.AdmissionEvidence
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -105,16 +106,14 @@ class VoiceEngineTest {
             player = player,
         ).first
 
-        // 先完成一轮，建立正在播报的旧 turn 快照。
+        // 建立一个尚未完成播放的旧 turn；不要让测试 TTS 的即时失败先收口它。
         engine.onListeningStart()
         engine.onVadStart()
-        engine.onCloudSegment(segment)
-        engine.onTurnSegment(segment)
-        delay(300)
-        stops = 0
-
-        val oldTurn = engine.conversation.snapshot.value.turnId!!
+        val oldTurn = engine.conversation.captureId
+        engine.conversation.confirmTurn(oldTurn, AdmissionEvidence.CLOUD_ASR)
+        engine.conversation.onFinalSemantic(oldTurn)
         engine.conversation.onPlaybackStarted(oldTurn)
+        stops = 0
         val speaking = engine.conversation.snapshot.value
 
         // A rejected VAD capture must leave the complete dialogue snapshot untouched.
@@ -264,6 +263,7 @@ class VoiceEngineTest {
             },
             onPlaybackStage = { identity, stage -> engineRef?.onPlaybackLifecycle(identity.turnId, stage) },
             onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
+            prepareTimeoutMs = 500,
         )
         val onDeviceArbiter = OnDeviceRaceArbiter(
             cloudWaitMs = cloudWaitMs,
@@ -969,7 +969,7 @@ class VoiceEngineTest {
         engine.onCloudSegment(segment)
         engine.onTurnSegment(segment)
         withTimeout(2_000) {
-            engine.conversation.snapshot.first { it.state == DialogueState.FOLLOW_UP_LISTENING }
+            engine.conversation.snapshot.first { it.state == DialogueState.LISTENING && it.turnId == null }
         }
     }
 
@@ -1374,6 +1374,45 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `early stream playback end cannot retire turn before semantic completion`() = runBlocking {
+        val chunks = Channel<ByteArray>(Channel.UNLIMITED).also { it.close() }
+        val completion = CompletableDeferred<AudioStreamEnd>()
+        val stream = StreamingAudioReply("audio/pcm", 24_000, 1, "pcm_s16le", chunks, completion)
+        lateinit var engine: VoiceEngine
+        val pair = engine(
+            scope = this,
+            local = LocalChainRunner { delay(300); Intent.unknown("local") },
+            cloud = CloudRunner { stream },
+            player = object : AudioPlayer {
+                override fun play(reply: AudioReply) = Unit
+                override suspend fun playStream(
+                    reply: StreamingAudioReply,
+                    identity: com.autovoice.tts.PlaybackIdentity,
+                ) {
+                    engine.onTtsPlayEvent("start", "info", identity.payload())
+                    engine.onTtsPlayEvent("completed", "info", identity.payload())
+                }
+            },
+        )
+        engine = pair.first
+        val vehicle = pair.second
+        engine.onListeningStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first { it.state == DialogueState.SPEAKING }
+        }
+        assertFalse(vehicle.isAcOn)
+        val turnId = engine.conversation.snapshot.value.turnId
+        completion.complete(AudioStreamEnd("Air conditioner on", powerOnIntent(), "Turn on AC"))
+        withTimeout(2_000) {
+            engine.conversation.snapshot.first { it.state == DialogueState.LISTENING && it.turnId == null }
+        }
+        assertTrue(vehicle.isAcOn)
+        assertFalse(engine.conversation.isCurrentTurn(turnId!!))
+    }
+
+    @Test
     fun `stream error after audio start does not crash engine scope`() {
         val chunks = Channel<ByteArray>(Channel.UNLIMITED).also { it.close() }
         val completion = CompletableDeferred<AudioStreamEnd>().also {
@@ -1407,7 +1446,7 @@ class VoiceEngineTest {
 
         assertFalse(vehicle.isAcOn, "流式错误不得执行未收口的 intent")
         assertEquals(
-            DialogueState.FOLLOW_UP_LISTENING,
+            DialogueState.LISTENING,
             engine.conversation.snapshot.value.state,
             "流式 completion 失败必须发出播放失败生命周期，不得卡在 RESPONDING",
         )
@@ -1418,11 +1457,12 @@ class VoiceEngineTest {
         var admitted = false
         while (true) {
             val snapshot = engine.conversation.snapshot.value
-            admitted = admitted || snapshot.turnId != null
+            admitted = admitted || snapshot.turnId != null ||
+                (snapshot.state == DialogueState.LISTENING && engine.conversation.captureId.isBlank())
             if (admitted && snapshot.state in setOf(
                     DialogueState.RESPONDING,
                     DialogueState.SPEAKING,
-                    DialogueState.FOLLOW_UP_LISTENING,
+                    DialogueState.LISTENING,
                     DialogueState.DORMANT,
                 )
             ) {
