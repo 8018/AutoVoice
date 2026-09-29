@@ -1,4 +1,4 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness.navigation
 
 /**
  * Pure navigation-task policy. It validates proposals against the immutable list displayed by

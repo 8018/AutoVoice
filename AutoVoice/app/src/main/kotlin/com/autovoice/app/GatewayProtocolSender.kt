@@ -1,4 +1,5 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import com.autovoice.gatewayclient.GatewayClient
 
@@ -97,18 +98,5 @@ internal class GatewayProtocolSender(
         segmentId?.let { payload["segmentId"] = it }
         utteranceId?.let { payload["utteranceId"] = it }
         channel.send("tts_request", payload)
-    }
-}
-
-internal data class NavigationTaskContextRef(
-    val taskId: String,
-    val revision: Long,
-    val interactionId: String,
-    val selectionId: String,
-    val active: Boolean = true,
-) {
-    init {
-        require(taskId.isNotBlank() && revision > 0 && interactionId.isNotBlank())
-        if (active) require(selectionId.isNotBlank())
     }
 }

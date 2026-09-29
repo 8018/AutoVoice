@@ -1,7 +1,7 @@
 package com.autovoice.app.business
 
 import com.autovoice.app.MockVehicleState
-import com.autovoice.app.NavigationExecutor
+import com.autovoice.voicebusiness.navigation.NavigationExecutor
 import com.autovoice.app.action.ActionExecutionGateway
 import com.autovoice.business.BusinessCommand
 import com.autovoice.business.BusinessHandler

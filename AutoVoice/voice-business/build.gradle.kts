@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":business-core"))
     implementation(project(":tts"))
     implementation(libs.coroutines.core)
+    implementation(libs.gson)
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
 }

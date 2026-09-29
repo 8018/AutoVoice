@@ -1,12 +1,13 @@
-package com.autovoice.app
+package com.autovoice.voicebusiness.navigation
 
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.TaskEndReason
+import com.autovoice.voicebusiness.dialog.TaskListeningDirective
 
 /** Application-level task coordination. Recognition, arbitration and transport remain outside. */
-internal class AppDialogueManager(
+class AppDialogueManager(
     interactionIdProvider: (String) -> String,
     private val onNavigation: (NavigationSnapshot) -> Unit,
     launchNavigation: (String) -> Boolean,
