@@ -9,6 +9,7 @@ import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.voiceengine.local.LocalAsrEngine
 import com.autovoice.voiceengine.local.LocalNluEngine
+import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
@@ -115,6 +116,7 @@ internal object VoiceEngineFactory {
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
         var engineRef: VoiceEngine? = null
+        val recognitionGate = RecognitionGate()
         val cloudRunner = GatewayCloudRunner(
             cfg.cloud, telemetrySink, scope, pendingSignals,
             locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
@@ -133,6 +135,7 @@ internal object VoiceEngineFactory {
                     } else null
                 }
             },
+            recognitionGate = recognitionGate,
         )
         cloudRunner.onAsrResult = { text, _, turnId ->
             if (text.isNotBlank()) {
@@ -239,6 +242,7 @@ internal object VoiceEngineFactory {
             tts = ttsOutput,
             business = business,
             scope = scope,
+            recognitionGate = recognitionGate,
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {

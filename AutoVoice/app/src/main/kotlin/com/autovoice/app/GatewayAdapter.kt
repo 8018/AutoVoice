@@ -1,6 +1,7 @@
 package com.autovoice.app
 import com.autovoice.voiceengine.cloud.CloudAsrEngine
 import com.autovoice.voiceengine.cloud.CloudNluEngine
+import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.util.Log
@@ -48,6 +49,7 @@ internal class GatewayCloudRunner(
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
     private val navigationContextProvider: () -> NavigationTaskContextRef? = { null },
+    private val recognitionGate: RecognitionGate,
 ) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner, SpeechRouteModules<Reply> {
 
     private val client = GatewayClientFactory.create(
@@ -102,6 +104,7 @@ internal class GatewayCloudRunner(
             pendingReplyText.remove(turnId)
             releasedReplyTurns.remove(turnId)
         },
+        recognitionGate,
     )
 
     /** D05b:采用确认上行;ready 前忽略。 */
@@ -263,6 +266,9 @@ internal class GatewayCloudRunner(
     override fun cancelStreamingTurn(utteranceId: String) {
         businessSpeech.cancelStreamingTurn(utteranceId)
         cloudAsr.release(utteranceId)
+    }
+    override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
+        if (!businessSpeech.isInputFinalized(utteranceId)) cancelStreamingTurn(utteranceId)
     }
     override fun commitStreamingTurn(utteranceId: String) = businessSpeech.commitStreamingTurn(utteranceId)
 

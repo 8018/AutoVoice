@@ -132,6 +132,63 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `dialogue exit stops unfinished streaming input`() = runBlocking {
+        val stopped = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) = Unit
+            override fun appendStreamingAudio(pcm: ByteArray) = Unit
+            override fun finishStreamingTurn(utteranceId: String) = Unit
+            override fun cancelStreamingTurn(utteranceId: String) { stopped += utteranceId }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("unexpected") },
+            streamingCloud = streaming,
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        val turnId = engine.conversation.captureId
+
+        engine.exitCurrentDialogue()
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(listOf(turnId), stopped)
+    }
+
+    @Test
+    fun `stopping recognition keeps a finalized streaming input`() = runBlocking {
+        var finalized = false
+        var cancelled = false
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) = Unit
+            override fun appendStreamingAudio(pcm: ByteArray) = Unit
+            override fun finishStreamingTurn(utteranceId: String) { finalized = true }
+            override fun cancelStreamingTurn(utteranceId: String) { cancelled = true }
+            override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
+                if (!finalized) cancelStreamingTurn(utteranceId)
+            }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("unexpected") },
+            streamingCloud = streaming,
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.finishStreamingCloudAudio()
+        engine.stopRecognition()
+
+        assertTrue(finalized)
+        assertFalse(cancelled)
+        assertFalse(engine.recognitionEnabled)
+    }
+
+    @Test
     fun `completed input may deliver NLU after recognition closes`() = runBlocking {
         val result = CompletableDeferred<Intent>()
         val (engine, vehicle) = engine(
