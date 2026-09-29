@@ -864,6 +864,8 @@ P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engi
 
 业务迁移的下一段把 `AppDialogueManager`、`NavigationSession`、`NavigationExecutor`、导航候选规则与任务上下文移入 `voice-business/navigation`。App 仅注入高德打开器、订阅快照与发送任务上下文；纯业务模块拥有独立导航用例，并单独执行 70% 行覆盖率门禁。
 
+云端识别实现迁移的第一段把 `CloudAsrEngine`、`CloudNluEngine` 移入 `voice-engine/cloud`，以只暴露消息订阅和已关联回复槽的 `CloudSpeechBridge` 端口对接 App 内的网关桥。云端 ASR/PGS 事件、pending、decision、最终语义与错误的独立模块测试覆盖率超过 70%；音频上传仍由原共享通道负责，ASR 不另起第二次请求。下一步仍需将本地实现和统一的 AsrModule/NluModule、请求级门禁迁入引擎模块。
+
 这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
 关键设计约束检查表（未勾选项仍属待办）：

@@ -1,4 +1,4 @@
-package com.autovoice.app
+package com.autovoice.voiceengine.cloud
 
 import com.autovoice.gatewayclient.GatewayPayloadParser
 import com.autovoice.messaging.ListenerRegistration
@@ -16,8 +16,8 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.channels.SendChannel
 
 /** Voice-side cloud ASR. The gateway only dispatches protocol frames; ASR owns transcript output. */
-internal class CloudAsrEngine(
-    private val bridge: GatewayBridge,
+class CloudAsrEngine(
+    private val bridge: CloudSpeechBridge,
     private val onAsrResult: (String, Boolean, String) -> Unit,
     private val onAsrTurnEstablished: (String) -> Unit,
 ) : AsrEngine, MessageListener {
@@ -63,8 +63,8 @@ internal class CloudAsrEngine(
 }
 
 /** Voice-side cloud NLU. A reply is a semantic candidate; it is not adopted until arbitration. */
-internal class CloudNluEngine(
-    private val bridge: GatewayBridge,
+class CloudNluEngine(
+    private val bridge: CloudSpeechBridge,
     private val parser: GatewayPayloadParser,
     private val sink: DecisionSink,
     private val pendingSignals: SendChannel<Unit>,

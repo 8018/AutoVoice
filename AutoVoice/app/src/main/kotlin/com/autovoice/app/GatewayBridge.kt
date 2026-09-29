@@ -4,6 +4,8 @@ import android.util.Log
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.gatewayclient.GatewayPayloadParser
+import com.autovoice.voiceengine.cloud.CloudReplySlot
+import com.autovoice.voiceengine.cloud.CloudSpeechBridge
 import com.autovoice.messaging.ListenerRegistration
 import com.autovoice.messaging.MessageDispatcher
 import com.autovoice.messaging.MessageListener
@@ -79,7 +81,7 @@ internal class GatewayBridge(
     private val onChatSpeechStarted: () -> Unit = {},
     /** Realtime 上游断开；调用方在锁域仍有效时重建 chat_start。 */
     private val onChatFailure: () -> Unit = {},
-) {
+) : CloudSpeechBridge {
     private val dispatcher = MessageDispatcher { message, failure ->
         Log.e(GATEWAY_BRIDGE_TAG, "gateway listener failed: type=${message.type}", failure)
     }
@@ -136,12 +138,13 @@ internal class GatewayBridge(
     }
 
     /** Additional observers may subscribe without becoming part of the gateway transport. */
-    fun register(types: Set<String>, listener: MessageListener): ListenerRegistration =
+    override fun register(types: Set<String>, listener: MessageListener): ListenerRegistration =
         dispatcher.register(types, listener)
 
     /** Protocol-level request correlation; semantic interpretation belongs to cloud speech engines. */
-    internal fun replySlot(payload: JsonObject): PendingSlot<Reply>? =
+    override fun replySlot(payload: JsonObject): CloudReplySlot? =
         findSlot(payload, pendingReplies)?.takeIf { isForSlot(payload, it) }
+            ?.let { CloudReplySlot(it.utteranceId, it.deferred) }
 
     /** 注册当前话语的回复等待槽（先于发送注册，避免 reply 先到被丢）。 */
     fun newReplySlot(segmentId: String, utteranceId: String = ""): CompletableDeferred<Reply> {
@@ -298,7 +301,7 @@ internal class GatewayBridge(
         parser.tts(msg.payload)?.let { slot.deferred.complete(it) }
     }
 
-    internal fun handleSpeechError(msg: GatewayMessage) {
+    override fun handleSpeechError(msg: GatewayMessage) {
         val code = msg.payload.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: "UNKNOWN"
         val message = msg.payload.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "网关错误"
         val error = GatewayRemoteException(code, "$message [$code]")
