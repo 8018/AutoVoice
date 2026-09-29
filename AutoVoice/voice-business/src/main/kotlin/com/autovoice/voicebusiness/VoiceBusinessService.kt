@@ -48,7 +48,7 @@ class VoiceBusinessService(
     /** A queued capture callback after exit/expiry must not reopen recognition without a new wake. */
     @Volatile private var requiresWake = false
     /** Existing direct VoiceEngine tests can start a first capture without a preceding wake. */
-    private var legacyFirstCapture = true
+    @Volatile private var legacyFirstCapture = true
 
     val conversation = ConversationController(
         onState = ::onConversationState,
