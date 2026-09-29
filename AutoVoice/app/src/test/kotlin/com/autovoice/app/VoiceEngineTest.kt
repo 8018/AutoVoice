@@ -69,6 +69,86 @@ class VoiceEngineTest {
     private val segment = ByteArray(960) { 7 }
 
     @Test
+    fun `new audio is blocked after recognition closes`() = runBlocking {
+        var localCalls = 0
+        var cloudCalls = 0
+        val events = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) { events += "begin" }
+            override fun appendStreamingAudio(pcm: ByteArray) { events += "audio" }
+            override fun finishStreamingTurn(utteranceId: String) { events += "finish" }
+            override fun cancelStreamingTurn(utteranceId: String) { events += "cancel" }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { cloudCalls++; TextReply("不应返回") },
+            streamingCloud = streaming,
+        )
+        assertFalse(engine.recognitionEnabled)
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        assertTrue(engine.recognitionEnabled)
+
+        engine.stopRecognition()
+        engine.appendStreamingCloudAudio(segment)
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(30)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudCalls)
+        assertTrue("audio" !in events)
+
+        // A later capture callback must not silently undo a deliberate business suppression.
+        engine.onListeningStart()
+        engine.onTurnSegment(segment)
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+    }
+
+    @Test
+    fun `completed input may deliver NLU after recognition closes`() = runBlocking {
+        val result = CompletableDeferred<Intent>()
+        val (engine, vehicle) = engine(
+            scope = this,
+            local = LocalChainRunner { result.await() },
+            cloud = CloudRunner { awaitCancellation() },
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onTurnSegment(segment)
+        engine.stopRecognition()
+        result.complete(powerOnIntent())
+
+        withTimeout(2_000) {
+            while (!vehicle.isAcOn) delay(10)
+        }
+        assertFalse(engine.recognitionEnabled)
+        assertTrue(vehicle.isAcOn)
+    }
+
+    @Test
+    fun `queued capture after dialogue exit cannot reopen recognition`() = runBlocking {
+        var localCalls = 0
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { TextReply("不应返回") },
+        )
+        engine.onWake()
+        engine.exitCurrentDialogue()
+        engine.onListeningStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+    }
+
+    @Test
     fun `starting a new turn stops current playback`() = runBlocking {
         var stops = 0
         val player = object : AudioPlayer {

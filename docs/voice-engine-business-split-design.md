@@ -860,7 +860,9 @@ Telemetry 按事件产生方归属，不作为跨模块反向依赖理由。统�
 
 本轮落地了业务边界的第一段：新增 `voice-business` Gradle 模块；DM 五个类及其测试、`ResponseDispatcher` 和播放/语义采用协调迁入该模块；App 中的 `VoiceEngine` 暂作兼容装配，通过 `VoiceBusinessService` 转发业务事件。Compose 首页按本地 UI 设计改为车辆概览、对话主体和二级设置页，保留原有真实状态与回调。业务模块单测和 Android 全量测试、lint、APK 构建均通过，并将业务模块纳入覆盖率门禁。
 
-这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；`voice-engine-api`、统一 ASR/NLU 模块与识别开关、云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把现有 `onTurnSegment` 或 realtime 直通视为新门禁已经生效。
+P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engine` 输入代次门禁：初始关闭，唤醒开启，业务回到 DORMANT 后关闭；新音频上行和候选提交检查许可，已完成输入的 NLU 不按当前许可作废。App 仍是过渡接线，完整模块化和所有异步队列/SDK 二次校验尚未完成。
+
+这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
 关键设计约束检查表（未勾选项仍属待办）：
 

@@ -13,6 +13,7 @@ import com.autovoice.voicebusiness.dialog.DialogueState
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.RaceWinner
+import com.autovoice.voiceengine.api.RecognitionControl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,6 +29,8 @@ class VoiceBusinessService(
     business: BusinessHandler,
     private val scope: CoroutineScope,
     private val thinkingTimeoutMs: Long,
+    /** During migration the App adapter provides the engine input gate; fake business tests omit it. */
+    private val recognition: RecognitionControl? = null,
     private val onExecution: (String, Intent, BusinessResult) -> Unit = { _, _, _ -> },
     private val onExecutionFailure: (String) -> Unit = {},
     private val onRecognizedText: (String?) -> Unit = {},
@@ -42,6 +45,10 @@ class VoiceBusinessService(
     private val output = tts
     private var thinkingJob: Job? = null
     private var thinkingTimerTurnId: String? = null
+    /** A queued capture callback after exit/expiry must not reopen recognition without a new wake. */
+    @Volatile private var requiresWake = false
+    /** Existing direct VoiceEngine tests can start a first capture without a preceding wake. */
+    @Volatile private var legacyFirstCapture = true
 
     val conversation = ConversationController(
         onState = ::onConversationState,
@@ -64,10 +71,16 @@ class VoiceBusinessService(
 
     fun onWake() {
         finishOpenRounds("new_interaction")
+        requiresWake = false
+        legacyFirstCapture = false
+        recognition?.startRecognition()
         conversation.onWake()
     }
 
     fun onCaptureStarted(interruptPlayback: Boolean) {
+        // Production paths are enabled by wake. Do not override an explicit stopRecognition just
+        // because a queued capture or VAD callback arrives later.
+        if (legacyFirstCapture && !requiresWake) recognition?.startRecognition()
         if (interruptPlayback) output.stop(PlaybackInterruptionReason.NEW_TURN)
     }
 
@@ -167,6 +180,10 @@ class VoiceBusinessService(
 
     private fun onConversationState(snapshot: DialogueSnapshot) {
         onDialogueState(snapshot)
+        if (snapshot.state == DialogueState.DORMANT) {
+            requiresWake = true
+            recognition?.stopRecognition()
+        }
         if (snapshot.state == DialogueState.PROCESSING) {
             val turnId = snapshot.turnId ?: return
             if (thinkingTimerTurnId == turnId) return
