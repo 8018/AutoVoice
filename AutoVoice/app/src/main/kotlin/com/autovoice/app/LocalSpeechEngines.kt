@@ -3,7 +3,6 @@ package com.autovoice.app
 import android.util.Log
 import com.autovoice.adapteriflytek.FakeCommandAsrProvider
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
-import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.voicecore.AsrEngine
@@ -18,32 +17,6 @@ import com.autovoice.voicecore.session.LocalChainRunner
 import kotlinx.coroutines.CancellationException
 
 private const val LOCAL_SPEECH_TAG = "LocalSpeechEngines"
-
-/** The current 2C command SDK does not provide an independent ASR result. */
-internal class LocalAsrEngine : AsrEngine {
-    override fun recognize(turnId: String, segment: ByteArray, sink: AsrSink): AsrResult? = null
-}
-
-/** A 2C command result is a semantic candidate with optional recognized text, not an ASR partial. */
-internal class LocalNluEngine(
-    private val configuredAsr: String,
-    private val offline: (ByteArray) -> String?,
-) : NluEngine<NluResult> {
-    override suspend fun understand(turnId: String, segment: ByteArray, asr: AsrResult?): NluResult {
-        val command = try {
-            recognizeLocalCommand(configuredAsr, segment) { offline(segment) }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            Log.w(LOCAL_SPEECH_TAG, "本地 2C 命令词异常，按未命中继续", error)
-            null
-        }
-        return NluResult(
-            intent = RuleNluProvider.understand(command.orEmpty()),
-            recognizedText = command,
-        )
-    }
-}
 
 /** VoiceEngine-owned local route: ASR output is immediate; only NLU enters arbitration. */
 internal class LocalSpeechChain(

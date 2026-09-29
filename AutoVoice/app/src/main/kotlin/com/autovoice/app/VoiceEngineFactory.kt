@@ -6,6 +6,9 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
+import com.autovoice.adapteriflytek.RuleNluProvider
+import com.autovoice.voiceengine.local.LocalAsrEngine
+import com.autovoice.voiceengine.local.LocalNluEngine
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
@@ -338,9 +341,15 @@ internal object VoiceEngineFactory {
         }
         // 2C 文本只随 NLU 候选返回；LocalAsrEngine 不伪造独立 ASR 输出。
         val nlu = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(cfg.local.asr) { segment ->
-                offlineStage?.recognize(segment)
-            }
+            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(
+                recognizeCommand = { segment ->
+                    recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
+                },
+                understandCommand = RuleNluProvider::understand,
+                onRecognizerFailure = { error ->
+                    Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", error)
+                },
+            )
             else -> error("unsupported local.nlu '${cfg.local.nlu}'")
         }
         return LocalSpeechChain(

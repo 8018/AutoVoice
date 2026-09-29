@@ -866,6 +866,8 @@ P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engi
 
 云端识别实现迁移的第一段把 `CloudAsrEngine`、`CloudNluEngine` 移入 `voice-engine/cloud`，以只暴露消息订阅和已关联回复槽的 `CloudSpeechBridge` 端口对接 App 内的网关桥。云端 ASR/PGS 事件、pending、decision、最终语义与错误的独立模块测试覆盖率超过 70%；音频上传仍由原共享通道负责，ASR 不另起第二次请求。下一步仍需将本地实现和统一的 AsrModule/NluModule、请求级门禁迁入引擎模块。
 
+本地识别实现也迁入 `voice-engine/local`：`LocalAsrEngine` 如实报告 2C SDK 无独立 ASR 文本，`LocalNluEngine` 接收厂商命令识别和规则语义的注入端口，不直接依赖 Android 或讯飞适配包；App 组合根仍负责选择真实/显式 fake SDK、注入规则解析和遥测。端云实现现在都在引擎模块，但统一 `AsrModule`/`NluModule` 编排与 SDK 队列二次门禁仍是待办。
+
 这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
 关键设计约束检查表（未勾选项仍属待办）：
