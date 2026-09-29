@@ -70,6 +70,27 @@ class VoiceEngineTest {
     private val segment = ByteArray(960) { 7 }
 
     @Test
+    fun `capture before explicit interaction does not open recognition or invoke speech routes`() = runBlocking {
+        var localCalls = 0
+        var cloudCalls = 0
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { cloudCalls++; TextReply("unexpected") },
+        )
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(30)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudCalls)
+    }
+
+    @Test
     fun `new audio is blocked after recognition closes`() = runBlocking {
         var localCalls = 0
         var cloudCalls = 0
@@ -437,6 +458,7 @@ class VoiceEngineTest {
             sink = DecisionSink(decisions::add),
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onCloudSegment(segment)
@@ -462,6 +484,7 @@ class VoiceEngineTest {
             sink = DecisionSink(decisions::add),
             tts = TtsRequester { spoken += it; null },
         )
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onCloudSegment(segment)
@@ -493,6 +516,7 @@ class VoiceEngineTest {
             streamingCloud = streaming,
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.appendStreamingCloudAudio(ByteArray(960))
@@ -775,6 +799,7 @@ class VoiceEngineTest {
                 )
                 val engine = pair.first
                 engine.onVadStart() // 录音外（IDLE）的杂散 SpeechStart → 忽略，不产生 utteranceId
+                engine.onWake()
                 engine.onListeningStart()
                 engine.onVadStart() // 首个段：产生 utteranceId + utterance_start + vad_start
                 engine.onVadStart() // 同轮第二段：不重复产生 id，只记 vad_start
@@ -832,6 +857,7 @@ class VoiceEngineTest {
                     telemetry = telemetry,
                 )
                 val engine = pair.first
+                engine.onWake()
                 engine.onListeningStart() // utt 轮 1
                 engine.onVadStart() // 产生 utt-1 + vad_start
                 engine.onListeningStart() // utt 轮 2：utteranceId 清空
@@ -929,6 +955,7 @@ class VoiceEngineTest {
                     sink = DecisionSink { entries.add(it) },
                 )
                 engine = pair.first
+                engine.onWake()
                 engine.onListeningStart()
                 engine.onCloudSegment(segment)
                 engine.onTurnSegment(segment)
@@ -1618,12 +1645,13 @@ class VoiceEngineTest {
             scope = scope,
         )
         runBlocking {
+            engine.onWake()
             engine.onListeningStart()
             engine.onCloudSegment(segment)
             engine.onTurnSegment(segment)
             withTimeout(2_000) { cloudStarted.await() } // 确保竞速已启动后才 close
         }
-        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(DialogueState.LISTENING, engine.conversation.snapshot.value.state)
 
         engine.close()
 
