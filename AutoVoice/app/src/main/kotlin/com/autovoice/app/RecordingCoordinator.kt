@@ -58,6 +58,7 @@ internal interface RecordingPipeline {
     fun startRealtimeChat()
     fun finishRealtimeChat()
     fun onFollowUpExpired(interactionId: String, taskRevision: Long?)
+    fun onInteractionExpired(interactionId: String)
     fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
         expected.interactionId?.let { onFollowUpExpired(it, taskRevision) }
     }
@@ -124,6 +125,7 @@ internal class RecordingCoordinator(
             capture.setFollowUpListening(false)
             pipeline.onListeningExpired(expected, revision)
         }, timing.followUpListenMs, timing.maxInteractionMs,
+        onInteractionExpired = { interactionId -> pipeline.onInteractionExpired(interactionId) },
     )
 
     val isRecording: Boolean get() = recording
@@ -281,6 +283,11 @@ internal class RecordingCoordinator(
             onLog("录音过短（${denoised.size}B < ${MIN_SEGMENT_BYTES}B），丢弃不送识别")
             pipeline.onListeningStop()
         }
+        // The input capture has released the microphone. If it was only noise, the same
+        // LISTENING snapshot can now start an actual follow-up window.
+        if (dialogueSnapshot.state == DialogueState.LISTENING && dialogueSnapshot.turnId == null) {
+            onDialogueState(pipeline.dialogueSnapshot, taskListeningDirective)
+        }
         rearmWakeWhenIdle()
     }
 
@@ -306,14 +313,15 @@ internal class RecordingCoordinator(
     fun onDialogueState(snapshot: DialogueSnapshot, taskDirective: TaskListeningDirective?) {
         dialogueSnapshot = snapshot
         taskListeningDirective = taskDirective
-        if (foreground && !chatLocked) listening.update(snapshot, taskDirective)
-        val waiting = snapshot.state == DialogueState.FOLLOW_UP_LISTENING ||
-            snapshot.state == DialogueState.AWAKE
+        if (foreground && !chatLocked) listening.update(snapshot, taskDirective, listeningReady = false)
+        val waiting = snapshot.state == DialogueState.LISTENING && snapshot.turnId == null
         if (!waiting) {
             capture.setFollowUpListening(false)
         }
         if (waiting) {
-            armFollowUpListening(snapshot)
+            if (armFollowUpListening(snapshot) && pipeline.dialogueSnapshot == snapshot &&
+                foreground && !chatLocked
+            ) listening.update(snapshot, taskDirective, listeningReady = true)
         } else if (snapshot.state == DialogueState.DORMANT) {
             if (recording && !chatLocked) cancelTurn(rearm = false)
             stopFollowUpListening(resetDialogue = false)
@@ -465,22 +473,22 @@ internal class RecordingCoordinator(
         if (!foreground || recording || chatLocked) return
         // Audio callbacks are queued onto the coordinator scope. The dialogue may have
         // exited before this callback runs; a stale VAD signal must not reopen capture.
-        if (dialogueSnapshot.state != DialogueState.FOLLOW_UP_LISTENING &&
-            dialogueSnapshot.state != DialogueState.AWAKE) return
+        if (dialogueSnapshot.state != DialogueState.LISTENING || dialogueSnapshot.turnId != null) return
         onLog("延时聆听检测到人声，建立临时 capture")
         startTurn(fromWake = true, includeBargeInPreRoll = true)
     }
 
-    private fun armFollowUpListening(snapshot: DialogueSnapshot) {
-        val interactionId = snapshot.interactionId ?: return
-        val taskRevision = taskListeningDirective?.revision
-        if (startingTurn || chatLocked || !foreground || recording) return
+    private fun armFollowUpListening(snapshot: DialogueSnapshot): Boolean {
+        val interactionId = snapshot.interactionId ?: return false
+        if (startingTurn || chatLocked || !foreground || recording) return false
         pauseWakeObservation()
         if (!capture.startMonitoring()) {
-            pipeline.onFollowUpExpired(interactionId, taskRevision)
-            return
+            updateState { it.copy(permissionRequired = true) }
+            pipeline.onInteractionExpired(interactionId)
+            return false
         }
         capture.setFollowUpListening(true)
+        return true
     }
 
     private fun stopFollowUpListening(resetDialogue: Boolean) {

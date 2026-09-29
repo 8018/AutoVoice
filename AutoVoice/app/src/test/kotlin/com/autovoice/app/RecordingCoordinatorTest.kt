@@ -80,7 +80,7 @@ class RecordingCoordinatorTest {
         coordinator.onForeground()
         runCurrent()
 
-        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
         coordinator.onDialogueState(waiting, taskDirective = null)
         assertTrue(capture.followUpEnabled)
@@ -94,6 +94,23 @@ class RecordingCoordinatorTest {
         assertEquals(listOf<Long?>(null), pipeline.expiredTaskRevisions)
     }
 
+    @Test fun `microphone readiness failure closes interaction rather than starting listen timer`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+        capture.monitoringResult = false
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting, null)
+        assertEquals(listOf("interaction"), pipeline.hardExpiredInteractions)
+        assertFalse(capture.followUpEnabled)
+        advanceTimeBy(1_000); runCurrent()
+        assertTrue(pipeline.expiredInteractions.isEmpty())
+    }
+
     @Test fun `queued follow up detection cannot reopen capture after dialogue exit`() = runTest {
         val capture = FakeCapture()
         val wake = FakeWakeWord()
@@ -102,7 +119,7 @@ class RecordingCoordinatorTest {
         runCurrent()
         coordinator.onForeground()
         runCurrent()
-        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
         coordinator.onDialogueState(waiting, null)
         capture.detectFollowUp = {
@@ -130,7 +147,7 @@ class RecordingCoordinatorTest {
         runCurrent()
         coordinator.onForeground()
         runCurrent()
-        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
         coordinator.onDialogueState(waiting, null)
         capture.raw.emit(byteArrayOf(1, 2))
@@ -147,7 +164,7 @@ class RecordingCoordinatorTest {
         coordinator.onForeground()
         runCurrent()
 
-        val waiting = DialogueSnapshot(DialogueState.FOLLOW_UP_LISTENING, "interaction", "turn")
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
         coordinator.onDialogueState(waiting, TaskListeningDirective(revision = 7, listenWindowMs = 2_000))
 
@@ -240,7 +257,11 @@ class RecordingCoordinatorTest {
         var detectFollowUp: () -> Boolean = { false }
         val startPreRoll = mutableListOf<Boolean>()
 
-        override fun startMonitoring(): Boolean { monitoring = true; return true }
+        var monitoringResult = true
+        override fun startMonitoring(): Boolean {
+            monitoring = monitoringResult
+            return monitoringResult
+        }
         override fun stopMonitoring() { monitoring = false }
         override fun setOpenMicBargeInListening(enabled: Boolean) { bargeInListening = enabled }
         override fun setFollowUpListening(enabled: Boolean) { followUpEnabled = enabled }
@@ -280,6 +301,7 @@ class RecordingCoordinatorTest {
         var finishRealtime = 0
         var dialogueResets = 0
         val expiredInteractions = mutableListOf<String>()
+        val hardExpiredInteractions = mutableListOf<String>()
         val expiredTaskRevisions = mutableListOf<Long?>()
 
         override fun onWake() { events += "wake" }
@@ -298,6 +320,9 @@ class RecordingCoordinatorTest {
         override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) {
             expiredInteractions += interactionId
             expiredTaskRevisions += taskRevision
+        }
+        override fun onInteractionExpired(interactionId: String) {
+            hardExpiredInteractions += interactionId
         }
         override fun resetDialogue() {
             dialogueResets++

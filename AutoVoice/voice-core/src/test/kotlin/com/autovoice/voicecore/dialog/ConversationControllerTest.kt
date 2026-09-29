@@ -22,6 +22,40 @@ class ConversationControllerTest {
         assertEquals(thinking, controller.snapshot.value)
     }
 
+    @Test fun `old window expiry cannot close identical looking follow up window`() {
+        val controller = ConversationController(newCaptureId = { "capture" })
+        val firstWindow = controller.onWake()
+        val turnId = controller.beginCapture()
+        controller.openCapture(turnId)
+        controller.confirmTurn(turnId, AdmissionEvidence.LOCAL_SEMANTIC)
+        controller.onFinalSemantic(turnId)
+        val secondWindow = controller.onOutputSkipped(turnId)
+        assertEquals(firstWindow.state, secondWindow.state)
+        assertEquals(firstWindow.interactionId, secondWindow.interactionId)
+        assertEquals(firstWindow.turnId, secondWindow.turnId)
+        assertTrue(firstWindow.listenWindowGeneration != secondWindow.listenWindowGeneration)
+        controller.onFollowUpExpired(firstWindow.interactionId!!, firstWindow)
+        assertEquals(secondWindow, controller.snapshot.value)
+    }
+
+    @Test fun `hard interaction expiry closes processing responding and speaking`() {
+        for (phase in listOf(DialogueState.PROCESSING, DialogueState.RESPONDING, DialogueState.SPEAKING)) {
+            val controller = ConversationController(newCaptureId = { "turn" })
+            val interactionId = controller.onWake().interactionId!!
+            controller.beginCapture()
+            controller.openCapture("turn")
+            controller.confirmTurn("turn", AdmissionEvidence.CLOUD_ASR)
+            controller.onInputFinalized("turn")
+            if (phase != DialogueState.PROCESSING) controller.onFinalSemantic("turn")
+            if (phase == DialogueState.SPEAKING) controller.onPlaybackStarted("turn")
+            assertEquals(phase, controller.snapshot.value.state)
+            controller.onInteractionExpired(interactionId)
+            assertEquals(DialogueSnapshot(), controller.snapshot.value)
+            assertFalse(controller.isCurrentTurn("turn"))
+            assertFalse(controller.onFinalSemantic("turn"))
+        }
+    }
+
     @Test fun `capture and vad candidate do not replace current dialogue turn`() {
         val controller = controller()
         controller.onWake()
@@ -39,7 +73,7 @@ class ConversationControllerTest {
         assertEquals(speaking, controller.snapshot.value)
     }
 
-    @Test fun `pending candidate becomes semantic processing only after admission`() {
+    @Test fun `pending is progress and only input finalization enters processing`() {
         val visible = mutableListOf<Boolean>()
         val states = mutableListOf<DialogueSnapshot>()
         val admitted = mutableListOf<AdmittedTurn>()
@@ -54,13 +88,15 @@ class ConversationControllerTest {
         controller.openCapture()
 
         controller.setPending("capture", true)
-        assertEquals(DialogueState.AWAKE, controller.snapshot.value.state)
+        assertEquals(DialogueState.LISTENING, controller.snapshot.value.state)
         assertEquals(true, visible.last())
 
         assertTrue(controller.confirmTurn("capture", AdmissionEvidence.CLOUD_ASR))
-        assertEquals(DialogueState.SEMANTIC_PROCESSING, controller.snapshot.value.state)
+        assertEquals(DialogueState.LISTENING, controller.snapshot.value.state)
         assertEquals(listOf(AdmittedTurn("capture", AdmissionEvidence.CLOUD_ASR)), admitted)
-        assertTrue(states.any { it.state == DialogueState.THINKING })
+        assertTrue(states.any { it.state == DialogueState.LISTENING && it.turnId == "capture" })
+        assertTrue(controller.onInputFinalized("capture"))
+        assertEquals(DialogueState.PROCESSING, controller.snapshot.value.state)
     }
 
     @Test fun `stale semantic and playback cannot replace current turn`() {
@@ -75,6 +111,25 @@ class ConversationControllerTest {
         controller.onPlaybackStarted("old")
         controller.onPlaybackEnded("old")
         assertEquals(snapshot, controller.snapshot.value)
+    }
+
+    @Test fun `input endpoint before admission is retained and settled capture cannot reenter`() {
+        val controller = ConversationController(newCaptureId = { "capture" })
+        controller.onWake()
+        val turnId = controller.beginCapture()
+        controller.openCapture(turnId)
+        assertTrue(controller.onInputFinalized(turnId))
+        assertEquals(DialogueState.LISTENING, controller.snapshot.value.state)
+        assertTrue(controller.confirmTurn(turnId, AdmissionEvidence.CLOUD_ASR))
+        assertEquals(DialogueState.PROCESSING, controller.snapshot.value.state)
+        assertTrue(controller.onFinalSemantic(turnId))
+        controller.onOutputSkipped(turnId)
+        assertEquals(DialogueState.LISTENING, controller.snapshot.value.state)
+        assertEquals(null, controller.snapshot.value.turnId)
+        assertFalse(controller.confirmTurn(turnId, AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
+        assertFalse(controller.onFinalSemantic(turnId))
+        controller.openCapture(turnId)
+        assertFalse(controller.confirmTurn(turnId, AdmissionEvidence.CLOUD_ASR))
     }
 
     @Test fun `late thinking timeout cannot clear a turn that is already responding`() {
@@ -94,8 +149,23 @@ class ConversationControllerTest {
 
         assertEquals(DialogueState.RESPONDING, snapshot.state)
         assertEquals(turnId, controller.captureId)
-        assertEquals(true, pending.last())
+        assertEquals(false, pending.last())
         assertTrue(controller.isVisible(turnId))
+    }
+
+    @Test fun `pending after final semantic or playback cannot rewind a turn`() {
+        val controller = ConversationController(newCaptureId = { "capture" })
+        controller.onWake()
+        val turnId = controller.beginCapture()
+        controller.openCapture(turnId)
+        assertTrue(controller.confirmTurn(turnId, AdmissionEvidence.CLOUD_ASR))
+        assertTrue(controller.onFinalSemantic(turnId))
+        assertFalse(controller.setPending(turnId, true))
+        assertEquals(DialogueState.RESPONDING, controller.snapshot.value.state)
+        controller.onPlaybackStarted(turnId)
+        assertFalse(controller.setPending(turnId, true))
+        assertFalse(controller.onFinalSemantic(turnId))
+        assertEquals(DialogueState.SPEAKING, controller.snapshot.value.state)
     }
 
     @Test fun `reset clears capture pending and dialogue together`() {
@@ -156,7 +226,7 @@ class ConversationControllerTest {
         assertFalse(controller.setPending(old, true))
         assertFalse(controller.setPending(old, false))
         assertEquals(true, visible.last())
-        assertEquals(DialogueState.SEMANTIC_PROCESSING, controller.snapshot.value.state)
+        assertEquals(DialogueState.LISTENING, controller.snapshot.value.state)
 
         assertTrue(controller.setPending(current, false))
         assertEquals(false, visible.last())
@@ -187,12 +257,12 @@ class ConversationControllerTest {
             val playbackEnd = executor.submit<DialogueSnapshot> {
                 controller.onPlaybackEnded("capture")
             }
-            assertEquals(DialogueState.FOLLOW_UP_LISTENING, playbackEnd.get(5, TimeUnit.SECONDS).state)
+            assertEquals(DialogueState.LISTENING, playbackEnd.get(5, TimeUnit.SECONDS).state)
 
             releaseAdmission.countDown()
             assertTrue(admission.get(5, TimeUnit.SECONDS))
             assertEquals(
-                listOf(DialogueState.AWAKE, DialogueState.THINKING, DialogueState.FOLLOW_UP_LISTENING),
+                listOf(DialogueState.LISTENING, DialogueState.LISTENING),
                 states,
             )
         } finally {

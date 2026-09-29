@@ -5,6 +5,7 @@ import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
 import com.autovoice.tts.PlaybackStage
+import com.autovoice.tts.PlaybackInterruptionReason
 import com.autovoice.tts.TtsOutput
 import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.AudioReply
@@ -118,6 +119,7 @@ class VoiceEngine(
     private var turnSegmentsTotalMs = 0L
 
     private var dialogueTimeoutJob: Job? = null
+    private var thinkingTimerTurnId: String? = null
 
     /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
     @Volatile
@@ -130,7 +132,7 @@ class VoiceEngine(
     val conversation: ConversationController = ConversationController(
         onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
-            tts.stop()
+            tts.stop(PlaybackInterruptionReason.NEW_TURN)
             streamingCloud?.commitStreamingTurn(admitted.turnId)
         },
         onPendingVisible = onCloudPending,
@@ -173,7 +175,7 @@ class VoiceEngine(
     fun close() {
         telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
-        tts.stop()
+        tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
         telemetry.close()
         dialogueTimeoutJob?.cancel()
         candidates.close()
@@ -182,12 +184,16 @@ class VoiceEngine(
     }
 
     /** 统一停止当前输出；用于 realtime 对端确认用户开始说话等非普通新轮入口。 */
-    fun stopPlayback() = tts.stop()
+    fun stopPlayback() {
+        val turnId = conversation.snapshot.value.turnId
+        tts.stop(PlaybackInterruptionReason.STOP_ONLY)
+        if (turnId != null) conversation.onPlaybackEnded(turnId)
+    }
 
     /** Ends the current interaction locally. Candidate producers may finish, but become stale. */
     fun exitCurrentDialogue() {
         telemetry.finishOpenRounds("dialogue_exited")
-        tts.stop()
+        tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
         dialogueTimeoutJob?.cancel()
         dialogueTimeoutJob = null
         conversation.reset()
@@ -218,6 +224,15 @@ class VoiceEngine(
         }
     }
 
+    fun onInteractionExpired(interactionId: String) {
+        if (conversation.snapshot.value.interactionId != interactionId) return
+        conversation.onInteractionExpired(interactionId)
+        if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
+            telemetry.finishOpenRounds("interaction_expired")
+            tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
+        }
+    }
+
     fun resetDialogue() {
         telemetry.finishOpenRounds("dialogue_reset")
         conversation.reset()
@@ -238,7 +253,7 @@ class VoiceEngine(
         telemetry.begin(captureId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
-        if (interruptPlayback) tts.stop()
+        if (interruptPlayback) tts.stop(PlaybackInterruptionReason.NEW_TURN)
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -320,6 +335,8 @@ class VoiceEngine(
     fun onTurnSegment(segment: ByteArray) {
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
+        // Capture-level endpoint may precede ASR admission; the gate retains that fact.
+        conversation.onInputFinalized(captureId)
         if (!hadCapture) {
             telemetry.begin(captureId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
@@ -403,7 +420,10 @@ class VoiceEngine(
             telemetry.end(utteranceId)
             return
         }
-        conversation.onFinalSemantic(utteranceId)
+        if (!conversation.onFinalSemantic(utteranceId)) {
+            telemetry.end(utteranceId, "semantic_not_adopted")
+            return
+        }
         val outcome = when (winner) {
             is RaceWinner.Cloud -> {
                 onCloudWon(utteranceId)
@@ -425,16 +445,20 @@ class VoiceEngine(
 
     private fun onConversationState(snapshot: DialogueSnapshot) {
         onDialogueState(snapshot)
-        dialogueTimeoutJob?.cancel()
-        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.THINKING ||
-            snapshot.state == com.autovoice.voicecore.dialog.DialogueState.SEMANTIC_PROCESSING
-        ) {
+        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.PROCESSING) {
             val turnId = snapshot.turnId ?: return
+            if (thinkingTimerTurnId == turnId) return
+            dialogueTimeoutJob?.cancel()
+            thinkingTimerTurnId = turnId
             dialogueTimeoutJob = scope.launch {
                 delay(thinkingTimeoutMs)
                 conversation.onThinkingExpired(turnId)
                 if (!conversation.isCurrentTurn(turnId)) telemetry.end(turnId, "thinking_expired")
             }
+        } else {
+            dialogueTimeoutJob?.cancel()
+            dialogueTimeoutJob = null
+            thinkingTimerTurnId = null
         }
     }
 

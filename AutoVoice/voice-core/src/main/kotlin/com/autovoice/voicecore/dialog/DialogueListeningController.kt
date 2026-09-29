@@ -15,24 +15,40 @@ class DialogueListeningController(
     private val onExpired: (DialogueSnapshot, Long?) -> Unit,
     private val defaultWindowMs: Long = 10_000,
     private val maxInteractionMs: Long = 60_000,
+    private val onInteractionExpired: (String) -> Unit = {},
 ) : AutoCloseable {
     private var interactionId: String? = null
     private var startedAt = 0L
     private var generation = 0L
-    private var key: Pair<DialogueSnapshot, TaskListeningDirective?>? = null
+    private var interactionGeneration = 0L
+    private var key: Triple<DialogueSnapshot, TaskListeningDirective?, Boolean>? = null
     private var timer: Job? = null
+    private var interactionTimer: Job? = null
 
-    @Synchronized fun update(snapshot: DialogueSnapshot, directive: TaskListeningDirective?) {
+    @Synchronized fun update(snapshot: DialogueSnapshot, directive: TaskListeningDirective?, listeningReady: Boolean = true) {
         if (snapshot.interactionId != interactionId) {
+            interactionTimer?.cancel()
+            interactionGeneration++
             interactionId = snapshot.interactionId
             startedAt = nowMs()
+            val id = interactionId
+            if (id != null) {
+                val token = interactionGeneration
+                interactionTimer = scope.launch {
+                    delay(maxInteractionMs.coerceAtLeast(0))
+                    val valid = synchronized(this@DialogueListeningController) {
+                        token == interactionGeneration && current().interactionId == id
+                    }
+                    if (valid) onInteractionExpired(id)
+                }
+            }
         }
-        val next = snapshot to directive
+        val next = Triple(snapshot, directive, listeningReady)
         if (next == key) return
-        close()
+        cancelListeningTimer()
         key = next
         if (snapshot.interactionId == null) return
-        if (snapshot.state != DialogueState.AWAKE && snapshot.state != DialogueState.FOLLOW_UP_LISTENING) return
+        if (!listeningReady || snapshot.state != DialogueState.LISTENING || snapshot.turnId != null) return
         val token = generation
         val remaining = (maxInteractionMs - (nowMs() - startedAt)).coerceAtLeast(0)
         val wait = minOf(directive?.listenWindowMs ?: defaultWindowMs, remaining)
@@ -46,6 +62,14 @@ class DialogueListeningController(
     }
 
     @Synchronized override fun close() {
+        cancelListeningTimer()
+        interactionGeneration++
+        interactionTimer?.cancel()
+        interactionTimer = null
+        interactionId = null
+    }
+
+    private fun cancelListeningTimer() {
         generation++
         timer?.cancel()
         timer = null

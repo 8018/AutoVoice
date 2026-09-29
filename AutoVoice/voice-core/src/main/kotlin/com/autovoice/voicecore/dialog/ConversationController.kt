@@ -64,6 +64,15 @@ class ConversationController(
         dialogue.reset().also { next -> queue.add { onState(next) } }
     }
 
+    /** Interaction hard deadline is independent of the current dialogue phase. */
+    fun onInteractionExpired(interactionId: String): DialogueSnapshot = mutate { queue ->
+        if (dialogue.snapshot.value.interactionId != interactionId) return@mutate dialogue.snapshot.value
+        admission.reset()
+        captureId = ""
+        clearPending(queue)
+        dialogue.reset().also { next -> queue.add { onState(next) } }
+    }
+
     fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null): DialogueSnapshot = mutate { queue ->
         // A newer ASR-admitted turn can share the same interaction ID. Only explicit UI dismissal
         // omits the expected snapshot; timer events must compare the exact listening state.
@@ -78,10 +87,7 @@ class ConversationController(
 
     fun onThinkingExpired(turnId: String): DialogueSnapshot = mutate { queue ->
         val current = dialogue.snapshot.value
-        if (current.turnId == turnId &&
-            (current.state == DialogueState.THINKING ||
-                current.state == DialogueState.SEMANTIC_PROCESSING)
-        ) {
+        if (current.turnId == turnId && current.state == DialogueState.PROCESSING) {
             admission.reset()
             captureId = ""
             clearPending(queue)
@@ -91,7 +97,7 @@ class ConversationController(
 
     /**
      * Confirms a capture using evidence produced by ASR/NLU. Repeated evidence for the current turn
-     * is idempotent and never moves SPEAKING/FOLLOW_UP back to THINKING.
+     * is idempotent and never moves SPEAKING or a settled response back to LISTENING.
      */
     fun confirmTurn(turnId: String, evidence: AdmissionEvidence): Boolean = mutate { queue ->
         if (turnId.isBlank()) return@mutate false
@@ -102,16 +108,23 @@ class ConversationController(
             AdmissionEvidence.LOCAL_SEMANTIC, AdmissionEvidence.CLOUD_FINAL_SEMANTIC ->
                 admission.confirmSemantic(turnId, evidence)
         } ?: return@mutate dialogue.isCurrentTurn(turnId)
-        val thinking = dialogue.onSpeechCommitted(admitted.turnId)
+        val listening = dialogue.onSpeechCommitted(admitted.turnId, admission.isInputFinalized(admitted.turnId))
         queue.add { onTurnAdmitted(admitted) }
-        queue.add { onState(thinking) }
+        queue.add { onState(listening) }
         if (pendingTurnId != null && pendingTurnId != admitted.turnId) {
             pendingTurnId = null
             queue.add { onPendingVisible(false) }
         }
-        if (pendingTurnId == admitted.turnId) {
-            val processing = dialogue.onSemanticProcessing(admitted.turnId)
-            queue.add { onState(processing) }
+        true
+    }
+
+    /** Turn-level input endpoint. It may arrive before ASR confirms this capture. */
+    fun onInputFinalized(turnId: String): Boolean = mutate { queue ->
+        if (!admission.finalizeInput(turnId)) return@mutate false
+        if (dialogue.isCurrentTurn(turnId)) {
+            val before = dialogue.snapshot.value
+            val after = dialogue.onInputFinalized(turnId)
+            if (after != before) queue.add { onState(after) }
         }
         true
     }
@@ -122,12 +135,12 @@ class ConversationController(
             // A pending signal may arrive after a newer turn was admitted. It must not replace the
             // pending owner or hide the newer turn's UI state merely because it arrived later.
             if (!isVisibleLocked(turnId)) return@mutate false
+            val current = dialogue.snapshot.value
+            if (current.turnId == turnId && current.state != DialogueState.LISTENING &&
+                current.state != DialogueState.PROCESSING
+            ) return@mutate false
             pendingTurnId = turnId
             queue.add { onPendingVisible(true) }
-            if (dialogue.isCurrentTurn(turnId)) {
-                val processing = dialogue.onSemanticProcessing(turnId)
-                queue.add { onState(processing) }
-            }
             true
         } else {
             // Only the owner may clear the pending indicator. A stale result from another turn is
@@ -142,7 +155,13 @@ class ConversationController(
     /** Marks a final semantic only when it still belongs to the locally current turn. */
     fun onFinalSemantic(turnId: String): Boolean = mutate { queue ->
         if (!dialogue.isCurrentTurn(turnId)) return@mutate false
+        val state = dialogue.snapshot.value.state
+        if (state != DialogueState.LISTENING && state != DialogueState.PROCESSING) return@mutate false
         val responding = dialogue.onFinalSemantic(turnId)
+        if (pendingTurnId == turnId) {
+            pendingTurnId = null
+            queue.add { onPendingVisible(false) }
+        }
         queue.add { onState(responding) }
         true
     }
@@ -152,12 +171,26 @@ class ConversationController(
     }
 
     fun onPlaybackEnded(turnId: String): DialogueSnapshot = mutate { queue ->
-        dialogue.onPlaybackEnded(turnId).also { next -> queue.add { onState(next) } }
+        val before = dialogue.snapshot.value
+        dialogue.onPlaybackEnded(turnId).also { next ->
+            if (next != before) {
+                admission.retire(turnId)
+                if (captureId == turnId) captureId = ""
+                queue.add { onState(next) }
+            }
+        }
     }
 
     /** Business completed without requesting audio; playback cannot drive the next state. */
     fun onOutputSkipped(turnId: String): DialogueSnapshot = mutate { queue ->
-        dialogue.onOutputSkipped(turnId).also { next -> queue.add { onState(next) } }
+        val before = dialogue.snapshot.value
+        dialogue.onOutputSkipped(turnId).also { next ->
+            if (next != before) {
+                admission.retire(turnId)
+                if (captureId == turnId) captureId = ""
+                queue.add { onState(next) }
+            }
+        }
     }
 
     fun isCurrentTurn(turnId: String): Boolean = synchronized(lock) {
