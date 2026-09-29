@@ -49,11 +49,13 @@ class DialogueStateMachine(
     fun onSpeechCommitted(turnId: String, inputFinalized: Boolean = false): DialogueSnapshot {
         require(turnId.isNotBlank())
         val current = _snapshot.value
+        // Only an explicit interaction entry point may leave DORMANT. Late recognition evidence
+        // from a retired capture must never manufacture a new interaction after reset/expiry.
+        if (current.state == DialogueState.DORMANT || current.interactionId == null) return current
         if (current.turnId == turnId) return current
         return update(current.copy(
             state = if (inputFinalized) DialogueState.PROCESSING else DialogueState.LISTENING,
             turnId = turnId,
-            interactionId = current.interactionId ?: newId(),
             listenWindowGeneration = ++nextWindowGeneration,
         ))
     }

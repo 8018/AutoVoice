@@ -207,6 +207,7 @@ class VoiceEngineTest {
         ).first
 
         // 建立一个尚未完成播放的旧 turn；不要让测试 TTS 的即时失败先收口它。
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         val oldTurn = engine.conversation.captureId
@@ -521,6 +522,7 @@ class VoiceEngineTest {
             streamingCloud = streaming,
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onTurnSegment(segment)
@@ -536,6 +538,9 @@ class VoiceEngineTest {
      * → onTurnSegment（本地整段，启动竞速）。在 runBlocking 内调用。
      */
     private suspend fun utter(engine: VoiceEngine, cloudSegments: Int = 1) {
+        // The production manual-turn entry explicitly opens an interaction before recording.
+        // A bare capture must not manufacture an interaction from late ASR/NLU evidence.
+        if (engine.conversation.snapshot.value.state == DialogueState.DORMANT) engine.onWake()
         engine.onListeningStart()
         repeat(cloudSegments) { engine.onCloudSegment(segment) }
         engine.onTurnSegment(segment)
@@ -687,6 +692,8 @@ class VoiceEngineTest {
             )
             engine = pair.first
             val vehicle = pair.second
+            engine.onWake()
+            pendingStates.clear() // Ignore the explicit interaction's initial pending=false reset.
             engine.onListeningStart()
             engine.onCloudSegment(segment)
             engine.onTurnSegment(segment)
@@ -1496,6 +1503,7 @@ class VoiceEngineTest {
         )
         engine = pair.first
         val vehicle = pair.second
+        engine.onWake()
         engine.onListeningStart()
         engine.onCloudSegment(segment)
         engine.onTurnSegment(segment)

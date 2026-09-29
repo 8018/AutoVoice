@@ -101,6 +101,9 @@ class ConversationController(
      */
     fun confirmTurn(turnId: String, evidence: AdmissionEvidence): Boolean = mutate { queue ->
         if (turnId.isBlank()) return@mutate false
+        // An open capture is only technical evidence, not permission to start a conversation.
+        // Exit/reset/expiry can race a late ASR or NLU callback from that capture.
+        if (dialogue.snapshot.value.state == DialogueState.DORMANT) return@mutate false
         if (dialogue.isCurrentTurn(turnId)) return@mutate true
         val admitted = when (evidence) {
             AdmissionEvidence.LOCAL_ASR, AdmissionEvidence.CLOUD_ASR ->

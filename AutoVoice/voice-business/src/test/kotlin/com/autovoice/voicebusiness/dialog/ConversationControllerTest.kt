@@ -10,6 +10,25 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class ConversationControllerTest {
+    @Test fun `late evidence from an open capture cannot wake a dormant dialogue`() {
+        val admitted = mutableListOf<AdmittedTurn>()
+        val controller = ConversationController(
+            newCaptureId = { "late" },
+            onTurnAdmitted = admitted::add,
+        )
+        controller.beginCapture()
+        controller.openCapture("late")
+        assertFalse(controller.confirmTurn("late", AdmissionEvidence.CLOUD_ASR))
+        assertFalse(controller.confirmTurn("late", AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
+        assertEquals(DialogueSnapshot(), controller.snapshot.value)
+        assertTrue(admitted.isEmpty())
+
+        controller.onWake()
+        controller.beginCapture()
+        controller.openCapture("late")
+        assertTrue(controller.confirmTurn("late", AdmissionEvidence.CLOUD_ASR))
+    }
+
     @Test fun `late listening expiry cannot end a newer admitted turn in the same interaction`() {
         val controller = controller()
         controller.onWake()
