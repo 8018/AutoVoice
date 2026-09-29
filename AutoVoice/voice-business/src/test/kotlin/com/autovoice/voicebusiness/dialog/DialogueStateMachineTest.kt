@@ -70,6 +70,7 @@ class DialogueStateMachineTest {
     }
 
     @Test fun `repeated admission does not regress speaking turn`() {
+        machine.onWake()
         machine.onSpeechCommitted("turn")
         machine.onFinalSemantic("turn")
         machine.onPlaybackStarted("turn")
@@ -96,6 +97,7 @@ class DialogueStateMachineTest {
     }
 
     @Test fun `state machine checks current turn after arbitration`() {
+        machine.onWake()
         machine.onSpeechCommitted("turn")
         assertFalse(machine.isCurrentTurn("old"))
         assertEquals(DialogueState.LISTENING, machine.onFinalSemantic("old").state)
@@ -104,5 +106,14 @@ class DialogueStateMachineTest {
         gate.reset()
         assertNull(gate.confirmSemantic("pending", AdmissionEvidence.CLOUD_FINAL_SEMANTIC))
         assertTrue(machine.isCurrentTurn("turn"))
+    }
+
+    @Test fun `late speech cannot create an interaction after reset`() {
+        machine.onWake()
+        machine.onSpeechCommitted("old")
+        val dormant = machine.reset()
+        assertEquals(dormant, machine.onSpeechCommitted("late", inputFinalized = true))
+        assertNull(machine.snapshot.value.interactionId)
+        assertFalse(machine.isCurrentTurn("late"))
     }
 }
