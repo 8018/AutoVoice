@@ -29,6 +29,7 @@ class TelemetryClientTest {
 
     private lateinit var server: MockWebServer
     private lateinit var okHttp: OkHttpClient
+    private val clients = mutableListOf<TelemetryClient>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private fun client(enabled: Boolean = true, clock: () -> Long = System::currentTimeMillis): TelemetryClient =
@@ -39,7 +40,7 @@ class TelemetryClientTest {
             scope = scope,
             enabled = enabled,
             clock = clock,
-        )
+        ).also(clients::add)
 
     @BeforeEach
     fun setUp() {
@@ -50,6 +51,8 @@ class TelemetryClientTest {
 
     @AfterEach
     fun tearDown() {
+        clients.forEach(TelemetryClient::close)
+        clients.clear()
         server.shutdown()
         okHttp.dispatcher.executorService.shutdown()
     }
@@ -68,6 +71,7 @@ class TelemetryClientTest {
         assertNotNull(req, "end 应 POST /api/telemetry/round")
         assertEquals("POST", req!!.method)
         assertEquals("/api/telemetry/round", req.path)
+        assertTrue(req.getHeader("Content-Type")!!.startsWith("application/json"))
 
         val body = JSONObject(req.body.readUtf8())
         assertEquals("utt-1", body.getString("utteranceId"))
@@ -286,6 +290,8 @@ class TelemetryClientTest {
         assertTrue(req.getHeader("Content-Type")!!.startsWith("multipart/form-data"), "应为 multipart 表单")
         val bodyText = req.body.readUtf8()
         assertTrue(bodyText.contains("name=\"utteranceId\""), "multipart 应含 utteranceId 表单字段")
+        assertTrue(bodyText.contains("name=\"deviceId\""), "multipart 应含设备 ID 供诊断窗口匹配")
+        assertTrue(bodyText.contains("demo-1"), "multipart 应携带设备 ID")
         assertTrue(bodyText.contains("utt-1"), "表单应携带 utteranceId 值")
         assertTrue(bodyText.contains("filename=\"utt-1.pcm\""), "音频文件名应为 <utteranceId>.pcm")
         assertTrue(bodyText.contains("application/octet-stream"), "PCM 内容类型应为 application/octet-stream")

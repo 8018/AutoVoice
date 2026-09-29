@@ -29,6 +29,7 @@ import com.autovoice.tts.TtsSynthesizer
 import com.autovoice.tts.createTtsOutput
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -84,7 +85,11 @@ internal object VoiceEngineFactory {
         // T6 遥测装配：telemetry 段未配置（enabled 缺省 false）→ enabled=false 全 no-op 实例；
         // clock 注入偏移（ready.serverTime 握手估算），设备端事件统一换算服务器时钟
         val telemetry = TelemetryClient(
-            okHttp = OkHttpClient(),
+            okHttp = OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .callTimeout(20, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false)
+                .build(),
             baseUrl = cfg.cloud.telemetry?.url ?: telemetryBaseUrl(cfg.cloud.gatewayUrl),
             deviceId = cfg.cloud.deviceId,
             // Diagnostic close-out must survive VoiceEngine.close() cancelling its own scope.

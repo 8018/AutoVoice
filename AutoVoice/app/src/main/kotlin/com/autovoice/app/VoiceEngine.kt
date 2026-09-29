@@ -174,6 +174,7 @@ class VoiceEngine(
         telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
         tts.stop()
+        telemetry.close()
         dialogueTimeoutJob?.cancel()
         candidates.close()
         conversation.reset()
