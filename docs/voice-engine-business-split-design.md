@@ -870,6 +870,8 @@ P2 的第一小步增加了 `voice-engine-api` 识别控制端口与 `voice-engi
 
 DM 准入边界补强：`DialogueStateMachine.onSpeechCommitted` 不再从 `DORMANT` 隐式创建 interaction；`ConversationController.confirmTurn` 在消费 ASR/NLU 证据前先拒绝休眠态。首次录音自动开启识别的旧兼容旁路已移除，录音开始本身不是显式建交互入口；生产按键和唤醒入口先调用 `onWake()`。迟到的识别证据不能在 reset/过期后重启对话。文本显式入口尚未实施，届时必须通过统一的 `beginInteraction` 建立交互，不能重新放开 `onSpeechCommitted` 的隐式路径。
 
+普通云端流式上传的门禁补强：生产装配中的 `VoiceEngine` 与 `GatewayBusinessSpeechChannel` 使用同一 `RecognitionGate`。开始上传时保存输入许可，Channel 消费者在连接完成后、`audio_start` 前、每个 PCM chunk 前和 `audio_end` 前复核；关闭识别后尚未收口的输入停止上传，已正常 `finishStreamingTurn` 的输入继续上传并等待既有 NLU。业务退出 DORMANT 时也停止未收口上行。这只覆盖普通业务流式上传；本地 SDK 执行队列、realtime 音频、统一 `AsrModule`/`NluModule` 和文本入口仍未完成，不能把此处测试当作全部队列门禁验收。
+
 这**不是 P1–P4 全部完成**：当前 `VoiceEngine` 仍在 `app`，仍依赖业务与 TTS；`RecordingCoordinator` 仍混有续听策略；完整引擎契约、统一 ASR/NLU 模块和云端文本协议尚未落地。后续必须按第 14 节继续拆分，尤其不可把入口门禁等同于异步 SDK/上传前的完整二次校验。
 
 关键设计约束检查表（未勾选项仍属待办）：

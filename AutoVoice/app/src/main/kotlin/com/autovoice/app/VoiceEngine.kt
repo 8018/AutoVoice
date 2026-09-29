@@ -16,6 +16,7 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicebusiness.dialog.AdmissionEvidence
 import com.autovoice.voicebusiness.dialog.ConversationController
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.DialogueState
 import com.autovoice.voicecore.session.CandidateCoordinator
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
@@ -56,6 +57,7 @@ class VoiceEngine(
     /** 仲裁后的领域处理出口由业务服务持有；适配器不感知导航、车控实现。 */
     business: BusinessHandler,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val recognitionGate: RecognitionGate = RecognitionGate(),
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
     onLocalRecognized: (String?) -> Unit = {},
     /** 模型回答文本（流式 partial 的最终兜底）。 */
@@ -114,8 +116,8 @@ class VoiceEngine(
     val candidates: CandidateCoordinator
 
     /** Input permit is invalidated by stopRecognition; completed NLU output is intentionally not gated here. */
-    private val recognitionGate = RecognitionGate()
     @Volatile private var capturePermit: RecognitionGate.InputPermit? = null
+    @Volatile private var streamingTurnId: String = ""
 
     /** Transitional application facade: dialogue and response policy are owned by :voice-business. */
     private val voiceBusiness = VoiceBusinessService(
@@ -143,7 +145,13 @@ class VoiceEngine(
         onReplyText = onReplyText,
         onCloudPending = onCloudPending,
         onCloudWon = onCloudWon,
-        onDialogueState = onDialogueState,
+        onDialogueState = { snapshot ->
+            if (snapshot.state == DialogueState.DORMANT) {
+                capturePermit = null
+                streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
+            }
+            onDialogueState(snapshot)
+        },
         onTurnAdmitted = { streamingCloud?.commitStreamingTurn(it) },
         finishOpenRounds = telemetry::finishOpenRounds,
         endRound = telemetry::end,
@@ -204,7 +212,7 @@ class VoiceEngine(
     fun stopRecognition() {
         recognitionGate.stopRecognition()
         capturePermit = null
-        cancelStreamingCloudAudio()
+        streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
     }
 
     val recognitionEnabled: Boolean get() = recognitionGate.recognitionEnabled
@@ -233,6 +241,7 @@ class VoiceEngine(
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
         voiceBusiness.onCaptureStarted(interruptPlayback)
         capturePermit = recognitionGate.admitInput()
+        streamingTurnId = ""
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -266,6 +275,7 @@ class VoiceEngine(
         awaitingVadStart = false
         conversation.openCapture(currentUtteranceId)
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
+        streamingTurnId = currentUtteranceId
         streamingCloud?.beginStreamingTurn(currentUtteranceId)
     }
 
@@ -291,7 +301,8 @@ class VoiceEngine(
 
     /** VAD 误报/过短录音不形成业务轮时，撤销已经预先打开的实时上行。 */
     fun cancelStreamingCloudAudio() {
-        streamingCloud?.cancelStreamingTurn(currentUtteranceId)
+        streamingCloud?.cancelStreamingTurn(streamingTurnId)
+        streamingTurnId = ""
     }
 
     /**
