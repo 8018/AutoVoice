@@ -49,7 +49,12 @@ class PhoneVehicleContextProvider(
     /** Bounded foreground refresh; never delays speech or fabricates a default location. */
     @Suppress("DEPRECATION")
     fun refresh() {
-        stopRefresh()
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { refresh() }
+            return
+        }
+        // Repeated VAD segments must not keep restarting the bounded location request.
+        if (listener != null) return
         if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             context.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             onStatus("未授权定位，请开启定位权限，或在导航中说明城市")

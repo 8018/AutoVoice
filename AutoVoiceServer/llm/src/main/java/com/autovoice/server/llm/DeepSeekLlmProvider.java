@@ -6,6 +6,7 @@ import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
 import com.autovoice.server.agentloop.NavigationCandidateReplies;
 import com.autovoice.server.agentloop.RequestToolExecutor;
+import com.autovoice.server.agentloop.NavigationRequestContext;
 import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.Intent;
@@ -319,7 +320,13 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         messages.add(systemMessage(ctx, requestToolSnapshot));
         messages.add(userMessage(text));
         RequestToolExecutor requestTools = new RequestToolExecutor(
-                call -> runTool(call.name(), call.argumentsJson()),
+                call -> {
+                    if (NavigationRequestContext.requiresResolution(call.name(), requestToolSnapshot)) {
+                        throw new LlmException("请先调用 resolve_navigation，根据本轮定位解析目的地");
+                    }
+                    return runTool(call.name(), NavigationRequestContext.bind(
+                            call.name(), call.argumentsJson(), ctx));
+                },
                 (call, error) -> "工具执行失败：" + error.getMessage(),
                 com.autovoice.server.agentloop.ToolExecutionPolicy.declared(requestToolSnapshot),
                 agentRuntime);
@@ -345,6 +352,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                     public java.util.Optional<Reply> terminal(JsonNode message, List<AgentToolCall> calls)
                             throws Exception {
                         JsonNode raw = message.path("tool_calls");
+                        if (calls.stream().anyMatch(call -> NavigationRequestContext.requiresResolution(
+                                call.name(), requestToolSnapshot))) return java.util.Optional.empty();
                         return isTerminalTool(raw)
                                 ? java.util.Optional.of(terminalReply(raw))
                                 : java.util.Optional.empty();

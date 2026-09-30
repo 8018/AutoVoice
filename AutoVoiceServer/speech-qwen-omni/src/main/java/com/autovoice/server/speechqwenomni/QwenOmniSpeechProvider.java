@@ -6,6 +6,7 @@ import com.autovoice.server.agentloop.AgentToolCall;
 import com.autovoice.server.agentloop.AgentToolResult;
 import com.autovoice.server.agentloop.NavigationCandidateReplies;
 import com.autovoice.server.agentloop.RequestToolExecutor;
+import com.autovoice.server.agentloop.NavigationRequestContext;
 import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.Intent;
@@ -256,7 +257,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
         AtomicReference<Intent> terminalIntent = new AtomicReference<>();
         AtomicReference<String> lastAssistantText = new AtomicReference<>("");
         RequestToolExecutor requestTools = new RequestToolExecutor(call -> {
-            ToolCall qwenCall = new ToolCall(call.id(), call.name(), call.argumentsJson());
+            if (NavigationRequestContext.requiresResolution(call.name(), requestToolSnapshot)) {
+                throw new IllegalArgumentException("请先调用 resolve_navigation，根据本轮定位解析目的地");
+            }
+            ToolCall qwenCall = new ToolCall(call.id(), call.name(),
+                    NavigationRequestContext.bind(
+                            call.name(), call.argumentsJson(), context));
             if (VehicleAgentTools.CAR_CONTROL.equals(call.name())
                     || VehicleAgentTools.NAVIGATE.equals(call.name())
                     || VehicleAgentTools.EXIT_DIALOGUE.equals(call.name())

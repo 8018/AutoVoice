@@ -61,7 +61,7 @@ class GatewayBusinessSpeechChannelTest {
             }.exceptionOrNull()
             assertTrue(failure is CloudRequestFailedException)
             assertFalse(gate.recognitionEnabled)
-            assertEquals(0, locationCalls, "queued upload must be rejected before audio_start")
+            assertEquals(1, locationCalls, "VAD snapshots location even when the queued upload is later rejected")
         } finally {
             speech.close()
             scope.cancel()
@@ -108,6 +108,8 @@ class GatewayBusinessSpeechChannelTest {
         val gate = RecognitionGate().apply { startRecognition() }
         val enteredReady = CompletableDeferred<Unit>()
         val releaseReady = CompletableDeferred<Unit>()
+        var position: Pair<Double, Double>? = 30.65 to 104.06
+        var reads = 0
         val speech = GatewayBusinessSpeechChannel(
             client, bridge, GatewayProtocolSender(client), scope,
             ensureReady = {
@@ -116,11 +118,13 @@ class GatewayBusinessSpeechChannelTest {
                 client.connect()
             },
             sessionId = { "session-1" },
-            location = { null }, navigationContext = { null },
+            location = { reads++; position }, navigationContext = { null },
             onTransportFailure = { _, _ -> }, clearReplyText = {}, recognitionGate = gate,
         )
         try {
             speech.beginStreamingTurn("turn-1")
+            position = 39.9 to 116.4
+            speech.beginStreamingTurn("turn-1") // another VAD segment must preserve the first fix
             speech.appendStreamingAudio(byteArrayOf(1, 2, 3, 4))
             withTimeout(2_000) { enteredReady.await() }
             speech.finishStreamingTurn("turn-1")
@@ -130,6 +134,10 @@ class GatewayBusinessSpeechChannelTest {
             val reply = withTimeout(3_000) { speech.run(byteArrayOf(), "turn-1") }
             assertEquals("ok", (reply as TextReply).text)
             assertEquals(1, sentTypes.count { it == "audio_start" })
+            val start = payloads.first { it.has("utteranceId") }
+            assertEquals(30.65, start.get("latitude").asDouble)
+            assertEquals(104.06, start.get("longitude").asDouble)
+            assertEquals(1, reads)
             assertEquals(1, sentTypes.count { it == "audio_end" })
             assertTrue(audioChunks.single().contentEquals(byteArrayOf(1, 2, 3, 4)))
         } finally {

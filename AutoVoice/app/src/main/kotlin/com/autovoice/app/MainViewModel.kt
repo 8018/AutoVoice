@@ -412,7 +412,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onListeningStart(interruptPlayback: Boolean) =
                 engine.onListeningStart(interruptPlayback)
             override fun onListeningStop() = engine.onListeningStop()
-            override fun onVadStart() = engine.onVadStart()
+            override fun onVadStart() {
+                vehicleContext.refresh()
+                engine.onVadStart()
+            }
             override fun onVadEnd() = engine.onVadEnd()
             override fun appendStreamingCloudAudio(block: ByteArray) =
                 engine.appendStreamingCloudAudio(block)

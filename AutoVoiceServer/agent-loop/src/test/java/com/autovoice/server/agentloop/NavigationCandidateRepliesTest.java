@@ -66,7 +66,10 @@ class NavigationCandidateRepliesTest {
                  {"query":"第一站","candidates":[{"poiname":"第一站","lat":30.1,"lon":104.1}]},
                  {"query":"第二站","candidates":[]}]}
                 """;
-        assertTrue(NavigationCandidateReplies.from(
-                List.of(new AgentToolResult(call, content, false, false))).isEmpty());
+        Reply reply = NavigationCandidateReplies.from(
+                List.of(new AgentToolResult(call, content, false, false))).orElseThrow();
+        assertEquals("text", reply.kind());
+        assertNull(reply.intent());
+        assertTrue(reply.speakText().contains("第二站"));
     }
 }
