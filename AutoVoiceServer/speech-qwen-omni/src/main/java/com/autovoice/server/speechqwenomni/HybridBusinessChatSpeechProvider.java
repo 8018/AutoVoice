@@ -9,6 +9,7 @@ import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineSpeechStream;
+import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.RealtimeChatProvider;
 import com.autovoice.server.contracts.RealtimeChatSession;
@@ -37,7 +38,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 原始音频交给 Qwen S2S 闲聊。两个模型不共享 prompt、Skill 或工具执行权限。
  */
 public final class HybridBusinessChatSpeechProvider
-        implements OnlineSpeechProvider, RealtimeChatProvider, AutoCloseable {
+        implements OnlineSpeechProvider, OnlineTextProvider, RealtimeChatProvider, AutoCloseable {
 
     public static final String ENTER_CHAT_PHRASE = "陪我聊会天";
     public static final String ENTER_CHAT_REPLY = "好呀，想聊什么？";
@@ -135,7 +136,7 @@ public final class HybridBusinessChatSpeechProvider
                 asrSink.onTurnEstablished();
                 asrSink.onResult(text, true);
                 CompletableFuture<OnlineSpeechResult> routed = route(
-                        pcm16k, context, utteranceId, text, audioSink);
+                        context, utteranceId, text, text);
                 stage.set(routed);
                 routed.whenComplete((result, error) -> {
                     if (error != null) out.completeExceptionally(error);
@@ -159,11 +160,9 @@ public final class HybridBusinessChatSpeechProvider
             return null;
         }
         StreamingAsrSession session = streaming.start(context, asrSink);
-        java.io.ByteArrayOutputStream pcm = new java.io.ByteArrayOutputStream();
         return new OnlineSpeechStream() {
             @Override public synchronized void append(byte[] chunk) {
                 if (chunk == null || chunk.length == 0) return;
-                pcm.writeBytes(chunk);
                 session.append(chunk);
             }
             @Override public CompletableFuture<OnlineSpeechResult> finish() {
@@ -172,8 +171,8 @@ public final class HybridBusinessChatSpeechProvider
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new IllegalStateException("ASR returned blank text"));
                     }
-                    return track(context, utteranceId, route(pcm.toByteArray(), context, utteranceId,
-                            text.trim(), audioSink));
+                    return track(context, utteranceId, route(
+                            context, utteranceId, text.trim(), text.trim()));
                 });
             }
             @Override public void cancel() { session.cancel(); }
@@ -198,30 +197,55 @@ public final class HybridBusinessChatSpeechProvider
                 utteranceId == null ? "" : utteranceId, "");
     }
 
-    private CompletableFuture<OnlineSpeechResult> route(byte[] pcm16k, SessionContext context,
+    @Override
+    public CompletableFuture<OnlineSpeechResult> processText(
+            String text, SessionContext context, String utteranceId) {
+        if (closed.get()) {
+            return CompletableFuture.failedFuture(new IllegalStateException("hybrid provider is closed"));
+        }
+        if (text == null || text.isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("text input is blank"));
+        }
+        if (isChatting(context)) {
+            return CompletableFuture.failedFuture(new IllegalStateException("realtime chat domain is active"));
+        }
+        return track(context, utteranceId, route(context, utteranceId, text, ""));
+    }
+
+    private CompletableFuture<OnlineSpeechResult> route(SessionContext context,
                                                          String utteranceId, String transcript,
-                                                         OnlineAudioSink audioSink) {
+                                                         String asrText) {
         String key = context == null || context.sessionId() == null ? "" : context.sessionId();
         String normalized = normalize(transcript);
         var dialogueControl = DialogueControlNlu.understand(transcript);
         if (dialogueControl.isPresent()) {
             return CompletableFuture.completedFuture(new OnlineSpeechResult(
-                    Reply.ofAction(dialogueControl.get(), "好的，已退出当前对话"), transcript));
+                    Reply.ofAction(dialogueControl.get(), "好的，已退出当前对话"), asrText));
         }
         if (isExit(normalized) && chatSessions.remove(key) != null) {
             return CompletableFuture.completedFuture(
-                    new OnlineSpeechResult(Reply.ofText(EXIT_CHAT_REPLY), transcript));
+                    new OnlineSpeechResult(Reply.ofText(EXIT_CHAT_REPLY), asrText));
         }
         if (isEnter(normalized)) {
             enterChatSession(key);
             // 入口只切域，不再调用普通 qwen3.5-omni-plus HTTP 模型。客户端收到控制意图后
             // 立即建立 qwen3.5-omni-plus-realtime 长会话，后续音频全走该连接。
             return CompletableFuture.completedFuture(new OnlineSpeechResult(
-                    Reply.ofAction(enterChatIntent(), ENTER_CHAT_REPLY), transcript));
+                    Reply.ofAction(enterChatIntent(), ENTER_CHAT_REPLY), asrText));
         }
-        return navigationDialog.complete(context, transcript,
-                        () -> businessLlm.chat(transcript, context, utteranceId))
-                .thenApply(reply -> new OnlineSpeechResult(reply, transcript));
+        CompletableFuture<Reply> source = navigationDialog.complete(context, transcript,
+                () -> businessLlm.chat(transcript, context, utteranceId));
+        CompletableFuture<OnlineSpeechResult> out = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                source.cancel(mayInterruptIfRunning);
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        source.whenComplete((reply, error) -> {
+            if (error != null) out.completeExceptionally(error);
+            else out.complete(new OnlineSpeechResult(reply, asrText));
+        });
+        return out;
     }
 
     private CompletableFuture<OnlineSpeechResult> processChat(

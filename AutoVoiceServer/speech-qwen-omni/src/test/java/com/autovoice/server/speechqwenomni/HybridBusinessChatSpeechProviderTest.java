@@ -33,6 +33,80 @@ class HybridBusinessChatSpeechProviderTest {
     private static final SessionContext CTX = new SessionContext("s1", "zh-CN", Map.of());
 
     @Test
+    void explicitTextUsesBusinessModelWithoutAsrOrS2s() throws Exception {
+        AtomicInteger asrCalls = new AtomicInteger();
+        AtomicInteger llmCalls = new AtomicInteger();
+        AtomicInteger chatCalls = new AtomicInteger();
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> {
+                    asrCalls.incrementAndGet();
+                    throw new AssertionError("text input must not invoke ASR");
+                },
+                (text, ctx) -> {
+                    llmCalls.incrementAndGet();
+                    return CompletableFuture.completedFuture(Reply.ofText("business:" + text));
+                },
+                new OnlineSpeechProvider() {
+                    @Override public CompletableFuture<OnlineSpeechResult> process(
+                            byte[] pcm, SessionContext ctx, String utteranceId) {
+                        chatCalls.incrementAndGet();
+                        return CompletableFuture.completedFuture(
+                                new OnlineSpeechResult(Reply.ofText("chat"), ""));
+                    }
+                    @Override public String id() { return "test-chat"; }
+                },
+                new NavigationDialogService());
+
+        OnlineSpeechResult result = provider.processText("导航去机场", CTX, "u-text")
+                .get(1, TimeUnit.SECONDS);
+
+        assertEquals("business:导航去机场", result.reply().text());
+        assertEquals("", result.asrText());
+        assertEquals(0, asrCalls.get());
+        assertEquals(1, llmCalls.get());
+        assertEquals(0, chatCalls.get());
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> provider.processText(" ", CTX, "empty").get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void explicitTextCannotBypassTheLockedRealtimeChatDomain() throws Exception {
+        AtomicInteger llmCalls = new AtomicInteger();
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> "unused",
+                (text, ctx) -> {
+                    llmCalls.incrementAndGet();
+                    return CompletableFuture.completedFuture(Reply.ofText(text));
+                },
+                unusedChat(), new NavigationDialogService());
+
+        assertEquals("enter_chat", provider.processText("陪我聊会天", CTX, "enter")
+                .get(1, TimeUnit.SECONDS).reply().intent().intent());
+        assertTrue(provider.isChatting(CTX));
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> provider.processText("导航去机场", CTX, "locked").get(1, TimeUnit.SECONDS));
+        assertEquals(0, llmCalls.get());
+    }
+
+    @Test
+    void explicitTextCancellationPropagatesToTheBusinessModel() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        CompletableFuture<Reply> pending = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                cancelled.set(true);
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> "unused", (text, ctx) -> pending,
+                unusedChat(), new NavigationDialogService());
+
+        provider.processText("导航去机场", CTX, "u-cancel").cancel(true);
+
+        assertTrue(cancelled.get());
+    }
+
+    @Test
     void defaultsToBusinessLlmAndKeepsS2sIdle() throws Exception {
         AtomicInteger llmCalls = new AtomicInteger();
         AtomicInteger chatCalls = new AtomicInteger();

@@ -23,6 +23,45 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ClassicOnlineSpeechProviderTest {
     @Test
+    void explicitTextUsesBusinessPathWithoutInvokingAsr() throws Exception {
+        AtomicBoolean asrCalled = new AtomicBoolean();
+        SessionContext context = new SessionContext("s1", "zh-CN", Map.of());
+        ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
+                (pcm, ctx) -> {
+                    asrCalled.set(true);
+                    throw new AssertionError("text input must not invoke ASR");
+                },
+                (text, ctx) -> CompletableFuture.completedFuture(Reply.ofText("business:" + text)));
+
+        OnlineSpeechResult result = provider.processText("今天天气", context, "u-text")
+                .get(1, TimeUnit.SECONDS);
+
+        assertFalse(asrCalled.get());
+        assertEquals("business:今天天气", result.reply().text());
+        assertEquals("", result.asrText());
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> provider.processText("  ", context, "empty").get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void explicitTextCancellationPropagatesToBusinessRequest() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        CompletableFuture<Reply> pending = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                cancelled.set(true);
+                return super.cancel(mayInterruptIfRunning);
+            }
+        };
+        ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
+                (pcm, ctx) -> "unused", (text, ctx) -> pending);
+
+        provider.processText("导航去机场", new SessionContext("s1", "zh-CN", Map.of()), "u-text")
+                .cancel(true);
+
+        assertTrue(cancelled.get());
+    }
+
+    @Test
     void asrEstablishesTurnIndependentlyBeforePublishingTranscript() throws Exception {
         List<String> events = new ArrayList<>();
         ClassicOnlineSpeechProvider provider = new ClassicOnlineSpeechProvider(
