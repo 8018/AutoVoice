@@ -132,6 +132,60 @@ class VoiceEngineTest {
     }
 
     @Test
+    fun `realtime audio requires its own active recognition session`() = runBlocking {
+        val audio = mutableListOf<ByteArray>()
+        var starts = 0
+        var finishes = 0
+        val chat = object : CloudRunner, RealtimeChatRunner {
+            override suspend fun run(segment: ByteArray): Reply = TextReply("unused")
+            override suspend fun startRealtimeChat() { starts++ }
+            override fun appendRealtimeAudio(pcm: ByteArray) { audio += pcm }
+            override fun finishRealtimeChat() { finishes++ }
+        }
+        val engine = engine(
+            scope = this,
+            local = LocalChainRunner { Intent.unknown("local") },
+            cloud = chat,
+        ).first
+
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(0, starts)
+        assertTrue(audio.isEmpty())
+
+        engine.onWake()
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, starts)
+        assertEquals(1, audio.size)
+
+        engine.stopRecognition()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, finishes)
+        assertEquals(1, audio.size)
+
+        // Reopening recognition must not reactivate the previous chat feed.
+        engine.onWake()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, audio.size)
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(2, starts)
+        assertEquals(2, audio.size)
+
+        engine.finishRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(2, finishes)
+        assertEquals(2, audio.size)
+
+        engine.startRealtimeChat()
+        engine.exitCurrentDialogue()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(3, finishes)
+        assertEquals(2, audio.size)
+    }
+
+    @Test
     fun `dialogue exit stops unfinished streaming input`() = runBlocking {
         val stopped = mutableListOf<String>()
         val streaming = object : StreamingCloudRunner {

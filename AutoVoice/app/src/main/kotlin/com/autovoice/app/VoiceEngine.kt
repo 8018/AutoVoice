@@ -22,6 +22,7 @@ import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -118,6 +119,9 @@ class VoiceEngine(
     /** Input permit is invalidated by stopRecognition; completed NLU output is intentionally not gated here. */
     @Volatile private var capturePermit: RecognitionGate.InputPermit? = null
     @Volatile private var streamingTurnId: String = ""
+    /** Realtime feed has its own admission epoch; reopening recognition cannot revive an old chat. */
+    private val realtimeInputLock = Any()
+    private var realtimePermit: RecognitionGate.InputPermit? = null
 
     /** Transitional application facade: dialogue and response policy are owned by :voice-business. */
     private val voiceBusiness = VoiceBusinessService(
@@ -149,6 +153,7 @@ class VoiceEngine(
             if (snapshot.state == DialogueState.DORMANT) {
                 capturePermit = null
                 streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
+                finishRealtimeChat()
             }
             onDialogueState(snapshot)
         },
@@ -184,7 +189,11 @@ class VoiceEngine(
      * （生产装配每次重建引擎时新建专属 scope，不复用 viewModelScope）。
      */
     fun close() {
-        recognitionGate.stopRecognition()
+        synchronized(realtimeInputLock) {
+            recognitionGate.stopRecognition()
+            realtimePermit = null
+            realtimeChat?.finishRealtimeChat()
+        }
         capturePermit = null
         telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
@@ -210,7 +219,11 @@ class VoiceEngine(
 
     /** Business controls new-input admission independently of capture and completed NLU work. */
     fun stopRecognition() {
-        recognitionGate.stopRecognition()
+        synchronized(realtimeInputLock) {
+            recognitionGate.stopRecognition()
+            if (realtimePermit != null) realtimeChat?.finishRealtimeChat()
+            realtimePermit = null
+        }
         capturePermit = null
         streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
     }
@@ -356,20 +369,34 @@ class VoiceEngine(
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */
     fun startRealtimeChat() {
-        scope.launch {
+        val permit = synchronized(realtimeInputLock) {
+            recognitionGate.admitInput()?.also { realtimePermit = it }
+        } ?: return
+        // Begin synchronously through the first suspension so finish/stop cannot be overtaken
+        // by a start coroutine that was merely queued on another dispatcher.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (!synchronized(realtimeInputLock) {
+                    realtimePermit === permit && recognitionGate.accepts(permit)
+                }) return@launch
             runCatching { realtimeChat?.startRealtimeChat() }
                 .onFailure { Log.w("VoiceEngine", "start realtime chat failed", it) }
         }
     }
 
     fun appendRealtimeChatAudio(pcm: ByteArray) {
-        if (!recognitionGate.recognitionEnabled) return
-        runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
-            .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
+        if (pcm.isEmpty()) return
+        synchronized(realtimeInputLock) {
+            if (realtimePermit == null || !recognitionGate.accepts(realtimePermit)) return
+            runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
+                .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
+        }
     }
 
     fun finishRealtimeChat() {
-        realtimeChat?.finishRealtimeChat()
+        synchronized(realtimeInputLock) {
+            realtimePermit = null
+            realtimeChat?.finishRealtimeChat()
+        }
     }
 
     internal fun playRealtimeChatReply(token: RealtimePlaybackToken, reply: StreamingAudioReply) {
