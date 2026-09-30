@@ -48,7 +48,7 @@ upload_release_chunks "fake@host" "$staging_dir" "$artifact"
 [[ "$(sha256sum "$artifact" | awk '{print $1}')" == \
    "$(sha256sum "$staging_dir/app.jar" | awk '{print $1}')" ]]
 first_calls="$scp_calls"
-[[ "$first_calls" -gt 2 ]]
+[[ "$first_calls" -eq 10 ]] # probe + nine 1 MiB chunks for 9,000,000 bytes
 
 # A rerun after interruption must reuse verified chunks, transferring only the tiny probe.
 rm -- "$staging_dir/app.jar"
@@ -58,7 +58,7 @@ cmp -- "$artifact" "$staging_dir/app.jar"
 
 # A corrupt cached chunk must be transferred again, not trusted by filename alone.
 digest="$(sha256sum "$artifact" | awk '{print $1}')"
-printf 'corrupt' > "$staging_dir/.upload/app.jar/$digest/part.001"
+printf 'corrupt' > "$staging_dir/.upload/app.jar/$digest/1m/part.001"
 rm -- "$staging_dir/app.jar"
 upload_release_chunks "fake@host" "$staging_dir" "$artifact"
 [[ "$scp_calls" -eq $((first_calls + 3)) ]]
