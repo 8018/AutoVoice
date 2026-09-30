@@ -15,6 +15,9 @@ internal class GatewayProtocolSender(
     private val channels: Int = 1,
     private val encoding: String = "pcm_s16le",
 ) {
+    companion object {
+        const val TEXT_RECOGNITION_CAPABILITY = "text_recognition_v1"
+    }
     private var segmentBytes = 0L
 
     fun navigationSelection(sessionId: String, context: NavigationTaskContextRef) = channel.send(
@@ -73,6 +76,36 @@ internal class GatewayProtocolSender(
         "audio_end",
         mapOf("sessionId" to sessionId, "durationMs" to segmentBytes * 1000 / (2L * sampleRate)),
     )
+
+    /** Explicit text input; this is a protocol command, not a WebSocket transport concern. */
+    fun textRequest(
+        sessionId: String,
+        requestId: String,
+        utteranceId: String,
+        segmentId: String,
+        text: String,
+        language: String,
+    ) {
+        check(channel.supportsCapability(TEXT_RECOGNITION_CAPABILITY)) {
+            "UNSUPPORTED_CAPABILITY: text input is unavailable on this connection"
+        }
+        require(sessionId.isNotBlank() && requestId.isNotBlank() && utteranceId.isNotBlank() &&
+            segmentId.isNotBlank() && text.isNotBlank() && language.isNotBlank())
+        channel.send(
+            "text_request",
+            mapOf(
+                "sessionId" to sessionId,
+                "requestId" to requestId,
+                "utteranceId" to utteranceId,
+                "segmentId" to segmentId,
+                "text" to text,
+                "language" to language,
+                "inputSource" to "text",
+                "contextVersion" to 1,
+                "context" to emptyMap<String, Any>(),
+            ),
+        )
+    }
 
     fun chatStart(sessionId: String, chatId: String) = channel.send(
         "chat_start", mapOf("sessionId" to sessionId, "chatId" to chatId),
