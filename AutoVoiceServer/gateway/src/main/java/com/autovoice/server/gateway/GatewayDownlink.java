@@ -62,6 +62,11 @@ final class GatewayDownlink {
 
     void sendReply(WebSocketSession session, SegmentPipeline.SegmentResult result,
                    String segmentId) {
+        sendReply(session, result, segmentId, null);
+    }
+
+    void sendReply(WebSocketSession session, SegmentPipeline.SegmentResult result,
+                   String segmentId, String requestId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (result.asrText() != null && !result.asrText().isBlank()) {
             payload.put("asrText", result.asrText());
@@ -84,6 +89,7 @@ final class GatewayDownlink {
             if (result.speakText() != null) payload.put("speakText", result.speakText());
         }
         if (segmentId != null) payload.put("segmentId", segmentId);
+        if (requestId != null) payload.put("requestId", requestId);
         if (result.actionId() != null) {
             payload.put("actionId", result.actionId());
             // D14c:随回复下发支持窗口截止时刻(客户端据此明确拒绝过期动作)
@@ -116,6 +122,17 @@ final class GatewayDownlink {
         if (context != null) payload.put("sessionId", context.sessionId());
         if (segmentId != null) payload.put("segmentId", segmentId);
         if (chatId != null) payload.put("chatId", chatId);
+        payload.put("code", code);
+        payload.put("message", message);
+        send(session, "error", payload);
+    }
+
+    void sendTextError(WebSocketSession session, SessionContext context,
+                       String code, String message, String segmentId, String requestId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (context != null) payload.put("sessionId", context.sessionId());
+        payload.put("segmentId", segmentId);
+        payload.put("requestId", requestId);
         payload.put("code", code);
         payload.put("message", message);
         send(session, "error", payload);
