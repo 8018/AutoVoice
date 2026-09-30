@@ -315,6 +315,101 @@ class NavigationToolFacadeTest {
         assertTrue(result.path("instruction").asText().contains("路线预览"));
     }
 
+    @Test
+    void genericTrainStationWaypointSelectsNearbyPointInsteadOfFirstRemoteResult() throws Exception {
+        List<String> calls = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            calls.add(name);
+            if (name.equals("maps_around_search")) return """
+                    {"pois":[
+                     {"name":"外地火车站","location":"116.40,39.90"},
+                     {"name":"成都东站","location":"104.14,30.63"}]}
+                    """;
+            if (name.equals("maps_text_search")) return """
+                    {"pois":[{"name":"成都天府国际机场","location":"104.44,30.31"}]}
+                    """;
+            throw new AssertionError("unexpected call: " + name);
+        });
+
+        JsonNode result = JSON.readTree(facade.resolve("""
+                {"destinations":["火车站","成都天府国际机场"],"location":"104.06,30.65"}
+                """));
+
+        assertEquals("成都东站", result.path("destinations").get(0)
+                .path("candidates").get(0).path("poiname").asText());
+        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
+        assertEquals(List.of("maps_around_search", "maps_text_search"), calls);
+    }
+
+    @Test
+    void genericTrainStationFallbackRanksLocalTextResultAndUsesCurrentCity() throws Exception {
+        List<String> calls = new ArrayList<>();
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            calls.add(name);
+            return switch (name) {
+                case "maps_around_search" ->
+                        "{\"pois\":[{\"name\":\"外地火车站\",\"location\":\"116.40,39.90\"}]}";
+                case "maps_regeocode" -> "{\"city\":\"成都市\"}";
+                case "maps_text_search" -> {
+                    if (!args.contains("火车站")) {
+                        yield "{\"pois\":[{\"name\":\"成都天府国际机场\",\"location\":\"104.44,30.31\"}]}";
+                    }
+                    assertTrue(args.contains("成都市"));
+                    yield """
+                            {"pois":[
+                             {"name":"外地火车站","location":"116.40,39.90"},
+                             {"name":"成都站","location":"104.08,30.69"}]}
+                            """;
+                }
+                default -> throw new AssertionError("unexpected call: " + name);
+            };
+        });
+
+        JsonNode candidate = JSON.readTree(facade.resolve("""
+                {"destinations":["火车站","成都天府国际机场"],"location":"104.06,30.65"}
+                """)).path("destinations").get(0).path("candidates").get(0);
+        assertEquals("成都站", candidate.path("poiname").asText());
+        assertEquals(List.of("maps_around_search", "maps_regeocode", "maps_text_search"),
+                calls.subList(0, 3));
+    }
+
+    @Test
+    void genericTrainStationWithoutLocationOrNearbyResultDoesNotOpenMultiStopRoute() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) ->
+                "{\"pois\":[{\"name\":\"外地火车站\",\"location\":\"116.40,39.90\"}]}");
+        JsonNode missingLocation = JSON.readTree(facade.resolve("""
+                {"destinations":["火车站","成都天府国际机场"]}
+                """));
+        assertTrue(missingLocation.path("destinations").get(0).path("candidates").isEmpty());
+        assertTrue(missingLocation.path("instruction").asText().contains("不得打开路线"));
+
+        JsonNode remoteOnly = JSON.readTree(facade.resolve("""
+                {"destinations":["火车站","成都天府国际机场"],"location":"104.06,30.65"}
+                """));
+        assertTrue(remoteOnly.path("destinations").get(0).path("candidates").isEmpty());
+        assertTrue(remoteOnly.path("instruction").asText().contains("不得打开路线"));
+    }
+
+    @Test
+    void laterGenericStationSearchesFromPreviousSelectedStop() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_text_search")) return """
+                    {"pois":[{"name":"北京天安门","location":"116.40,39.91"}]}
+                    """;
+            if (name.equals("maps_around_search")) {
+                assertTrue(args.contains("116.4,39.91"));
+                return "{\"pois\":[{\"name\":\"北京站\",\"location\":\"116.42,39.90\"}]}";
+            }
+            throw new AssertionError("unexpected call: " + name);
+        });
+
+        JsonNode result = JSON.readTree(facade.resolve("""
+                {"destinations":["北京天安门","火车站"],"location":"104.06,30.65"}
+                """));
+        assertEquals("北京站", result.path("destinations").get(1)
+                .path("candidates").get(0).path("poiname").asText());
+    }
+
     private static Map<String, FunctionTool> tools() {
         Map<String, FunctionTool> tools = new LinkedHashMap<>();
         tools.put("maps_text_search", new FunctionTool("maps_text_search", "", schema("keywords", "city")));
