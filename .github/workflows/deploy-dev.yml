@@ -33,7 +33,8 @@ jobs:
       github.event.workflow_run.head_branch == 'dev' &&
       vars.AUTO_DEPLOY_DEV == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # About 100 MiB over the measured cross-region link can take over an hour.
+    timeout-minutes: 120
     environment: dev
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
@@ -132,18 +133,11 @@ jobs:
 
           source AutoVoiceServer/deploy/ssh-retry.sh
 
-          retry_ssh_operation 5 30 "Create dev staging directory" \
-            ssh "${SSH_ARGS[@]}" "$TARGET" "install -d -m 700 '$STAGING_DIR'"
-          # A single timeout for all three jars (about 100 MB) repeatedly expired on 2026-09-27.
-          # Bound and retry each immutable artifact separately so a slow transfer does not restart
-          # already-uploaded jars, and the failed artifact is visible in the job log.
-          for artifact in \
+          source AutoVoiceServer/deploy/upload-release-chunks.sh
+          upload_release_chunks "$TARGET" "$STAGING_DIR" \
             AutoVoiceServer/app/build/libs/app.jar \
             AutoVoiceServer/tts-server/build/libs/tts-server.jar \
-            AutoVoiceServer/skill-manager/build/libs/skill-manager.jar; do
-            retry_ssh_operation 2 180 "Upload $(basename "$artifact")" \
-              scp "${SCP_ARGS[@]}" "$artifact" "$TARGET:$STAGING_DIR/"
-          done
+            AutoVoiceServer/skill-manager/build/libs/skill-manager.jar
           retry_ssh_operation 2 30 "Upload dev deployment scripts" \
             scp "${SCP_ARGS[@]}" \
               AutoVoiceServer/deploy/deploy-release.sh \
