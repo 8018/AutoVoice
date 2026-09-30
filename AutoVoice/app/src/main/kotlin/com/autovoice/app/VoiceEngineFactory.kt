@@ -9,6 +9,7 @@ import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.voiceengine.local.LocalAsrEngine
 import com.autovoice.voiceengine.local.LocalNluEngine
+import com.autovoice.voiceengine.local.LocalSpeechRoute
 import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.voiceengine.AsrModule
 import com.autovoice.voiceengine.NluModule
@@ -368,12 +369,39 @@ internal object VoiceEngineFactory {
         }
         asrModule.bindLocal(LocalAsrEngine())
         nluModule.bindLocal(nlu)
-        return LocalSpeechChain(
-            asrModule = asrModule,
-            nluModule = nluModule,
-            onRecognized = onLocalRecognized,
+        return LocalSpeechRoute(
+            asr = asrModule,
+            nlu = nluModule,
+            onRecognized = { turnId, result ->
+                onLocalRecognized(turnId, result.text)
+                telemetry.record(
+                    TelemetryStages.LOCAL_ASR,
+                    "info",
+                    mapOf("text" to result.text, "isFinal" to result.isFinal),
+                )
+            },
             onTurnEstablished = onLocalTurnEstablished,
-            telemetry = telemetry,
+            onResult = { _, result, durationMs ->
+                val intent = result.intent
+                Log.i(FACTORY_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
+                telemetry.record(
+                    TelemetryStages.LOCAL_NLU,
+                    "info",
+                    mapOf(
+                        "text" to (result.recognizedText ?: ""),
+                        "intent" to "${intent.domain}/${intent.intent}",
+                        "durationMs" to durationMs,
+                    ),
+                )
+            },
+            onFailure = { _, error, durationMs ->
+                Log.w(FACTORY_TAG, "本地链路异常，降级 unknown 意图", error)
+                telemetry.record(
+                    TelemetryStages.LOCAL_NLU,
+                    "warn",
+                    mapOf("intent" to "unknown/vehicle", "durationMs" to durationMs),
+                )
+            },
         )
     }
 
