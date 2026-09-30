@@ -14,19 +14,25 @@ grep -Fq 'Require configured dev host' "${workflows[1]}"
 
 for workflow in "${workflows[@]}"; do
   grep -Fq "github.event.workflow_run.event == 'push'" "$workflow"
-  grep -Fq 'timeout-minutes: 20' "$workflow"
   [[ "$(grep -c -- '-o ConnectTimeout=15' "$workflow")" -eq 3 ]]
   [[ "$(grep -c -- '-o ServerAliveInterval=15' "$workflow")" -eq 3 ]]
   [[ "$(grep -c 'source AutoVoiceServer/deploy/ssh-retry.sh' "$workflow")" -eq 2 ]]
   [[ "$(grep -c 'AutoVoiceServer/deploy/install-resource-guards.sh' "$workflow")" -eq 1 ]]
-  grep -Fq 'retry_ssh_operation 5 30' "$workflow"
   [[ "$(grep -c 'retry_ssh_operation 1 300' "$workflow")" -eq 1 ]]
 done
 
+grep -Fq 'timeout-minutes: 20' "${workflows[0]}"
+grep -Fq 'timeout-minutes: 45' "${workflows[1]}"
+grep -Fq 'retry_ssh_operation 5 30' "${workflows[0]}"
 [[ "$(grep -c 'retry_ssh_operation 3 180' "${workflows[0]}")" -eq 1 ]]
-[[ "$(grep -c 'retry_ssh_operation 2 180' "${workflows[1]}")" -eq 1 ]]
 [[ "$(grep -c 'retry_ssh_operation 2 30' "${workflows[1]}")" -eq 1 ]]
-grep -Fq 'for artifact in \' "${workflows[1]}"
+grep -Fq 'source AutoVoiceServer/deploy/upload-release-chunks.sh' "${workflows[1]}"
+grep -Fq 'upload_release_chunks "$TARGET" "$STAGING_DIR"' "${workflows[1]}"
+
+upload_script="$repo_root/AutoVoiceServer/deploy/upload-release-chunks.sh"
+grep -Fq 'retry_ssh_operation 5 30' "$upload_script"
+grep -Fq 'retry_ssh_operation 3 120' "$upload_script"
+grep -Fq 'sha256sum -c --status' "$upload_script"
 
 retry_script="$repo_root/AutoVoiceServer/deploy/ssh-retry.sh"
 grep -Fq 'timeout --foreground --signal=TERM --kill-after=5s' "$retry_script"
