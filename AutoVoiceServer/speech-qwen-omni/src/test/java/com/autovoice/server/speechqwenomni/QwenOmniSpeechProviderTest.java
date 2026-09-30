@@ -461,6 +461,32 @@ class QwenOmniSpeechProviderTest {
         assertEquals(12, server.getRequestCount());
     }
 
+    @Test
+    void navigationCannotBypassResolverAndMissingModelLocationUsesDeviceFix() throws Exception {
+        server.enqueue(sse(toolCall("navigate", "{\"poiname\":\"北京站\",\"lat\":39.9,\"lon\":116.4}")));
+        server.enqueue(sse(toolCall("resolve_navigation", "{\"destinations\":[\"火车站\"]}")));
+        var executed = new java.util.ArrayList<String>();
+        try (var provider = new QwenOmniSpeechProvider(new OkHttpClient(), "test-key",
+                server.url("/chat").toString(), null, null,
+                () -> java.util.List.of(new com.autovoice.server.contracts.FunctionTool(
+                        "resolve_navigation", "导航", "{\"type\":\"object\"}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY),
+                        new com.autovoice.server.contracts.FunctionTool("navigate", "导航动作", "{\"type\":\"object\"}",
+                                com.autovoice.server.contracts.ToolExecutionTraits.APPROVED_COMMIT)),
+                (name, args) -> {
+                    executed.add(name);
+                    assertTrue(args.contains("104.06,30.65"));
+                    return "{\"destinations\":[{\"query\":\"火车站\",\"candidates\":[]}]}";
+                }, () -> "测试")) {
+            var result = provider.process(new byte[]{1, 2}, new SessionContext("s", "zh",
+                    Map.of("latitude", 30.65, "longitude", 104.06)), "u-nav").get(5, TimeUnit.SECONDS);
+            assertEquals(java.util.List.of("resolve_navigation"), executed);
+            assertEquals("text", result.reply().kind());
+            assertEquals(null, result.reply().intent());
+            assertEquals(2, server.getRequestCount());
+        }
+    }
+
     private static SessionContext context() {
         return new SessionContext("s1", "zh-CN", Map.of());
     }

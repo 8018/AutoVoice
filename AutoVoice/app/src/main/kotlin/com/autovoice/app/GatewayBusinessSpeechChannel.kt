@@ -40,6 +40,7 @@ internal class GatewayBusinessSpeechChannel(
     private data class LiveUpload(
         val utteranceId: String,
         val navigationContext: NavigationTaskContextRef?,
+        val coordinates: Pair<Double, Double>?,
         val segmentId: String = UUID.randomUUID().toString(),
         val chunks: Channel<ByteArray> = Channel(LIVE_UPLOAD_QUEUE_CAPACITY),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
@@ -57,7 +58,9 @@ internal class GatewayBusinessSpeechChannel(
         if (utteranceId.isBlank()) return
         val permit = recognitionGate?.admitInput()
         if (recognitionGate != null && !recognitionGate.accepts(permit)) return
-        val upload = LiveUpload(utteranceId, navigationContext(), permit = permit)
+        if (liveUpload.get()?.utteranceId == utteranceId) return
+        // Capture position at SpeechStart, before connection setup or coroutine scheduling.
+        val upload = LiveUpload(utteranceId, navigationContext(), location(), permit = permit)
         while (true) {
             val previous = liveUpload.get()
             // Multiple VAD segments from the same admitted turn belong to one upload.
@@ -130,7 +133,7 @@ internal class GatewayBusinessSpeechChannel(
             requireQueuedInput(upload)
             ensureReady()
             requireQueuedInput(upload)
-            val coordinates = location()
+            val coordinates = upload.coordinates
             protocol.audioStart(
                 sessionId(), upload.segmentId, upload.utteranceId,
                 coordinates?.first, coordinates?.second,

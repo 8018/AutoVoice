@@ -37,9 +37,9 @@ final class NavigationToolFacade {
                     + "(?:咖啡(?:店|馆)?|加油站|充电站|停车场|洗车店|维修店|医院|药店|银行|"
                     + "厕所|卫生间|餐厅|饭店|酒店|宾馆|商场|超市|便利店|景区|公园|机场|飞机场)$");
     private static final Pattern GENERIC_RAIL_STATION = Pattern.compile(
-            "^(?:找|去|导航去|我要去)?(?:附近的?|周边的?|最近的?)?(?:火车站|高铁站|动车站|铁路站)$");
-    private static final int RAIL_RECALL_LIMIT = 10;
-    private static final double MAX_GENERIC_RAIL_DISTANCE_KM = 200;
+            "^(?:请|帮我|带我|我要)?(?:导航到|导航去|导航|去|找)?(?:离我最近的?|附近的?|周边的?|最近的?|就近的?)?(?:火车站|高铁站|动车站|铁路站)$");
+    private static final int RAIL_RECALL_LIMIT = 25;
+    private static final double MAX_GENERIC_RAIL_DISTANCE_KM = 50;
     private static final Pattern LOCATION = Pattern.compile(
             "(?<![0-9.])((?:7[3-9]|[89]\\d|1[0-3]\\d|140)(?:\\.\\d+)?)\\s*,\\s*"
                     + "((?:[0-5]?\\d)(?:\\.\\d+)?)(?![0-9.])");
@@ -102,21 +102,15 @@ final class NavigationToolFacade {
             int limit = Math.max(1, Math.min(5, args.path("limit").asInt(3)));
             boolean multiStop = destinations.size() > 1;
             ArrayNode resolved = JSON.createArrayNode();
-            String anchor = location;
             for (JsonNode destination : destinations) {
                 if (!destination.isTextual() || destination.asText().isBlank()) continue;
                 ObjectNode item = resolved.addObject();
                 String query = destination.asText().trim();
                 item.put("query", query);
-                ArrayNode candidates = resolveOne(query, anchor, city, multiStop ? 1 : limit, multiStop);
+                ArrayNode candidates = resolveOne(query, location, city, multiStop ? 1 : limit, multiStop);
                 item.set("candidates", candidates);
-                // A generic later stop is relative to the preceding selected stop, not always
-                // the original vehicle position. Explicit named places still use text search.
-                if (multiStop && !candidates.isEmpty()) {
-                    JsonNode selected = candidates.get(0);
-                    anchor = selected.path("lon").asDouble() + "," + selected.path("lat").asDouble();
-                    city = "";
-                }
+                // Unqualified categories stay relative to the vehicle for every stop.
+                // Route order alone is not evidence that the user meant "near the previous stop".
             }
             ObjectNode out = JSON.createObjectNode();
             out.set("destinations", resolved);
@@ -141,12 +135,9 @@ final class NavigationToolFacade {
                                  boolean forceSingleCandidate) {
         boolean broadAirportQuery = BROAD_AIRPORT_QUERY.matcher(compact(query)).matches();
         boolean genericRailStation = GENERIC_RAIL_STATION.matcher(compact(query)).matches();
-        double[] origin = parseLocation(location);
-        // A bare "火车站" has no safe nationwide first result. Without a location, ask for a
-        // specific station instead of silently selecting one in another province.
-        if (genericRailStation && origin == null) return JSON.createArrayNode();
+        if (genericRailStation) return resolveRailStation(location, limit);
         int effectiveLimit = broadAirportQuery && !forceSingleCandidate ? Math.max(limit, 5) : limit;
-        int recallLimit = broadAirportQuery ? 20 : genericRailStation ? RAIL_RECALL_LIMIT : effectiveLimit;
+        int recallLimit = broadAirportQuery ? 20 : effectiveLimit;
         String searchName = !location.isBlank() && tools.containsKey("maps_around_search")
                 && shouldSearchAround(query)
                 ? "maps_around_search" : "maps_text_search";
@@ -184,21 +175,15 @@ final class NavigationToolFacade {
         // 周边搜索适合“附近咖啡店”这类相对目的地，但某些返回只含名称/地址而没有坐标。
         // 先用文本搜索补一次可直接导航的坐标，避免为每个候选消耗 maps_geo 配额。
         // 这也是 named/跨城地点不应一律以车辆当前位置做周边搜索的兜底。
-        if ((direct.isEmpty() || genericRailStation && nearbyRailCandidates(direct, origin).isEmpty())
+        if (direct.isEmpty()
                 && "maps_around_search".equals(search.name())
                 && tools.containsKey("maps_text_search")) {
             FunctionTool textSearch = tools.get("maps_text_search");
             try {
                 Map<String, Object> textValues = new LinkedHashMap<>(values);
-                if (genericRailStation && city.isBlank()) {
-                    String localCity = reverseGeocodeCity(location);
-                    if (!localCity.isBlank()) textValues.put("city", localCity);
-                }
                 String textRaw = caller.apply(textSearch.name(), arguments(textSearch, textValues));
                 List<Candidate> textCandidates = candidates(textRaw, recallLimit);
-                direct = genericRailStation
-                        ? java.util.stream.Stream.concat(direct.stream(), textCandidates.stream()).toList()
-                        : textCandidates;
+                direct = textCandidates;
                 places = mergePlaces(places(textRaw, recallLimit), places, recallLimit);
             } catch (McpToolException error) {
                 LOG.warn("AMap coordinate enrichment through text search failed; keeping around results: {}",
@@ -227,8 +212,7 @@ final class NavigationToolFacade {
             }
         }
         if (!direct.isEmpty() && !broadAirportQuery) {
-            List<Candidate> preferred = genericRailStation ? nearbyRailCandidates(direct, origin) : direct;
-            if (!preferred.isEmpty()) return toJson(preferred.stream()
+            return toJson(direct.stream()
                     .map(candidate -> candidate.name().isBlank()
                             ? new Candidate(query, candidate.lat(), candidate.lon(), candidate.address())
                             : candidate)
@@ -271,13 +255,88 @@ final class NavigationToolFacade {
                 LOG.warn("AMap geocode failed for one candidate; continuing with remaining candidates: {}",
                         error.getMessage());
             }
-            if (geocoded.size() >= (genericRailStation ? recallLimit : effectiveLimit)) break;
+            if (geocoded.size() >= effectiveLimit) break;
         }
         if (direct.isEmpty() && geocoded.isEmpty() && firstGeoError != null) throw firstGeoError;
         List<Candidate> result = broadAirportQuery
                 ? mergeAirportCandidates(direct, geocoded) : geocoded;
         return toJson(broadAirportQuery ? rankAirports(result, location)
-                : genericRailStation ? nearbyRailCandidates(result, origin) : result, effectiveLimit);
+                : result, effectiveLimit);
+    }
+
+    /** Resolve current city before any category search; never use an unbounded national fallback. */
+    private ArrayNode resolveRailStation(String location, int limit) {
+        double[] origin = parseLocation(location);
+        if (origin == null) return JSON.createArrayNode();
+        String city = reverseGeocodeCity(location);
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("keywords", "火车站");
+        values.put("keyword", "火车站");
+        values.put("query", "火车站");
+        values.put("types", "150200");
+        values.put("location", location);
+        values.put("center", location);
+        values.put("city", city);
+        values.put("citylimit", true);
+        values.put("radius", 50_000);
+        values.put("sortrule", "distance");
+        values.put("special", false);
+        values.put("offset", RAIL_RECALL_LIMIT);
+        values.put("limit", RAIL_RECALL_LIMIT);
+        values.put("page_size", RAIL_RECALL_LIMIT);
+        values.put("pageSize", RAIL_RECALL_LIMIT);
+
+        List<Candidate> direct = new ArrayList<>();
+        List<Place> unresolved = new ArrayList<>();
+        FunctionTool around = tools.get("maps_around_search");
+        if (around != null) {
+            try {
+                String raw = caller.apply(around.name(), arguments(around, values));
+                direct.addAll(candidates(raw, RAIL_RECALL_LIMIT));
+                unresolved.addAll(places(raw, RAIL_RECALL_LIMIT));
+            } catch (McpToolException error) {
+                LOG.warn("Rail nearby search failed; trying current-city search: {}", error.getMessage());
+            }
+        }
+        // Some MCP tools omit coordinates or ignore distance order. Retain the city for both
+        // text fallback and all geocodes; a model-supplied city is never a current-position fix.
+        if (nearbyRailCandidates(direct, origin).isEmpty() && !city.isBlank()
+                && tools.containsKey("maps_text_search")) {
+            FunctionTool search = tools.get("maps_text_search");
+            try {
+                String raw = caller.apply(search.name(), arguments(search, values));
+                direct.addAll(candidates(raw, RAIL_RECALL_LIMIT));
+                unresolved = mergePlaces(places(raw, RAIL_RECALL_LIMIT), unresolved, RAIL_RECALL_LIMIT);
+            } catch (McpToolException error) {
+                LOG.warn("Rail current-city search failed: {}", error.getMessage());
+            }
+        }
+        // Fill missing station coordinates before sorting, even if another station already
+        // has coordinates. Otherwise a nearer station can be silently lost.
+        if (!city.isBlank() && tools.containsKey("maps_geo")) {
+            Set<String> known = direct.stream().map(Candidate::name).collect(java.util.stream.Collectors.toSet());
+            for (Place place : unresolved) {
+                if (!railStationName(place.name()) || known.contains(place.name())) continue;
+                Map<String, Object> geoValues = Map.of("city", city,
+                        "address", String.join(" ", city, place.address(), place.name()).trim());
+                try {
+                    List<Candidate> points = candidates(callGeocode(tools.get("maps_geo"),
+                            arguments(tools.get("maps_geo"), geoValues)), 1);
+                    if (!points.isEmpty()) {
+                        Candidate point = points.getFirst();
+                        direct.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
+                    }
+                } catch (McpToolException error) {
+                    LOG.warn("Rail coordinate enrichment failed: {}", error.getMessage());
+                }
+            }
+        }
+        return toJson(nearbyRailCandidates(direct, origin), limit);
+    }
+
+    private static boolean railStationName(String name) {
+        String value = compact(name);
+        return value.endsWith("站") && !value.matches(".*(地铁|公交|货运|货场|售票|停车|酒店|宾馆|广场|商店|汽车站|客运站).*");
     }
 
     /**
@@ -338,7 +397,11 @@ final class NavigationToolFacade {
         try {
             JsonNode parsed = parseEmbeddedJson(
                     caller.apply(regeocode.name(), arguments(regeocode, values)));
-            return firstTextDeep(parsed, "city");
+            String city = firstTextDeep(parsed, "city");
+            if (!city.isBlank()) return city;
+            // AMap returns city:[] for municipalities; province then names the city.
+            String province = firstTextDeep(parsed, "province");
+            return Set.of("北京市", "上海市", "天津市", "重庆市").contains(province) ? province : "";
         } catch (McpToolException ignored) {
             return "";
         }
@@ -396,6 +459,8 @@ final class NavigationToolFacade {
     private static List<Candidate> nearbyRailCandidates(List<Candidate> candidates, double[] origin) {
         if (origin == null) return List.of();
         return candidates.stream()
+                .filter(point -> railStationName(point.name()))
+                .distinct()
                 .filter(point -> Double.isFinite(point.lat()) && Double.isFinite(point.lon())
                         && Math.abs(point.lat()) <= 90 && Math.abs(point.lon()) <= 180)
                 .filter(point -> 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(distanceScore(origin, point))))
@@ -439,7 +504,11 @@ final class NavigationToolFacade {
             for (Map.Entry<String, Object> entry : values.entrySet()) {
                 if (!properties.isObject() || properties.has(entry.getKey())) {
                     if (entry.getValue() instanceof String text && text.isBlank()) continue;
-                    args.set(entry.getKey(), JSON.valueToTree(entry.getValue()));
+                    if ("string".equals(properties.path(entry.getKey()).path("type").asText())) {
+                        args.put(entry.getKey(), String.valueOf(entry.getValue()));
+                    } else {
+                        args.set(entry.getKey(), JSON.valueToTree(entry.getValue()));
+                    }
                 }
             }
             return JSON.writeValueAsString(args);
@@ -538,7 +607,7 @@ final class NavigationToolFacade {
 
     private static String firstText(JsonNode node, String... names) {
         for (String name : names) {
-            if (node.path(name).isValueNode() && !node.path(name).asText().isBlank()) {
+            if (node.path(name).isValueNode() && !node.path(name).isNull() && !node.path(name).asText().isBlank()) {
                 return node.path(name).asText();
             }
         }
