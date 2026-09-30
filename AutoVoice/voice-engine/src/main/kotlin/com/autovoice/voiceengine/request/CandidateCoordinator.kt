@@ -1,65 +1,20 @@
-package com.autovoice.voicecore.session
+package com.autovoice.voiceengine.request
 
 import com.autovoice.voicecore.DemoConfig
-import com.autovoice.voicecore.Intent
-import com.autovoice.voicecore.NluResult
-import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.arbiter.ArbitrationOutput
 import com.autovoice.voicecore.arbiter.LocalAdmission
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.arbiter.RaceWinner
+import com.autovoice.voicecore.session.CloudRequestFailedException
+import com.autovoice.voicecore.session.CloudRunner
+import com.autovoice.voicecore.session.CloudUnavailableException
+import com.autovoice.voicecore.session.LocalChainRunner
+import com.autovoice.voicecore.session.ResultListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-
-/**
- * 端侧本地 NLU 链路由（spec §5.1 本地兜底链路）：话语段 → 语义候选。
- * ASR 在链内先独立输出到 UI；这里只把 NLU 结果交给仲裁器。
- */
-fun interface LocalChainRunner {
-    suspend fun run(segment: ByteArray): NluResult
-
-    /** 独立 ASR 回调需要保留所属 capture/turn，避免迟到文本覆盖另一轮 UI。 */
-    suspend fun run(segment: ByteArray, utteranceId: String): NluResult = run(segment)
-}
-
-/** 兼容只返回 Intent 的旧装配/测试；新 2C 适配器应直接返回带文本的 [NluResult]。 */
-@Suppress("FunctionName")
-fun LocalChainRunner(block: suspend (ByteArray) -> Intent): LocalChainRunner =
-    object : LocalChainRunner {
-        override suspend fun run(segment: ByteArray): NluResult = NluResult(block(segment))
-    }
-
-/**
- * 云端链路由（spec §5.1 云端优先链路）：话语段 → 网关回复。
- * gateway-client 装配由 Task 20 注入实现。
- */
-fun interface CloudRunner {
-    suspend fun run(segment: ByteArray): Reply
-
-    /** 并发轮次使用显式快照 ID，避免迟启动的旧音频被标成新轮。 */
-    suspend fun run(segment: ByteArray, utteranceId: String): Reply = run(segment)
-}
-
-/**
- * 收敛结果通道（Task 18/19/20 消费）：每轮话语恰好回调一次，
- * 只下发真实胜出语义；拒识和无候选不伪造失败结果，由会话状态定时器回 IDLE。
- */
-fun interface ResultListener {
-    fun onResult(utteranceId: String, winner: RaceWinner)
-}
-
-/**
- * 云端链路故障（Task 15 M1）：连接失败 / ready 后中途断开时由云端链实现抛出。
- * 候选协调器捕获后打开本地入队门。是否 latch 不可达由云端链实现决定。
- */
-class CloudUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
-
-/** 云端已连接但拒绝/处理失败；本轮转本地，不把健康连接误判为断网并重连。 */
-class CloudRequestFailedException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
  * 本地/云端候选生产协调器。它只拥有采集资源事实、云端音频聚合和候选任务，完全不拥有
