@@ -10,6 +10,21 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class ConversationControllerTest {
+    @Test fun `explicit text publishes processing directly and stale result remains rejected`() {
+        val states = mutableListOf<DialogueSnapshot>()
+        val admitted = mutableListOf<AdmittedTurn>()
+        val controller = ConversationController(onState = states::add, onTurnAdmitted = admitted::add)
+
+        assertTrue(controller.beginExplicitText("text-1"))
+        assertEquals(DialogueState.PROCESSING, controller.snapshot.value.state)
+        assertEquals("text-1", controller.snapshot.value.turnId)
+        assertEquals(listOf(DialogueState.PROCESSING), states.map { it.state })
+        assertEquals(listOf(AdmittedTurn("text-1", AdmissionEvidence.EXPLICIT_TEXT)), admitted)
+        assertTrue(controller.beginExplicitText("text-2"))
+        assertFalse(controller.onFinalSemantic("text-1"))
+        assertEquals("text-2", controller.snapshot.value.turnId)
+    }
+
     @Test fun `late evidence from an open capture cannot wake a dormant dialogue`() {
         val admitted = mutableListOf<AdmittedTurn>()
         val controller = ConversationController(

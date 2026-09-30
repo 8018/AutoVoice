@@ -14,6 +14,9 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voiceengine.api.RecognitionControl
+import com.autovoice.voiceengine.api.TextInputPort
+import com.autovoice.voiceengine.api.TextSubmission
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -68,6 +71,30 @@ class VoiceBusinessService(
         finishOpenRounds("new_interaction")
         recognition?.startRecognition()
         conversation.onWake()
+    }
+
+    /** Business admission owns the turn; the engine port only produces its cloud candidate. */
+    fun submitText(rawText: String, input: TextInputPort, onAccepted: (String) -> Unit = {}): TextSubmission {
+        val text = rawText.trim()
+        if (text.isEmpty() || text.length > MAX_TEXT_LENGTH) return TextSubmission.BUSY
+        val requestId = UUID.randomUUID().toString()
+        val result = input.submitText(requestId, text)
+        if (result != TextSubmission.ACCEPTED) return result
+        finishOpenRounds("new_explicit_text")
+        // Opens the interaction gate for later voice follow-up; it does not start microphone capture.
+        recognition?.startRecognition()
+        if (!conversation.beginExplicitText(requestId)) return TextSubmission.BUSY
+        onAccepted(requestId)
+        onRecognizedText(text)
+        input.finalizeTextInput(requestId)
+        return TextSubmission.ACCEPTED
+    }
+
+    fun onTextFailure(turnId: String): Boolean {
+        if (!conversation.isCurrentTurn(turnId)) return false
+        conversation.onThinkingExpired(turnId)
+        endRound(turnId, "text_request_failed")
+        return true
     }
 
     fun onCaptureStarted(interruptPlayback: Boolean) {
@@ -191,4 +218,6 @@ class VoiceBusinessService(
             thinkingTimerTurnId = null
         }
     }
+
+    private companion object { const val MAX_TEXT_LENGTH = 2_000 }
 }

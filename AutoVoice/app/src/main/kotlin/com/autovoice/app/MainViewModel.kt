@@ -27,6 +27,7 @@ import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voiceengine.api.TextSubmission
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -111,6 +112,7 @@ data class UiState(
     /** 导航 POI 候选；非空时在本应用内显示语音选择弹窗，尚未拉起地图。 */
     /** 已进入 S2S 闲聊锁域；麦克风常开且绕过端侧 ASR/NLU。 */
     val chatMode: Boolean = false,
+    val textInputError: String? = null,
 ) {
     val navigationCandidates: List<NavigationExecutor.NavigationCandidate> get() = navigation.candidates
 }
@@ -240,6 +242,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopRecording() = recordingCoordinator.stopTurn()
+
+    fun submitText(text: String): Boolean {
+        if (_uiState.value.chatMode || _uiState.value.recording) {
+            _uiState.update { it.copy(textInputError = "当前正在语音输入，请稍后再发送文字") }
+            return false
+        }
+        val outcome = engine.submitText(text)
+        _uiState.update {
+            it.copy(textInputError = when (outcome) {
+                TextSubmission.ACCEPTED -> null
+                TextSubmission.NO_ROUTE -> "当前模式不支持云端文字输入"
+                TextSubmission.BUSY -> "文字输入暂不可用，请稍后重试"
+                TextSubmission.DUPLICATE_REQUEST -> "请勿重复发送"
+            })
+        }
+        return outcome == TextSubmission.ACCEPTED
+    }
 
     private fun cancelRecording() = recordingCoordinator.cancelTurn()
 
@@ -484,6 +503,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
             onConversationMode = ::setChatMode,
             onDialogueState = ::handleDialogueState,
+            onTextInputError = { error -> _uiState.update { it.copy(textInputError = error) } },
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
             onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,

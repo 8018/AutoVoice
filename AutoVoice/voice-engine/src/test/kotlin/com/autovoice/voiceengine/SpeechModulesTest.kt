@@ -64,9 +64,16 @@ class SpeechModulesTest {
         val local = module.understandLocal("local-1", byteArrayOf(1), AsrResult("hello"))
         val cloud = module.understandCloud("cloud-1", byteArrayOf(2), null)
 
+        module.bindCloudText(CloudTextNluEngine { turnId, text ->
+            events += "text:$turnId:$text"
+            TextReply("text answer")
+        })
+        val text = module.understandCloudText("text-1", "导航到公司")
+
         assertEquals("hello", local.recognizedText)
         assertEquals("cloud answer", (cloud as TextReply).text)
-        assertEquals(listOf("local:local-1:hello", "cloud:cloud-1:null"), events)
+        assertEquals("text answer", (text as TextReply).text)
+        assertEquals(listOf("local:local-1:hello", "cloud:cloud-1:null", "text:text-1:导航到公司"), events)
     }
 
     @Test
@@ -80,5 +87,8 @@ class SpeechModulesTest {
         val local = NluEngine<NluResult> { _, _, _ -> NluResult(Intent.unknown("local")) }
         nlu.bindLocal(local)
         assertThrows(IllegalStateException::class.java) { nlu.bindLocal(local) }
+        val text = CloudTextNluEngine { _, _ -> TextReply("ok") }
+        nlu.bindCloudText(text)
+        assertThrows(IllegalStateException::class.java) { nlu.bindCloudText(text) }
     }
 }

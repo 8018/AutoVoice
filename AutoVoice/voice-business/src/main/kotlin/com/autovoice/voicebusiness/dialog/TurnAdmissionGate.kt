@@ -6,6 +6,7 @@ enum class AdmissionEvidence {
     CLOUD_ASR,
     LOCAL_SEMANTIC,
     CLOUD_FINAL_SEMANTIC,
+    EXPLICIT_TEXT,
 }
 
 data class AdmittedTurn(val turnId: String, val evidence: AdmissionEvidence)
@@ -41,6 +42,10 @@ class TurnAdmissionGate {
         require(source == AdmissionEvidence.LOCAL_SEMANTIC || source == AdmissionEvidence.CLOUD_FINAL_SEMANTIC)
         return confirm(captureId, source)
     }
+
+    @Synchronized
+    fun confirmExplicitText(captureId: String): AdmittedTurn? =
+        confirm(captureId, AdmissionEvidence.EXPLICIT_TEXT)
 
     @Synchronized
     fun reject(captureId: String): Boolean {

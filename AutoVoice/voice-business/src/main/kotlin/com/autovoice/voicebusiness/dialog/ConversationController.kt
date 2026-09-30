@@ -35,6 +35,22 @@ class ConversationController(
         dialogue.onWake().also { next -> queue.add { onState(next) } }
     }
 
+    /** A typed utterance is a complete input, not a VAD/ASR observation. Publish only PROCESSING. */
+    fun beginExplicitText(turnId: String): Boolean = mutate { queue ->
+        if (turnId.isBlank()) return@mutate false
+        if (dialogue.snapshot.value.state == DialogueState.DORMANT) dialogue.onWake()
+        admission.open(turnId)
+        admission.finalizeInput(turnId)
+        val admitted = admission.confirmExplicitText(turnId) ?: return@mutate false
+        captureId = turnId
+        val processing = dialogue.onSpeechCommitted(turnId, inputFinalized = true)
+        if (processing.turnId != turnId) return@mutate false
+        clearPending(queue)
+        queue.add { onTurnAdmitted(admitted) }
+        queue.add { onState(processing) }
+        true
+    }
+
     /** Starts a capture identity without changing the user-visible dialogue state. */
     fun beginCapture(): String = mutate { newCaptureId().also { captureId = it } }
 
@@ -110,6 +126,7 @@ class ConversationController(
                 admission.confirmAsr(turnId, evidence)
             AdmissionEvidence.LOCAL_SEMANTIC, AdmissionEvidence.CLOUD_FINAL_SEMANTIC ->
                 admission.confirmSemantic(turnId, evidence)
+            AdmissionEvidence.EXPLICIT_TEXT -> admission.confirmExplicitText(turnId)
         } ?: return@mutate dialogue.isCurrentTurn(turnId)
         val listening = dialogue.onSpeechCommitted(admitted.turnId, admission.isInputFinalized(admitted.turnId))
         queue.add { onTurnAdmitted(admitted) }

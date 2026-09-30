@@ -13,12 +13,44 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.arbiter.RaceWinner
+import com.autovoice.voiceengine.api.TextInputPort
+import com.autovoice.voiceengine.api.TextSubmission
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class VoiceBusinessServiceTest {
+    @Test
+    fun `typed input uses engine port without ASR and adopts cloud result`() = runTest {
+        val output = RecordingOutput()
+        val recognized = mutableListOf<String?>()
+        val service = service(output, onRecognized = recognized::add)
+        val calls = mutableListOf<String>()
+        var requestId = ""
+        val port = object : TextInputPort {
+            override fun submitText(requestId: String, text: String): TextSubmission {
+                calls += "submit:$text"
+                return TextSubmission.ACCEPTED
+            }
+            override fun finalizeTextInput(requestId: String): Boolean {
+                calls += "finalize:$requestId"
+                return true
+            }
+        }
+
+        assertEquals(TextSubmission.ACCEPTED, service.submitText(" 导航到机场 ", port) { requestId = it })
+        assertEquals(DialogueState.PROCESSING, service.conversation.snapshot.value.state)
+        assertEquals(requestId, service.conversation.snapshot.value.turnId)
+        assertEquals(listOf("导航到机场"), recognized)
+        assertEquals("submit:导航到机场", calls.first())
+        assertEquals("finalize:$requestId", calls.last())
+
+        service.onTurnResult(requestId, RaceWinner.Cloud(TextReply("好的")))
+        assertEquals(DialogueState.RESPONDING, service.conversation.snapshot.value.state)
+        assertEquals(listOf(requestId to "好的"), output.spoken)
+    }
+
     @Test
     fun `current cloud reply reaches output and advances dialogue`() = runTest {
         val output = RecordingOutput()

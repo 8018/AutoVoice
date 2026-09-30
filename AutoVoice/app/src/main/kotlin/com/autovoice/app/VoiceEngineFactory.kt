@@ -73,6 +73,7 @@ internal object VoiceEngineFactory {
         /** S2S 闲聊锁域进入/退出。 */
         onConversationMode: (Boolean) -> Unit = {},
         onDialogueState: (DialogueSnapshot) -> Unit = {},
+        onTextInputError: (String) -> Unit = {},
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
@@ -262,6 +263,7 @@ internal object VoiceEngineFactory {
             onCloudPending = onCloudPending,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
+            onTextInputError = onTextInputError,
             streamingCloud = cloudRunner,
         )
         engineRef = engine
