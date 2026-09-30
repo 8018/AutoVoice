@@ -1,0 +1,14 @@
+{
+  "type": "text_request",
+  "payload": {
+    "sessionId": "session-1",
+    "requestId": "req-1",
+    "utteranceId": "req-1",
+    "segmentId": "text-seg-1",
+    "text": "导航到公司",
+    "language": "zh-CN",
+    "inputSource": "text",
+    "contextVersion": 1,
+    "context": {}
+  }
+}

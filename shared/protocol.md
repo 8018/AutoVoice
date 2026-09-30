@@ -28,6 +28,7 @@
 | `hello` | 客户端 → 服务端 | 连接建立后的握手，声明客户端与协议版本 |
 | `audio_start` | 客户端 → 服务端 | 声明一段录音流开始（采样率/声道/编码） |
 | `audio_end` | 客户端 → 服务端 | 声明录音流结束（附时长） |
+| `text_request` | 客户端 → 服务端 | 显式文本输入；需 `ready.capabilities` 含 `text_recognition_v1` |
 | `turn_commit` | 客户端 → 服务端 | ASR 或有效语义确认候选采集已经成为业务轮 |
 | `cancel_turn` | 客户端 → 服务端 | 显式作废该轮输出（兼容消息；只关闭闸门，不取消候选） |
 | `chat_start` | 客户端 → 服务端 | 进入锁域后建立 Qwen Realtime 长会话 |
@@ -60,8 +61,28 @@
   但接收端不得使用虚构 ID 绕过当前轮校验。
 - 共享 fixture 同时进入 Schema、Java 网关 codec 和 Kotlin 客户端测试；
   `fixtures/invalid` 保存应被拒绝的负例。
+- `ready.capabilities` 为服务端实际支持的可选能力列表；旧服务端缺失时视为空列表，客户端不得尝试 `text_request`。
 
 ## 3. 客户端 → 服务端消息
+
+### 3.0 text_request（text_recognition_v1）
+
+仅在 `ready.capabilities` 包含 `text_recognition_v1` 时发送。消息示例见
+`shared/fixtures/gateway-text-request.json`。`requestId` 是一次输入的稳定身份，
+`utteranceId` 用于现有轮次准入，`segmentId` 用于 `cancel_turn` 与回复关联；
+三个 ID 都必填，长度 1–128，只允许字母、数字、下划线和连字符。
+`text` 必须为非空、最多 2000 字符；`sessionId`、`language` 必须与当前
+`ready` 一致；`inputSource` 固定为 `text`，当前仅支持 `contextVersion=1`
+和空 `context`。不支持的上下文版本或字段明确报错，不静默丢弃。
+
+文本输入不发送 `audio_start`、`audio_end` 或 PCM，也不产生
+`asr_turn_started` / `asr_partial`。网关受理后进入与音频共用的每连接
+处理槽（一个执行中、一个排队）；有效文本直接作为新输入证据，旧轮输出权限
+按现有轮次准入规则撤销。最终 `reply` 或 `error` 同时回显 `segmentId`
+和 `requestId`；可用 `cancel_turn(segmentId)` 拒绝未完成结果。
+重复 `requestId` 在短期去重窗口内返回 `DUPLICATE_REQUEST`，不重放旧回复；
+排队满返回 `BUSY`。断开连接即关闭输出权限，客户端不得自动重试文本或音频。
+文本只调用支持文本的在线后端，不伪造离线音频候选或云端 ASR 决策。
 
 ### 3.1 hello
 
