@@ -5,6 +5,7 @@ import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
 import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.CloudTextNluEngine
 import com.autovoice.voicebusiness.VoiceBusinessService
 import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.TtsOutput
@@ -18,6 +19,7 @@ import com.autovoice.voicebusiness.dialog.ConversationController
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
 import com.autovoice.voiceengine.request.CandidateCoordinator
+import com.autovoice.voiceengine.api.TextSubmission
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
@@ -80,6 +82,7 @@ class VoiceEngine(
     onCloudWon: (String) -> Unit = {},
     /** 本地交互状态；只由 ConversationController 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
     onDialogueState: (DialogueSnapshot) -> Unit = {},
+    private val onTextInputError: (String) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
@@ -179,6 +182,11 @@ class VoiceEngine(
                 }
             },
             resultListener = ResultListener { utteranceId, winner -> voiceBusiness.onTurnResult(utteranceId, winner) },
+            cloudText = cloud as? CloudTextNluEngine,
+            onTextFailure = { requestId, error ->
+                Log.w(TAG, "text NLU request failed: $requestId", error)
+                if (voiceBusiness.onTextFailure(requestId)) onTextInputError("云端处理失败，请重试")
+            },
         )
     }
 
@@ -216,6 +224,15 @@ class VoiceEngine(
     fun onForeground() = onForeground.invoke()
 
     fun onWake() = voiceBusiness.onWake()
+
+    /** Explicit text bypasses audio capture and ASR but retains turn admission and arbitration. */
+    fun submitText(text: String): TextSubmission = voiceBusiness.submitText(text, candidates) { requestId ->
+        onTurnStarted(requestId)
+        telemetry.begin(requestId)
+        telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "explicit_text"))
+        telemetry.record(TelemetryStages.VAD_START, "info", mapOf("source" to "explicit_text", "synthetic" to true))
+        telemetry.record(TelemetryStages.VAD_END, "info", mapOf("source" to "explicit_text", "synthetic" to true))
+    }
 
     /** Business controls new-input admission independently of capture and completed NLU work. */
     fun stopRecognition() {

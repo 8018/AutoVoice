@@ -9,6 +9,12 @@ import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voiceengine.api.TextSubmission
+import com.autovoice.voiceengine.api.TextInputPort
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -31,9 +37,14 @@ class CandidateCoordinator(
     private val local: LocalChainRunner,
     private val cloud: CloudRunner,
     private val resultListener: ResultListener = ResultListener { _, _ -> },
-) {
+    private val cloudText: CloudTextNluEngine? = null,
+    private val onTextFailure: (String, Throwable) -> Unit = { _, _ -> },
+) : TextInputPort {
     private val candidateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val captureLock = Any()
+    private val textInFlight = AtomicInteger()
+    private val acceptedTextIds = LinkedHashSet<String>()
+    private val textInputFinalized = HashMap<String, CompletableDeferred<Unit>>()
 
     @Volatile
     var currentCaptureId: String = ""
@@ -89,6 +100,45 @@ class CandidateCoordinator(
         }
         runTurn(captureId, localAudio, cloudAudio)
         return true
+    }
+
+    /** Explicit text has no local audio candidate; the cloud NLU reply enters the same arbiter. */
+    override fun submitText(requestId: String, text: String): TextSubmission {
+        require(requestId.isNotBlank() && text.isNotBlank())
+        val runner = cloudText ?: return TextSubmission.NO_ROUTE
+        if (!cfg.cloud.enabled) return TextSubmission.NO_ROUTE
+        val inputReady = synchronized(acceptedTextIds) {
+            if (requestId in acceptedTextIds) return TextSubmission.DUPLICATE_REQUEST
+            if (textInFlight.get() >= MAX_TEXT_IN_FLIGHT) return TextSubmission.BUSY
+            textInFlight.incrementAndGet()
+            acceptedTextIds.add(requestId)
+            val ready = CompletableDeferred<Unit>()
+            textInputFinalized[requestId] = ready
+            if (acceptedTextIds.size > MAX_RETAINED_TEXT_IDS) acceptedTextIds.remove(acceptedTextIds.first())
+            ready
+        }
+        arbiter.openTurn(requestId) { output ->
+            if (output is ArbitrationOutput.Winner) resultListener.onResult(requestId, output.value)
+        }
+        candidateScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                inputReady.await()
+                arbiter.submitCloud(requestId, runner.understand(requestId, text))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                onTextFailure(requestId, failure)
+            } finally {
+                synchronized(acceptedTextIds) { textInputFinalized.remove(requestId) }
+                textInFlight.decrementAndGet()
+            }
+        }
+        return TextSubmission.ACCEPTED
+    }
+
+    /** Releases cloud processing only after synthetic VAD end and input-finalized are delivered. */
+    override fun finalizeTextInput(requestId: String): Boolean = synchronized(acceptedTextIds) {
+        textInputFinalized[requestId]?.complete(Unit) ?: false
     }
 
     /** 云端不可达（断网/认证失效等，spec §5.1 可达性检查）：此后只跑本地链。 */
@@ -167,5 +217,10 @@ class CandidateCoordinator(
 
     /** 云端链启动条件（spec §5.1 可达性）：配置开启且云端可达。 */
     private fun cloudRouteActive(): Boolean = cfg.cloud.enabled && cloudAvailable
+
+    companion object {
+        private const val MAX_TEXT_IN_FLIGHT = 2
+        private const val MAX_RETAINED_TEXT_IDS = 64
+    }
 
 }

@@ -7,6 +7,11 @@ import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.NluResult
 import com.autovoice.voicecore.Reply
 
+/** Explicit text goes straight to NLU/model; it must never be encoded as fake ASR audio. */
+fun interface CloudTextNluEngine {
+    suspend fun understand(turnId: String, text: String): Reply
+}
+
 /** One engine-owned ASR entry for both local and cloud routes. Binding is composition-only. */
 class AsrModule {
     private data class CloudRoute(
@@ -46,6 +51,7 @@ class AsrModule {
 class NluModule {
     @Volatile private var local: NluEngine<NluResult>? = null
     @Volatile private var cloud: NluEngine<Reply>? = null
+    @Volatile private var cloudText: CloudTextNluEngine? = null
 
     @Synchronized
     fun bindLocal(engine: NluEngine<NluResult>) {
@@ -59,9 +65,18 @@ class NluModule {
         cloud = engine
     }
 
+    @Synchronized
+    fun bindCloudText(engine: CloudTextNluEngine) {
+        check(cloudText == null) { "cloud text NLU already bound" }
+        cloudText = engine
+    }
+
     suspend fun understandLocal(turnId: String, segment: ByteArray, asr: AsrResult?): NluResult =
         requireNotNull(local) { "local NLU not bound" }.understand(turnId, segment, asr)
 
     suspend fun understandCloud(turnId: String, segment: ByteArray, asr: AsrResult?): Reply =
         requireNotNull(cloud) { "cloud NLU not bound" }.understand(turnId, segment, asr)
+
+    suspend fun understandCloudText(turnId: String, text: String): Reply =
+        requireNotNull(cloudText) { "cloud text NLU not bound" }.understand(turnId, text)
 }

@@ -4,6 +4,7 @@ import com.autovoice.voiceengine.cloud.CloudNluEngine
 import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.voiceengine.AsrModule
 import com.autovoice.voiceengine.NluModule
+import com.autovoice.voiceengine.CloudTextNluEngine
 import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.util.Log
@@ -51,7 +52,7 @@ internal class GatewayCloudRunner(
     private val recognitionGate: RecognitionGate,
     private val asrModule: AsrModule,
     private val nluModule: NluModule,
-) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
+) : CloudRunner, CloudTextNluEngine, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClientFactory.create(
         url = cfg.gatewayUrl,
@@ -90,6 +91,9 @@ internal class GatewayCloudRunner(
     init {
         asrModule.bindCloud(cloudAsr, cloudAsr::release, cloudAsr::close)
         nluModule.bindCloud(cloudNlu)
+        nluModule.bindCloudText(CloudTextNluEngine { turnId, text ->
+            textChannel.run(turnId, text)
+        })
     }
     private val realtimeChatChannel: GatewayRealtimeChatChannel by lazy {
         GatewayRealtimeChatChannel(client, bridge, protocol, scope, ::ensureReady, { sessionId }) {
@@ -109,6 +113,11 @@ internal class GatewayCloudRunner(
         },
         recognitionGate,
     )
+    private val textChannel: GatewayBusinessTextChannel by lazy {
+        GatewayBusinessTextChannel(client, bridge, protocol, ::ensureReady, { sessionId }) { error ->
+            onSpeechTransportFailure(error, false)
+        }
+    }
 
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) = navigationChannel.publish(context)
@@ -273,6 +282,8 @@ internal class GatewayCloudRunner(
     override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
         if (!businessSpeech.isInputFinalized(utteranceId)) cancelStreamingTurn(utteranceId)
     }
+    override suspend fun understand(turnId: String, text: String): Reply =
+        nluModule.understandCloudText(turnId, text)
     override fun commitStreamingTurn(utteranceId: String) = businessSpeech.commitStreamingTurn(utteranceId)
 
     private fun onSpeechTransportFailure(error: Throwable, streaming: Boolean) {

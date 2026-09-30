@@ -16,6 +16,8 @@ import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voiceengine.api.TextSubmission
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -64,6 +66,7 @@ class CandidateCoordinatorTest {
         cloud: CloudRunner,
         cloudEnabled: Boolean = true,
         cloudWaitMs: Long = 100,
+        cloudText: CloudTextNluEngine? = null,
     ): Harness {
         val results = mutableListOf<Pair<String, RaceWinner>>()
         val decisions = mutableListOf<DecisionEntry>()
@@ -77,10 +80,46 @@ class CandidateCoordinatorTest {
                 local = local,
                 cloud = cloud,
                 resultListener = ResultListener { id, winner -> results += id to winner },
+                cloudText = cloudText,
             ),
             results,
             decisions,
         )
+    }
+
+    @Test
+    fun `text waits for input finalization then enters cloud arbitration without audio`() = runBlocking {
+        val called = AtomicInteger()
+        harness(
+            local = LocalChainRunner { error("text must not use local audio") },
+            cloud = CloudRunner { error("text must not use cloud audio") },
+            cloudText = CloudTextNluEngine { _, text ->
+                called.incrementAndGet()
+                TextReply("answer: $text")
+            },
+        ).use { h ->
+            assertEquals(TextSubmission.ACCEPTED, h.coordinator.submitText("req-1", "导航到公司"))
+            assertEquals(TextSubmission.DUPLICATE_REQUEST, h.coordinator.submitText("req-1", "导航到公司"))
+            delay(30)
+            assertEquals(0, called.get(), "model must not run before synthetic input finalization")
+            assertTrue(h.coordinator.finalizeTextInput("req-1"))
+            assertEquals("answer: 导航到公司", (h.awaitResult() as RaceWinner.Cloud).reply.let { (it as TextReply).text })
+            assertEquals(1, called.get())
+            assertEquals("cloud_won", h.decisions.single().reason)
+        }
+    }
+
+    @Test
+    fun `text admission is bounded and requires a configured cloud route`() {
+        val held = CloudTextNluEngine { _, _ -> awaitCancellation() }
+        harness(LocalChainRunner { intent() }, CloudRunner { TextReply("unused") }, cloudText = held).use { h ->
+            assertEquals(TextSubmission.ACCEPTED, h.coordinator.submitText("one", "a"))
+            assertEquals(TextSubmission.ACCEPTED, h.coordinator.submitText("two", "b"))
+            assertEquals(TextSubmission.BUSY, h.coordinator.submitText("three", "c"))
+        }
+        harness(LocalChainRunner { intent() }, CloudRunner { TextReply("unused") }).use { h ->
+            assertEquals(TextSubmission.NO_ROUTE, h.coordinator.submitText("one", "a"))
+        }
     }
 
     private suspend fun Harness.awaitResult(timeoutMs: Long = 1_000): RaceWinner? {

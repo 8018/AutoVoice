@@ -17,6 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -40,6 +42,7 @@ fun VoiceScreen(
     state: UiState,
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
+    onSubmitText: (String) -> Boolean,
     onDismissNavigationCandidates: () -> Unit,
     onSelectNavigationCandidate: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
 ) {
@@ -77,6 +80,11 @@ fun VoiceScreen(
             }
             InteractionHeadline(state)
             ConversationCard(state)
+            TextInputCard(
+                enabled = !state.chatMode && !state.recording,
+                error = state.textInputError,
+                onSubmit = onSubmitText,
+            )
             NavigationStatus(state)
             WakeGuidance(state)
         }
@@ -98,6 +106,28 @@ fun VoiceScreen(
             onDismissRequest = onDismissNavigationCandidates,
             onSelect = onSelectNavigationCandidate,
         )
+    }
+}
+
+@Composable
+private fun TextInputCard(enabled: Boolean, error: String?, onSubmit: (String) -> Boolean) {
+    var text by rememberSaveable { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("输入文字指令") },
+                singleLine = true,
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+            )
+            Button(
+                onClick = { if (onSubmit(text)) text = "" },
+                enabled = enabled && text.isNotBlank(),
+            ) { Text("发送") }
+        }
+        if (error != null) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
 }
 

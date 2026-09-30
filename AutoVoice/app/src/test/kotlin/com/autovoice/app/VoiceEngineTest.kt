@@ -30,6 +30,8 @@ import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicebusiness.dialog.DialogueState
 import com.autovoice.voicebusiness.dialog.AdmissionEvidence
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voiceengine.api.TextSubmission
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +68,35 @@ import org.junit.jupiter.api.Test
  * 输家可自然完成，不阻塞测试轮次返回。
  */
 class VoiceEngineTest {
+
+    @Test
+    fun `explicit text reaches cloud arbitration without either audio runner`() = runBlocking {
+        var localCalls = 0
+        var cloudAudioCalls = 0
+        val recognized = mutableListOf<String?>()
+        val winners = mutableListOf<String>()
+        val cloud = object : CloudRunner, CloudTextNluEngine {
+            override suspend fun run(segment: ByteArray): Reply {
+                cloudAudioCalls++
+                error("audio runner must not be used")
+            }
+            override suspend fun understand(turnId: String, text: String): Reply = TextReply("reply to $text")
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; error("local audio must not be used") },
+            cloud = cloud,
+            onRecognized = recognized::add,
+            onCloudWon = winners::add,
+        )
+
+        assertEquals(TextSubmission.ACCEPTED, engine.submitText(" 今天天气 "))
+        withTimeout(2_000) { while (winners.isEmpty()) delay(10) }
+        assertEquals(listOf("今天天气"), recognized)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudAudioCalls)
+        assertTrue(engine.recognitionEnabled, "later voice follow-up remains available")
+    }
 
     private val segment = ByteArray(960) { 7 }
 
