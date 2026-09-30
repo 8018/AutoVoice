@@ -22,7 +22,7 @@ for workflow in "${workflows[@]}"; do
 done
 
 grep -Fq 'timeout-minutes: 20' "${workflows[0]}"
-grep -Fq 'timeout-minutes: 45' "${workflows[1]}"
+grep -Fq 'timeout-minutes: 120' "${workflows[1]}"
 grep -Fq 'retry_ssh_operation 5 30' "${workflows[0]}"
 [[ "$(grep -c 'retry_ssh_operation 3 180' "${workflows[0]}")" -eq 1 ]]
 [[ "$(grep -c 'retry_ssh_operation 2 30' "${workflows[1]}")" -eq 1 ]]

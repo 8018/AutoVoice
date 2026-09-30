@@ -38,10 +38,12 @@ upload_release_chunks() {
       continue
     fi
 
-    local_dir="$RUNNER_TEMP/autovoice-upload-chunks/$name/$digest"
-    remote_dir="$staging_dir/.upload/$name/$digest"
+    local_dir="$RUNNER_TEMP/autovoice-upload-chunks/$name/$digest/1m"
+    remote_dir="$staging_dir/.upload/$name/$digest/1m"
     install -d -m 700 "$local_dir"
-    split -b 4m -d -a 3 "$artifact" "$local_dir/part."
+    # GitHub-hosted runner -> China ECS measured about 1.5-2 min per 4 MiB chunk.
+    # One MiB keeps a transfer comfortably inside the bounded per-attempt timeout.
+    split -b 1m -d -a 3 "$artifact" "$local_dir/part."
     retry_ssh_operation 3 30 "Prepare chunks for $name" \
       ssh "${SSH_ARGS[@]}" "$target" "install -d -m 700 '$remote_dir'"
 

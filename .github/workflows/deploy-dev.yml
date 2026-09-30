@@ -33,7 +33,8 @@ jobs:
       github.event.workflow_run.head_branch == 'dev' &&
       vars.AUTO_DEPLOY_DEV == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # About 100 MiB over the measured cross-region link can take over an hour.
+    timeout-minutes: 120
     environment: dev
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
