@@ -8,6 +8,7 @@ import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineSpeechStream;
+import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
 import com.autovoice.server.contracts.Reply;
@@ -21,7 +22,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 /** 现有在线链路适配器：PCM → ASR → DeepSeek；不改变原有请求和工具循环。 */
-public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
+public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, OnlineTextProvider {
 
     private final AsrProvider asr;
     private final LlmProvider llm;
@@ -62,7 +63,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);
         }
-        return completeFromText(text, context, utteranceId);
+        return completeFromText(text, context, utteranceId, text);
     }
 
     @Override
@@ -80,15 +81,24 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new AsrException("ASR returned blank text"));
                     }
-                    return completeFromText(text, context, utteranceId);
+                    return completeFromText(text, context, utteranceId, text);
                 });
             }
             @Override public void cancel() { session.cancel(); }
         };
     }
 
-    private CompletableFuture<OnlineSpeechResult> completeFromText(
+    @Override
+    public CompletableFuture<OnlineSpeechResult> processText(
             String text, SessionContext context, String utteranceId) {
+        if (text == null || text.isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("text input is blank"));
+        }
+        return completeFromText(text, context, utteranceId, "");
+    }
+
+    private CompletableFuture<OnlineSpeechResult> completeFromText(
+            String text, SessionContext context, String utteranceId, String asrText) {
         CompletableFuture<com.autovoice.server.contracts.Reply> source = DialogueControlNlu
                 .understand(text)
                 .map(intent -> CompletableFuture.completedFuture(
@@ -104,7 +114,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider {
         };
         source.whenComplete((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
-            else out.complete(new OnlineSpeechResult(reply, text));
+            else out.complete(new OnlineSpeechResult(reply, asrText));
         });
         return out;
     }
