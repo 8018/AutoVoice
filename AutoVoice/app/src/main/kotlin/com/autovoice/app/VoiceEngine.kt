@@ -17,7 +17,7 @@ import com.autovoice.voicebusiness.dialog.AdmissionEvidence
 import com.autovoice.voicebusiness.dialog.ConversationController
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
-import com.autovoice.voicecore.session.CandidateCoordinator
+import com.autovoice.voiceengine.request.CandidateCoordinator
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
