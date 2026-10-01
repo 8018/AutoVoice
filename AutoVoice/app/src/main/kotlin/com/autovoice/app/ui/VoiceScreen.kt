@@ -24,10 +24,16 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import android.widget.TextView
+import android.text.method.LinkMovementMethod
+import io.noties.markwon.Markwon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +51,7 @@ fun VoiceScreen(
     onSubmitText: (String) -> Boolean,
     onDismissNavigationCandidates: () -> Unit,
     onSelectNavigationCandidate: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
+    onDismissTravelGuide: () -> Unit,
 ) {
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     Column(
@@ -107,6 +114,40 @@ fun VoiceScreen(
             onSelect = onSelectNavigationCandidate,
         )
     }
+    if (state.travelGuide.visible) {
+        TravelGuideDialog(state.travelGuide, onDismissTravelGuide)
+    }
+}
+
+@Composable
+private fun TravelGuideDialog(guide: com.autovoice.app.TravelGuideUiState, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val markdownRenderer = remember(context) { Markwon.create(context) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (guide.generating) "行程攻略 · 生成中…" else "行程攻略") },
+        text = {
+            Column(Modifier.heightIn(max = 450.dp).verticalScroll(rememberScrollState())) {
+                if (guide.markdown.isNotBlank()) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxWidth(),
+                        factory = { context ->
+                            TextView(context).apply {
+                                movementMethod = LinkMovementMethod.getInstance()
+                                setTextIsSelectable(true)
+                                textSize = 16f
+                            }
+                        },
+                        update = { view -> markdownRenderer.setMarkdown(view, guide.markdown) },
+                    )
+                } else if (guide.generating) {
+                    Text("正在搜索景点并编排行程…")
+                }
+                guide.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 @Composable

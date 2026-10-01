@@ -7,10 +7,41 @@
   "required": ["type", "payload"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "text_request", "cancel_turn", "turn_commit", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "text_request", "cancel_turn", "turn_commit", "travel_start", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
+    {
+      "title": "travel_start (client -> server, accepted travel business marker)",
+      "properties": {
+        "type": { "const": "travel_start" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "utteranceId"],
+          "properties": {
+            "segmentId": { "type": "string", "minLength": 1 },
+            "utteranceId": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    {
+      "title": "document_stream (server -> client, travel Markdown delta)",
+      "properties": {
+        "type": { "const": "document_stream" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "utteranceId", "format", "operation", "text"],
+          "properties": {
+            "segmentId": { "type": "string", "minLength": 1 },
+            "utteranceId": { "type": "string", "minLength": 1 },
+            "format": { "const": "text/markdown" },
+            "operation": { "enum": ["start", "delta", "complete", "error"] },
+            "text": { "type": "string" }
+          }
+        }
+      }
+    },
     {
       "title": "text_request (client -> server, capability text_recognition_v1)",
       "properties": {

@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
                         onSubmitText = viewModel::submitText,
                         onDismissNavigationCandidates = viewModel::dismissNavigationCandidates,
                         onSelectNavigationCandidate = viewModel::selectNavigationCandidate,
+                        onDismissTravelGuide = viewModel::dismissTravelGuide,
                     )
                 }
             }

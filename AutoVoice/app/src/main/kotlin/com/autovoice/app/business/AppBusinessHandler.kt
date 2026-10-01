@@ -15,6 +15,7 @@ class AppBusinessHandler(
     private val onVehicleApplied: () -> Unit = {},
     private val onConversationMode: (Boolean) -> Unit = {},
     private val onExitDialogue: () -> Unit = {},
+    private val onTravelGuideStarted: (String) -> Unit = {},
 ) : BusinessHandler {
     override fun handle(command: BusinessCommand): BusinessResult {
         val intent = command.intent
@@ -29,6 +30,16 @@ class AppBusinessHandler(
                     onExitDialogue()
                 }
                 else -> BusinessResult.failed()
+            }
+        }
+        if (intent.domain == "travel" && intent.intent == "plan_guide") {
+            return when (actionGateway.execute(command.turnId) { true }) {
+                ActionExecutionGateway.Result.APPLIED -> BusinessResult.applied().also {
+                    onTravelGuideStarted(command.turnId)
+                }
+                ActionExecutionGateway.Result.DUPLICATE -> BusinessResult(BusinessResult.Status.DUPLICATE)
+                ActionExecutionGateway.Result.INVALID_TURN -> BusinessResult.rejected()
+                ActionExecutionGateway.Result.FAILED -> BusinessResult.failed()
             }
         }
         var appliedText: String? = null

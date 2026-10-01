@@ -30,7 +30,7 @@ public final class GatewayCodec {
 
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
-            "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
+            "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "travel_start", "pending", "reply", "error", "bye",
             "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
             "chat_start", "chat_ready", "chat_finish", "chat_speech_started",
             "navigation_selection_start", "navigation_context_result", "text_request");
@@ -55,6 +55,8 @@ public final class GatewayCodec {
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal", "chat", "chatId")),
             Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat", "chatId")),
+            Map.entry("document_stream", Set.of("segmentId", "utteranceId", "format", "operation", "text")),
+            Map.entry("travel_start", Set.of("segmentId", "utteranceId")),
             Map.entry("pending", Set.of("segmentId", "text")),
             Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "requestId", "asrText", "actionId", "actionExpiresAtMs")),
             Map.entry("error", Set.of("sessionId", "code", "message", "segmentId", "requestId", "chatId")),

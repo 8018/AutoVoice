@@ -59,6 +59,7 @@ public final class HybridBusinessChatSpeechProvider
     private final OnlineSpeechProvider chatSpeech;
     private final QwenOmniRealtimeChatProvider realtimeChat;
     private final NavigationDialog navigationDialog;
+    private final com.autovoice.server.contracts.TravelGuideProvider travelGuide;
     /** Active chat domains, ordered by admission sequence for deterministic bounded eviction. */
     private final ConcurrentHashMap<String, Long> chatSessions = new ConcurrentHashMap<>();
     private final AtomicLong chatSequence = new AtomicLong();
@@ -77,11 +78,21 @@ public final class HybridBusinessChatSpeechProvider
                                             OnlineSpeechProvider chatSpeech,
                                             NavigationDialog navigationDialog,
                                             QwenOmniRealtimeChatProvider realtimeChat) {
+        this(asr, businessLlm, chatSpeech, navigationDialog, realtimeChat,
+                com.autovoice.server.contracts.TravelGuideProvider.NONE);
+    }
+
+    public HybridBusinessChatSpeechProvider(AsrProvider asr, LlmProvider businessLlm,
+                                            OnlineSpeechProvider chatSpeech,
+                                            NavigationDialog navigationDialog,
+                                            QwenOmniRealtimeChatProvider realtimeChat,
+                                            com.autovoice.server.contracts.TravelGuideProvider travelGuide) {
         this.asr = asr;
         this.businessLlm = businessLlm;
         this.chatSpeech = chatSpeech;
         this.navigationDialog = navigationDialog;
         this.realtimeChat = realtimeChat;
+        this.travelGuide = travelGuide;
     }
 
     @Override
@@ -136,7 +147,7 @@ public final class HybridBusinessChatSpeechProvider
                 asrSink.onTurnEstablished();
                 asrSink.onResult(text, true);
                 CompletableFuture<OnlineSpeechResult> routed = route(
-                        context, utteranceId, text, text);
+                        context, utteranceId, text, text, audioSink);
                 stage.set(routed);
                 routed.whenComplete((result, error) -> {
                     if (error != null) out.completeExceptionally(error);
@@ -172,7 +183,7 @@ public final class HybridBusinessChatSpeechProvider
                         return CompletableFuture.failedFuture(new IllegalStateException("ASR returned blank text"));
                     }
                     return track(context, utteranceId, route(
-                            context, utteranceId, text.trim(), text.trim()));
+                            context, utteranceId, text.trim(), text.trim(), audioSink));
                 });
             }
             @Override public void cancel() { session.cancel(); }
@@ -209,12 +220,21 @@ public final class HybridBusinessChatSpeechProvider
         if (isChatting(context)) {
             return CompletableFuture.failedFuture(new IllegalStateException("realtime chat domain is active"));
         }
-        return track(context, utteranceId, route(context, utteranceId, text, ""));
+        return processText(text, context, utteranceId, OnlineAudioSink.NOOP);
+    }
+
+    @Override
+    public CompletableFuture<OnlineSpeechResult> processText(
+            String text, SessionContext context, String utteranceId, OnlineAudioSink sink) {
+        if (closed.get()) return CompletableFuture.failedFuture(new IllegalStateException("hybrid provider is closed"));
+        if (text == null || text.isBlank()) return CompletableFuture.failedFuture(new IllegalArgumentException("text input is blank"));
+        if (isChatting(context)) return CompletableFuture.failedFuture(new IllegalStateException("realtime chat domain is active"));
+        return track(context, utteranceId, route(context, utteranceId, text, "", sink));
     }
 
     private CompletableFuture<OnlineSpeechResult> route(SessionContext context,
                                                          String utteranceId, String transcript,
-                                                         String asrText) {
+                                                         String asrText, OnlineAudioSink sink) {
         String key = context == null || context.sessionId() == null ? "" : context.sessionId();
         String normalized = normalize(transcript);
         var dialogueControl = DialogueControlNlu.understand(transcript);
@@ -243,7 +263,8 @@ public final class HybridBusinessChatSpeechProvider
         };
         source.whenComplete((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
-            else out.complete(new OnlineSpeechResult(reply, asrText));
+            else out.complete(new OnlineSpeechResult(
+                    travelGuide.prepare(reply, transcript, context, utteranceId, sink), asrText));
         });
         return out;
     }
@@ -366,9 +387,18 @@ public final class HybridBusinessChatSpeechProvider
     @Override public long minimumTurnTimeoutMs() { return chatSpeech.minimumTurnTimeoutMs(); }
 
     @Override public void cancel(String utteranceId) {
+        cancel(null, utteranceId);
+    }
+
+    @Override public void cancel(SessionContext context, String utteranceId) {
         if (utteranceId == null) return;
         active.cancelTurn(utteranceId);
         chatSpeech.cancel(utteranceId);
+        travelGuide.cancel(context, utteranceId);
+    }
+
+    @Override public void admitTravel(SessionContext context, String utteranceId) {
+        travelGuide.admit(context, utteranceId);
     }
 
     /** Application-owned router closes its private ASR workers and the composed Qwen HTTP provider. */

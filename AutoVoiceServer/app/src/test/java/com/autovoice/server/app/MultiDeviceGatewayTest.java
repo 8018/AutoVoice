@@ -184,8 +184,10 @@ class MultiDeviceGatewayTest {
                 .collect(Collectors.toSet());
         assertTrue(asrLifecycle.containsAll(Set.of("fallback", "first_result", "final_result")),
                 "ASR 模式、首字和终字生命周期应汇合, 实际: " + asrLifecycle);
-        // 6 端侧 + fallback/first/final + 兼容 cloud_asr 摘要 + received/won = 12。
-        assertEquals(12, events.size(), "汇合事件数应为 12, 实际 events: " + events);
+        // pending depends on whether offline miss is observed before the fast mock LLM reply.
+        // The other 12 events are deterministic; either ordering is valid.
+        int expected = 12 + (stages.contains("cloud_arbiter_pending") ? 1 : 0);
+        assertEquals(expected, events.size(), "汇合事件数应为 " + expected + ", 实际 events: " + events);
     }
 
     /** 一条设备连接的封装：hello → ready → speak（audio_start/PCM/audio_end）→ awaitReply。 */

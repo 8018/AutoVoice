@@ -380,6 +380,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "audio_end" -> onAudioEnd(session, st);
             case "text_request" -> onTextRequest(session, st, castPayload(msg));
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
+            case "travel_start" -> onTravelStart(st, castPayload(msg));
             case "tts_request" -> ttsEndpoint.request(session, st.ctx, st.downlinkBudget, castPayload(msg));
             case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
@@ -415,7 +416,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** Both transport teardown and bean destruction own the same upstream resources. */
     private void releaseConnection(ConnectionState st) {
         st.outputPermits.values().forEach(
-                permit -> permit.revoke(TurnOutputPermit.RevocationReason.CONNECTION_CLOSED));
+                permit -> {
+                    permit.revoke(TurnOutputPermit.RevocationReason.CONNECTION_CLOSED);
+                    online.cancel(st.ctx, permit.utteranceId());
+                });
+        st.travelReady.clear();
         OnlineSpeechStream stream = st.onlineStream;
         st.onlineStream = null;
         try {
@@ -554,6 +559,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
         st.activePermit = new TurnOutputPermit(st.utteranceId, st.segmentId);
         st.outputPermits.putIfAbsent(st.utteranceId, st.activePermit);
+        st.turnOrder.putIfAbsent(st.utteranceId, st.nextTurnOrder.incrementAndGet());
         st.activeAsrTrace = new AsrTurnTrace(recorder, st.utteranceId, online.id());
         // Snapshot before opening ASR: a modern client must prove that the displayed selection
         // belongs to the exact active task. This prevents reconnect from reviving an old server
@@ -678,6 +684,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                     "utteranceId is already active", request.segmentId(), request.requestId());
             return;
         }
+        st.turnOrder.putIfAbsent(request.utteranceId(), st.nextTurnOrder.incrementAndGet());
         SegmentWork work = new SegmentWork(new byte[0], st.ctx, request.utteranceId(),
                 request.segmentId(), null, permit, null, request);
         ConnectionTurnCoordinator.Offer offer = st.turns.offer(work);
@@ -763,9 +770,20 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (utteranceId == null || utteranceId.isBlank() || segmentId == null || segmentId.isBlank()) return;
         boolean activeCandidate = segmentId.equals(st.segmentId) && utteranceId.equals(st.utteranceId);
         if (!activeCandidate && !st.turns.ownsSegment(segmentId)) return;
+        // A completed reply may still have an active travel stream. Revoke it only after this
+        // candidate has valid ASR/text admission, never on VAD/audio_start alone.
+        long candidateOrder = st.turnOrder.getOrDefault(utteranceId, 0L);
+        st.outputPermits.forEach((oldId, permit) -> {
+            if (st.turnOrder.getOrDefault(oldId, Long.MAX_VALUE) < candidateOrder
+                    && permit.revoke(TurnOutputPermit.RevocationReason.SUPERSEDED)) {
+                st.travelReady.remove(oldId);
+                online.cancel(st.ctx, oldId);
+            }
+        });
         SegmentWork processing = st.turns.processing();
         if (processing == null || utteranceId.equals(processing.utteranceId())) return;
         processing.outputPermit().revoke(TurnOutputPermit.RevocationReason.SUPERSEDED);
+        online.cancel(processing.ctx(), processing.utteranceId());
         discardDecisions(st, processing.utteranceId());
     }
 
@@ -775,10 +793,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
         String segmentId = String.valueOf(payload.get("segmentId"));
+        st.outputPermits.forEach((oldId, permit) -> {
+            if (segmentId.equals(permit.segmentId()) && permit.revoke(TurnOutputPermit.RevocationReason.CANCELLED)) {
+                st.travelReady.remove(oldId);
+                online.cancel(st.ctx, oldId);
+            }
+        });
         SegmentWork processing = st.turns.processing();
         if (processing != null && segmentId.equals(processing.segmentId())) {
             // 仅撤销输出权限并唤醒连接 worker；provider 与仲裁候选继续自然完成。
             processing.outputPermit().revoke(TurnOutputPermit.RevocationReason.CANCELLED);
+            online.cancel(processing.ctx(), processing.utteranceId());
             discardDecisions(st, processing.utteranceId());
         } else if (st.turns.ownsSegment(segmentId)) {
             SegmentWork queued = st.turns.removeQueued(segmentId);
@@ -811,6 +836,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             }
             st.audioActive = false;
         }
+    }
+
+    private void onTravelStart(ConnectionState st, Map<String, Object> payload) {
+        String utteranceId = stringValue(payload.get("utteranceId"));
+        String segmentId = stringValue(payload.get("segmentId"));
+        if (st.ctx == null || utteranceId == null || segmentId == null) return;
+        TurnOutputPermit permit = st.outputPermits.get(utteranceId);
+        if (permit == null || !permit.allowsOutput() || !segmentId.equals(permit.segmentId())
+                || !segmentId.equals(st.travelReady.get(utteranceId))) return;
+        online.admitTravel(st.ctx, utteranceId);
     }
 
     /**
@@ -855,7 +890,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             try {
                 if (ownedWork.textRequest() != null) {
                     result = textEndpoint.process(ownedWork.textRequest(), ctx,
-                            ownedWork.outputPermit().revoked());
+                            ownedWork.outputPermit().revoked(),
+                            streamSink(session, st, segmentId, utteranceId, ownedWork.outputPermit()));
                 } else {
                     CompletableFuture<OnlineSpeechResult> onlineCandidate = null;
                     if (inputStream != null) {
@@ -873,7 +909,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                         }
                     }
                     result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
-                            streamSink(session, st, segmentId, ownedWork.outputPermit()),
+                            streamSink(session, st, segmentId, utteranceId, ownedWork.outputPermit()),
                             asrSink(session, st, utteranceId, segmentId,
                                     ownedWork.outputPermit(), ownedWork.asrTrace()),
                             onlineCandidate, ownedWork.outputPermit().revoked());
@@ -907,6 +943,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && ownedWork.outputPermit().allowsOutput()) {
                 commitNavigationOnAdmit(ctx, result);
+                if (result.intent() != null && "travel".equals(result.intent().domain())
+                        && "plan_guide".equals(result.intent().intent())) {
+                    st.travelReady.put(utteranceId, segmentId);
+                }
                 downlink.sendReply(session, result, segmentId,
                         ownedWork.textRequest() == null ? null : ownedWork.textRequest().requestId());
             }
@@ -940,15 +980,34 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private void schedulePermitCleanup(ConnectionState st, TurnOutputPermit permit) {
         if (permit == null || permit.utteranceId() == null) return;
-        long delayMs = safetyTimeoutMs + offlineGraceMs + 1000;
-        scheduler.schedule(() -> st.outputPermits.remove(permit.utteranceId(), permit),
-                delayMs, TimeUnit.MILLISECONDS);
+        long delayMs = Math.max(120_000, safetyTimeoutMs + offlineGraceMs + 1000);
+        scheduler.schedule(() -> {
+            if (st.outputPermits.remove(permit.utteranceId(), permit)) {
+                st.turnOrder.remove(permit.utteranceId());
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
     private OnlineAudioSink streamSink(WebSocketSession session, ConnectionState st, String segmentId,
+                                       String utteranceId,
                                        TurnOutputPermit outputPermit) {
         return new OnlineAudioSink() {
             private final long startedAtNanos = System.nanoTime();
+            private final TravelDocumentInterceptor documentInterceptor = new TravelDocumentInterceptor(
+                    () -> allowed() && segmentId.equals(st.travelReady.get(utteranceId)),
+                    (operation, text) -> {
+                        if (!allowed() || !segmentId.equals(st.travelReady.get(utteranceId))) return;
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("segmentId", segmentId);
+                        payload.put("utteranceId", utteranceId);
+                        payload.put("format", "text/markdown");
+                        payload.put("operation", operation);
+                        payload.put("text", text);
+                        downlink.send(session, "document_stream", payload);
+                        if ("complete".equals(operation) || "error".equals(operation)) {
+                            st.travelReady.remove(utteranceId, segmentId);
+                        }
+                    });
 
             private boolean allowed() {
                 return outputPermit.allowsOutput();
@@ -979,6 +1038,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("text", text);
                 payload.put("isFinal", isFinal);
                 downlink.send(session, "reply_partial", payload);
+            }
+
+            @Override public void onDocument(String operation, String text) {
+                documentInterceptor.accept(operation, text);
             }
 
             @Override
@@ -1028,13 +1091,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
             @Override public void onTurnEstablished() {
                 if (!active() || !turnEstablishedSent.compareAndSet(false, true)) return;
-                commitCandidate(st, utteranceId, segmentId);
                 downlink.send(session, "asr_turn_started", Map.of("segmentId", segmentId));
             }
 
             @Override public void onResult(String text, boolean isFinal) {
                 asrTrace.onResult(text, isFinal);
                 if (!active() || text == null || text.isBlank()) return;
+                if (isFinal) commitCandidate(st, utteranceId, segmentId);
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("segmentId", segmentId);
                 payload.put("text", text);
@@ -1120,6 +1183,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         });
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final ConcurrentMap<String, TurnOutputPermit> outputPermits = new ConcurrentHashMap<>();
+        final java.util.concurrent.atomic.AtomicLong nextTurnOrder = new java.util.concurrent.atomic.AtomicLong();
+        final ConcurrentMap<String, Long> turnOrder = new ConcurrentHashMap<>();
+        final ConcurrentMap<String, String> travelReady = new ConcurrentHashMap<>();
         final DecisionSink sink = entry -> {
             TurnOutputPermit permit = outputPermits.get(entry.utteranceId());
             if (permit == null || permit.allowsOutput()) pendingDecisions.add(entry);

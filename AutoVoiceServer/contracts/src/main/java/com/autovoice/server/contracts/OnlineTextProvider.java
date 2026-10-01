@@ -10,4 +10,9 @@ import java.util.concurrent.CompletableFuture;
 public interface OnlineTextProvider {
     CompletableFuture<OnlineSpeechResult> processText(
             String text, SessionContext context, String utteranceId);
+
+    default CompletableFuture<OnlineSpeechResult> processText(
+            String text, SessionContext context, String utteranceId, OnlineAudioSink sink) {
+        return processText(text, context, utteranceId);
+    }
 }
