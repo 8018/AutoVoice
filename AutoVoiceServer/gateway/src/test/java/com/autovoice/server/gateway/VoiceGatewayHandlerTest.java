@@ -6,6 +6,7 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineSpeechStream;
 import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
@@ -66,6 +67,69 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 测试环境用极短仲裁参数（safety 1s），fake providers 同步就绪。
  */
 class VoiceGatewayHandlerTest {
+
+    @Test
+    void streamingSpeechTravelDocumentReachesClientAfterAdmission() throws Exception {
+        AtomicReference<OnlineAudioSink> documentSink = new AtomicReference<>();
+        AtomicInteger admitted = new AtomicInteger();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public String id() { return "streaming-travel-test"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("streaming request must not use batch processing");
+            }
+            @Override public OnlineSpeechStream openStream(SessionContext ctx, String uid,
+                                                            OnlineAudioSink sink,
+                                                            com.autovoice.server.contracts.OnlineAsrSink asrSink) {
+                documentSink.set(sink);
+                return new OnlineSpeechStream() {
+                    @Override public void append(byte[] pcm) {}
+                    @Override public CompletableFuture<OnlineSpeechResult> finish() {
+                        Intent intent = Intent.of("1.0", "travel", "plan_guide", Map.of(), 1,
+                                "llm.plan_travel", null);
+                        return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                                Reply.ofAction(intent, "正在生成北京攻略"), "北京一日游攻略"));
+                    }
+                    @Override public void cancel() {}
+                };
+            }
+            @Override public void admitTravel(SessionContext ctx, String uid) {
+                admitted.incrementAndGet();
+                documentSink.get().onDocument("start", "");
+                documentSink.get().onDocument("delta", "# 北京攻略");
+                documentSink.get().onDocument("complete", "");
+            }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            h.handleMessage(s, new TextMessage(audioStart(sid, "seg-stream-travel")));
+            h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+            h.handleMessage(s, new TextMessage(audioEnd(sid)));
+            JsonNode marker = awaitReplyFor(s, "seg-stream-travel");
+            assertEquals("travel", marker.at("/payload/intent/domain").asText());
+            assertNull(findTextFrame(s, "document_stream"));
+            h.handleMessage(s, new TextMessage("{\"type\":\"travel_start\",\"payload\":{"
+                    + "\"segmentId\":\"seg-stream-travel\",\"utteranceId\":\"u-1\"}}"));
+            assertEquals(1, admitted.get());
+            List<JsonNode> docs;
+            long deadline = System.currentTimeMillis() + 5_000;
+            do {
+                synchronized (s.sent) {
+                    docs = s.sent.stream().filter(TextMessage.class::isInstance)
+                            .map(VoiceGatewayHandlerTest::parse)
+                            .filter(frame -> "document_stream".equals(frame.path("type").asText())).toList();
+                }
+                if (docs.size() >= 3) break;
+                Thread.sleep(20);
+            } while (System.currentTimeMillis() < deadline);
+            assertEquals(List.of("start", "delta", "complete"), docs.stream()
+                    .map(frame -> frame.at("/payload/operation").asText()).toList());
+            assertEquals("# 北京攻略", docs.get(1).at("/payload/text").asText());
+        } finally { h.close(); }
+    }
 
     @Test
     void travelMarkerPrecedesMarkdownAndRequiresClientBusinessAdmission() throws Exception {

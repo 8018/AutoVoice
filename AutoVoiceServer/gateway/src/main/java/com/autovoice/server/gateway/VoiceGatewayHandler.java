@@ -609,9 +609,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         if (st.onlineStream != null) st.onlineStream.cancel();
         try {
-            // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
+            // The streaming provider may prepare a travel task before arbitration finishes.
+            // Keep its document outlet, but never release answer audio/text before the gate.
+            OnlineAudioSink documentSink = streamSink(st.session, st, st.segmentId,
+                    st.utteranceId, st.activePermit);
             st.onlineStream = online.openStream(st.ctx, st.utteranceId,
-                    OnlineAudioSink.NOOP,
+                    new OnlineAudioSink() {
+                        @Override public void onDocument(String operation, String text) {
+                            documentSink.onDocument(operation, text);
+                        }
+                    },
                     asrSink(st.session, st, st.utteranceId, st.segmentId,
                             st.activePermit, st.activeAsrTrace));
             if (st.onlineStream == null) {
