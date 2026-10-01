@@ -7,6 +7,7 @@ public final class VehicleAgentTools {
     public static final String CAR_CONTROL = "car_control";
     public static final String NAVIGATE = "navigate";
     public static final String EXIT_DIALOGUE = "exit_dialogue";
+    public static final String PLAN_TRAVEL = "plan_travel";
 
     private static final String CAR_SCHEMA = """
             {"type":"object","properties":{
@@ -38,6 +39,10 @@ public final class VehicleAgentTools {
                 new FunctionTool(EXIT_DIALOGUE,
                         "仅当用户明确要求退出或结束当前语音对话时调用；不要用于退出导航或其他业务",
                         "{\"type\":\"object\",\"properties\":{}}",
+                        ToolExecutionTraits.APPROVED_COMMIT),
+                new FunctionTool(PLAN_TRAVEL,
+                        "用户询问城市好玩景点、旅游攻略或一日/两日游行程时调用；只识别业务，不生成攻略。不要用于导航到某地点",
+                        "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"days\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":3}},\"required\":[\"city\",\"days\"]}",
                         ToolExecutionTraits.APPROVED_COMMIT));
     }
 }

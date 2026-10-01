@@ -7,6 +7,7 @@ import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.ToolProvider;
+import com.autovoice.server.contracts.TravelGuideProvider;
 import com.autovoice.server.skillmcp.ChatSystemPromptStore;
 import com.autovoice.server.skillmcp.McpSkillRegistry;
 import com.autovoice.server.skillmcp.McpToolExecutor;
@@ -31,7 +32,8 @@ public class OmniBackendConfig {
                                                      McpSkillRegistry registry,
                                                      ChatSystemPromptStore chatPromptStore,
                                                      NavigationDialog navigationDialog,
-                                                     AgentExecutionRuntime agentRuntime) {
+                                                     AgentExecutionRuntime agentRuntime,
+                                                     TravelGuideProvider travelGuide) {
         ToolProvider chatTools = () -> {
             List<FunctionTool> tools = new ArrayList<>();
             tools.add(QwenOmniSpeechProvider.exitChatTool());
@@ -58,6 +60,6 @@ public class OmniBackendConfig {
                             ? QwenOmniRealtimeChatProvider.DEFAULT_SYSTEM_PROMPT : configured;
                 });
         return new HybridBusinessChatSpeechProvider(
-                asr, businessLlm, qwen, navigationDialog, realtime);
+                asr, businessLlm, qwen, navigationDialog, realtime, travelGuide);
     }
 }

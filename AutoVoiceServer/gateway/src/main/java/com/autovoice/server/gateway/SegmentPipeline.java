@@ -218,7 +218,7 @@ public final class SegmentPipeline {
             return audioGate.streamed() && "audio".equals(decision.reply().kind())
                     ? result.asStreamed() : result;
         } catch (Exception e) {
-            cancelOnline(onlineF, utteranceId);
+            cancelOnline(onlineF, ctx, utteranceId);
             audioGate.abort(e);
             LOG.error("arbitration failed (utt={}) → arbitration_failed_fallback", utteranceId, e);
             SegmentResult result = fallback(ctx, utteranceId, REASON_ARBITRATION_FAILED);
@@ -226,10 +226,11 @@ public final class SegmentPipeline {
         }
     }
 
-    private void cancelOnline(CompletableFuture<OnlineSpeechResult> future, String utteranceId) {
+    private void cancelOnline(CompletableFuture<OnlineSpeechResult> future,
+                              SessionContext context, String utteranceId) {
         // Future cancellation stops the current worker; provider cancellation additionally aborts
         // an in-flight HTTP call (or a tool round) so a timed-out turn cannot occupy the fixed pool.
-        online.cancel(utteranceId);
+        online.cancel(context, utteranceId);
         future.cancel(true);
     }
 
@@ -441,6 +442,10 @@ public final class SegmentPipeline {
         @Override
         public void onReplyText(String text, boolean isFinal) {
             submit(sink -> sink.onReplyText(text, isFinal));
+        }
+
+        @Override public void onDocument(String operation, String text) {
+            submit(sink -> sink.onDocument(operation, text));
         }
 
         @Override

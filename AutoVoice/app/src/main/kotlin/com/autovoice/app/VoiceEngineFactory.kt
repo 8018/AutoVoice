@@ -1,9 +1,18 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.NavigationExecutor
+import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
+import com.autovoice.adapteriflytek.RuleNluProvider
+import com.autovoice.voiceengine.local.LocalAsrEngine
+import com.autovoice.voiceengine.local.LocalNluEngine
+import com.autovoice.voiceengine.local.LocalSpeechRoute
+import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.AsrModule
+import com.autovoice.voiceengine.NluModule
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
@@ -11,8 +20,8 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.arbiter.OnDeviceArbiterEvent
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.dialog.AdmissionEvidence
-import com.autovoice.voicecore.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.AdmissionEvidence
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.validateForRuntime
 import com.autovoice.tts.TtsEventSink
@@ -64,6 +73,9 @@ internal object VoiceEngineFactory {
         /** S2S 闲聊锁域进入/退出。 */
         onConversationMode: (Boolean) -> Unit = {},
         onDialogueState: (DialogueSnapshot) -> Unit = {},
+        onTextInputError: (String) -> Unit = {},
+        onTravelGuideStarted: (String) -> Unit = {},
+        onTravelDocument: (String, String, String) -> Unit = { _, _, _ -> },
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
@@ -110,6 +122,9 @@ internal object VoiceEngineFactory {
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
         var engineRef: VoiceEngine? = null
+        val recognitionGate = RecognitionGate()
+        val asrModule = AsrModule()
+        val nluModule = NluModule()
         val cloudRunner = GatewayCloudRunner(
             cfg.cloud, telemetrySink, scope, pendingSignals,
             locationProvider = { vehicleContext.snapshot().position?.let { it.latitude to it.longitude } },
@@ -128,10 +143,16 @@ internal object VoiceEngineFactory {
                     } else null
                 }
             },
+            recognitionGate = recognitionGate,
+            asrModule = asrModule,
+            nluModule = nluModule,
         )
-        cloudRunner.onAsrResult = { text, _, turnId ->
+        cloudRunner.onAsrResult = { text, final, turnId ->
             if (text.isNotBlank()) {
                 engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                    cloudRunner.retireTravelIfDifferent(turnId)
+                }
             }
         }
         cloudRunner.onAsrTurnEstablished = { turnId ->
@@ -140,6 +161,7 @@ internal object VoiceEngineFactory {
         cloudRunner.onReplyText = { text, _ ->
             if (text.isNotBlank()) onReplyText(text)
         }
+        cloudRunner.onTravelDocument = onTravelDocument
         cloudRunner.onConnectionEvent = { stage, level, payload ->
             telemetry.record(stage, level, payload)
         }
@@ -182,6 +204,10 @@ internal object VoiceEngineFactory {
             onVehicleApplied = onVehicleApplied,
             onConversationMode = onConversationMode,
             onExitDialogue = { engineRef?.exitCurrentDialogue() },
+            onTravelGuideStarted = { turnId ->
+                onTravelGuideStarted(turnId)
+                cloudRunner.startTravelGuide(turnId)
+            },
         )
         val onDeviceArbiter = OnDeviceRaceArbiter(
             cloudWaitMs = cfg.cloud.waitMs,
@@ -221,19 +247,27 @@ internal object VoiceEngineFactory {
                 cfg,
                 context,
                 scope,
-                { turnId, text ->
+                { turnId, text, final ->
                     if (!text.isNullOrBlank()) {
                         engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                        if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                            cloudRunner.retireTravelIfDifferent(turnId)
+                        }
                     }
                 },
-                { turnId -> engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR) },
+                { turnId ->
+                    engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
+                },
                 offlineStageRef,
                 telemetry,
+                asrModule,
+                nluModule,
             ),
             cloud = cloudRunner,
             tts = ttsOutput,
             business = business,
             scope = scope,
+            recognitionGate = recognitionGate,
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {
@@ -244,6 +278,7 @@ internal object VoiceEngineFactory {
             onCloudPending = onCloudPending,
             onCloudWon = cloudRunner::releaseReplyText,
             onDialogueState = onDialogueState,
+            onTextInputError = onTextInputError,
             streamingCloud = cloudRunner,
         )
         engineRef = engine
@@ -306,12 +341,14 @@ internal object VoiceEngineFactory {
         cfg: DemoConfig,
         context: Context,
         scope: CoroutineScope,
-        onLocalRecognized: (String, String?) -> Unit,
+        onLocalRecognized: (String, String?, Boolean) -> Unit,
         onLocalTurnEstablished: (String) -> Unit,
         /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
         offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
         /** T7 插桩：local_asr 事件（识别文本/意图/耗时；enabled=false 时 no-op）。 */
         telemetry: TelemetryClient,
+        asrModule: AsrModule,
+        nluModule: NluModule,
     ): LocalChainRunner {
         val offlineStage = if (cfg.local.asr == "iflytek.offline") {
             // 凭据来自 local.properties（BuildConfig 注入，不入库）
@@ -336,17 +373,52 @@ internal object VoiceEngineFactory {
         }
         // 2C 文本只随 NLU 候选返回；LocalAsrEngine 不伪造独立 ASR 输出。
         val nlu = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(cfg.local.asr) { segment ->
-                offlineStage?.recognize(segment)
-            }
+            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(
+                recognizeCommand = { segment ->
+                    recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
+                },
+                understandCommand = RuleNluProvider::understand,
+                onRecognizerFailure = { error ->
+                    Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", error)
+                },
+            )
             else -> error("unsupported local.nlu '${cfg.local.nlu}'")
         }
-        return LocalSpeechChain(
-            asr = LocalAsrEngine(),
-            nlu = nlu,
-            onRecognized = onLocalRecognized,
+        asrModule.bindLocal(LocalAsrEngine())
+        nluModule.bindLocal(nlu)
+        return LocalSpeechRoute(
+            asr = asrModule,
+            nlu = nluModule,
+            onRecognized = { turnId, result ->
+                onLocalRecognized(turnId, result.text, result.isFinal)
+                telemetry.record(
+                    TelemetryStages.LOCAL_ASR,
+                    "info",
+                    mapOf("text" to result.text, "isFinal" to result.isFinal),
+                )
+            },
             onTurnEstablished = onLocalTurnEstablished,
-            telemetry = telemetry,
+            onResult = { _, result, durationMs ->
+                val intent = result.intent
+                Log.i(FACTORY_TAG, "本地 NLU 意图: ${intent.domain}/${intent.intent} (${intent.slots})")
+                telemetry.record(
+                    TelemetryStages.LOCAL_NLU,
+                    "info",
+                    mapOf(
+                        "text" to (result.recognizedText ?: ""),
+                        "intent" to "${intent.domain}/${intent.intent}",
+                        "durationMs" to durationMs,
+                    ),
+                )
+            },
+            onFailure = { _, error, durationMs ->
+                Log.w(FACTORY_TAG, "本地链路异常，降级 unknown 意图", error)
+                telemetry.record(
+                    TelemetryStages.LOCAL_NLU,
+                    "warn",
+                    mapOf("intent" to "unknown/vehicle", "durationMs" to durationMs),
+                )
+            },
         )
     }
 

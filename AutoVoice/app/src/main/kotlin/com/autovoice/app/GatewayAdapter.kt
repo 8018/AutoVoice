@@ -1,4 +1,11 @@
 package com.autovoice.app
+import com.autovoice.voiceengine.cloud.CloudAsrEngine
+import com.autovoice.voiceengine.cloud.CloudNluEngine
+import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.AsrModule
+import com.autovoice.voiceengine.NluModule
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.util.Log
 import com.autovoice.app.telemetry.TelemetryStages
@@ -8,15 +15,14 @@ import com.autovoice.gatewayclient.GatewayClientFactory
 import com.autovoice.gatewayclient.GatewayConnectionPolicy
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.gatewayclient.GatewayPayloadParser
+import com.autovoice.messaging.MessageListener
+import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
-import com.autovoice.voicecore.AsrEngine
 import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.Reply
-import com.autovoice.voicecore.NluEngine
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.SpeechRouteModules
 import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicecore.session.CloudRunner
@@ -45,7 +51,10 @@ internal class GatewayCloudRunner(
     private val pendingSignals: SendChannel<Unit> = Channel(Channel.BUFFERED),
     private val locationProvider: () -> Pair<Double, Double>? = { null },
     private val navigationContextProvider: () -> NavigationTaskContextRef? = { null },
-) : CloudRunner, TtsRequester, RealtimeChatRunner, StreamingCloudRunner, SpeechRouteModules<Reply> {
+    private val recognitionGate: RecognitionGate,
+    private val asrModule: AsrModule,
+    private val nluModule: NluModule,
+) : CloudRunner, CloudTextNluEngine, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
 
     private val client = GatewayClientFactory.create(
         url = cfg.gatewayUrl,
@@ -81,8 +90,28 @@ internal class GatewayCloudRunner(
         { segment, turnId -> businessSpeech.run(segment, turnId) },
     )
     private val speechRegistrations = listOf(cloudAsr.register(), cloudNlu.register())
-    override val asr: AsrEngine get() = cloudAsr
-    override val nlu: NluEngine<Reply> get() = cloudNlu
+    private val travelInterceptor = TravelDocumentInterceptor()
+    private val travelRegistration = bridge.register(setOf("document_stream"), object : MessageListener {
+        override fun onMessage(message: GatewayMessage) {
+            val payload = message.payload
+            val turnId = payload.get("utteranceId")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+            val segmentId = payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+            if (segmentId != bridge.segmentForTurn(turnId)) return
+            if (payload.get("format")?.asString != "text/markdown") return
+            val operation = payload.get("operation")?.asString ?: return
+            val text = payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+            if (!travelInterceptor.accept(turnId, segmentId, operation, text)) return
+            onTravelDocument(turnId, operation, text)
+        }
+    })
+    init {
+        asrModule.bindCloud(cloudAsr, cloudAsr::release, cloudAsr::close)
+        nluModule.bindCloud(cloudNlu)
+        nluModule.bindCloudText(CloudTextNluEngine { turnId, text ->
+            retireTravelIfDifferent(turnId)
+            textChannel.run(turnId, text)
+        })
+    }
     private val realtimeChatChannel: GatewayRealtimeChatChannel by lazy {
         GatewayRealtimeChatChannel(client, bridge, protocol, scope, ::ensureReady, { sessionId }) {
                 token, reply -> onRealtimeReply(token, reply)
@@ -99,7 +128,13 @@ internal class GatewayCloudRunner(
             pendingReplyText.remove(turnId)
             releasedReplyTurns.remove(turnId)
         },
+        recognitionGate,
     )
+    private val textChannel: GatewayBusinessTextChannel by lazy {
+        GatewayBusinessTextChannel(client, bridge, protocol, ::ensureReady, { sessionId }) { error ->
+            onSpeechTransportFailure(error, false)
+        }
+    }
 
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) = navigationChannel.publish(context)
@@ -146,6 +181,20 @@ internal class GatewayCloudRunner(
     /** 模型回答文本累计快照，用于音频播放期间上屏。 */
     @Volatile
     var onReplyText: (String, Boolean) -> Unit = { _, _ -> }
+
+    @Volatile var onTravelDocument: (String, String, String) -> Unit = { _, _, _ -> }
+    fun startTravelGuide(turnId: String) {
+        val segmentId = bridge.segmentForTurn(turnId) ?: return
+        travelInterceptor.admit(turnId, segmentId)
+        protocol.travelStart(segmentId, turnId)
+    }
+
+    /** Called after DM admits a different recognized turn, including a local-only command. */
+    fun retireTravelIfDifferent(newTurnId: String) {
+        val (previous, segmentId) = travelInterceptor.retireIfDifferent(newTurnId) ?: return
+        runCatching { protocol.cancelTurn(segmentId, "new_admitted_turn") }
+        onTravelDocument(previous, "interrupted", "")
+    }
 
     @Volatile
     var onRealtimeReply: (RealtimePlaybackToken, StreamingAudioReply) -> Unit = { _, _ -> }
@@ -214,9 +263,11 @@ internal class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        travelInterceptor.clear()
         connectionObserver.cancel()
         speechRegistrations.forEach { it.unregister() }
-        cloudAsr.close()
+        travelRegistration.unregister()
+        asrModule.closeCloud()
         navigationChannel.close()
         businessSpeech.close()
         finishRealtimeChat()
@@ -250,7 +301,7 @@ internal class GatewayCloudRunner(
 
     override fun beginStreamingTurn(utteranceId: String) {
         if (cfg.enabled) {
-            cloudAsr.recognize(utteranceId, byteArrayOf(), asrSink(utteranceId))
+            asrModule.recognizeCloud(utteranceId, byteArrayOf(), asrSink(utteranceId))
             businessSpeech.beginStreamingTurn(utteranceId)
         }
     }
@@ -259,8 +310,13 @@ internal class GatewayCloudRunner(
     override fun finishStreamingTurn(utteranceId: String) = businessSpeech.finishStreamingTurn(utteranceId)
     override fun cancelStreamingTurn(utteranceId: String) {
         businessSpeech.cancelStreamingTurn(utteranceId)
-        cloudAsr.release(utteranceId)
+        asrModule.releaseCloud(utteranceId)
     }
+    override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
+        if (!businessSpeech.isInputFinalized(utteranceId)) cancelStreamingTurn(utteranceId)
+    }
+    override suspend fun understand(turnId: String, text: String): Reply =
+        nluModule.understandCloudText(turnId, text)
     override fun commitStreamingTurn(utteranceId: String) = businessSpeech.commitStreamingTurn(utteranceId)
 
     private fun onSpeechTransportFailure(error: Throwable, streaming: Boolean) {
@@ -286,11 +342,11 @@ internal class GatewayCloudRunner(
     override suspend fun run(segment: ByteArray): Reply = run(segment, utteranceIdProvider())
 
     override suspend fun run(segment: ByteArray, utteranceId: String): Reply {
-        cloudAsr.recognize(utteranceId, segment, asrSink(utteranceId))
+        asrModule.recognizeCloud(utteranceId, segment, asrSink(utteranceId))
         return try {
-            cloudNlu.understand(utteranceId, segment, null)
+            nluModule.understandCloud(utteranceId, segment, null)
         } finally {
-            cloudAsr.release(utteranceId)
+            asrModule.releaseCloud(utteranceId)
         }
     }
 

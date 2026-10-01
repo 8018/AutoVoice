@@ -97,6 +97,13 @@ class GatewayClient(
     @Volatile
     private var serverResumeToken: String? = null
 
+    /** Negotiated capabilities belong to the current socket only, never to a resumed session. */
+    @Volatile
+    private var serverCapabilities: Set<String> = emptySet()
+
+    fun supportsCapability(capability: String): Boolean =
+        mutableConnectionState.value == GatewayConnectionState.READY && capability in serverCapabilities
+
     /** 当前存储的会话 ID（服务端签发）；null = 尚未握手或会话已被清除。 */
     fun currentSessionId(): String? = serverSessionId
 
@@ -158,6 +165,7 @@ class GatewayClient(
     /** 断开连接（幂等）：发送 1000 正常关闭帧；未连接时为 no-op。 */
     fun disconnect() {
         mutableConnectionState.value = GatewayConnectionState.CLOSING
+        serverCapabilities = emptySet()
         val ws = webSocket
         webSocket = null
         ws?.close(1000, "client disconnect")
@@ -165,6 +173,7 @@ class GatewayClient(
     }
 
     private suspend fun doConnect() {
+        serverCapabilities = emptySet()
         val ready = CompletableDeferred<GatewayMessage>()
         val ws = try {
             transport.open(url, GatewayListener(events, gson, ready, ::markDisconnected, ::clearSessionContext))
@@ -187,11 +196,15 @@ class GatewayClient(
                 ?.takeIf { it.isNotBlank() }?.let { serverSessionId = it }
             readyMsg.payload["resumeToken"]?.takeIf { it.isJsonPrimitive }?.asString
                 ?.takeIf { it.isNotBlank() }?.let { serverResumeToken = it }
+            serverCapabilities = readyMsg.payload.get("capabilities")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { value -> value.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString }
+                ?.toSet() ?: emptySet()
             if (webSocket !== ws) {
                 throw GatewayException("websocket disconnected before ready completed")
             }
             mutableConnectionState.value = GatewayConnectionState.READY
         } catch (e: Exception) {
+            serverCapabilities = emptySet()
             if (webSocket === ws) webSocket = null
             ws.cancel()
             throw e
@@ -202,6 +215,7 @@ class GatewayClient(
     private fun markDisconnected(socket: GatewaySocket): Boolean {
         if (webSocket !== socket) return false
         webSocket = null
+        serverCapabilities = emptySet()
         mutableConnectionState.value = GatewayConnectionState.DISCONNECTED
         return true
     }

@@ -26,6 +26,43 @@ class DeepSeekLlmLoopTest {
 
     static final ObjectMapper MAPPER = new ObjectMapper();
 
+    @Test
+    void navigationCannotBypassResolutionAndUsesDeviceCoordinates() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            for (String name : List.of("navigate", "resolve_navigation")) {
+                var body = MAPPER.createObjectNode();
+                var fn = body.putArray("choices").addObject().putObject("message")
+                        .putArray("tool_calls").addObject().put("id", name)
+                        .put("type", "function").putObject("function");
+                fn.put("name", name).put("arguments", name.equals("navigate")
+                        ? "{\"poiname\":\"北京站\",\"lat\":39.9,\"lon\":116.4}"
+                        : "{\"destinations\":[\"火车站\"],\"location\":\"116.4,39.9\"}");
+                server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                        .setBody(body.toString()));
+            }
+            List<String> executed = new ArrayList<>();
+            ToolProvider tools = () -> List.of(new FunctionTool("resolve_navigation", "导航", "{\"type\":\"object\"}",
+                        com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY),
+                        new com.autovoice.server.contracts.FunctionTool("navigate", "导航动作", "{\"type\":\"object\"}",
+                                com.autovoice.server.contracts.ToolExecutionTraits.APPROVED_COMMIT));
+            try (var provider = new DeepSeekLlmProvider(new OkHttpClient(), "test-key",
+                    server.url("/chat").toString(), NoopTelemetryRecorder.INSTANCE,
+                    tools, 5_000, (name, args) -> {
+                        executed.add(name);
+                        assertTrue(args.contains("104.06,30.65"));
+                        assertFalse(args.contains("116.4,39.9"));
+                        return "{\"destinations\":[{\"query\":\"火车站\",\"candidates\":[]}]}";
+                    }, null)) {
+                Reply result = provider.chat("导航到火车站", new SessionContext("s", "zh",
+                        java.util.Map.of("latitude", 30.65, "longitude", 104.06))).get(10, TimeUnit.SECONDS);
+                assertEquals(List.of("resolve_navigation"), executed);
+                assertEquals("text", result.kind());
+                assertNull(result.intent());
+                assertEquals(2, server.getRequestCount(), "empty candidates must terminate the model loop");
+            }
+        }
+    }
+
     /** 模拟 LLM：第 1 次请求 → 调 poi_search 工具；第 2 次 → 最终文本。记录收到的请求数与 body。 */
     private static MockWebServer twoRoundLlm(AtomicInteger calls, List<String> bodies) throws Exception {
         MockWebServer server = new MockWebServer();

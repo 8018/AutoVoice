@@ -4,26 +4,28 @@ import android.util.Log
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
+import com.autovoice.voiceengine.RecognitionGate
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voicebusiness.VoiceBusinessService
 import com.autovoice.tts.PlaybackStage
-import com.autovoice.tts.PlaybackInterruptionReason
 import com.autovoice.tts.TtsOutput
 import com.autovoice.tts.RealtimePlaybackToken
-import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
-import com.autovoice.voicecore.arbiter.RaceWinner
-import com.autovoice.voicecore.dialog.AdmissionEvidence
-import com.autovoice.voicecore.dialog.ConversationController
-import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.session.CandidateCoordinator
+import com.autovoice.voicebusiness.dialog.AdmissionEvidence
+import com.autovoice.voicebusiness.dialog.ConversationController
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voiceengine.request.CandidateCoordinator
+import com.autovoice.voiceengine.api.TextSubmission
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.LocalChainRunner
 import com.autovoice.voicecore.session.ResultListener
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -31,21 +33,11 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
- * 端侧全局装配点（Task 20）：双链路竞速引擎 + 播报/执行路由。
+ * 过渡期 App 组合适配器：装配 [CandidateCoordinator]，将仲裁结果交给
+ * [VoiceBusinessService] 负责 DM、业务执行和 TTS。这里仍持有采集与业务两侧依赖，
+ * 尚不是目标设计中不依赖业务/TTS 的 DefaultVoiceEngine。
  *
- * 持有装配好的 [CandidateCoordinator]（本地链 + 云端链 + [OnDeviceRaceArbiter]）以及
- * 通用 TTS、业务处理出口。对话状态只由 [ConversationController] 产生。
- * 播报统一走网络 TTS（2026-08-15：不用系统 TTS）。结果路由与播放生命周期
- * 分别由 [ResponseDispatcher] 和独立 `:tts` 模块管理：
- *  - [RaceWinner.Cloud]：AudioReply → 播放 + 附 intent 执行；TextReply → 播报；
- *    ActionReply → 执行 intent + 播报自带 speakText；
- *  - [RaceWinner.Local]：胜出 NLU 交业务处理模块，成功时播报其返回文本。
- *
- * 弱网调试 hook（仅 debug 构建暴露）：[weakNetwork] 为 true 时云端链启动前人为 delay 3000ms，
- * 云端赶不上 cloudWaitMs → 仲裁回落到本地（reason `cloud_timeout_use_local`）。
- *
- * 生产装配走 [VoiceEngineFactory.create]（真实本地链 + GatewayClient 云端链 + ConnectivityManager 网络检查）；
- * 构造器直接注入链/仲裁器/出口（JVM 测试用 fake）。
+ * 生产装配走 [VoiceEngineFactory.create]；测试可直接注入 fake 链和出口。
  */
 class VoiceEngine(
     cfg: DemoConfig,
@@ -64,31 +56,33 @@ class VoiceEngine(
     private val networkAvailable: () -> Boolean,
     local: LocalChainRunner,
     cloud: CloudRunner,
-    private val tts: TtsOutput,
-    /** 已通过状态机与仲裁的语义唯一业务出口；引擎不感知导航、车控等具体领域。 */
-    private val business: BusinessHandler,
+    tts: TtsOutput,
+    /** 仲裁后的领域处理出口由业务服务持有；适配器不感知导航、车控实现。 */
+    business: BusinessHandler,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val recognitionGate: RecognitionGate = RecognitionGate(),
     /** 本地 ASR 识别文本回调（Task 34：UI 显示识别结果，未检出时为 null）。 */
-    private val onLocalRecognized: (String?) -> Unit = {},
+    onLocalRecognized: (String?) -> Unit = {},
     /** 模型回答文本（流式 partial 的最终兜底）。 */
-    private val onReplyText: (String) -> Unit = {},
+    onReplyText: (String) -> Unit = {},
     private val debugBuild: Boolean = BuildConfig.DEBUG,
     /** 释放钩子（生产装配注册网关断开；Task 21 模式切换）。 */
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
-    private val thinkingTimeoutMs: Long = 60_000,
+    thinkingTimeoutMs: Long = 60_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
     /**
      * B5：云端 pending 占位回调（LLM 处理中，协议 §4.8）：收到 pending 帧 → true，
      * 最终语义到达 / 新一轮开始 → false。UI 据此显示"处理中…"徽标，无执行无播报。
      */
-    private val onCloudPending: (Boolean) -> Unit = {},
+    onCloudPending: (Boolean) -> Unit = {},
     /** 云端语义通过端侧仲裁后释放其回复字幕；ASR 文本不受此门控。 */
-    private val onCloudWon: (String) -> Unit = {},
+    onCloudWon: (String) -> Unit = {},
     /** 本地交互状态；只由 ConversationController 产生，ASR/NLU/仲裁器不直接修改 UI 状态。 */
-    private val onDialogueState: (DialogueSnapshot) -> Unit = {},
+    onDialogueState: (DialogueSnapshot) -> Unit = {},
+    private val onTextInputError: (String) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
@@ -118,9 +112,6 @@ class VoiceEngine(
     /** 本轮云端 VAD 段总时长 ms（T7 vad 聚合统计；16k 单声道 16bit，bytes/32 = ms）。 */
     private var turnSegmentsTotalMs = 0L
 
-    private var dialogueTimeoutJob: Job? = null
-    private var thinkingTimerTurnId: String? = null
-
     /** 新轮 SpeechStart 到达前忽略上一轮迟到的 SpeechEnd。 */
     @Volatile
     private var awaitingVadStart = true
@@ -128,24 +119,52 @@ class VoiceEngine(
     /** 只管理采集资源事实与候选生产，不拥有对话状态。 */
     val candidates: CandidateCoordinator
 
-    /** Capture 准入、pending 可见性和当前 turn 的唯一拥有者。 */
-    val conversation: ConversationController = ConversationController(
-        onState = ::onConversationState,
-        onTurnAdmitted = { admitted ->
-            tts.stop(PlaybackInterruptionReason.NEW_TURN)
-            streamingCloud?.commitStreamingTurn(admitted.turnId)
-        },
-        onPendingVisible = onCloudPending,
-    )
+    /** Input permit is invalidated by stopRecognition; completed NLU output is intentionally not gated here. */
+    @Volatile private var capturePermit: RecognitionGate.InputPermit? = null
+    @Volatile private var streamingTurnId: String = ""
+    /** Realtime feed has its own admission epoch; reopening recognition cannot revive an old chat. */
+    private val realtimeInputLock = Any()
+    private var realtimePermit: RecognitionGate.InputPermit? = null
 
-    private val responses = ResponseDispatcher(
-        output = tts,
+    /** Transitional application facade: dialogue and response policy are owned by :voice-business. */
+    private val voiceBusiness = VoiceBusinessService(
+        tts = tts,
         business = business,
-        telemetry = telemetry,
-        isCurrentTurn = ::isLatestTurn,
-        onRecognized = onLocalRecognized,
+        scope = scope,
+        thinkingTimeoutMs = thinkingTimeoutMs,
+        recognition = recognitionGate,
+        onExecution = { turnId, intent, result ->
+            telemetry.recordFor(
+                turnId,
+                TelemetryStages.EXECUTE,
+                "info",
+                mapOf(
+                    "intent" to "${intent.domain}/${intent.intent}",
+                    "result" to result.status.name.lowercase(),
+                    "speakText" to (result.speakText ?: ""),
+                ),
+            )
+        },
+        onExecutionFailure = { turnId ->
+            telemetry.recordFor(turnId, TelemetryStages.EXECUTE, "warn", mapOf("result" to "failed"))
+        },
+        onRecognizedText = onLocalRecognized,
         onReplyText = onReplyText,
+        onCloudPending = onCloudPending,
+        onCloudWon = onCloudWon,
+        onDialogueState = { snapshot ->
+            if (snapshot.state == DialogueState.DORMANT) {
+                capturePermit = null
+                streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
+                finishRealtimeChat()
+            }
+            onDialogueState(snapshot)
+        },
+        onTurnAdmitted = { streamingCloud?.commitStreamingTurn(it) },
+        finishOpenRounds = telemetry::finishOpenRounds,
+        endRound = telemetry::end,
     )
+    val conversation: ConversationController get() = voiceBusiness.conversation
 
     init {
         onTtsPlayEvent = tts::acceptPlaybackEvent
@@ -162,7 +181,12 @@ class VoiceEngine(
                     return cloud.run(segment, utteranceId)
                 }
             },
-            resultListener = ResultListener { utteranceId, winner -> onTurnResult(utteranceId, winner) },
+            resultListener = ResultListener { utteranceId, winner -> voiceBusiness.onTurnResult(utteranceId, winner) },
+            cloudText = cloud as? CloudTextNluEngine,
+            onTextFailure = { requestId, error ->
+                Log.w(TAG, "text NLU request failed: $requestId", error)
+                if (voiceBusiness.onTextFailure(requestId)) onTextInputError("云端处理失败，请重试")
+            },
         )
     }
 
@@ -173,70 +197,62 @@ class VoiceEngine(
      * （生产装配每次重建引擎时新建专属 scope，不复用 viewModelScope）。
      */
     fun close() {
+        synchronized(realtimeInputLock) {
+            recognitionGate.stopRecognition()
+            realtimePermit = null
+            realtimeChat?.finishRealtimeChat()
+        }
+        capturePermit = null
         telemetry.finishOpenRounds("engine_closed")
         runCatching { onClose() }.onFailure { Log.w(TAG, "引擎释放钩子失败", it) }
-        tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
+        voiceBusiness.close()
         telemetry.close()
-        dialogueTimeoutJob?.cancel()
         candidates.close()
-        conversation.reset()
         scope.cancel()
     }
 
     /** 统一停止当前输出；用于 realtime 对端确认用户开始说话等非普通新轮入口。 */
-    fun stopPlayback() {
-        val turnId = conversation.snapshot.value.turnId
-        tts.stop(PlaybackInterruptionReason.STOP_ONLY)
-        if (turnId != null) conversation.onPlaybackEnded(turnId)
-    }
+    fun stopPlayback() = voiceBusiness.stopPlayback()
 
     /** Ends the current interaction locally. Candidate producers may finish, but become stale. */
-    fun exitCurrentDialogue() {
-        telemetry.finishOpenRounds("dialogue_exited")
-        tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
-        dialogueTimeoutJob?.cancel()
-        dialogueTimeoutJob = null
-        conversation.reset()
-    }
+    fun exitCurrentDialogue() = voiceBusiness.exitCurrentDialogue()
 
     /** Called only by :tts after playback identity validation. */
-    internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) {
-        // Realtime chat has its own playback owner and must not mutate the ordinary turn state.
-        if (turnId.isBlank() || turnId.startsWith("chat:")) return
-        when (stage) {
-            PlaybackStage.STARTED -> conversation.onPlaybackStarted(turnId)
-            PlaybackStage.COMPLETED, PlaybackStage.FAILED -> conversation.onPlaybackEnded(turnId)
-            PlaybackStage.INTERRUPTED -> Unit
-        }
-    }
+    internal fun onPlaybackLifecycle(turnId: String, stage: PlaybackStage) =
+        voiceBusiness.onPlaybackLifecycle(turnId, stage)
 
     fun onForeground() = onForeground.invoke()
 
-    fun onWake() {
-        telemetry.finishOpenRounds("new_interaction")
-        conversation.onWake()
+    fun onWake() = voiceBusiness.onWake()
+
+    /** Explicit text bypasses audio capture and ASR but retains turn admission and arbitration. */
+    fun submitText(text: String): TextSubmission = voiceBusiness.submitText(text, candidates) { requestId ->
+        onTurnStarted(requestId)
+        telemetry.begin(requestId)
+        telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "explicit_text"))
+        telemetry.record(TelemetryStages.VAD_START, "info", mapOf("source" to "explicit_text", "synthetic" to true))
+        telemetry.record(TelemetryStages.VAD_END, "info", mapOf("source" to "explicit_text", "synthetic" to true))
     }
 
-    fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null) {
-        conversation.onFollowUpExpired(interactionId, expected)
-        if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
-            telemetry.finishOpenRounds("listening_expired")
+    /** Business controls new-input admission independently of capture and completed NLU work. */
+    fun stopRecognition() {
+        synchronized(realtimeInputLock) {
+            recognitionGate.stopRecognition()
+            if (realtimePermit != null) realtimeChat?.finishRealtimeChat()
+            realtimePermit = null
         }
+        capturePermit = null
+        streamingCloud?.stopUnfinalizedStreamingTurn(streamingTurnId)
     }
 
-    fun onInteractionExpired(interactionId: String) {
-        if (conversation.snapshot.value.interactionId != interactionId) return
-        conversation.onInteractionExpired(interactionId)
-        if (conversation.snapshot.value.state == com.autovoice.voicecore.dialog.DialogueState.DORMANT) {
-            telemetry.finishOpenRounds("interaction_expired")
-            tts.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
-        }
-    }
+    val recognitionEnabled: Boolean get() = recognitionGate.recognitionEnabled
 
-    fun resetDialogue() {
-        telemetry.finishOpenRounds("dialogue_reset")
-        conversation.reset()
-    }
+    fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null) =
+        voiceBusiness.onFollowUpExpired(interactionId, expected)
+
+    fun onInteractionExpired(interactionId: String) = voiceBusiness.onInteractionExpired(interactionId)
+
+    fun resetDialogue() = voiceBusiness.resetDialogue()
 
     // ------------------------------------------------------------------ 话语入口（MainViewModel 接线）
 
@@ -253,7 +269,9 @@ class VoiceEngine(
         telemetry.begin(captureId)
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
-        if (interruptPlayback) tts.stop(PlaybackInterruptionReason.NEW_TURN)
+        voiceBusiness.onCaptureStarted(interruptPlayback)
+        capturePermit = recognitionGate.admitInput()
+        streamingTurnId = ""
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
         turnSegmentsTotalMs = 0L
@@ -272,7 +290,7 @@ class VoiceEngine(
      */
     fun setCloudPending(v: Boolean) = setCloudPending(currentUtteranceId, v)
 
-    fun setCloudPending(turnId: String, v: Boolean) = conversation.setPending(turnId, v)
+    fun setCloudPending(turnId: String, v: Boolean) = voiceBusiness.setCloudPending(turnId, v)
 
     /**
      * VAD 语音段开始（录音实时，SpeechStart 触发，需求 2）：
@@ -282,10 +300,12 @@ class VoiceEngine(
      * 守卫：非录音中（LISTENING）的杂散 SpeechStart 忽略。
      */
     fun onVadStart() {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (!candidates.isCapturing(currentUtteranceId)) return
         awaitingVadStart = false
         conversation.openCapture(currentUtteranceId)
         telemetry.record(TelemetryStages.VAD_START, "info", emptyMap())
+        streamingTurnId = currentUtteranceId
         streamingCloud?.beginStreamingTurn(currentUtteranceId)
     }
 
@@ -294,22 +314,25 @@ class VoiceEngine(
      * [onVadStart] 配对；无话语时静默跳过——防杂散事件）。
      */
     fun onVadEnd() {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (currentUtteranceId.isBlank() || awaitingVadStart) return
         telemetry.record(TelemetryStages.VAD_END, "info", emptyMap())
     }
 
     fun appendStreamingCloudAudio(pcm: ByteArray) {
-        if (pcm.isNotEmpty()) streamingCloud?.appendStreamingAudio(pcm)
+        if (pcm.isNotEmpty() && recognitionGate.accepts(capturePermit)) streamingCloud?.appendStreamingAudio(pcm)
     }
 
     /** 按钮抬手时 VAD 可能尚未产生 SpeechEnd，显式收口，幂等。 */
     fun finishStreamingCloudAudio() {
-        streamingCloud?.finishStreamingTurn(currentUtteranceId)
+        if (recognitionGate.accepts(capturePermit)) streamingCloud?.finishStreamingTurn(currentUtteranceId)
+        else streamingCloud?.cancelStreamingTurn(currentUtteranceId)
     }
 
     /** VAD 误报/过短录音不形成业务轮时，撤销已经预先打开的实时上行。 */
     fun cancelStreamingCloudAudio() {
-        streamingCloud?.cancelStreamingTurn(currentUtteranceId)
+        streamingCloud?.cancelStreamingTurn(streamingTurnId)
+        streamingTurnId = ""
     }
 
     /**
@@ -319,6 +342,7 @@ class VoiceEngine(
      * T7：累加本轮 VAD 聚合统计（段数/总时长，随 onTurnSegment 的 vad 事件上报）。
      */
     fun onCloudSegment(segment: ByteArray) {
+        if (!recognitionGate.accepts(capturePermit)) return
         if (candidates.appendCloudSegment(currentUtteranceId, segment)) {
             turnSegmentCount += 1
             turnSegmentsTotalMs += durationMs(segment.size)
@@ -333,6 +357,10 @@ class VoiceEngine(
      * （T6），最后启动双路竞速收敛。
     */
     fun onTurnSegment(segment: ByteArray) {
+        if (!recognitionGate.accepts(capturePermit)) {
+            candidates.cancelCapture(currentUtteranceId)
+            return
+        }
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
         // Capture-level endpoint may precede ASR admission; the gate retains that fact.
@@ -358,23 +386,38 @@ class VoiceEngine(
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */
     fun startRealtimeChat() {
-        scope.launch {
+        val permit = synchronized(realtimeInputLock) {
+            recognitionGate.admitInput()?.also { realtimePermit = it }
+        } ?: return
+        // Begin synchronously through the first suspension so finish/stop cannot be overtaken
+        // by a start coroutine that was merely queued on another dispatcher.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (!synchronized(realtimeInputLock) {
+                    realtimePermit === permit && recognitionGate.accepts(permit)
+                }) return@launch
             runCatching { realtimeChat?.startRealtimeChat() }
                 .onFailure { Log.w("VoiceEngine", "start realtime chat failed", it) }
         }
     }
 
     fun appendRealtimeChatAudio(pcm: ByteArray) {
-        runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
-            .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
+        if (pcm.isEmpty()) return
+        synchronized(realtimeInputLock) {
+            if (realtimePermit == null || !recognitionGate.accepts(realtimePermit)) return
+            runCatching { realtimeChat?.appendRealtimeAudio(pcm) }
+                .onFailure { Log.w("VoiceEngine", "append realtime audio failed", it) }
+        }
     }
 
     fun finishRealtimeChat() {
-        realtimeChat?.finishRealtimeChat()
+        synchronized(realtimeInputLock) {
+            realtimePermit = null
+            realtimeChat?.finishRealtimeChat()
+        }
     }
 
     internal fun playRealtimeChatReply(token: RealtimePlaybackToken, reply: StreamingAudioReply) {
-        responses.dispatchRealtime(token, reply)
+        voiceBusiness.playRealtimeChatReply(token, reply)
     }
 
     /** 16k 单声道 16bit PCM 字节数 → 毫秒（与 AudioRecorder/TtsPlayer 同口径：32000B/s）。 */
@@ -383,84 +426,17 @@ class VoiceEngine(
     /** 录音中止（用户抬手/放弃）：回 IDLE；进行中的竞速不受影响（会话防御）。 */
     fun onListeningStop() {
         val id = currentUtteranceId
+        capturePermit = null
         conversation.rejectCapture(id)
         if (candidates.cancelCapture(id)) telemetry.end(id, "capture_rejected")
     }
 
-    // ------------------------------------------------------------------ 结果路由
+    /** ASR recognition updates are independent of semantic arbitration. */
+    internal fun onRecognized(turnId: String, text: String) = voiceBusiness.onRecognized(turnId, text)
 
-    /** ASR 文本只更新识别框；不得从文本内容、partial/final 推断新轮。 */
-    internal fun onRecognized(turnId: String, text: String) {
-        if (text.isBlank()) return
-        if (turnId.isBlank()) {
-            onLocalRecognized(text)
-            return
-        }
-        if (conversation.isVisible(turnId)) onLocalRecognized(text)
-    }
-
-    /** ASR/AEC 独立确认新话语；状态机只消费该事件，不检查识别文本。 */
-    internal fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) {
-        if (turnId.isNotBlank()) conversation.confirmTurn(turnId, evidence)
-    }
-
-    private fun onTurnResult(utteranceId: String, winner: RaceWinner) {
-        // 仲裁器只保证“该 turn 尚未输出过语义”。这里才判断是否为状态机当前轮。
-        when (winner) {
-            is RaceWinner.Cloud -> conversation.confirmTurn(
-                utteranceId,
-                AdmissionEvidence.CLOUD_FINAL_SEMANTIC,
-            )
-            is RaceWinner.Local -> conversation.confirmTurn(
-                utteranceId,
-                AdmissionEvidence.LOCAL_SEMANTIC,
-            )
-        }
-        if (!conversation.isCurrentTurn(utteranceId)) {
-            telemetry.end(utteranceId)
-            return
-        }
-        if (!conversation.onFinalSemantic(utteranceId)) {
-            telemetry.end(utteranceId, "semantic_not_adopted")
-            return
-        }
-        val outcome = when (winner) {
-            is RaceWinner.Cloud -> {
-                onCloudWon(utteranceId)
-                responses.dispatchCloud(utteranceId, winner.reply)
-            }
-            is RaceWinner.Local -> responses.dispatchLocal(utteranceId, winner.nlu)
-        }
-        if (outcome == ResponseDispatcher.Outcome.NO_OUTPUT) {
-            conversation.onOutputSkipped(utteranceId)
-        }
-        // B5：最终语义到达（任一收敛结果）→ 清除"处理中"占位状态
-        setCloudPending(utteranceId, false)
-        // T6：每轮结束收包（事件已按当前 utterance 聚合完毕）
-        telemetry.end(utteranceId)
-    }
-
-    private fun isLatestTurn(utteranceId: String): Boolean =
-        utteranceId.isBlank() || conversation.isCurrentTurn(utteranceId)
-
-    private fun onConversationState(snapshot: DialogueSnapshot) {
-        onDialogueState(snapshot)
-        if (snapshot.state == com.autovoice.voicecore.dialog.DialogueState.PROCESSING) {
-            val turnId = snapshot.turnId ?: return
-            if (thinkingTimerTurnId == turnId) return
-            dialogueTimeoutJob?.cancel()
-            thinkingTimerTurnId = turnId
-            dialogueTimeoutJob = scope.launch {
-                delay(thinkingTimeoutMs)
-                conversation.onThinkingExpired(turnId)
-                if (!conversation.isCurrentTurn(turnId)) telemetry.end(turnId, "thinking_expired")
-            }
-        } else {
-            dialogueTimeoutJob?.cancel()
-            dialogueTimeoutJob = null
-            thinkingTimerTurnId = null
-        }
-    }
+    /** ASR evidence is sent to business-owned dialogue admission. */
+    internal fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) =
+        voiceBusiness.onAsrTurnEstablished(turnId, evidence)
 
     companion object {
         private const val TAG = "VoiceEngine"

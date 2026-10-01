@@ -1,4 +1,8 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.AppDialogueManager
+import com.autovoice.voicebusiness.navigation.NavigationExecutor
+import com.autovoice.voicebusiness.navigation.NavigationSession
+import com.autovoice.voicebusiness.navigation.NavigationSnapshot
 
 import android.app.Application
 import android.content.Context
@@ -21,8 +25,9 @@ import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
-import com.autovoice.voicecore.dialog.DialogueSnapshot
-import com.autovoice.voicecore.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
+import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voiceengine.api.TextSubmission
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -72,6 +77,14 @@ data class VehicleUiState(
 /** Pure presentation projection of [DialogueState]; it never drives dialogue transitions. */
 enum class VoiceUiPhase { IDLE, LISTENING, UNDERSTANDING, EXECUTING, SPEAKING }
 
+data class TravelGuideUiState(
+    val turnId: String = "",
+    val visible: Boolean = false,
+    val generating: Boolean = false,
+    val markdown: String = "",
+    val error: String? = null,
+)
+
 data class UiState(
     val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
@@ -107,6 +120,8 @@ data class UiState(
     /** 导航 POI 候选；非空时在本应用内显示语音选择弹窗，尚未拉起地图。 */
     /** 已进入 S2S 闲聊锁域；麦克风常开且绕过端侧 ASR/NLU。 */
     val chatMode: Boolean = false,
+    val textInputError: String? = null,
+    val travelGuide: TravelGuideUiState = TravelGuideUiState(),
 ) {
     val navigationCandidates: List<NavigationExecutor.NavigationCandidate> get() = navigation.candidates
 }
@@ -236,6 +251,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopRecording() = recordingCoordinator.stopTurn()
+
+    fun submitText(text: String): Boolean {
+        if (_uiState.value.chatMode || _uiState.value.recording) {
+            _uiState.update { it.copy(textInputError = "当前正在语音输入，请稍后再发送文字") }
+            return false
+        }
+        val outcome = engine.submitText(text)
+        _uiState.update {
+            it.copy(textInputError = when (outcome) {
+                TextSubmission.ACCEPTED -> null
+                TextSubmission.NO_ROUTE -> "当前模式不支持云端文字输入"
+                TextSubmission.BUSY -> "文字输入暂不可用，请稍后重试"
+                TextSubmission.DUPLICATE_REQUEST -> "请勿重复发送"
+            })
+        }
+        return outcome == TextSubmission.ACCEPTED
+    }
 
     private fun cancelRecording() = recordingCoordinator.cancelTurn()
 
@@ -389,7 +421,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onListeningStart(interruptPlayback: Boolean) =
                 engine.onListeningStart(interruptPlayback)
             override fun onListeningStop() = engine.onListeningStop()
-            override fun onVadStart() = engine.onVadStart()
+            override fun onVadStart() {
+                vehicleContext.refresh()
+                engine.onVadStart()
+            }
             override fun onVadEnd() = engine.onVadEnd()
             override fun appendStreamingCloudAudio(block: ByteArray) =
                 engine.appendStreamingCloudAudio(block)
@@ -480,12 +515,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onCloudPending = { v -> _uiState.update { it.copy(cloudPending = v) } },
             onConversationMode = ::setChatMode,
             onDialogueState = ::handleDialogueState,
+            onTextInputError = { error -> _uiState.update { it.copy(textInputError = error) } },
+            onTravelGuideStarted = { turnId ->
+                _uiState.update { it.copy(travelGuide = TravelGuideUiState(
+                    turnId = turnId, visible = true, generating = true,
+                )) }
+            },
+            onTravelDocument = { turnId, operation, text ->
+                _uiState.update { state ->
+                    val guide = state.travelGuide
+                    if (guide.turnId != turnId) state else state.copy(travelGuide = when (operation) {
+                        "delta" -> guide.copy(markdown = (guide.markdown + text).take(24_000))
+                        "complete" -> guide.copy(generating = false)
+                        "error" -> guide.copy(generating = false, error = text)
+                        "interrupted" -> guide.copy(generating = false, visible = false)
+                        else -> guide
+                    })
+                }
+            },
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
             onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
             onNavigationTransportReset = dialogueManager::abortPendingTask,
         )
         return engine
+    }
+
+    fun dismissTravelGuide() {
+        _uiState.update { it.copy(travelGuide = it.travelGuide.copy(visible = false)) }
     }
 
     /** 恢复在线/离线选择；旧版本保存的 DEMO_DEV 自动迁移为当前构建的在线环境。 */

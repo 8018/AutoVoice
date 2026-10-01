@@ -6,6 +6,7 @@ import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
+import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.OnlineAsrSink;
@@ -97,6 +98,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private static final Logger LOG = LoggerFactory.getLogger(VoiceGatewayHandler.class);
 
     private final OnlineSpeechProvider online;
+    private final GatewayTextEndpoint textEndpoint;
     private final GatewayTtsEndpoint ttsEndpoint;
     private final OfflineCommandService offline;
     private final SessionRegistry registry;
@@ -147,6 +149,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     /** Short-lived duplicate marker. Duplicate turns are rejected; business replies are never replayed. */
     private final ConcurrentMap<TurnKey, Long> completedTurns = new ConcurrentHashMap<>();
+    /** Accepted explicit text IDs are never replayed, including after reconnect. */
+    private final ConcurrentMap<TurnKey, Long> acceptedTextRequests = new ConcurrentHashMap<>();
 
     /** demo 默认仲裁参数（安全兜底 4s，ASR 失败等离线窗口 2s，离线宽限期 1.5s）；鉴权关、连接上限 32。 */
     public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
@@ -238,6 +242,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 : connectionQuota;
         this.helloDeadlineMs = helloDeadlineMs < 1 ? DEFAULT_HELLO_DEADLINE_MS : helloDeadlineMs;
         this.online = online;
+        this.textEndpoint = new GatewayTextEndpoint(online instanceof OnlineTextProvider provider ? provider : null);
         this.ttsEndpoint = new GatewayTtsEndpoint(tts, downlink);
         this.offline = offline;
         this.registry = registry;
@@ -373,7 +378,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "hello" -> onHello(session, st, castPayload(msg));
             case "audio_start" -> onAudioStart(st, castPayload(msg));
             case "audio_end" -> onAudioEnd(session, st);
+            case "text_request" -> onTextRequest(session, st, castPayload(msg));
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
+            case "travel_start" -> onTravelStart(st, castPayload(msg));
             case "tts_request" -> ttsEndpoint.request(session, st.ctx, st.downlinkBudget, castPayload(msg));
             case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
@@ -409,7 +416,11 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     /** Both transport teardown and bean destruction own the same upstream resources. */
     private void releaseConnection(ConnectionState st) {
         st.outputPermits.values().forEach(
-                permit -> permit.revoke(TurnOutputPermit.RevocationReason.CONNECTION_CLOSED));
+                permit -> {
+                    permit.revoke(TurnOutputPermit.RevocationReason.CONNECTION_CLOSED);
+                    online.cancel(st.ctx, permit.utteranceId());
+                });
+        st.travelReady.clear();
         OnlineSpeechStream stream = st.onlineStream;
         st.onlineStream = null;
         try {
@@ -527,6 +538,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         ready.put("sessionState", sessionState);
         ready.put("navigationCandidatesValid", navigationDialog.hasPending(st.ctx));
         ready.put("protocolVersion", PROTOCOL_VERSION);
+        if (textEndpoint.supported()) ready.put("capabilities", java.util.List.of(GatewayTextEndpoint.CAPABILITY));
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());
         downlink.send(session, "ready", ready);
@@ -547,6 +559,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         st.segmentId = payload.get("segmentId") != null ? String.valueOf(payload.get("segmentId")) : null;
         st.activePermit = new TurnOutputPermit(st.utteranceId, st.segmentId);
         st.outputPermits.putIfAbsent(st.utteranceId, st.activePermit);
+        st.turnOrder.putIfAbsent(st.utteranceId, st.nextTurnOrder.incrementAndGet());
         st.activeAsrTrace = new AsrTurnTrace(recorder, st.utteranceId, online.id());
         // Snapshot before opening ASR: a modern client must prove that the displayed selection
         // belongs to the exact active task. This prevents reconnect from reviving an old server
@@ -596,9 +609,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         if (st.onlineStream != null) st.onlineStream.cancel();
         try {
-            // 流式阶段只允许 ASR 旁路出字；回答音频仍由 audio_end 后的仲裁门控制。
+            // The streaming provider may prepare a travel task before arbitration finishes.
+            // Keep its document outlet, but never release answer audio/text before the gate.
+            OnlineAudioSink documentSink = streamSink(st.session, st, st.segmentId,
+                    st.utteranceId, st.activePermit);
             st.onlineStream = online.openStream(st.ctx, st.utteranceId,
-                    OnlineAudioSink.NOOP,
+                    new OnlineAudioSink() {
+                        @Override public void onDocument(String operation, String text) {
+                            documentSink.onDocument(operation, text);
+                        }
+                    },
                     asrSink(st.session, st, st.utteranceId, st.segmentId,
                             st.activePermit, st.activeAsrTrace));
             if (st.onlineStream == null) {
@@ -633,7 +653,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         asrTrace.markFinish();
         st.onlineStream = null;
         SegmentWork work = new SegmentWork(
-                pcm, ctx, utteranceId, segmentId, onlineStream, outputPermit, asrTrace);
+                pcm, ctx, utteranceId, segmentId, onlineStream, outputPermit, asrTrace, null);
         ConnectionTurnCoordinator.Offer offer = st.turns.offer(work);
         if (offer == ConnectionTurnCoordinator.Offer.START_NOW) {
             submitSegment(session, st, work);
@@ -643,6 +663,50 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (onlineStream != null) onlineStream.cancel();
             downlink.sendError(session, st.ctx, "BUSY", "candidate queue is full", segmentId);
         }
+    }
+
+    private void onTextRequest(WebSocketSession session, ConnectionState st, Map<String, Object> payload) {
+        GatewayTextEndpoint.TextRequest request;
+        try {
+            request = textEndpoint.validate(payload, st.ctx);
+        } catch (GatewayTextEndpoint.InvalidTextRequest error) {
+            String requestId = stringValue(payload.get("requestId"));
+            downlink.sendTextError(session, st.ctx, error.code(), error.getMessage(),
+                    stringValue(payload.get("segmentId")),
+                    requestId != null && requestId.length() <= 128 ? requestId : null);
+            return;
+        }
+        TurnKey key = new TurnKey(st.deviceId != null ? st.deviceId : st.ctx.sessionId(), request.requestId());
+        long now = System.currentTimeMillis();
+        Long previous = acceptedTextRequests.putIfAbsent(key, now + TURN_CACHE_TTL_MS);
+        if (previous != null) {
+            downlink.sendTextError(session, st.ctx, "DUPLICATE_REQUEST",
+                    "text request was already accepted and will not be replayed", request.segmentId(), request.requestId());
+            return;
+        }
+        TurnOutputPermit permit = new TurnOutputPermit(request.utteranceId(), request.segmentId());
+        if (st.outputPermits.putIfAbsent(request.utteranceId(), permit) != null) {
+            acceptedTextRequests.remove(key);
+            downlink.sendTextError(session, st.ctx, "DUPLICATE_TURN",
+                    "utteranceId is already active", request.segmentId(), request.requestId());
+            return;
+        }
+        st.turnOrder.putIfAbsent(request.utteranceId(), st.nextTurnOrder.incrementAndGet());
+        SegmentWork work = new SegmentWork(new byte[0], st.ctx, request.utteranceId(),
+                request.segmentId(), null, permit, null, request);
+        ConnectionTurnCoordinator.Offer offer = st.turns.offer(work);
+        if (offer == ConnectionTurnCoordinator.Offer.REJECTED) {
+            st.outputPermits.remove(request.utteranceId(), permit);
+            acceptedTextRequests.remove(key);
+            downlink.sendTextError(session, st.ctx, "BUSY", "candidate queue is full",
+                    request.segmentId(), request.requestId());
+            return;
+        }
+        scheduler.schedule(() -> acceptedTextRequests.remove(key, now + TURN_CACHE_TTL_MS),
+                TURN_CACHE_TTL_MS, TimeUnit.MILLISECONDS);
+        // Explicit text is established input evidence; it needs no ASR/VAD signal.
+        commitCandidate(st, request.utteranceId(), request.segmentId());
+        if (offer == ConnectionTurnCoordinator.Offer.START_NOW) submitSegment(session, st, work);
     }
 
     /** Exact task-context adoption. A late close from a replaced task cannot clear the new task. */
@@ -713,9 +777,20 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         if (utteranceId == null || utteranceId.isBlank() || segmentId == null || segmentId.isBlank()) return;
         boolean activeCandidate = segmentId.equals(st.segmentId) && utteranceId.equals(st.utteranceId);
         if (!activeCandidate && !st.turns.ownsSegment(segmentId)) return;
+        // A completed reply may still have an active travel stream. Revoke it only after this
+        // candidate has valid ASR/text admission, never on VAD/audio_start alone.
+        long candidateOrder = st.turnOrder.getOrDefault(utteranceId, 0L);
+        st.outputPermits.forEach((oldId, permit) -> {
+            if (st.turnOrder.getOrDefault(oldId, Long.MAX_VALUE) < candidateOrder
+                    && permit.revoke(TurnOutputPermit.RevocationReason.SUPERSEDED)) {
+                st.travelReady.remove(oldId);
+                online.cancel(st.ctx, oldId);
+            }
+        });
         SegmentWork processing = st.turns.processing();
         if (processing == null || utteranceId.equals(processing.utteranceId())) return;
         processing.outputPermit().revoke(TurnOutputPermit.RevocationReason.SUPERSEDED);
+        online.cancel(processing.ctx(), processing.utteranceId());
         discardDecisions(st, processing.utteranceId());
     }
 
@@ -725,10 +800,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private void onCancelTurn(ConnectionState st, Map<String, Object> payload) {
         String segmentId = String.valueOf(payload.get("segmentId"));
+        st.outputPermits.forEach((oldId, permit) -> {
+            if (segmentId.equals(permit.segmentId()) && permit.revoke(TurnOutputPermit.RevocationReason.CANCELLED)) {
+                st.travelReady.remove(oldId);
+                online.cancel(st.ctx, oldId);
+            }
+        });
         SegmentWork processing = st.turns.processing();
         if (processing != null && segmentId.equals(processing.segmentId())) {
             // 仅撤销输出权限并唤醒连接 worker；provider 与仲裁候选继续自然完成。
             processing.outputPermit().revoke(TurnOutputPermit.RevocationReason.CANCELLED);
+            online.cancel(processing.ctx(), processing.utteranceId());
             discardDecisions(st, processing.utteranceId());
         } else if (st.turns.ownsSegment(segmentId)) {
             SegmentWork queued = st.turns.removeQueued(segmentId);
@@ -763,6 +845,16 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
     }
 
+    private void onTravelStart(ConnectionState st, Map<String, Object> payload) {
+        String utteranceId = stringValue(payload.get("utteranceId"));
+        String segmentId = stringValue(payload.get("segmentId"));
+        if (st.ctx == null || utteranceId == null || segmentId == null) return;
+        TurnOutputPermit permit = st.outputPermits.get(utteranceId);
+        if (permit == null || !permit.allowsOutput() || !segmentId.equals(permit.segmentId())
+                || !segmentId.equals(st.travelReady.get(utteranceId))) return;
+        online.admitTravel(st.ctx, utteranceId);
+    }
+
     /**
      * 工作线程执行段处理：只读快照（不回写 ConnectionState——audioActive 由 onAudioEnd 同步管），
      * 发送走任务线程 session.sendMessage（Spring WS 线程安全）。handleSegment 返回后本段决策事件
@@ -778,7 +870,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                 OnlineSpeechStream inputStream, SegmentWork ownedWork) {
         boolean inFlightStarted = false; // D12a:排空计数标志(与 increment 配对递减)
         try {
-            if (pcm.length == 0) {
+            if (pcm.length == 0 && ownedWork.textRequest() == null) {
                 if (inputStream != null) inputStream.cancel();
                 return;
             }
@@ -789,35 +881,55 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             if (completedUntil != null && completedUntil > System.currentTimeMillis()) {
                 if (inputStream != null) inputStream.cancel();
                 if (ownedWork.outputPermit().allowsOutput()) {
-                    downlink.sendError(session, ctx, "DUPLICATE_TURN",
-                            "this turn has already completed and will not be replayed", segmentId);
+                    if (ownedWork.textRequest() != null) {
+                        downlink.sendTextError(session, ctx, "DUPLICATE_TURN",
+                                "this turn has already completed and will not be replayed",
+                                segmentId, ownedWork.textRequest().requestId());
+                    } else {
+                        downlink.sendError(session, ctx, "DUPLICATE_TURN",
+                                "this turn has already completed and will not be replayed", segmentId);
+                    }
                 }
                 return;
             }
             if (completedUntil != null) completedTurns.remove(turnKey, completedUntil);
             SegmentPipeline.SegmentResult result;
             try {
-                CompletableFuture<OnlineSpeechResult> onlineCandidate = null;
-                if (inputStream != null) {
-                    try {
-                        CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
-                        streamed.whenComplete((value, error) -> {
-                            if (error != null) ownedWork.asrTrace().onFailure(error);
-                        });
-                        onlineCandidate = streamed;
+                if (ownedWork.textRequest() != null) {
+                    result = textEndpoint.process(ownedWork.textRequest(), ctx,
+                            ownedWork.outputPermit().revoked(),
+                            streamSink(session, st, segmentId, utteranceId, ownedWork.outputPermit()));
+                } else {
+                    CompletableFuture<OnlineSpeechResult> onlineCandidate = null;
+                    if (inputStream != null) {
+                        try {
+                            CompletableFuture<OnlineSpeechResult> streamed = inputStream.finish();
+                            streamed.whenComplete((value, error) -> {
+                                if (error != null) ownedWork.asrTrace().onFailure(error);
+                            });
+                            onlineCandidate = streamed;
+                        }
+                        catch (RuntimeException error) {
+                            ownedWork.asrTrace().onFailure(error);
+                            LOG.warn("streaming ASR finish failed; turn will not be replayed as batch", error);
+                            onlineCandidate = CompletableFuture.failedFuture(error);
+                        }
                     }
-                    catch (RuntimeException error) {
-                        ownedWork.asrTrace().onFailure(error);
-                        LOG.warn("streaming ASR finish failed; turn will not be replayed as batch", error);
-                        onlineCandidate = CompletableFuture.failedFuture(error);
-                    }
+                    result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
+                            streamSink(session, st, segmentId, utteranceId, ownedWork.outputPermit()),
+                            asrSink(session, st, utteranceId, segmentId,
+                                    ownedWork.outputPermit(), ownedWork.asrTrace()),
+                            onlineCandidate, ownedWork.outputPermit().revoked());
                 }
-                result = st.pipeline.handleSegment(pcm, ctx, utteranceId, segmentId,
-                        streamSink(session, st, segmentId, ownedWork.outputPermit()),
-                        asrSink(session, st, utteranceId, segmentId,
-                                ownedWork.outputPermit(), ownedWork.asrTrace()),
-                        onlineCandidate, ownedWork.outputPermit().revoked());
             } catch (RuntimeException e) {
+                if (ownedWork.textRequest() != null) {
+                    LOG.warn("text request failed: segment={}", segmentId, e);
+                    if (ownedWork.outputPermit().allowsOutput()) {
+                        downlink.sendTextError(session, ctx, "TEXT_PROCESS_FAILED",
+                                "text request failed", segmentId, ownedWork.textRequest().requestId());
+                    }
+                    return;
+                }
                 // 防御：pipeline 保证不抛异常；意外失败仍走兜底话术
                 result = new SegmentPipeline.SegmentResult(null, SegmentPipeline.FALLBACK_TEXT, null, null);
             }
@@ -838,7 +950,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             drainDecisions(session, st, utteranceId, true);
             if (!result.streamed() && ownedWork.outputPermit().allowsOutput()) {
                 commitNavigationOnAdmit(ctx, result);
-                downlink.sendReply(session, result, segmentId);
+                if (result.intent() != null && "travel".equals(result.intent().domain())
+                        && "plan_guide".equals(result.intent().intent())) {
+                    st.travelReady.put(utteranceId, segmentId);
+                }
+                downlink.sendReply(session, result, segmentId,
+                        ownedWork.textRequest() == null ? null : ownedWork.textRequest().requestId());
             }
         } finally {
             if (inFlightStarted) {
@@ -870,15 +987,34 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private void schedulePermitCleanup(ConnectionState st, TurnOutputPermit permit) {
         if (permit == null || permit.utteranceId() == null) return;
-        long delayMs = safetyTimeoutMs + offlineGraceMs + 1000;
-        scheduler.schedule(() -> st.outputPermits.remove(permit.utteranceId(), permit),
-                delayMs, TimeUnit.MILLISECONDS);
+        long delayMs = Math.max(120_000, safetyTimeoutMs + offlineGraceMs + 1000);
+        scheduler.schedule(() -> {
+            if (st.outputPermits.remove(permit.utteranceId(), permit)) {
+                st.turnOrder.remove(permit.utteranceId());
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
     private OnlineAudioSink streamSink(WebSocketSession session, ConnectionState st, String segmentId,
+                                       String utteranceId,
                                        TurnOutputPermit outputPermit) {
         return new OnlineAudioSink() {
             private final long startedAtNanos = System.nanoTime();
+            private final TravelDocumentInterceptor documentInterceptor = new TravelDocumentInterceptor(
+                    () -> allowed() && segmentId.equals(st.travelReady.get(utteranceId)),
+                    (operation, text) -> {
+                        if (!allowed() || !segmentId.equals(st.travelReady.get(utteranceId))) return;
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("segmentId", segmentId);
+                        payload.put("utteranceId", utteranceId);
+                        payload.put("format", "text/markdown");
+                        payload.put("operation", operation);
+                        payload.put("text", text);
+                        downlink.send(session, "document_stream", payload);
+                        if ("complete".equals(operation) || "error".equals(operation)) {
+                            st.travelReady.remove(utteranceId, segmentId);
+                        }
+                    });
 
             private boolean allowed() {
                 return outputPermit.allowsOutput();
@@ -909,6 +1045,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 payload.put("text", text);
                 payload.put("isFinal", isFinal);
                 downlink.send(session, "reply_partial", payload);
+            }
+
+            @Override public void onDocument(String operation, String text) {
+                documentInterceptor.accept(operation, text);
             }
 
             @Override
@@ -958,13 +1098,13 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
             @Override public void onTurnEstablished() {
                 if (!active() || !turnEstablishedSent.compareAndSet(false, true)) return;
-                commitCandidate(st, utteranceId, segmentId);
                 downlink.send(session, "asr_turn_started", Map.of("segmentId", segmentId));
             }
 
             @Override public void onResult(String text, boolean isFinal) {
                 asrTrace.onResult(text, isFinal);
                 if (!active() || text == null || text.isBlank()) return;
+                if (isFinal) commitCandidate(st, utteranceId, segmentId);
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("segmentId", segmentId);
                 payload.put("text", text);
@@ -982,7 +1122,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
 
     private record SegmentWork(byte[] pcm, SessionContext ctx, String utteranceId, String segmentId,
                                OnlineSpeechStream inputStream, TurnOutputPermit outputPermit,
-                               AsrTurnTrace asrTrace)
+                               AsrTurnTrace asrTrace, GatewayTextEndpoint.TextRequest textRequest)
             implements ConnectionTurnCoordinator.WorkIdentity {}
 
 
@@ -1050,6 +1190,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         });
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final ConcurrentMap<String, TurnOutputPermit> outputPermits = new ConcurrentHashMap<>();
+        final java.util.concurrent.atomic.AtomicLong nextTurnOrder = new java.util.concurrent.atomic.AtomicLong();
+        final ConcurrentMap<String, Long> turnOrder = new ConcurrentHashMap<>();
+        final ConcurrentMap<String, String> travelReady = new ConcurrentHashMap<>();
         final DecisionSink sink = entry -> {
             TurnOutputPermit permit = outputPermits.get(entry.utteranceId());
             if (permit == null || permit.allowsOutput()) pendingDecisions.add(entry);
@@ -1083,6 +1226,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         }
         connections.clear();
         completedTurns.clear();
+        acceptedTextRequests.clear();
         activeConnections.set(0);
         ttsEndpoint.close();
         scheduler.shutdownNow();

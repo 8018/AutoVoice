@@ -7,10 +7,62 @@
   "required": ["type", "payload"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "cancel_turn", "turn_commit", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "text_request", "cancel_turn", "turn_commit", "travel_start", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
     }
   },
   "oneOf": [
+    {
+      "title": "travel_start (client -> server, accepted travel business marker)",
+      "properties": {
+        "type": { "const": "travel_start" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "utteranceId"],
+          "properties": {
+            "segmentId": { "type": "string", "minLength": 1 },
+            "utteranceId": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    {
+      "title": "document_stream (server -> client, travel Markdown delta)",
+      "properties": {
+        "type": { "const": "document_stream" },
+        "payload": {
+          "type": "object",
+          "required": ["segmentId", "utteranceId", "format", "operation", "text"],
+          "properties": {
+            "segmentId": { "type": "string", "minLength": 1 },
+            "utteranceId": { "type": "string", "minLength": 1 },
+            "format": { "const": "text/markdown" },
+            "operation": { "enum": ["start", "delta", "complete", "error"] },
+            "text": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "title": "text_request (client -> server, capability text_recognition_v1)",
+      "properties": {
+        "type": { "const": "text_request" },
+        "payload": {
+          "type": "object",
+          "required": ["sessionId", "requestId", "utteranceId", "segmentId", "text", "language", "inputSource", "contextVersion", "context"],
+          "properties": {
+            "sessionId": { "type": "string", "minLength": 1 },
+            "requestId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "utteranceId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "segmentId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+            "language": { "type": "string", "minLength": 1 },
+            "inputSource": { "const": "text" },
+            "contextVersion": { "const": 1 },
+            "context": { "type": "object", "maxProperties": 0 }
+          }
+        }
+      }
+    },
     {
       "title": "navigation_context_result (server -> client)",
       "properties": {
@@ -55,6 +107,7 @@
           "properties": {
             "client": { "type": "string" },
             "protocolVersion": { "type": "string" },
+            "capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "sessionId": { "type": "string" },
             "resumeToken": { "type": "string", "description": "会话恢复凭据（D02a）：auth-enabled 时恢复既有会话必须携带；凭据由 ready 下发，独立于 sessionId" },
             "deviceId": { "type": "string", "description": "设备标识（多设备加固 M5）：网关 auth-enabled 时必填，与 authToken 配对" },
@@ -265,6 +318,7 @@
             "speakText": { "type": "string" },
             "text": { "type": "string" },
             "segmentId": { "type": "string" },
+            "requestId": { "type": "string", "description": "text_request 的请求 ID；仅文本请求回复携带" },
             "asrText": { "type": "string" }
           },
           "oneOf": [
@@ -377,6 +431,7 @@
             "code": { "type": "string" },
             "message": { "type": "string" },
             "segmentId": { "type": "string" },
+            "requestId": { "type": "string", "description": "text_request 的请求 ID；仅文本请求错误携带" },
             "chatId": { "type": "string", "minLength": 1 }
           }
         }

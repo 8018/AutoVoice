@@ -12,6 +12,9 @@ public interface OnlineAudioSink {
     /** 模型回答文本的累计快照；用于在语音播放期间增量上屏。 */
     default void onReplyText(String text, boolean isFinal) {}
 
+    /** Markdown document lifecycle: start, delta, complete or error. */
+    default void onDocument(String operation, String text) {}
+
     default void onComplete(String speakText, Intent intent) {}
 
     /**

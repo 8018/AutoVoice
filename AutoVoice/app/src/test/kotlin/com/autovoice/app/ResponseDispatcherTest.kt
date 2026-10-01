@@ -1,6 +1,6 @@
 package com.autovoice.app
 
-import com.autovoice.app.telemetry.TelemetryClient
+import com.autovoice.voicebusiness.ResponseDispatcher
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.tts.TtsPlaybackDriver
 import com.autovoice.tts.TtsSynthesizer
@@ -11,7 +11,6 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.TextReply
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import okhttp3.OkHttpClient
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -19,10 +18,6 @@ import org.junit.jupiter.api.Test
 class ResponseDispatcherTest {
 
     private fun dispatcher(onReplyText: (String) -> Unit): ResponseDispatcher {
-        val telemetry = TelemetryClient(
-            OkHttpClient(), "http://unused", null,
-            CoroutineScope(Dispatchers.Default), enabled = false,
-        )
         val output = createTtsOutput(
             synthesizer = TtsSynthesizer { _, _ -> null },
             cacheDir = null,
@@ -34,7 +29,6 @@ class ResponseDispatcherTest {
         return ResponseDispatcher(
             output = output,
             business = AppBusinessHandler(MockVehicleState(), null),
-            telemetry = telemetry,
             isCurrentTurn = { true },
             onRecognized = {},
             onReplyText = onReplyText,
