@@ -51,4 +51,10 @@ public interface OnlineSpeechProvider {
 
     /** 端侧高优先级候选胜出时按话语取消；不支持的后端可依赖 future 取消。 */
     default void cancel(String utteranceId) {}
+
+    /** Scope cancellation to one session when its context is available. */
+    default void cancel(SessionContext context, String utteranceId) { cancel(utteranceId); }
+
+    /** Client confirmed the travel business marker after endpoint arbitration and DM. */
+    default void admitTravel(SessionContext context, String utteranceId) {}
 }

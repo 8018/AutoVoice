@@ -16,6 +16,7 @@ import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.StreamingAudioReply
 import com.google.gson.JsonObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -95,6 +96,8 @@ internal class GatewayBridge(
     )
 
     private val pendingReplies = ConcurrentHashMap<String, PendingSlot<Reply>>()
+    private val segmentByTurn = ConcurrentHashMap<String, String>()
+    private val recentTurns = ConcurrentLinkedQueue<String>()
     private val pendingTts = ConcurrentHashMap<String, PendingSlot<AudioReply>>()
     private val activeStream = AtomicReference<ActiveStream?>(null)
     private sealed interface ChatReadyEvent {
@@ -150,8 +153,17 @@ internal class GatewayBridge(
     fun newReplySlot(segmentId: String, utteranceId: String = ""): CompletableDeferred<Reply> {
         val deferred = CompletableDeferred<Reply>()
         pendingReplies[segmentId] = PendingSlot(segmentId, utteranceId, deferred)
+        if (utteranceId.isNotBlank()) {
+            segmentByTurn[utteranceId] = segmentId
+            recentTurns.add(utteranceId)
+            while (recentTurns.size > 128) {
+                recentTurns.poll()?.let { old -> segmentByTurn.remove(old) }
+            }
+        }
         return deferred
     }
+
+    fun segmentForTurn(turnId: String): String? = segmentByTurn[turnId]
 
     fun clearReplySlot(deferred: CompletableDeferred<Reply>) {
         pendingReplies.entries.firstOrNull { it.value.deferred === deferred }?.let {

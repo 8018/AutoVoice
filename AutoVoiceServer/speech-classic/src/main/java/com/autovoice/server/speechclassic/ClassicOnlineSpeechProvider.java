@@ -15,6 +15,7 @@ import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
 import com.autovoice.server.contracts.StreamingAsrProvider;
 import com.autovoice.server.contracts.StreamingAsrSession;
+import com.autovoice.server.contracts.TravelGuideProvider;
 
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -27,6 +28,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
     private final AsrProvider asr;
     private final LlmProvider llm;
     private final NavigationDialog navigationDialog;
+    private final TravelGuideProvider travelGuide;
 
     public ClassicOnlineSpeechProvider(AsrProvider asr, LlmProvider llm) {
         this(asr, llm, NavigationDialog.NONE);
@@ -34,9 +36,15 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
 
     public ClassicOnlineSpeechProvider(AsrProvider asr, LlmProvider llm,
                                        NavigationDialog navigationDialog) {
+        this(asr, llm, navigationDialog, TravelGuideProvider.NONE);
+    }
+
+    public ClassicOnlineSpeechProvider(AsrProvider asr, LlmProvider llm,
+                                       NavigationDialog navigationDialog, TravelGuideProvider travelGuide) {
         this.asr = Objects.requireNonNull(asr, "asr");
         this.llm = Objects.requireNonNull(llm, "llm");
         this.navigationDialog = Objects.requireNonNull(navigationDialog, "navigationDialog");
+        this.travelGuide = Objects.requireNonNull(travelGuide, "travelGuide");
     }
 
     @Override
@@ -63,7 +71,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
             if (e instanceof CompletionException completion) throw completion;
             throw new CompletionException(e);
         }
-        return completeFromText(text, context, utteranceId, text);
+        return completeFromText(text, context, utteranceId, text, replySink);
     }
 
     @Override
@@ -81,7 +89,7 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
                     if (text == null || text.isBlank()) {
                         return CompletableFuture.failedFuture(new AsrException("ASR returned blank text"));
                     }
-                    return completeFromText(text, context, utteranceId, text);
+                    return completeFromText(text, context, utteranceId, text, audioSink);
                 });
             }
             @Override public void cancel() { session.cancel(); }
@@ -94,11 +102,20 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
         if (text == null || text.isBlank()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("text input is blank"));
         }
-        return completeFromText(text, context, utteranceId, "");
+        return processText(text, context, utteranceId, OnlineAudioSink.NOOP);
+    }
+
+    @Override
+    public CompletableFuture<OnlineSpeechResult> processText(
+            String text, SessionContext context, String utteranceId, OnlineAudioSink sink) {
+        if (text == null || text.isBlank()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("text input is blank"));
+        }
+        return completeFromText(text, context, utteranceId, "", sink);
     }
 
     private CompletableFuture<OnlineSpeechResult> completeFromText(
-            String text, SessionContext context, String utteranceId, String asrText) {
+            String text, SessionContext context, String utteranceId, String asrText, OnlineAudioSink sink) {
         CompletableFuture<com.autovoice.server.contracts.Reply> source = DialogueControlNlu
                 .understand(text)
                 .map(intent -> CompletableFuture.completedFuture(
@@ -114,7 +131,8 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
         };
         source.whenComplete((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
-            else out.complete(new OnlineSpeechResult(reply, asrText));
+            else out.complete(new OnlineSpeechResult(
+                    travelGuide.prepare(reply, text, context, utteranceId, sink), asrText));
         });
         return out;
     }
@@ -122,5 +140,17 @@ public final class ClassicOnlineSpeechProvider implements OnlineSpeechProvider, 
     @Override
     public String id() {
         return "classic";
+    }
+
+    @Override public void cancel(String utteranceId) {
+        travelGuide.cancel(null, utteranceId);
+    }
+
+    @Override public void cancel(SessionContext context, String utteranceId) {
+        travelGuide.cancel(context, utteranceId);
+    }
+
+    @Override public void admitTravel(SessionContext context, String utteranceId) {
+        travelGuide.admit(context, utteranceId);
     }
 }

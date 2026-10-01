@@ -15,6 +15,8 @@ import com.autovoice.gatewayclient.GatewayClientFactory
 import com.autovoice.gatewayclient.GatewayConnectionPolicy
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.gatewayclient.GatewayPayloadParser
+import com.autovoice.messaging.MessageListener
+import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.AudioReply
 import com.autovoice.voicecore.AsrResult
 import com.autovoice.voicecore.AsrSink
@@ -88,10 +90,25 @@ internal class GatewayCloudRunner(
         { segment, turnId -> businessSpeech.run(segment, turnId) },
     )
     private val speechRegistrations = listOf(cloudAsr.register(), cloudNlu.register())
+    private val travelInterceptor = TravelDocumentInterceptor()
+    private val travelRegistration = bridge.register(setOf("document_stream"), object : MessageListener {
+        override fun onMessage(message: GatewayMessage) {
+            val payload = message.payload
+            val turnId = payload.get("utteranceId")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+            val segmentId = payload.get("segmentId")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+            if (segmentId != bridge.segmentForTurn(turnId)) return
+            if (payload.get("format")?.asString != "text/markdown") return
+            val operation = payload.get("operation")?.asString ?: return
+            val text = payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+            if (!travelInterceptor.accept(turnId, segmentId, operation, text)) return
+            onTravelDocument(turnId, operation, text)
+        }
+    })
     init {
         asrModule.bindCloud(cloudAsr, cloudAsr::release, cloudAsr::close)
         nluModule.bindCloud(cloudNlu)
         nluModule.bindCloudText(CloudTextNluEngine { turnId, text ->
+            retireTravelIfDifferent(turnId)
             textChannel.run(turnId, text)
         })
     }
@@ -165,6 +182,20 @@ internal class GatewayCloudRunner(
     @Volatile
     var onReplyText: (String, Boolean) -> Unit = { _, _ -> }
 
+    @Volatile var onTravelDocument: (String, String, String) -> Unit = { _, _, _ -> }
+    fun startTravelGuide(turnId: String) {
+        val segmentId = bridge.segmentForTurn(turnId) ?: return
+        travelInterceptor.admit(turnId, segmentId)
+        protocol.travelStart(segmentId, turnId)
+    }
+
+    /** Called after DM admits a different recognized turn, including a local-only command. */
+    fun retireTravelIfDifferent(newTurnId: String) {
+        val (previous, segmentId) = travelInterceptor.retireIfDifferent(newTurnId) ?: return
+        runCatching { protocol.cancelTurn(segmentId, "new_admitted_turn") }
+        onTravelDocument(previous, "interrupted", "")
+    }
+
     @Volatile
     var onRealtimeReply: (RealtimePlaybackToken, StreamingAudioReply) -> Unit = { _, _ -> }
 
@@ -232,8 +263,10 @@ internal class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        travelInterceptor.clear()
         connectionObserver.cancel()
         speechRegistrations.forEach { it.unregister() }
+        travelRegistration.unregister()
         asrModule.closeCloud()
         navigationChannel.close()
         businessSpeech.close()

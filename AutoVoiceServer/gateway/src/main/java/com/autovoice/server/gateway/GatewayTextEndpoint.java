@@ -4,6 +4,7 @@ import com.autovoice.server.contracts.OnlineSpeechResult;
 import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
+import com.autovoice.server.contracts.OnlineAudioSink;
 
 import java.util.Map;
 import java.util.Objects;
@@ -53,15 +54,20 @@ final class GatewayTextEndpoint {
     }
 
     SegmentPipeline.SegmentResult process(TextRequest request, SessionContext context,
-                                          CompletableFuture<?> stopWaiting) {
+                                          CompletableFuture<?> stopWaiting, OnlineAudioSink sink) {
         CompletableFuture<OnlineSpeechResult> future = provider.processText(
-                request.text(), context, request.utteranceId());
+                request.text(), context, request.utteranceId(), sink);
         Object settled = CompletableFuture.anyOf(
                 future.orTimeout(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS), stopWaiting).join();
         if (!(settled instanceof OnlineSpeechResult result)) return null;
         Reply reply = result.reply();
         return new SegmentPipeline.SegmentResult(reply.text(), reply.speakText(), reply.intent(), "",
                 reply.mime(), reply.data(), false, null, 0L);
+    }
+
+    SegmentPipeline.SegmentResult process(TextRequest request, SessionContext context,
+                                          CompletableFuture<?> stopWaiting) {
+        return process(request, context, stopWaiting, OnlineAudioSink.NOOP);
     }
 
     private static String identity(Object value, String field) {

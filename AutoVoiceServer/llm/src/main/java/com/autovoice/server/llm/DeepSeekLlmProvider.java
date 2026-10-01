@@ -112,6 +112,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
 
     /** 退出当前普通语音对话；由客户端会话状态机执行，不关闭应用。 */
     static final String EXIT_DIALOGUE_TOOL_NAME = VehicleAgentTools.EXIT_DIALOGUE;
+    static final String PLAN_TRAVEL_TOOL_NAME = VehicleAgentTools.PLAN_TRAVEL;
 
     /** intent.source 值：LLM 工具调用产出的意图。 */
     static final String INTENT_SOURCE = "llm.car_control";
@@ -464,7 +465,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         for (JsonNode tc : toolCalls) {
             String name = tc.path("function").path("name").asText("");
             if (TOOL_NAME.equals(name) || NAVIGATE_TOOL_NAME.equals(name)
-                    || EXIT_DIALOGUE_TOOL_NAME.equals(name)) {
+                    || EXIT_DIALOGUE_TOOL_NAME.equals(name) || PLAN_TRAVEL_TOOL_NAME.equals(name)) {
                 return true;
             }
         }
@@ -489,6 +490,18 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                 Intent intent = Intent.of("1.0", "conversation", "exit_dialogue", Map.of(), 1.0,
                         "llm.exit-dialogue", arguments);
                 return Reply.ofAction(intent, "好的，已退出当前对话");
+            }
+            if (PLAN_TRAVEL_TOOL_NAME.equals(name)) {
+                JsonNode args = MAPPER.readTree(arguments);
+                String city = args.path("city").asText("").strip();
+                int days = args.path("days").asInt(1);
+                if (city.isBlank() || city.length() > 30 || days < 1 || days > 3) {
+                    throw new LlmException("invalid plan_travel arguments");
+                }
+                Intent intent = Intent.of("1.0", "travel", "plan_guide",
+                        Map.of("city", SlotValue.stringValue(city), "days", SlotValue.number(days)),
+                        1.0, "llm.plan_travel", arguments);
+                return Reply.ofAction(intent, "正在生成" + city + days + "日游攻略");
             }
         }
         throw new LlmException("deepseek llm called unexpected tool: "
@@ -577,6 +590,10 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
         }
         if (enabledTools.stream().anyMatch(t -> EXIT_DIALOGUE_TOOL_NAME.equals(t.name()))) {
             prompt += DIALOGUE_CONTROL_POLICY;
+        }
+        if (enabledTools.stream().anyMatch(t -> PLAN_TRAVEL_TOOL_NAME.equals(t.name()))) {
+            prompt += "\n用户询问城市有什么好玩的、景点推荐、一日游或多日游攻略时，必须调用 plan_travel 识别城市和天数。"
+                    + "泛问有什么好玩的按一天处理。不要把行程攻略请求识别成导航；不要在这一步写攻略。";
         }
         boolean hasResolver = enabledTools.stream()
                 .anyMatch(t -> "resolve_navigation".equals(t.name()));

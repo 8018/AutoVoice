@@ -126,6 +126,11 @@ internal class GatewayProtocolSender(
         channel.send("turn_commit", mapOf("segmentId" to segmentId, "utteranceId" to utteranceId))
     }
 
+    fun travelStart(segmentId: String, utteranceId: String) {
+        require(segmentId.isNotBlank() && utteranceId.isNotBlank())
+        channel.send("travel_start", mapOf("segmentId" to segmentId, "utteranceId" to utteranceId))
+    }
+
     fun tts(text: String, segmentId: String? = null, utteranceId: String? = null) {
         val payload = linkedMapOf<String, Any?>("text" to text)
         segmentId?.let { payload["segmentId"] = it }

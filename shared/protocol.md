@@ -40,6 +40,8 @@
 | `asr_partial` | 服务端 → 客户端 | 云端 ASR 的中间识别结果（流式） |
 | `asr_turn_started` | 服务端 → 客户端 | ASR/AEC 确认输入为有效新话语；状态机据此建立新轮 |
 | `reply_partial` | 服务端 → 客户端 | 模型回答文本累计快照，音频播放期间增量上屏 |
+| `document_stream` | 服务端 → 客户端 | 已采用的行程攻略任务的 Markdown 增量 |
+| `travel_start` | 客户端 → 服务端 | 端侧仲裁及业务 DM 采用 `travel/plan_guide` 后启动检索生成 |
 | `pending` | 服务端 → 客户端 | LLM 处理中占位：最终 `reply` 前的中间通知（可选，0..1 次） |
 | `reply` | 服务端 → 客户端 | 最终回复（文本 / 动作意图；**TTS 解耦后不再携带音频**） |
 | `audio_reply_start` | 服务端 → 客户端 | S2S 流式回复开始；后续二进制帧属于该回复 |
@@ -426,6 +428,15 @@ partial/final 或内容自行推断。TTS 回声和识别稳定性属于 ASR/AEC
 ```
 
 ### 4.4 reply
+
+行程攻略先用普通 `reply.kind=action` 下发 `intent.domain=travel`、
+`intent.intent=plan_guide`，槽位为 `city`（string）和 `days`（number），播报文本为“正在生成…”。
+客户端经过端侧仲裁、当前轮校验和业务执行边界后打开生成中弹窗，并发送
+`travel_start {segmentId,utteranceId}`。服务端只接受本连接已下发且输出许可仍有效的业务标志。
+随后逐帧发送 `document_stream {segmentId,utteranceId,format:"text/markdown",
+operation:"start"|"delta"|"complete"|"error",text}`。`delta.text` 是新 token，客户端直接追加并重渲染，
+不等待全文完成。`complete` 和 `error` 仅更新同一任务状态，不再次参与语义仲裁。
+新有效轮次准入或 `cancel_turn` 撤销旧轮输出并尽力取消搜索/模型 HTTP 调用。
 
 最终的回复，按 `kind` 分两种形态（**TTS 解耦（v1.1）：下行只携带语义，不再携带音频**——
 播报音频由客户端按回复文本另发 `tts_request` 获取，见 §3.4 / §4.6）：

@@ -77,6 +77,14 @@ data class VehicleUiState(
 /** Pure presentation projection of [DialogueState]; it never drives dialogue transitions. */
 enum class VoiceUiPhase { IDLE, LISTENING, UNDERSTANDING, EXECUTING, SPEAKING }
 
+data class TravelGuideUiState(
+    val turnId: String = "",
+    val visible: Boolean = false,
+    val generating: Boolean = false,
+    val markdown: String = "",
+    val error: String? = null,
+)
+
 data class UiState(
     val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
@@ -113,6 +121,7 @@ data class UiState(
     /** 已进入 S2S 闲聊锁域；麦克风常开且绕过端侧 ASR/NLU。 */
     val chatMode: Boolean = false,
     val textInputError: String? = null,
+    val travelGuide: TravelGuideUiState = TravelGuideUiState(),
 ) {
     val navigationCandidates: List<NavigationExecutor.NavigationCandidate> get() = navigation.candidates
 }
@@ -507,12 +516,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onConversationMode = ::setChatMode,
             onDialogueState = ::handleDialogueState,
             onTextInputError = { error -> _uiState.update { it.copy(textInputError = error) } },
+            onTravelGuideStarted = { turnId ->
+                _uiState.update { it.copy(travelGuide = TravelGuideUiState(
+                    turnId = turnId, visible = true, generating = true,
+                )) }
+            },
+            onTravelDocument = { turnId, operation, text ->
+                _uiState.update { state ->
+                    val guide = state.travelGuide
+                    if (guide.turnId != turnId) state else state.copy(travelGuide = when (operation) {
+                        "delta" -> guide.copy(markdown = (guide.markdown + text).take(24_000))
+                        "complete" -> guide.copy(generating = false)
+                        "error" -> guide.copy(generating = false, error = text)
+                        "interrupted" -> guide.copy(generating = false, visible = false)
+                        else -> guide
+                    })
+                }
+            },
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
             onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
             onNavigationTransportReset = dialogueManager::abortPendingTask,
         )
         return engine
+    }
+
+    fun dismissTravelGuide() {
+        _uiState.update { it.copy(travelGuide = it.travelGuide.copy(visible = false)) }
     }
 
     /** 恢复在线/离线选择；旧版本保存的 DEMO_DEV 自动迁移为当前构建的在线环境。 */

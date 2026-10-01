@@ -8,6 +8,22 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 class AppBusinessHandlerTest {
+    @Test fun `travel business marker starts generation once after business adoption`() {
+        val started = mutableListOf<String>()
+        val handler = AppBusinessHandler(
+            vehicle = MockVehicleState(),
+            navigation = null,
+            onTravelGuideStarted = started::add,
+        )
+        val marker = BusinessCommand("travel-turn", Intent(
+            schemaVersion = "1.0", domain = "travel", intent = "plan_guide",
+            slots = emptyMap(), confidence = 1.0, source = "llm.plan_travel",
+        ))
+        assertEquals(BusinessResult.Status.APPLIED, handler.handle(marker).status)
+        assertEquals(BusinessResult.Status.DUPLICATE, handler.handle(marker).status)
+        assertEquals(listOf("travel-turn"), started)
+    }
+
     @Test fun `exit dialogue leaves chat and invokes local lifecycle exit without speech`() {
         val modes = mutableListOf<Boolean>()
         var exits = 0

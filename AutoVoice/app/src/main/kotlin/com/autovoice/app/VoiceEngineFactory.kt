@@ -74,6 +74,8 @@ internal object VoiceEngineFactory {
         onConversationMode: (Boolean) -> Unit = {},
         onDialogueState: (DialogueSnapshot) -> Unit = {},
         onTextInputError: (String) -> Unit = {},
+        onTravelGuideStarted: (String) -> Unit = {},
+        onTravelDocument: (String, String, String) -> Unit = { _, _, _ -> },
         onPlaybackStage: (PlaybackStage) -> Unit = {},
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
@@ -145,9 +147,12 @@ internal object VoiceEngineFactory {
             asrModule = asrModule,
             nluModule = nluModule,
         )
-        cloudRunner.onAsrResult = { text, _, turnId ->
+        cloudRunner.onAsrResult = { text, final, turnId ->
             if (text.isNotBlank()) {
                 engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                    cloudRunner.retireTravelIfDifferent(turnId)
+                }
             }
         }
         cloudRunner.onAsrTurnEstablished = { turnId ->
@@ -156,6 +161,7 @@ internal object VoiceEngineFactory {
         cloudRunner.onReplyText = { text, _ ->
             if (text.isNotBlank()) onReplyText(text)
         }
+        cloudRunner.onTravelDocument = onTravelDocument
         cloudRunner.onConnectionEvent = { stage, level, payload ->
             telemetry.record(stage, level, payload)
         }
@@ -198,6 +204,10 @@ internal object VoiceEngineFactory {
             onVehicleApplied = onVehicleApplied,
             onConversationMode = onConversationMode,
             onExitDialogue = { engineRef?.exitCurrentDialogue() },
+            onTravelGuideStarted = { turnId ->
+                onTravelGuideStarted(turnId)
+                cloudRunner.startTravelGuide(turnId)
+            },
         )
         val onDeviceArbiter = OnDeviceRaceArbiter(
             cloudWaitMs = cfg.cloud.waitMs,
@@ -237,12 +247,17 @@ internal object VoiceEngineFactory {
                 cfg,
                 context,
                 scope,
-                { turnId, text ->
+                { turnId, text, final ->
                     if (!text.isNullOrBlank()) {
                         engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                        if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                            cloudRunner.retireTravelIfDifferent(turnId)
+                        }
                     }
                 },
-                { turnId -> engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR) },
+                { turnId ->
+                    engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
+                },
                 offlineStageRef,
                 telemetry,
                 asrModule,
@@ -326,7 +341,7 @@ internal object VoiceEngineFactory {
         cfg: DemoConfig,
         context: Context,
         scope: CoroutineScope,
-        onLocalRecognized: (String, String?) -> Unit,
+        onLocalRecognized: (String, String?, Boolean) -> Unit,
         onLocalTurnEstablished: (String) -> Unit,
         /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
         offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
@@ -375,7 +390,7 @@ internal object VoiceEngineFactory {
             asr = asrModule,
             nlu = nluModule,
             onRecognized = { turnId, result ->
-                onLocalRecognized(turnId, result.text)
+                onLocalRecognized(turnId, result.text, result.isFinal)
                 telemetry.record(
                     TelemetryStages.LOCAL_ASR,
                     "info",

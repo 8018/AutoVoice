@@ -109,6 +109,7 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.gson)
     implementation(libs.gson)
+    implementation("io.noties.markwon:core:4.6.2")
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
