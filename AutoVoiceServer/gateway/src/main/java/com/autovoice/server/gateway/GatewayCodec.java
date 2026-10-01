@@ -30,10 +30,10 @@ public final class GatewayCodec {
 
     /** 全部合法消息类型（protocol.md §2 消息总览）。 */
     private static final Set<String> TYPES = Set.of(
-            "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "pending", "reply", "error", "bye",
+            "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "travel_start", "pending", "reply", "error", "bye",
             "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
             "chat_start", "chat_ready", "chat_finish", "chat_speech_started",
-            "navigation_selection_start", "navigation_context_result");
+            "navigation_selection_start", "navigation_context_result", "text_request");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
@@ -45,17 +45,21 @@ public final class GatewayCodec {
                     "latitude", "longitude", "attempt", "navigationSelectionId", "navigationTaskId",
                     "navigationTaskRevision", "navigationInteractionId", "taskDialogVersion")),
             Map.entry("audio_end", Set.of("sessionId", "durationMs")),
+            Map.entry("text_request", Set.of("sessionId", "requestId", "utteranceId", "segmentId",
+                    "text", "language", "inputSource", "contextVersion", "context")),
             Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId", "taskId", "taskRevision",
                     "interactionId", "active")),
             Map.entry("navigation_context_result", Set.of("taskId", "taskRevision", "interactionId", "selectionId", "status")),
-            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid")),
+            Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid", "capabilities")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
             Map.entry("asr_turn_started", Set.of("sessionId", "segmentId")),
             Map.entry("asr_partial", Set.of("sessionId", "segmentId", "text", "isFinal", "chat", "chatId")),
             Map.entry("reply_partial", Set.of("segmentId", "text", "isFinal", "chat", "chatId")),
+            Map.entry("document_stream", Set.of("segmentId", "utteranceId", "format", "operation", "text")),
+            Map.entry("travel_start", Set.of("segmentId", "utteranceId")),
             Map.entry("pending", Set.of("segmentId", "text")),
-            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "asrText", "actionId", "actionExpiresAtMs")),
-            Map.entry("error", Set.of("sessionId", "code", "message", "segmentId", "chatId")),
+            Map.entry("reply", Set.of("kind", "text", "speakText", "mime", "dataBase64", "intent", "segmentId", "requestId", "asrText", "actionId", "actionExpiresAtMs")),
+            Map.entry("error", Set.of("sessionId", "code", "message", "segmentId", "requestId", "chatId")),
             Map.entry("bye", Set.of("sessionId", "reason")),
             Map.entry("tts_request", Set.of("text", "segmentId", "utteranceId")),
             Map.entry("tts_response", Set.of("mime", "dataBase64", "text", "segmentId")),
@@ -74,6 +78,8 @@ public final class GatewayCodec {
             Map.entry("hello", List.of("client", "protocolVersion")),
             Map.entry("audio_start", List.of("sessionId", "sampleRate", "channels", "encoding")),
             Map.entry("audio_end", List.of("sessionId", "durationMs")),
+            Map.entry("text_request", List.of("sessionId", "requestId", "utteranceId", "segmentId",
+                    "text", "language", "inputSource", "contextVersion", "context")),
             Map.entry("chat_start", List.of("sessionId")),
             Map.entry("chat_finish", List.of("sessionId")),
             Map.entry("cancel_turn", List.of("segmentId")),

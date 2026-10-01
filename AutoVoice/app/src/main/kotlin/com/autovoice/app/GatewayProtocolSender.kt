@@ -1,4 +1,5 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import com.autovoice.gatewayclient.GatewayClient
 
@@ -14,6 +15,9 @@ internal class GatewayProtocolSender(
     private val channels: Int = 1,
     private val encoding: String = "pcm_s16le",
 ) {
+    companion object {
+        const val TEXT_RECOGNITION_CAPABILITY = "text_recognition_v1"
+    }
     private var segmentBytes = 0L
 
     fun navigationSelection(sessionId: String, context: NavigationTaskContextRef) = channel.send(
@@ -73,6 +77,36 @@ internal class GatewayProtocolSender(
         mapOf("sessionId" to sessionId, "durationMs" to segmentBytes * 1000 / (2L * sampleRate)),
     )
 
+    /** Explicit text input; this is a protocol command, not a WebSocket transport concern. */
+    fun textRequest(
+        sessionId: String,
+        requestId: String,
+        utteranceId: String,
+        segmentId: String,
+        text: String,
+        language: String,
+    ) {
+        check(channel.supportsCapability(TEXT_RECOGNITION_CAPABILITY)) {
+            "UNSUPPORTED_CAPABILITY: text input is unavailable on this connection"
+        }
+        require(sessionId.isNotBlank() && requestId.isNotBlank() && utteranceId.isNotBlank() &&
+            segmentId.isNotBlank() && text.isNotBlank() && language.isNotBlank())
+        channel.send(
+            "text_request",
+            mapOf(
+                "sessionId" to sessionId,
+                "requestId" to requestId,
+                "utteranceId" to utteranceId,
+                "segmentId" to segmentId,
+                "text" to text,
+                "language" to language,
+                "inputSource" to "text",
+                "contextVersion" to 1,
+                "context" to emptyMap<String, Any>(),
+            ),
+        )
+    }
+
     fun chatStart(sessionId: String, chatId: String) = channel.send(
         "chat_start", mapOf("sessionId" to sessionId, "chatId" to chatId),
     )
@@ -92,23 +126,15 @@ internal class GatewayProtocolSender(
         channel.send("turn_commit", mapOf("segmentId" to segmentId, "utteranceId" to utteranceId))
     }
 
+    fun travelStart(segmentId: String, utteranceId: String) {
+        require(segmentId.isNotBlank() && utteranceId.isNotBlank())
+        channel.send("travel_start", mapOf("segmentId" to segmentId, "utteranceId" to utteranceId))
+    }
+
     fun tts(text: String, segmentId: String? = null, utteranceId: String? = null) {
         val payload = linkedMapOf<String, Any?>("text" to text)
         segmentId?.let { payload["segmentId"] = it }
         utteranceId?.let { payload["utteranceId"] = it }
         channel.send("tts_request", payload)
-    }
-}
-
-internal data class NavigationTaskContextRef(
-    val taskId: String,
-    val revision: Long,
-    val interactionId: String,
-    val selectionId: String,
-    val active: Boolean = true,
-) {
-    init {
-        require(taskId.isNotBlank() && revision > 0 && interactionId.isNotBlank())
-        if (active) require(selectionId.isNotBlank())
     }
 }

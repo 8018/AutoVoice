@@ -6,6 +6,8 @@ import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
+import com.autovoice.server.contracts.OnlineSpeechStream;
+import com.autovoice.server.contracts.OnlineTextProvider;
 import com.autovoice.server.contracts.OnlineAudioSink;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.RealtimeChatProvider;
@@ -65,6 +67,233 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 测试环境用极短仲裁参数（safety 1s），fake providers 同步就绪。
  */
 class VoiceGatewayHandlerTest {
+
+    @Test
+    void streamingSpeechTravelDocumentReachesClientAfterAdmission() throws Exception {
+        AtomicReference<OnlineAudioSink> documentSink = new AtomicReference<>();
+        AtomicInteger admitted = new AtomicInteger();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public String id() { return "streaming-travel-test"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("streaming request must not use batch processing");
+            }
+            @Override public OnlineSpeechStream openStream(SessionContext ctx, String uid,
+                                                            OnlineAudioSink sink,
+                                                            com.autovoice.server.contracts.OnlineAsrSink asrSink) {
+                documentSink.set(sink);
+                return new OnlineSpeechStream() {
+                    @Override public void append(byte[] pcm) {}
+                    @Override public CompletableFuture<OnlineSpeechResult> finish() {
+                        Intent intent = Intent.of("1.0", "travel", "plan_guide", Map.of(), 1,
+                                "llm.plan_travel", null);
+                        return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                                Reply.ofAction(intent, "正在生成北京攻略"), "北京一日游攻略"));
+                    }
+                    @Override public void cancel() {}
+                };
+            }
+            @Override public void admitTravel(SessionContext ctx, String uid) {
+                admitted.incrementAndGet();
+                documentSink.get().onDocument("start", "");
+                documentSink.get().onDocument("delta", "# 北京攻略");
+                documentSink.get().onDocument("complete", "");
+            }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            h.handleMessage(s, new TextMessage(audioStart(sid, "seg-stream-travel")));
+            h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+            h.handleMessage(s, new TextMessage(audioEnd(sid)));
+            JsonNode marker = awaitReplyFor(s, "seg-stream-travel");
+            assertEquals("travel", marker.at("/payload/intent/domain").asText());
+            assertNull(findTextFrame(s, "document_stream"));
+            h.handleMessage(s, new TextMessage("{\"type\":\"travel_start\",\"payload\":{"
+                    + "\"segmentId\":\"seg-stream-travel\",\"utteranceId\":\"u-1\"}}"));
+            assertEquals(1, admitted.get());
+            List<JsonNode> docs;
+            long deadline = System.currentTimeMillis() + 5_000;
+            do {
+                synchronized (s.sent) {
+                    docs = s.sent.stream().filter(TextMessage.class::isInstance)
+                            .map(VoiceGatewayHandlerTest::parse)
+                            .filter(frame -> "document_stream".equals(frame.path("type").asText())).toList();
+                }
+                if (docs.size() >= 3) break;
+                Thread.sleep(20);
+            } while (System.currentTimeMillis() < deadline);
+            assertEquals(List.of("start", "delta", "complete"), docs.stream()
+                    .map(frame -> frame.at("/payload/operation").asText()).toList());
+            assertEquals("# 北京攻略", docs.get(1).at("/payload/text").asText());
+        } finally { h.close(); }
+    }
+
+    @Test
+    void travelMarkerPrecedesMarkdownAndRequiresClientBusinessAdmission() throws Exception {
+        AtomicReference<OnlineAudioSink> documentSink = new AtomicReference<>();
+        AtomicInteger admitted = new AtomicInteger();
+        OnlineSpeechProvider provider = new OnlineSpeechProvider() {
+            @Override public String id() { return "travel-test"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(byte[] pcm, SessionContext ctx, String uid) {
+                return process(pcm, ctx, uid, OnlineAudioSink.NOOP);
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> process(
+                    byte[] pcm, SessionContext ctx, String uid, OnlineAudioSink sink) {
+                documentSink.set(sink);
+                Intent marker = Intent.of("1.0", "travel", "plan_guide", Map.of(), 1,
+                        "llm.plan_travel", null);
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(
+                        Reply.ofAction(marker, "正在生成北京攻略"), "北京一日游攻略"));
+            }
+            @Override public void admitTravel(SessionContext ctx, String uid) {
+                admitted.incrementAndGet();
+                documentSink.get().onDocument("start", "");
+                documentSink.get().onDocument("delta", "# 北京攻略");
+                documentSink.get().onDocument("complete", "");
+            }
+        };
+        VoiceGatewayHandler h = new VoiceGatewayHandler(provider, ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            h.handleMessage(s, new TextMessage(audioStart(sid, "seg-travel")));
+            h.handleMessage(s, new BinaryMessage(new byte[]{1}));
+            h.handleMessage(s, new TextMessage(audioEnd(sid)));
+            JsonNode marker = awaitReplyFor(s, "seg-travel");
+            assertEquals("travel", marker.at("/payload/intent/domain").asText());
+            assertNull(findTextFrame(s, "document_stream"));
+            String uid = "u-1";
+            h.handleMessage(s, new TextMessage("{\"type\":\"travel_start\",\"payload\":{"
+                    + "\"segmentId\":\"wrong\",\"utteranceId\":\"" + uid + "\"}}"));
+            assertEquals(0, admitted.get());
+            h.handleMessage(s, new TextMessage("{\"type\":\"travel_start\",\"payload\":{"
+                    + "\"segmentId\":\"seg-travel\",\"utteranceId\":\"" + uid + "\"}}"));
+            assertEquals(1, admitted.get());
+            List<JsonNode> docs;
+            long deadline = System.currentTimeMillis() + 5_000;
+            do {
+                synchronized (s.sent) {
+                    docs = s.sent.stream().filter(TextMessage.class::isInstance)
+                            .map(VoiceGatewayHandlerTest::parse)
+                            .filter(frame -> "document_stream".equals(frame.path("type").asText())).toList();
+                }
+                if (docs.size() >= 3) break;
+                Thread.sleep(20);
+            } while (System.currentTimeMillis() < deadline);
+            assertEquals(List.of("start", "delta", "complete"), docs.stream()
+                    .map(frame -> frame.at("/payload/operation").asText()).toList());
+            assertEquals("# 北京攻略", docs.get(1).at("/payload/text").asText());
+        } finally { h.close(); }
+    }
+
+    @Test
+    void textRequestUsesTextProviderWithoutAudioOrAsrAndRejectsReplay() throws Exception {
+        AtomicInteger textCalls = new AtomicInteger();
+        AtomicInteger audioCalls = new AtomicInteger();
+        class TextOnline implements OnlineSpeechProvider, OnlineTextProvider {
+            @Override public String id() { return "text-test"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(byte[] pcm, SessionContext ctx, String uid) {
+                audioCalls.incrementAndGet();
+                throw new AssertionError("text must not enter audio pipeline");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> processText(String text, SessionContext ctx, String uid) {
+                textCalls.incrementAndGet();
+                return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("收到：" + text), ""));
+            }
+        }
+        VoiceGatewayHandler h = new VoiceGatewayHandler(new TextOnline(), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            assertEquals("text_recognition_v1", parse(s.sent.get(0)).path("payload")
+                    .path("capabilities").get(0).asText());
+            String request = textRequest(sid, "req-1", "text-seg-1", "导航到公司");
+            h.handleMessage(s, new TextMessage(request));
+            JsonNode reply = awaitType(s, "reply");
+            assertEquals("req-1", reply.path("payload").path("requestId").asText());
+            assertEquals("text-seg-1", reply.path("payload").path("segmentId").asText());
+            assertEquals("收到：导航到公司", reply.path("payload").path("text").asText());
+            assertFalse(reply.path("payload").has("asrText"));
+            h.handleMessage(s, new TextMessage(request));
+            assertEquals("DUPLICATE_REQUEST", awaitType(s, "error").path("payload").path("code").asText());
+            assertEquals(1, textCalls.get());
+            assertEquals(0, audioCalls.get());
+            assertNull(findTextFrame(s, "asr_partial"));
+            assertNull(findTextFrame(s, "asr_turn_started"));
+        } finally {
+            h.close();
+        }
+    }
+
+    @Test
+    void unsupportedTextRequestIsExplicitlyRejectedAndNotAdvertised() throws Exception {
+        VoiceGatewayHandler h = new VoiceGatewayHandler(online(Reply.ofText("audio only")), ttsOk(),
+                noopOffline(), registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            assertFalse(parse(s.sent.get(0)).path("payload").has("capabilities"));
+            h.handleMessage(s, new TextMessage(textRequest(sid, "req-2", "text-seg-2", "你好")));
+            assertEquals("UNSUPPORTED_CAPABILITY", awaitType(s, "error").path("payload").path("code").asText());
+            assertNull(findTextFrame(s, "reply"));
+        } finally {
+            h.close();
+        }
+    }
+
+    @Test
+    void cancelledTextRequestCannotDeliverLateReply() throws Exception {
+        CompletableFuture<OnlineSpeechResult> held = new CompletableFuture<>();
+        CountDownLatch invoked = new CountDownLatch(1);
+        class TextOnline implements OnlineSpeechProvider, OnlineTextProvider {
+            @Override public String id() { return "text-held"; }
+            @Override public CompletableFuture<OnlineSpeechResult> process(byte[] pcm, SessionContext ctx, String uid) {
+                throw new AssertionError("audio path should not be called");
+            }
+            @Override public CompletableFuture<OnlineSpeechResult> processText(String text, SessionContext ctx, String uid) {
+                invoked.countDown();
+                if ("req-after".equals(uid)) {
+                    return CompletableFuture.completedFuture(new OnlineSpeechResult(Reply.ofText("after"), ""));
+                }
+                return held;
+            }
+        }
+        VoiceGatewayHandler h = new VoiceGatewayHandler(new TextOnline(), ttsOk(), noopOffline(),
+                registry, SAFETY, ASR_FAIL_WAIT);
+        try {
+            StubSession s = open(h);
+            String sid = handshake(h, s);
+            h.handleMessage(s, new TextMessage(textRequest(sid, "req-cancel", "text-cancel", "你好")));
+            assertTrue(invoked.await(5, TimeUnit.SECONDS));
+            h.handleMessage(s, new TextMessage(
+                    "{\"type\":\"cancel_turn\",\"payload\":{\"segmentId\":\"text-cancel\"}}"));
+            // A different accepted request proves the connection worker progressed past the cancelled result.
+            h.handleMessage(s, new TextMessage(textRequest(sid, "req-after", "text-after", "再见")));
+            assertEquals("after", awaitReplyFor(s, "text-after").path("payload").path("text").asText());
+            held.complete(new OnlineSpeechResult(Reply.ofText("late"), ""));
+            synchronized (s.sent) {
+                assertFalse(s.sent.stream().filter(TextMessage.class::isInstance)
+                        .map(VoiceGatewayHandlerTest::parse)
+                        .anyMatch(frame -> "reply".equals(frame.path("type").asText())
+                                && "text-cancel".equals(frame.path("payload").path("segmentId").asText())));
+            }
+        } finally {
+            held.complete(new OnlineSpeechResult(Reply.ofText("late"), ""));
+            h.close();
+        }
+    }
+
+    private static String textRequest(String sessionId, String requestId, String segmentId, String text) {
+        return "{\"type\":\"text_request\",\"payload\":{\"sessionId\":\"" + sessionId
+                + "\",\"requestId\":\"" + requestId + "\",\"utteranceId\":\"" + requestId
+                + "\",\"segmentId\":\"" + segmentId + "\",\"text\":\"" + text
+                + "\",\"language\":\"zh-CN\",\"inputSource\":\"text\",\"contextVersion\":1,\"context\":{}}}";
+    }
 
     @Test
     void shutdownCancelsEveryOpenRecognitionStreamEvenWhenOneCancelFails() {

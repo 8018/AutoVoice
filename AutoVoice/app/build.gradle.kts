@@ -91,9 +91,11 @@ kotlin {
 
 dependencies {
     implementation(project(":voice-core"))
+    implementation(project(":voice-engine"))
     implementation(project(":gateway-client"))
     implementation(project(":message-dispatch"))
     implementation(project(":business-core"))
+    implementation(project(":voice-business"))
     implementation(project(":tts"))
     implementation(project(":audio-frontend"))
     implementation(project(":adapter-iflytek"))
@@ -107,6 +109,7 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.gson)
     implementation(libs.gson)
+    implementation("io.noties.markwon:core:4.6.2")
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

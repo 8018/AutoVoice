@@ -27,6 +27,8 @@ interface StreamingCloudRunner {
     fun appendStreamingAudio(pcm: ByteArray)
     fun finishStreamingTurn(utteranceId: String)
     fun cancelStreamingTurn(utteranceId: String)
+    /** Stop only unfinished input; already finalized PCM may finish its cloud NLU request. */
+    fun stopUnfinalizedStreamingTurn(utteranceId: String) = cancelStreamingTurn(utteranceId)
     /** Candidate audio has been admitted as a business turn by ASR or final semantic evidence. */
     fun commitStreamingTurn(utteranceId: String) {}
 }

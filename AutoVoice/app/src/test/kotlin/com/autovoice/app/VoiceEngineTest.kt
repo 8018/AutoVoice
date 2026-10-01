@@ -1,4 +1,5 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.NavigationExecutor
 
 import com.autovoice.app.business.AppBusinessHandler
 import com.autovoice.tts.TtsPlaybackDriver
@@ -27,8 +28,10 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
 import com.autovoice.voicecore.session.LocalChainRunner
-import com.autovoice.voicecore.dialog.DialogueState
-import com.autovoice.voicecore.dialog.AdmissionEvidence
+import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.AdmissionEvidence
+import com.autovoice.voiceengine.CloudTextNluEngine
+import com.autovoice.voiceengine.api.TextSubmission
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +69,248 @@ import org.junit.jupiter.api.Test
  */
 class VoiceEngineTest {
 
+    @Test
+    fun `explicit text reaches cloud arbitration without either audio runner`() = runBlocking {
+        var localCalls = 0
+        var cloudAudioCalls = 0
+        val recognized = mutableListOf<String?>()
+        val winners = mutableListOf<String>()
+        val cloud = object : CloudRunner, CloudTextNluEngine {
+            override suspend fun run(segment: ByteArray): Reply {
+                cloudAudioCalls++
+                error("audio runner must not be used")
+            }
+            override suspend fun understand(turnId: String, text: String): Reply = TextReply("reply to $text")
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; error("local audio must not be used") },
+            cloud = cloud,
+            onRecognized = recognized::add,
+            onCloudWon = winners::add,
+        )
+
+        assertEquals(TextSubmission.ACCEPTED, engine.submitText(" 今天天气 "))
+        withTimeout(2_000) { while (winners.isEmpty()) delay(10) }
+        assertEquals(listOf("今天天气"), recognized)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudAudioCalls)
+        assertTrue(engine.recognitionEnabled, "later voice follow-up remains available")
+    }
+
     private val segment = ByteArray(960) { 7 }
+
+    @Test
+    fun `capture before explicit interaction does not open recognition or invoke speech routes`() = runBlocking {
+        var localCalls = 0
+        var cloudCalls = 0
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { cloudCalls++; TextReply("unexpected") },
+        )
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(30)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudCalls)
+    }
+
+    @Test
+    fun `new audio is blocked after recognition closes`() = runBlocking {
+        var localCalls = 0
+        var cloudCalls = 0
+        val events = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) { events += "begin" }
+            override fun appendStreamingAudio(pcm: ByteArray) { events += "audio" }
+            override fun finishStreamingTurn(utteranceId: String) { events += "finish" }
+            override fun cancelStreamingTurn(utteranceId: String) { events += "cancel" }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { cloudCalls++; TextReply("不应返回") },
+            streamingCloud = streaming,
+        )
+        assertFalse(engine.recognitionEnabled)
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        assertTrue(engine.recognitionEnabled)
+
+        engine.stopRecognition()
+        engine.appendStreamingCloudAudio(segment)
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+        delay(30)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+        assertEquals(0, cloudCalls)
+        assertTrue("audio" !in events)
+
+        // A later capture callback must not silently undo a deliberate business suppression.
+        engine.onListeningStart()
+        engine.onTurnSegment(segment)
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+    }
+
+    @Test
+    fun `realtime audio requires its own active recognition session`() = runBlocking {
+        val audio = mutableListOf<ByteArray>()
+        var starts = 0
+        var finishes = 0
+        val chat = object : CloudRunner, RealtimeChatRunner {
+            override suspend fun run(segment: ByteArray): Reply = TextReply("unused")
+            override suspend fun startRealtimeChat() { starts++ }
+            override fun appendRealtimeAudio(pcm: ByteArray) { audio += pcm }
+            override fun finishRealtimeChat() { finishes++ }
+        }
+        val engine = engine(
+            scope = this,
+            local = LocalChainRunner { Intent.unknown("local") },
+            cloud = chat,
+        ).first
+
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(0, starts)
+        assertTrue(audio.isEmpty())
+
+        engine.onWake()
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, starts)
+        assertEquals(1, audio.size)
+
+        engine.stopRecognition()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, finishes)
+        assertEquals(1, audio.size)
+
+        // Reopening recognition must not reactivate the previous chat feed.
+        engine.onWake()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(1, audio.size)
+        engine.startRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(2, starts)
+        assertEquals(2, audio.size)
+
+        engine.finishRealtimeChat()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(2, finishes)
+        assertEquals(2, audio.size)
+
+        engine.startRealtimeChat()
+        engine.exitCurrentDialogue()
+        engine.appendRealtimeChatAudio(segment)
+        assertEquals(3, finishes)
+        assertEquals(2, audio.size)
+    }
+
+    @Test
+    fun `dialogue exit stops unfinished streaming input`() = runBlocking {
+        val stopped = mutableListOf<String>()
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) = Unit
+            override fun appendStreamingAudio(pcm: ByteArray) = Unit
+            override fun finishStreamingTurn(utteranceId: String) = Unit
+            override fun cancelStreamingTurn(utteranceId: String) { stopped += utteranceId }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("unexpected") },
+            streamingCloud = streaming,
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        val turnId = engine.conversation.captureId
+
+        engine.exitCurrentDialogue()
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(listOf(turnId), stopped)
+    }
+
+    @Test
+    fun `stopping recognition keeps a finalized streaming input`() = runBlocking {
+        var finalized = false
+        var cancelled = false
+        val streaming = object : StreamingCloudRunner {
+            override fun beginStreamingTurn(utteranceId: String) = Unit
+            override fun appendStreamingAudio(pcm: ByteArray) = Unit
+            override fun finishStreamingTurn(utteranceId: String) { finalized = true }
+            override fun cancelStreamingTurn(utteranceId: String) { cancelled = true }
+            override fun stopUnfinalizedStreamingTurn(utteranceId: String) {
+                if (!finalized) cancelStreamingTurn(utteranceId)
+            }
+        }
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { powerOnIntent() },
+            cloud = CloudRunner { TextReply("unexpected") },
+            streamingCloud = streaming,
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onVadStart()
+        engine.finishStreamingCloudAudio()
+        engine.stopRecognition()
+
+        assertTrue(finalized)
+        assertFalse(cancelled)
+        assertFalse(engine.recognitionEnabled)
+    }
+
+    @Test
+    fun `completed input may deliver NLU after recognition closes`() = runBlocking {
+        val result = CompletableDeferred<Intent>()
+        val (engine, vehicle) = engine(
+            scope = this,
+            local = LocalChainRunner { result.await() },
+            cloud = CloudRunner { awaitCancellation() },
+        )
+        engine.onWake()
+        engine.onListeningStart()
+        engine.onTurnSegment(segment)
+        engine.stopRecognition()
+        result.complete(powerOnIntent())
+
+        withTimeout(2_000) {
+            while (!vehicle.isAcOn) delay(10)
+        }
+        assertFalse(engine.recognitionEnabled)
+        assertTrue(vehicle.isAcOn)
+    }
+
+    @Test
+    fun `queued capture after dialogue exit cannot reopen recognition`() = runBlocking {
+        var localCalls = 0
+        val (engine, _) = engine(
+            scope = this,
+            local = LocalChainRunner { localCalls++; powerOnIntent() },
+            cloud = CloudRunner { TextReply("不应返回") },
+        )
+        engine.onWake()
+        engine.exitCurrentDialogue()
+        engine.onListeningStart()
+        engine.onCloudSegment(segment)
+        engine.onTurnSegment(segment)
+
+        assertFalse(engine.recognitionEnabled)
+        assertEquals(0, localCalls)
+    }
 
     @Test
     fun `starting a new turn stops current playback`() = runBlocking {
@@ -126,6 +370,7 @@ class VoiceEngineTest {
         ).first
 
         // 建立一个尚未完成播放的旧 turn；不要让测试 TTS 的即时失败先收口它。
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         val oldTurn = engine.conversation.captureId
@@ -355,6 +600,7 @@ class VoiceEngineTest {
             sink = DecisionSink(decisions::add),
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onCloudSegment(segment)
@@ -380,6 +626,7 @@ class VoiceEngineTest {
             sink = DecisionSink(decisions::add),
             tts = TtsRequester { spoken += it; null },
         )
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onCloudSegment(segment)
@@ -411,6 +658,7 @@ class VoiceEngineTest {
             streamingCloud = streaming,
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.appendStreamingCloudAudio(ByteArray(960))
@@ -440,6 +688,7 @@ class VoiceEngineTest {
             streamingCloud = streaming,
         )
 
+        engine.onWake()
         engine.onListeningStart()
         engine.onVadStart()
         engine.onTurnSegment(segment)
@@ -455,6 +704,9 @@ class VoiceEngineTest {
      * → onTurnSegment（本地整段，启动竞速）。在 runBlocking 内调用。
      */
     private suspend fun utter(engine: VoiceEngine, cloudSegments: Int = 1) {
+        // The production manual-turn entry explicitly opens an interaction before recording.
+        // A bare capture must not manufacture an interaction from late ASR/NLU evidence.
+        if (engine.conversation.snapshot.value.state == DialogueState.DORMANT) engine.onWake()
         engine.onListeningStart()
         repeat(cloudSegments) { engine.onCloudSegment(segment) }
         engine.onTurnSegment(segment)
@@ -606,6 +858,8 @@ class VoiceEngineTest {
             )
             engine = pair.first
             val vehicle = pair.second
+            engine.onWake()
+            pendingStates.clear() // Ignore the explicit interaction's initial pending=false reset.
             engine.onListeningStart()
             engine.onCloudSegment(segment)
             engine.onTurnSegment(segment)
@@ -687,6 +941,7 @@ class VoiceEngineTest {
                 )
                 val engine = pair.first
                 engine.onVadStart() // 录音外（IDLE）的杂散 SpeechStart → 忽略，不产生 utteranceId
+                engine.onWake()
                 engine.onListeningStart()
                 engine.onVadStart() // 首个段：产生 utteranceId + utterance_start + vad_start
                 engine.onVadStart() // 同轮第二段：不重复产生 id，只记 vad_start
@@ -744,6 +999,7 @@ class VoiceEngineTest {
                     telemetry = telemetry,
                 )
                 val engine = pair.first
+                engine.onWake()
                 engine.onListeningStart() // utt 轮 1
                 engine.onVadStart() // 产生 utt-1 + vad_start
                 engine.onListeningStart() // utt 轮 2：utteranceId 清空
@@ -841,6 +1097,7 @@ class VoiceEngineTest {
                     sink = DecisionSink { entries.add(it) },
                 )
                 engine = pair.first
+                engine.onWake()
                 engine.onListeningStart()
                 engine.onCloudSegment(segment)
                 engine.onTurnSegment(segment)
@@ -1415,6 +1672,7 @@ class VoiceEngineTest {
         )
         engine = pair.first
         val vehicle = pair.second
+        engine.onWake()
         engine.onListeningStart()
         engine.onCloudSegment(segment)
         engine.onTurnSegment(segment)
@@ -1529,12 +1787,13 @@ class VoiceEngineTest {
             scope = scope,
         )
         runBlocking {
+            engine.onWake()
             engine.onListeningStart()
             engine.onCloudSegment(segment)
             engine.onTurnSegment(segment)
             withTimeout(2_000) { cloudStarted.await() } // 确保竞速已启动后才 close
         }
-        assertEquals(DialogueState.DORMANT, engine.conversation.snapshot.value.state)
+        assertEquals(DialogueState.LISTENING, engine.conversation.snapshot.value.state)
 
         engine.close()
 

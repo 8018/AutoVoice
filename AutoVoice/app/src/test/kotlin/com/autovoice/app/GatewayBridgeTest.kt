@@ -1,4 +1,6 @@
 package com.autovoice.app
+import com.autovoice.voiceengine.cloud.CloudAsrEngine
+import com.autovoice.voiceengine.cloud.CloudNluEngine
 
 import com.autovoice.gatewayclient.GatewayClient
 import com.autovoice.gatewayclient.GatewayException

@@ -9,6 +9,7 @@ import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.ToolProvider;
+import com.autovoice.server.contracts.TravelGuideProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
 import com.autovoice.server.llm.DeepSeekLlmProvider;
 import com.autovoice.server.navigation.NavigationDialogService;
@@ -18,6 +19,7 @@ import com.autovoice.server.skillmcp.SystemPromptStore;
 import okhttp3.OkHttpClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Clock;
 import java.util.ArrayList;
@@ -83,5 +85,19 @@ public class BusinessBackendConfig {
     @Bean
     public NavigationDialog navigationDialog() {
         return new NavigationDialogService();
+    }
+
+    @Bean(destroyMethod = "close")
+    public TravelGuideProvider travelGuideProvider(OkHttpClient client,
+            AppConfig.AutovoiceProperties props,
+            @Value("${TENCENT_SEARCHPRO_API_KEY:}") String searchKey,
+            @Value("${TENCENTCLOUD_SECRET_ID:}") String secretId,
+            @Value("${TENCENTCLOUD_SECRET_KEY:}") String secretKey) {
+        boolean standard = !secretId.isBlank() && !secretKey.isBlank();
+        return new TravelGuideService(client, searchKey, secretId, secretKey,
+                props.secrets().deepseekApiKey(),
+                standard ? "https://wsa.tencentcloudapi.com/"
+                        : "https://api.wsa.cloud.tencent.com/SearchPro",
+                DeepSeekLlmProvider.DEFAULT_ENDPOINT);
     }
 }

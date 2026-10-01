@@ -117,6 +117,30 @@ class GatewayClientTest {
     /** 一句话语段 PCM：1600 字节 @16kHz/S16LE = 50ms，audio_end 应换算 durationMs=50。 */
     private val pcm = ByteArray(1600) { (it % 251).toByte() }
 
+    @Test
+    fun `capabilities are scoped to current ready connection`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.readyCapabilities = listOf("text_recognition_v1")
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        gateway.server.enqueue(gateway.upgrade())
+        val okHttp = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp, gson)
+        try {
+            assertFalse(client.supportsCapability("text_recognition_v1"))
+            client.connect()
+            assertTrue(client.supportsCapability("text_recognition_v1"))
+            gateway.latestSocket!!.close(1012, "service restart")
+            assertTrue(awaitTrue { client.connectionState.value == GatewayConnectionState.DISCONNECTED })
+            assertFalse(client.supportsCapability("text_recognition_v1"))
+            gateway.readyCapabilities = emptyList()
+            client.connect()
+            assertFalse(client.supportsCapability("text_recognition_v1"), "old capability must not survive reconnect")
+        } finally {
+            gateway.closeAll(client, okHttp)
+        }
+    }
+
     private fun fixture(name: String): String =
         checkNotNull(javaClass.classLoader.getResource(name)) { "shared/fixtures 未接线: $name" }.readText()
 
@@ -125,10 +149,14 @@ class GatewayClientTest {
         return GatewayMessage(root.get("type").asString, root.getAsJsonObject("payload"))
     }
 
-    private fun readyFrame(sessionId: String, serverTime: Long? = null, resumeToken: String? = null): String {
+    private fun readyFrame(
+        sessionId: String, serverTime: Long? = null, resumeToken: String? = null,
+        capabilities: List<String> = emptyList(),
+    ): String {
         val st = serverTime?.let { ""","serverTime":$it""" } ?: ""
         val rt = resumeToken?.let { ""","resumeToken":"$it"""" } ?: ""
-        return """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"$st$rt}}"""
+        val cp = if (capabilities.isEmpty()) "" else ",\"capabilities\":" + gson.toJson(capabilities)
+        return """{"type":"ready","payload":{"sessionId":"$sessionId","language":"zh-CN","protocolVersion":"1.1"$st$rt$cp}}"""
     }
 
     private fun decisionFrame() =
@@ -157,6 +185,8 @@ class GatewayClientTest {
         /** D02b：非 null 时 ready 帧携带该 resumeToken（会话恢复凭据）。 */
         var readyResumeToken: String? = null
 
+        var readyCapabilities: List<String> = emptyList()
+
         /** 服务端主动推送下行文本帧（error 等）。 */
         fun sendText(text: String) {
             assertTrue(latestSocket?.send(text) == true, "下行帧应发送成功")
@@ -172,7 +202,9 @@ class GatewayClientTest {
                     val msg = parse(text)
                     frames.add(msg)
                     when (msg.type) {
-                        "hello" -> webSocket.send(readyFrame("srv-sess-1", readyServerTime, readyResumeToken))
+                        "hello" -> webSocket.send(readyFrame(
+                            "srv-sess-1", readyServerTime, readyResumeToken, readyCapabilities,
+                        ))
                         "audio_end" -> onAudioEnd(webSocket, msg)
                         else -> Unit
                     }

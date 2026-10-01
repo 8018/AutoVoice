@@ -1,4 +1,5 @@
 package com.autovoice.app
+import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.util.Log
 import com.autovoice.gatewayclient.GatewayClient
@@ -8,6 +9,7 @@ import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.session.CloudRequestFailedException
 import com.autovoice.voicecore.session.CloudRunner
 import com.autovoice.voicecore.session.CloudUnavailableException
+import com.autovoice.voiceengine.RecognitionGate
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -33,13 +35,17 @@ internal class GatewayBusinessSpeechChannel(
     private val navigationContext: () -> NavigationTaskContextRef?,
     private val onTransportFailure: (Throwable, Boolean) -> Unit,
     private val clearReplyText: (String) -> Unit,
+    private val recognitionGate: RecognitionGate? = null,
 ) : CloudRunner, StreamingCloudRunner {
     private data class LiveUpload(
         val utteranceId: String,
         val navigationContext: NavigationTaskContextRef?,
+        val coordinates: Pair<Double, Double>?,
         val segmentId: String = UUID.randomUUID().toString(),
         val chunks: Channel<ByteArray> = Channel(LIVE_UPLOAD_QUEUE_CAPACITY),
         val reply: CompletableDeferred<Reply> = CompletableDeferred(),
+        val permit: RecognitionGate.InputPermit? = null,
+        val inputFinalized: AtomicBoolean = AtomicBoolean(false),
         val admitted: AtomicBoolean = AtomicBoolean(false),
         val audioStarted: AtomicBoolean = AtomicBoolean(false),
         val commitSent: AtomicBoolean = AtomicBoolean(false),
@@ -50,7 +56,11 @@ internal class GatewayBusinessSpeechChannel(
 
     override fun beginStreamingTurn(utteranceId: String) {
         if (utteranceId.isBlank()) return
-        val upload = LiveUpload(utteranceId, navigationContext())
+        val permit = recognitionGate?.admitInput()
+        if (recognitionGate != null && !recognitionGate.accepts(permit)) return
+        if (liveUpload.get()?.utteranceId == utteranceId) return
+        // Capture position at SpeechStart, before connection setup or coroutine scheduling.
+        val upload = LiveUpload(utteranceId, navigationContext(), location(), permit = permit)
         while (true) {
             val previous = liveUpload.get()
             // Multiple VAD segments from the same admitted turn belong to one upload.
@@ -67,6 +77,7 @@ internal class GatewayBusinessSpeechChannel(
     override fun appendStreamingAudio(pcm: ByteArray) {
         if (pcm.isEmpty()) return
         val upload = liveUpload.get() ?: return
+        if (upload.inputFinalized.get() || !acceptsQueuedInput(upload)) return
         val result = upload.chunks.trySend(pcm.copyOf())
         if (result.isFailure && !result.isClosed) {
             val overflow = CloudRequestFailedException("streaming audio queue overflow")
@@ -76,8 +87,16 @@ internal class GatewayBusinessSpeechChannel(
     }
 
     override fun finishStreamingTurn(utteranceId: String) {
-        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.chunks?.close()
+        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.let {
+            // A finalized input is allowed to finish uploading and resolve NLU after the global
+            // gate closes. The pending PCM is already part of this admitted request.
+            it.inputFinalized.set(true)
+            it.chunks.close()
+        }
     }
+
+    fun isInputFinalized(utteranceId: String): Boolean =
+        liveUpload.get()?.takeIf { it.utteranceId == utteranceId }?.inputFinalized?.get() == true
 
     override fun cancelStreamingTurn(utteranceId: String) {
         val upload = liveUpload.get()?.takeIf { it.utteranceId == utteranceId } ?: return
@@ -111,8 +130,10 @@ internal class GatewayBusinessSpeechChannel(
     private suspend fun executeLiveUpload(upload: LiveUpload) {
         val slot = bridge.newReplySlot(upload.segmentId, upload.utteranceId)
         try {
+            requireQueuedInput(upload)
             ensureReady()
-            val coordinates = location()
+            requireQueuedInput(upload)
+            val coordinates = upload.coordinates
             protocol.audioStart(
                 sessionId(), upload.segmentId, upload.utteranceId,
                 coordinates?.first, coordinates?.second,
@@ -120,7 +141,11 @@ internal class GatewayBusinessSpeechChannel(
             )
             upload.audioStarted.set(true)
             sendCommitIfReady(upload)
-            for (chunk in upload.chunks) protocol.audioChunk(chunk)
+            for (chunk in upload.chunks) {
+                requireQueuedInput(upload)
+                protocol.audioChunk(chunk)
+            }
+            requireQueuedInput(upload)
             protocol.audioEnd(sessionId())
             upload.reply.complete(slot.await())
         } catch (cancelled: CancellationException) {
@@ -140,9 +165,22 @@ internal class GatewayBusinessSpeechChannel(
             onTransportFailure(error, true)
             upload.reply.completeExceptionally(CloudUnavailableException("流式云端链路故障：${error.message}", error))
         } catch (error: CloudRequestFailedException) {
+            if (upload.audioStarted.get() && client.connectionState.value == GatewayConnectionState.READY) {
+                runCatching { protocol.cancelTurn(upload.segmentId) }
+            }
+            bridge.cancelStream(upload.segmentId)
             upload.reply.completeExceptionally(error)
         } finally {
             bridge.clearReplySlot(slot)
+        }
+    }
+
+    private fun acceptsQueuedInput(upload: LiveUpload): Boolean =
+        upload.inputFinalized.get() || recognitionGate?.accepts(upload.permit) != false
+
+    private fun requireQueuedInput(upload: LiveUpload) {
+        if (!acceptsQueuedInput(upload)) {
+            throw CloudRequestFailedException("recognition stopped before queued audio was sent")
         }
     }
 

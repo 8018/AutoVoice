@@ -36,6 +36,12 @@ public final class NavigationCandidateReplies {
             try {
                 JsonNode destinations = JSON.readTree(result.content()).path("destinations");
                 if (!destinations.isArray() || destinations.isEmpty()) continue;
+                for (JsonNode destination : destinations) {
+                    if (destination.path("candidates").isArray() && destination.path("candidates").isEmpty()) {
+                        return Optional.of(Reply.ofText("未找到“" + destination.path("query").asText("")
+                                + "”的可靠地点，请确认定位或说出具体城市和地点名称。"));
+                    }
+                }
                 if (destinations.size() > 1) {
                     Optional<Reply> multiStop = multiStopReply(destinations, result.content());
                     if (multiStop.isPresent()) return multiStop;
