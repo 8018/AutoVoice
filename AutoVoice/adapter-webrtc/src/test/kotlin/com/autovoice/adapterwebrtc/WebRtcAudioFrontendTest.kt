@@ -183,6 +183,68 @@ class WebRtcAudioFrontendTest {
         assertTrue(segments.all { it.size / 2 <= 500 })
         f.close()
     }
+    @Test fun `higher invalidation retires queued older reference before any render reaches backend`() {
+        val backend = FakeBackend()
+        val f = WebRtcAudioFrontend(backend,config(),clockNanos = { 0 })
+        try {
+            assertTrue(f.acceptRender(RenderReferenceFrame(5,0,0,pcm(ShortArray(160) { 5 }))))
+            f.invalidateRender(6)
+            assertEquals(3,f.process(ByteArray(1024)).processedBlocks.size)
+            assertTrue(backend.renders.isEmpty())
+            assertEquals(com.autovoice.voicecore.health.Health.UNKNOWN,f.aecHealth)
+            assertFalse(f.acceptRender(RenderReferenceFrame(5,160,0,ByteArray(320))))
+            assertFalse(f.acceptRender(RenderReferenceFrame(6,0,0,ByteArray(320))))
+            assertTrue(f.acceptRender(RenderReferenceFrame(7,0,0,pcm(ShortArray(160) { 7 }))))
+            f.process(ByteArray(1024))
+            assertEquals(1,backend.renders.size)
+            assertArrayEquals(ShortArray(160) { 7 },backend.renders.single())
+            assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
+            assertTrue(backend.resets.isEmpty());assertEquals(0,backend.closes)
+        } finally { f.close() }
+    }
+    @Test fun `higher invalidation immediately withdraws healthy older reference and clears partial samples`() {
+        val backend = FakeBackend()
+        val events = mutableListOf<com.autovoice.voicecore.health.ComponentStatusEvent>()
+        val reporter = com.autovoice.voicecore.health.ComponentReporter(
+            com.autovoice.voicecore.health.ComponentDescriptor("aec","webrtc.apm","open"),1,com.autovoice.voicecore.health.ComponentStatusSink(events::add))
+        val f = WebRtcAudioFrontend(backend,config(),clockNanos = { 0 },aecReporter = reporter)
+        try {
+            f.acceptRender(RenderReferenceFrame(5,0,0,pcm(ShortArray(240) { 5 })))
+            f.process(ByteArray(1024)) // One rendered frame plus80 pending real samples.
+            assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
+            f.acceptRender(RenderReferenceFrame(5,240,0,pcm(ShortArray(80) { 5 })))
+            f.invalidateRender(6)
+            assertEquals(com.autovoice.voicecore.health.Health.UNKNOWN,f.aecHealth)
+            assertEquals(com.autovoice.voicecore.health.Health.UNKNOWN,events.last().update.health)
+            assertNull(f.renderFailure)
+            f.acceptRender(RenderReferenceFrame(7,0,0,pcm(ShortArray(80) { 7 })))
+            f.process(ByteArray(1024))
+            assertEquals(1,backend.renders.size) // Old80 queued and old80 pending cannot form a frame.
+            assertEquals(com.autovoice.voicecore.health.Health.UNKNOWN,f.aecHealth)
+            f.acceptRender(RenderReferenceFrame(7,80,0,pcm(ShortArray(80) { 7 })))
+            f.process(ByteArray(1024))
+            assertEquals(2,backend.renders.size)
+            assertArrayEquals(ShortArray(160) { 7 },backend.renders.last())
+            assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
+            assertTrue(backend.resets.isEmpty());assertEquals(0,backend.closes)
+        } finally { f.close() }
+    }
+    @Test fun `delayed older invalidation keeps newer active reference usable`() {
+        val backend = FakeBackend()
+        val f = WebRtcAudioFrontend(backend,config(),clockNanos = { 0 })
+        try {
+            f.acceptRender(RenderReferenceFrame(7,0,0,pcm(ShortArray(160) { 7 })))
+            f.process(ByteArray(1024))
+            f.invalidateRender(6);f.invalidateRender(5)
+            assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
+            assertFalse(f.acceptRender(RenderReferenceFrame(6,0,0,ByteArray(320))))
+            assertTrue(f.acceptRender(RenderReferenceFrame(7,160,0,pcm(ShortArray(160) { 7 }))))
+            f.process(ByteArray(1024))
+            assertEquals(2,backend.renders.size)
+            assertTrue(backend.renders.all { it.contentEquals(ShortArray(160) { 7 }) })
+            assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
+        } finally { f.close() }
+    }
     private fun pcm(samples: ShortArray) = ByteArray(samples.size * 2).also { b -> samples.forEachIndexed { i,s -> b[2*i]=s.toByte();b[2*i+1]=(s.toInt() shr 8).toByte() } }
     private fun samples(pcm: ByteArray) = ShortArray(pcm.size / 2) { i -> ((pcm[i*2].toInt() and 255) or (pcm[i*2+1].toInt() shl 8)).toShort() }
 }

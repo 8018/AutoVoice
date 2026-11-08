@@ -164,7 +164,7 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     }
     @Synchronized override fun invalidateRender(playbackId: Long) {
         invalidatedThrough = maxOf(invalidatedThrough,playbackId)
-        if (this.playbackId == playbackId) { clearReference();this.playbackId = null;reportAec() }
+        if (this.playbackId?.let { it <= invalidatedThrough } == true) { clearReference();this.playbackId = null;reportAec() }
     }
     private fun clearReference() {
         renderQueue.clear();renderPending = ShortArray(0);nextRenderSample = null;lastReferenceNanos = null
