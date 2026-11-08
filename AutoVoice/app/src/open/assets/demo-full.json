@@ -1,0 +1,28 @@
+{
+  "mode": "full",
+  "vad": {
+    "minSpeechMs": 64,
+    "minSilenceMs": 960,
+    "provider": "webrtc.vad"
+  },
+  "ecnr": "none",
+  "local": {
+    "asr": "firered.ctc.int8",
+    "nlu": "rule.text"
+  },
+  "cloud": {
+    "enabled": true,
+    "gatewayUrl": "ws://47.94.4.204:8080/ws",
+    "waitMs": 3000,
+    "deviceId": "demo-1",
+    "authToken": "",
+    "telemetry": {
+      "enabled": true,
+      "url": ""
+    }
+  },
+  "mock": {
+    "executor": false
+  },
+  "frontend": "webrtc.apm"
+}

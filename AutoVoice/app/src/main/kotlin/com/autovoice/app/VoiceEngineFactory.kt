@@ -3,12 +3,10 @@ import com.autovoice.voicebusiness.navigation.NavigationExecutor
 import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
 import android.content.Context
+import com.autovoice.app.channel.SpeechChannel
+import com.autovoice.app.channel.LocalEngineAssembly
 import android.net.ConnectivityManager
 import android.util.Log
-import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
-import com.autovoice.adapteriflytek.RuleNluProvider
-import com.autovoice.voiceengine.local.LocalAsrEngine
-import com.autovoice.voiceengine.local.LocalNluEngine
 import com.autovoice.voiceengine.local.LocalSpeechRoute
 import com.autovoice.voiceengine.RecognitionGate
 import com.autovoice.voiceengine.AsrModule
@@ -23,9 +21,7 @@ import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
 import com.autovoice.voicebusiness.dialog.AdmissionEvidence
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicecore.session.LocalChainRunner
-import com.autovoice.voicecore.validateForRuntime
 import com.autovoice.tts.TtsEventSink
-import com.autovoice.tts.TtsPlaybackDriver
 import com.autovoice.tts.TtsSynthesizer
 import com.autovoice.tts.createTtsOutput
 import java.io.File
@@ -44,19 +40,11 @@ private const val FACTORY_TAG = "VoiceEngineFactory"
  * Android 生产环境的组合根。只负责构造依赖与绑定回调，不处理录音、轮次、仲裁结果或播放状态。
  */
 internal object VoiceEngineFactory {
-    /**
-     * 生产装配：
- *  - 本地链：`local.asr=iflytek.offline` → [IflytekOfflineCommandAsrStage]；SDK 未配置或
- *    授权未就绪时本地候选不可用，不产生模拟语义。只有显式配置
- *    `iflytek.fake-cmd` 才启用 [FakeCommandAsrProvider]。
-     *    之后 [RuleNluProvider.understand]；任何 SDK 异常 → [Intent.unknown]("vehicle")，
-     *    本地链绝不抛出。
-     *  - 云端链：[GatewayCloudRunner]（GatewayClient + 事件桥，决策事件透传 sink）。
-     *  - 网络检查：ConnectivityManager active network != null，可注入。
-     */
+    /** Selected channel supplies local engines and platform audio ports; shared routing stays here. */
     fun create(
         cfg: DemoConfig,
         context: Context,
+        channel: SpeechChannel,
         networkAvailable: () -> Boolean = { context.hasActiveNetwork() },
         sink: DecisionSink,
         player: AudioPlayer,
@@ -82,7 +70,7 @@ internal object VoiceEngineFactory {
         bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
         onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
     ): VoiceEngine {
-        cfg.validateForRuntime()
+        channel.validateConfig(cfg)
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
         // engineRef 模式；AtomicReference 保证跨线程可见性——握手在线程池，打戳在 IO）
         val clockOffsetProvider = AtomicReference<() -> Long>({ 0L })
@@ -172,13 +160,7 @@ internal object VoiceEngineFactory {
         val ttsOutput = createTtsOutput(
             synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
             cacheDir = File(context.filesDir, "tts_cache"),
-            driver = object : TtsPlaybackDriver {
-                override fun play(reply: com.autovoice.voicecore.AudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
-                    player.play(reply, identity)
-                override suspend fun playStream(reply: com.autovoice.voicecore.StreamingAudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
-                    player.playStream(reply, identity)
-                override fun stop() = player.stop()
-            },
+            driver = channel.createPlaybackDriver(player),
             scope = scope,
             isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
             isCurrentRealtime = cloudRunner::isCurrentRealtimeOutput,
@@ -192,9 +174,8 @@ internal object VoiceEngineFactory {
             },
             onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
         )
-        // Task 34：模式切换/销毁时释放离线 stage（unLoadData + engineUnInit）——
-        // AiHelper 同能力 ID 单例，旧实例 FSA 残留会导致新实例 loadData 报 15114
-        val offlineStageRef = AtomicReference<IflytekOfflineCommandAsrStage?>(null)
+        // Lazy creation preserves the original local-chain initialization point below.
+        val localEngines by lazy { channel.createLocalEngines(context, cfg, scope) }
         // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
         // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
         // 业务路由位于引擎之外。只有状态机与仲裁通过后的语义才会抵达此边界。
@@ -244,9 +225,7 @@ internal object VoiceEngineFactory {
             telemetry = telemetry,
             networkAvailable = networkAvailable,
             local = buildLocalChain(
-                cfg,
-                context,
-                scope,
+                localEngines,
                 { turnId, text, final ->
                     if (!text.isNullOrBlank()) {
                         engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
@@ -258,7 +237,6 @@ internal object VoiceEngineFactory {
                 { turnId ->
                     engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
                 },
-                offlineStageRef,
                 telemetry,
                 asrModule,
                 nluModule,
@@ -272,7 +250,7 @@ internal object VoiceEngineFactory {
             onReplyText = onReplyText,
             onClose = {
                 cloudRunner.close() // Task 21：模式切换时断开网关
-                offlineStageRef.get()?.release() // Task 34：释放离线 stage，防新实例 FSA 残留（15114）
+                localEngines.close() // Selected channel releases its own local resources.
             },
             onForeground = cloudRunner::warmUp,
             onCloudPending = onCloudPending,
@@ -328,64 +306,17 @@ internal object VoiceEngineFactory {
             else -> gatewayUrl.removeSuffix("/ws")
         }
 
-    /**
-     * 本地链装配：显式选择真实或 fake 命令词 ASR → 规则 NLU；处理过程绝不抛出。
-     *
-     * Task 34 接线：`local.asr=iflytek.offline` 时构造真实 [IflytekOfflineCommandAsrStage]
-     * 并在引擎后台协程里 [IflytekOfflineCommandAsrStage.init]（首次联网授权 + 引擎初始化 +
-     * 命令词加载）。init 阻塞最长 20s（授权超时），放后台不卡装配；就绪前 recognize 抛
-     * NOT_CONFIGURED → 本次按本地候选未命中处理，授权完成后自动
-     * 切换真实引擎，无需重启。
-     */
+    /** Provider-neutral local route and telemetry; selected channel owns initialization/release. */
     private fun buildLocalChain(
-        cfg: DemoConfig,
-        context: Context,
-        scope: CoroutineScope,
+        engines: LocalEngineAssembly,
         onLocalRecognized: (String, String?, Boolean) -> Unit,
         onLocalTurnEstablished: (String) -> Unit,
-        /** 装载离线 stage 引用，供 [VoiceEngine.close] 释放（模式切换防 15114 残留）。 */
-        offlineStageRef: AtomicReference<IflytekOfflineCommandAsrStage?>,
-        /** T7 插桩：local_asr 事件（识别文本/意图/耗时；enabled=false 时 no-op）。 */
         telemetry: TelemetryClient,
         asrModule: AsrModule,
         nluModule: NluModule,
     ): LocalChainRunner {
-        val offlineStage = if (cfg.local.asr == "iflytek.offline") {
-            // 凭据来自 local.properties（BuildConfig 注入，不入库）
-            IflytekOfflineCommandAsrStage(
-                appId = BuildConfig.XFYUN_APPID,
-                apiKey = BuildConfig.XFYUN_API_KEY,
-                apiSecret = BuildConfig.XFYUN_API_SECRET,
-            ).also { offlineStageRef.set(it) }
-        } else {
-            null
-        }
-        if (offlineStage != null) {
-            scope.launch(Dispatchers.IO) {
-                try {
-                    offlineStage.init(context)
-                    Log.i(FACTORY_TAG, "讯飞离线命令词初始化完成（授权通过）")
-                } catch (t: Throwable) {
-                    // 授权失败/资源缺失等：真实候选保持不可用，不得暗中产生 fake 命令。
-                    Log.w(FACTORY_TAG, "讯飞离线命令词初始化失败，本地真实候选保持不可用", t)
-                }
-            }
-        }
-        // 2C 文本只随 NLU 候选返回；LocalAsrEngine 不伪造独立 ASR 输出。
-        val nlu = when (cfg.local.nlu) {
-            DemoConfig.LOCAL_NLU_RULE -> LocalNluEngine(
-                recognizeCommand = { segment ->
-                    recognizeLocalCommand(cfg.local.asr, segment) { offlineStage?.recognize(segment) }
-                },
-                understandCommand = RuleNluProvider::understand,
-                onRecognizerFailure = { error ->
-                    Log.w(FACTORY_TAG, "本地 2C 命令词异常，按未命中继续", error)
-                },
-            )
-            else -> error("unsupported local.nlu '${cfg.local.nlu}'")
-        }
-        asrModule.bindLocal(LocalAsrEngine())
-        nluModule.bindLocal(nlu)
+        asrModule.bindLocal(engines.asr)
+        nluModule.bindLocal(engines.nlu)
         return LocalSpeechRoute(
             asr = asrModule,
             nlu = nluModule,

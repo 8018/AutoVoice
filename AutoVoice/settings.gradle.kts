@@ -22,6 +22,8 @@ include(
     ":tts",
     ":audio-frontend",
     ":audio-frontend-legacy",
+    ":adapter-webrtc",
+    ":adapter-firered",
     ":adapter-iflytek",
     ":iflytek-sdk-stub",
     ":app",

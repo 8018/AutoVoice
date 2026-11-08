@@ -6,10 +6,8 @@ import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
-import com.autovoice.audiofrontend.AndroidCaptureEffects
 import com.autovoice.audiofrontend.AudioFrontendEngine
 import com.autovoice.audiofrontend.AudioFrontendEngineFactory
-import com.autovoice.audiofrontend.AudioFrontendFactory
 import com.autovoice.audiofrontend.CaptureEffects
 import com.autovoice.audiofrontend.CaptureEffectsFactory
 import com.autovoice.audiofrontend.VadEngineFactory
@@ -81,9 +79,10 @@ class AudioRecorder(
     frontend: AudioFrontendEngine? = null,
     captureEffects: CaptureEffects? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    private val frontendFactory: AudioFrontendEngineFactory = AudioFrontendEngineFactory(AudioFrontendFactory::create),
-    vadFactory: VadEngineFactory = VadEngineFactory(AudioFrontendFactory::createVad),
-    captureEffectsFactory: CaptureEffectsFactory = CaptureEffectsFactory(::AndroidCaptureEffects),
+    private val frontendFactory: AudioFrontendEngineFactory,
+    vadFactory: VadEngineFactory,
+    captureEffectsFactory: CaptureEffectsFactory,
+    private val audioSource: Int = MediaRecorder.AudioSource.VOICE_COMMUNICATION,
 ) : RecordingCapture {
 
     @Volatile
@@ -132,6 +131,8 @@ class AudioRecorder(
 
     /** VAD 事件流（SpeechStart / SpeechEnd；模型加载失败时永不发射）。 */
     override val vadEvents: SharedFlow<VadEvent> = _vadEvents.asSharedFlow()
+
+    val frontendUnavailableReason: String? get() = frontend.unavailabilityReason
 
     /** VAD 是否可用（模型加载成功）。 */
     override val vadAvailable: Boolean get() = frontend.vadAvailable
@@ -274,6 +275,10 @@ class AudioRecorder(
     @Synchronized
     override fun start(includeBargeInPreRoll: Boolean): Boolean {
         if (turnActive) return false
+        frontendUnavailableReason?.let {
+            Log.w(TAG, "audio frontend unavailable: $it")
+            return false
+        }
         val source = testAudioSource
         if (source != null) {
             // 测试模式（Task 58）：屏蔽麦克风，预置语音按真实节奏喂双网格，无需录音权限
@@ -444,8 +449,8 @@ class AudioRecorder(
         val bufferBytes = maxOf(minBuffer, AudioFormat.BLOCK_BYTES * 2)
         return try {
             AudioRecord.Builder()
-                // VOICE_COMMUNICATION 请求设备的语音前处理路径，为 AEC 提供回参。
-                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                // Channel policy selects the capture source; legacy keeps VOICE_COMMUNICATION.
+                .setAudioSource(audioSource)
                 .setAudioFormat(
                     AndroidAudioFormat.Builder()
                         .setSampleRate(AudioFormat.SAMPLE_RATE)

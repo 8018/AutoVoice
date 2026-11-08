@@ -2,52 +2,120 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://autovoice/shared/config.schema.json",
   "title": "DemoConfig",
-  "description": "demo 单文件配置（assets/demo-full.json / assets/demo-offline.json），字段与 voice-core 的 DemoConfig 数据类一一对应。",
+  "description": "渠道单文件配置；旧资产缺省映射legacy/Silero，Open必须声明其provider组合。通用结构与所选渠道能力共同校验。",
   "type": "object",
-  "required": ["mode", "cloud", "local"],
+  "required": [
+    "mode",
+    "cloud",
+    "local"
+  ],
   "properties": {
-    "mode": { "type": "string", "enum": ["full", "offline", "dev"] },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "full",
+        "offline",
+        "dev"
+      ]
+    },
     "vad": {
       "type": "object",
-      "description": "主录音分段使用的 Silero VAD 门控参数；不用于播报打断或延时聆听检测。",
+      "description": "provider专属分段门控；续听/打断保持独立状态。",
       "properties": {
-        "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
-        "minSpeechMs": { "type": "integer", "minimum": 1, "maximum": 60000 },
-        "minSilenceMs": { "type": "integer", "minimum": 1, "maximum": 60000 }
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Silero概率阈值，仅legacy适用；Open配置禁止声明。"
+        },
+        "minSpeechMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "minSilenceMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "silero",
+            "webrtc.vad"
+          ],
+          "default": "silero"
+        }
       }
     },
     "ecnr": {
       "type": "string",
-      "enum": ["rnnoise", "none"],
+      "enum": [
+        "rnnoise",
+        "none"
+      ],
       "default": "rnnoise",
-      "description": "本地整段音频的降噪处理；省略时兼容为 rnnoise。"
+      "description": "仅legacy软件降噪选择；Open必须显式none，WebRTC NS由frontend策略控制。"
     },
     "local": {
       "type": "object",
-      "required": ["asr", "nlu"],
+      "required": [
+        "asr",
+        "nlu"
+      ],
       "properties": {
         "asr": {
           "type": "string",
-          "enum": ["iflytek.offline", "iflytek.fake-cmd"],
+          "enum": [
+            "iflytek.offline",
+            "iflytek.fake-cmd",
+            "firered.ctc.int8"
+          ],
           "description": "iflytek.fake-cmd 仅用于显式 Demo；真实 SDK 不可用时 iflytek.offline 按未命中处理。"
         },
-        "nlu": { "type": "string", "const": "rule.nlu" }
+        "nlu": {
+          "type": "string",
+          "enum": [
+            "rule.nlu",
+            "rule.text"
+          ]
+        }
       }
     },
     "cloud": {
       "type": "object",
-      "required": ["enabled", "waitMs", "gatewayUrl"],
+      "required": [
+        "enabled",
+        "waitMs",
+        "gatewayUrl"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "waitMs": { "type": "integer", "minimum": 1 },
-        "gatewayUrl": { "type": "string" },
-        "deviceId": { "type": "string" },
-        "authToken": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gatewayUrl": {
+          "type": "string"
+        },
+        "deviceId": {
+          "type": "string"
+        },
+        "authToken": {
+          "type": "string"
+        },
         "telemetry": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean", "default": true },
-            "url": { "type": "string" }
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "url": {
+              "type": "string"
+            }
           }
         }
       }
@@ -65,6 +133,92 @@
       "type": "string",
       "minLength": 1,
       "description": "可选的 16kHz mono PCM16 asset，仅用于确定性 Demo/设备联调；未配置时使用麦克风。"
+    },
+    "frontend": {
+      "type": "string",
+      "enum": [
+        "legacy",
+        "webrtc.apm"
+      ],
+      "default": "legacy"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "frontend"
+        ],
+        "properties": {
+          "frontend": {
+            "const": "webrtc.apm"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "frontend",
+          "vad",
+          "ecnr"
+        ],
+        "properties": {
+          "ecnr": {
+            "const": "none"
+          },
+          "vad": {
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "provider": {
+                "const": "webrtc.vad"
+              }
+            },
+            "not": {
+              "required": [
+                "threshold"
+              ]
+            }
+          },
+          "local": {
+            "properties": {
+              "asr": {
+                "const": "firered.ctc.int8"
+              },
+              "nlu": {
+                "const": "rule.text"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "frontend": {
+            "const": "legacy"
+          },
+          "vad": {
+            "properties": {
+              "provider": {
+                "const": "silero"
+              }
+            }
+          },
+          "local": {
+            "properties": {
+              "asr": {
+                "enum": [
+                  "iflytek.offline",
+                  "iflytek.fake-cmd"
+                ]
+              },
+              "nlu": {
+                "const": "rule.nlu"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

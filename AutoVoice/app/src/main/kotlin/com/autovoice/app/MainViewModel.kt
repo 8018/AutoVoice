@@ -13,17 +13,15 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
-import com.autovoice.adapteriflytek.IflytekWakeWordObserver
 import com.autovoice.app.audio.AudioRecorder
+import com.autovoice.app.channel.SelectedSpeechChannel
+import com.autovoice.app.channel.WakeWordFactory
+import com.autovoice.app.channel.loadChannelConfig
 import com.autovoice.app.audio.TtsPlayer
-import com.autovoice.voicecore.CloudConfig
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
-import com.autovoice.voicecore.LocalConfig
-import com.autovoice.voicecore.MockConfig
 import com.autovoice.voicecore.StreamingAudioReply
-import com.autovoice.voicecore.VadConfig
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
@@ -97,6 +95,8 @@ data class UiState(
     val recording: Boolean = false,
     /** Silero VAD 加载失败（云端路段切分不可用，仅提示不阻断）。 */
     val vadUnavailable: Boolean = false,
+    /** Presentation-only indication that the selected audio frontend cannot run yet. */
+    val speechFrontendUnavailable: Boolean = false,
     /** 最近一次本地 ASR 识别文本（Task 34 接线后可见识别结果，null = 尚未识别）。 */
     val lastRecognizedText: String? = null,
     /** 最近一次回复播报文本（Task 53：云端 AudioReply.speakText 或本地文本播报）。 */
@@ -148,6 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 录音器（Task 19 由 UI 驱动；Task 50 按住录音：VAD 云端段 + RNNoise 降噪整段）。 */
     private lateinit var recorder: AudioRecorder
+    private val speechChannel = SelectedSpeechChannel.create()
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -168,10 +169,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private lateinit var engine: VoiceEngine
 
     /** 只观察共享 PCM，不自行创建 AudioRecord。 */
-    private val wakeObserver = IflytekWakeWordObserver(
-        appId = BuildConfig.XFYUN_APPID,
-        apiKey = BuildConfig.XFYUN_API_KEY,
-        apiSecret = BuildConfig.XFYUN_API_SECRET,
+    private val wakeObserver = WakeWordFactory.create(
+        context = application,
         onWake = { keyword -> viewModelScope.launch { recordingCoordinator.deliverWake(keyword) } },
         onError = { error -> viewModelScope.launch { recordingCoordinator.deliverWakeError(error) } },
     )
@@ -238,7 +237,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             testAudioAsset = config.testAudio,
             vadConfig = config.vad,
             ecnr = config.ecnr,
+            frontendFactory = speechChannel.frontendFactory,
+            vadFactory = speechChannel.vadFactory,
+            captureEffectsFactory = speechChannel.capturePolicy.effectsFactory,
+            audioSource = speechChannel.capturePolicy.audioSource,
         )
+        _uiState.update { it.copy(speechFrontendUnavailable = recorder.frontendUnavailableReason != null) }
+        recorder.frontendUnavailableReason?.let { Log.w(TAG, it) }
         engine = buildEngine(config)
         recordingCoordinator = buildRecordingCoordinator()
     }
@@ -350,7 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
-        _uiState.update { it.copy(mode = mode) }
+        _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
@@ -406,15 +411,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildRecordingCoordinator() = RecordingCoordinator(
         capture = recorder,
-        wakeWord = object : WakeWordPort {
-            override val keyword: String get() = wakeObserver.keyword
-            override fun initialize() = wakeObserver.init(getApplication())
-            override fun arm() = wakeObserver.arm()
-            override fun accept(pcm: ByteArray) = wakeObserver.accept(pcm)
-            override fun pause() = wakeObserver.pause()
-            override fun disarm() = wakeObserver.disarm()
-            override fun close() = wakeObserver.close()
-        },
+        wakeWord = wakeObserver,
         pipeline = object : RecordingPipeline {
             override val dialogueSnapshot: DialogueSnapshot get() = engine.conversation.snapshot.value
             override fun onWake() = engine.onWake()
@@ -481,6 +478,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val engine = VoiceEngineFactory.create(
             cfg = cfg,
             context = getApplication(),
+            channel = speechChannel,
             sink = DecisionSink { addDecision(it) },
             player = object : AudioPlayer {
                 override fun play(reply: com.autovoice.voicecore.AudioReply) {
@@ -566,59 +564,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 配置：按模式加载 assets；缺失时用内置默认，内容非法则明确终止装配。 */
+    /** Flavor assets preserve environment selection; fallback is explicitly owned by that channel. */
     private fun loadConfig(mode: DemoMode): DemoConfig {
         val asset = when (mode) {
             DemoMode.DEMO_FULL -> BuildConfig.ONLINE_CONFIG_ASSET
             DemoMode.DEMO_OFFLINE -> ASSET_DEMO_OFFLINE
         }
-        val json = runCatching {
-            getApplication<Application>().assets.open(asset).bufferedReader().use { it.readText() }
-        }.getOrNull()
-        if (json == null) {
-            Log.w(TAG, "$asset 缺失，使用内置默认配置")
-            return defaultConfig(mode)
-        }
-        return try {
-            val parsed = DemoConfig.fromJson(json)
-            if (mode == DemoMode.DEMO_FULL && BuildConfig.GATEWAY_AUTH_TOKEN.isNotBlank()) {
-                parsed.copy(cloud = parsed.cloud.copy(authToken = BuildConfig.GATEWAY_AUTH_TOKEN))
-            } else {
-                parsed
-            }
-        } catch (error: Throwable) {
-            throw IllegalStateException("$asset 配置无效，拒绝装配: ${error.message}", error)
-        }
-    }
-
-    /**
-     * 内置默认配置（防御兜底）：在线环境继续服从构建类型，离线模式关闭云端。
-     */
-    private fun defaultConfig(mode: DemoMode): DemoConfig {
-        val onlineAsset = BuildConfig.ONLINE_CONFIG_ASSET
-        val full =
-            DemoConfig(
-                mode = if (onlineAsset == ASSET_DEMO_DEV) "dev" else "full",
-                vad = VadConfig(),
-                ecnr = "rnnoise",
-                local = LocalConfig(asr = "iflytek.fake-cmd", nlu = "rule.nlu"),
-                cloud = CloudConfig(
-                    enabled = true,
-                    gatewayUrl = if (onlineAsset == ASSET_DEMO_DEV) {
-                        "ws://8.153.153.77:8090/ws"
-                    } else {
-                        "ws://47.94.4.204:8080/ws"
-                    },
-                    waitMs = 2000,
-                    authToken = BuildConfig.GATEWAY_AUTH_TOKEN,
-                ),
-                mock = MockConfig(),
-            )
-        return when (mode) {
-            DemoMode.DEMO_FULL -> full
-            DemoMode.DEMO_OFFLINE ->
-                full.copy(mode = "offline", cloud = full.cloud.copy(enabled = false, gatewayUrl = ""))
-        }
+        return loadChannelConfig(
+            channel = speechChannel, asset = asset, onlineAsset = BuildConfig.ONLINE_CONFIG_ASSET,
+            authToken = BuildConfig.GATEWAY_AUTH_TOKEN,
+            readAsset = { getApplication<Application>().assets.open(asset).bufferedReader().use { it.readText() } },
+            onMissingAsset = { Log.w(TAG, "$asset 缺失，由所选渠道处理默认配置") },
+        )
     }
 
     override fun onCleared() {
@@ -633,9 +590,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val TAG = "MainViewModel"
 
-        /** 双模式配置资产（Task 21 落地；缺失时用 [defaultConfig] 兜底）。 */
+        /** 双模式配置资产；缺失策略由渠道决定。 */
         const val ASSET_DEMO_OFFLINE = "demo-offline.json"
-        const val ASSET_DEMO_DEV = "demo-dev.json"
 
         /** 模式持久化存储（Task 58：重启保持用户选择，防云端链静默失联）。 */
         const val PREFS_NAME = "autovoice_settings"

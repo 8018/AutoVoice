@@ -16,7 +16,10 @@ AutoVoice/                      Android 端（Kotlin）
 ├── voice-core/                 消息模型（gateway 消息 schema）、DemoConfig、
 │                               Stage SPI、CandidateCoordinator、OnDeviceRaceArbiter
 ├── gateway-client/             WS 网关客户端（连接/重连、事件桥、segmentId 对账）
-├── audio-frontend/             统一音频前端（信号处理 + Silero VAD；RNNoise JNI，4 ABI）
+├── audio-frontend/             公共音频契约、分段与门控
+├── audio-frontend-legacy/      讯飞渠道的 RNNoise/Silero/Android系统效果
+├── adapter-webrtc/             Open前端边界（当前明确不可用，待真实native实现）
+├── adapter-firered/            FireRed ASR边界（当前明确不可用，待真实runtime/模型）
 ├── adapter-iflytek/            讯飞离线唤醒 IVW + 离线命令词 AIKit（共享运行时）+
 │                               FakeCommandAsr + RuleNlu（规则意图映射表）
 └── app/                        Compose UI（决策日志/模拟车控/录音）、AudioRecorder、
@@ -54,8 +57,39 @@ export XFYUN_APPID=... XFYUN_API_KEY=... DEEPSEEK_API_KEY=... \
 
 # 2. 手机：装 App（同一局域网），并先把 demo-full.json 的 gatewayUrl 改成开发机 LAN IP
 cd AutoVoice
-./gradlew :app:installDebug
+./gradlew :app:installIflytekDebug
 ```
+
+### 渠道与环境
+
+`speechChannel` 有 `iflytek` / `open` 两个 flavor，均以 arm64-v8a 为目标；
+讯飞 applicationId 保持 `com.autovoice.app`，Open 联调包使用 `.open` suffix。
+`debug` 仍默认读取 `demo-dev.json`（`AUTOVOICE_APP_ENV=prod` 可选 `demo-full.json`），
+`release` 固定读取 `demo-full.json`，离线模式读取 `demo-offline.json`。
+各渠道的同名资产分别位于 `app/src/iflytek/assets` 与 `app/src/open/assets`。
+
+```sh
+./gradlew :app:assembleIflytekDebug :app:assembleOpenDebug
+./gradlew :app:testIflytekDebugUnitTest :app:testOpenDebugUnitTest
+./gradlew :app:lintIflytekDebug :app:lintOpenDebug
+```
+
+旧配置缺省 `frontend=legacy`、`vad.provider=silero`、`ecnr=rnnoise`，使用
+`local.asr=iflytek.offline`（或显式 Demo `iflytek.fake-cmd`）和 `local.nlu=rule.nlu`。
+Open 必须声明 `frontend=webrtc.apm`、`vad.provider=webrtc.vad`、
+`local.asr=firered.ctc.int8`、`local.nlu=rule.text` 与 `ecnr=none`。
+`ecnr` 是 legacy 字段；Open 的 NS 属于 WebRTC 前端策略，不串联 RNNoise 或系统效果。
+Open 资产不声明 Silero 概率 `vad.threshold`，schema 也禁止该字段；内部默认值仅为兼容旧数据结构保留。
+解析器只检查通用格式/数值，所选渠道在装配前拒绝未知或串渠道 provider。
+两渠道复用公共 `WakeWordFactory` 和原进程级 AIKit runtime；Open 不构造讯飞命令识别器。
+
+当前 Open 只建立装配边界，WebRTC APM/VAD、FireRed runtime/模型、文本规则 NLU、
+PCM 播放参考尚未就绪。能力诊断明确列出原因，录音启动返回失败且不输出模拟识别；
+共享原始麦克风监听/讯飞唤醒仍走原通路，在线模式文字输入仍可使用。
+后续实现会替换这些过渡状态，当前 APK 不代表真实 Open 语音能力验收完成。
+
+仅讯飞资产文件缺失时保留历史内置 Demo fallback 并记录日志；Open 缺资产明确失败。
+非法 JSON、未知 provider、SDK/授权/模型失败均不会触发 fake fallback。
 
 ### 离线唤醒
 

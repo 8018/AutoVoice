@@ -16,10 +16,10 @@ import org.junit.jupiter.api.Test
 class DemoConfigAssetsTest {
 
     private fun readAsset(name: String): String {
-        val file = File("src/main/assets/$name")
+        val file = File("src/${BuildConfig.FLAVOR}/assets/$name")
         assertTrue(
             file.isFile,
-            "缺失配置资产 src/main/assets/$name（工作目录=${System.getProperty("user.dir")}）",
+            "缺失配置资产 src/${BuildConfig.FLAVOR}/assets/$name（工作目录=${System.getProperty("user.dir")}）",
         )
         return file.readText()
     }
@@ -45,9 +45,9 @@ class DemoConfigAssetsTest {
             "demo-full 的 gatewayUrl 不得为空（占位符 ws://10.0.2.2:8080/ws，真机演示时改网关地址）",
         )
         // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
-        assertEquals("iflytek.offline", cfg.local.asr)
-        assertEquals("rule.nlu", cfg.local.nlu)
-        assertEquals("rnnoise", cfg.ecnr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "firered.ctc.int8", cfg.local.asr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rule.nlu" else "rule.text", cfg.local.nlu)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rnnoise" else "none", cfg.ecnr)
         assertFalse(cfg.mock.executor)
     }
 
@@ -60,9 +60,9 @@ class DemoConfigAssetsTest {
         assertEquals(3000L, cfg.cloud.waitMs)
         assertEquals("", cfg.cloud.gatewayUrl)
         // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
-        assertEquals("iflytek.offline", cfg.local.asr)
-        assertEquals("rule.nlu", cfg.local.nlu)
-        assertEquals("rnnoise", cfg.ecnr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "firered.ctc.int8", cfg.local.asr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rule.nlu" else "rule.text", cfg.local.nlu)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rnnoise" else "none", cfg.ecnr)
         assertFalse(cfg.mock.executor)
     }
 }

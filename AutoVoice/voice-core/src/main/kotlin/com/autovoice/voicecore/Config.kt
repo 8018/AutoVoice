@@ -8,7 +8,7 @@ import com.google.gson.JsonParser
  * 解析规则：
  *  - required = [mode, cloud, local]，缺失即抛 [IllegalArgumentException]；
  *  - cloud.enabled / cloud.gatewayUrl / cloud.waitMs 必读；
- *  - 解析后立即校验当前构建实际支持的 provider 与参数范围；
+ *  - 解析后校验通用格式与数值；provider 支持矩阵由所选渠道校验；
  *  - 未知字段忽略（宽松解析）。
  */
 data class DemoConfig(
@@ -20,6 +20,8 @@ data class DemoConfig(
     val mock: MockConfig,
     /** Optional PCM asset used only for deterministic device/demo testing. */
     val testAudio: String? = null,
+    /** Missing in older assets means the historical RNNoise/Silero composition. */
+    val frontend: String = "legacy",
 ) {
     companion object {
         fun fromJson(json: String): DemoConfig {
@@ -37,6 +39,7 @@ data class DemoConfig(
                     threshold = vad?.optNumber("threshold") ?: VadConfig.DEFAULT_THRESHOLD,
                     minSpeechMs = vad?.optLong("minSpeechMs") ?: VadConfig.DEFAULT_MIN_SPEECH_MS,
                     minSilenceMs = vad?.optLong("minSilenceMs") ?: VadConfig.DEFAULT_MIN_SILENCE_MS,
+                    provider = vad?.optString("provider") ?: "silero",
                 ),
                 // 旧配置未声明时保持历史上的 RNNoise 实际行为。
                 ecnr = ecnr,
@@ -65,6 +68,7 @@ data class DemoConfig(
                     executor = mock?.optBoolean("executor") ?: false,
                 ),
                 testAudio = root.optString("testAudio")?.takeIf { it.isNotBlank() },
+                frontend = root.optString("frontend") ?: "legacy",
             ).validateForRuntime()
         }
 
@@ -77,9 +81,11 @@ data class DemoConfig(
 }
 
 data class VadConfig(
+    /** Legacy Silero probability only; Open assets omit this field and do not consume its default. */
     val threshold: Double = DEFAULT_THRESHOLD,
     val minSpeechMs: Long = DEFAULT_MIN_SPEECH_MS,
     val minSilenceMs: Long = DEFAULT_MIN_SILENCE_MS,
+    val provider: String = "silero",
 ) {
     init {
         require(threshold.isFinite() && threshold in 0.0..1.0) {
@@ -129,24 +135,15 @@ data class MockConfig(
     val executor: Boolean = false,
 )
 
-/**
- * Validates the provider matrix implemented by the current Android composition root.
- * Kept separate from data-class construction so isolated core tests may still use test doubles;
- * JSON configuration and production assembly both call this guard.
- */
+/** Validates common structure/ranges. The selected composition root validates provider support. */
 fun DemoConfig.validateForRuntime(): DemoConfig {
     require(mode == "full" || mode == "offline" || mode == "dev") {
         "config: unsupported mode '$mode'; supported: full, offline, dev"
     }
-    require(ecnr == DemoConfig.ECNR_RNNOISE || ecnr == DemoConfig.ECNR_NONE) {
-        "config: unsupported ecnr '$ecnr'; supported: rnnoise, none"
-    }
-    require(local.asr == DemoConfig.LOCAL_ASR_IFLYTEK || local.asr == DemoConfig.LOCAL_ASR_FAKE) {
-        "config: unsupported local.asr '${local.asr}'; supported: iflytek.offline, iflytek.fake-cmd"
-    }
-    require(local.nlu == DemoConfig.LOCAL_NLU_RULE) {
-        "config: unsupported local.nlu '${local.nlu}'; supported: rule.nlu"
-    }
+    for ((field, provider) in listOf(
+        "frontend" to frontend, "vad.provider" to vad.provider, "ecnr" to ecnr,
+        "local.asr" to local.asr, "local.nlu" to local.nlu,
+    )) require(provider.isNotBlank()) { "config: $field must not be blank" }
     require(cloud.waitMs > 0) {
         "config: cloud.waitMs must be positive, got ${cloud.waitMs}"
     }

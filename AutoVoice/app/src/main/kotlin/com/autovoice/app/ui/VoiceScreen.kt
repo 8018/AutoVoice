@@ -95,9 +95,10 @@ fun VoiceScreen(
             NavigationStatus(state)
             WakeGuidance(state)
         }
-        if (state.permissionHint || state.vadUnavailable || state.wakeError != null) {
+        if (state.permissionHint || state.speechFrontendUnavailable || state.vadUnavailable || state.wakeError != null) {
             Text(
                 text = when {
+                    state.speechFrontendUnavailable -> "语音前端尚未就绪，可先使用文字输入。"
                     state.permissionHint -> "需要录音权限，请在系统弹窗中允许麦克风访问。"
                     state.vadUnavailable -> "语音检测不可用，语音控制暂时失效。"
                     else -> "唤醒不可用：${state.wakeError}"

@@ -43,9 +43,18 @@ for (const name of fs.readdirSync(path.join(root, "fixtures/invalid")).filter((n
   reject("contracts/gateway-messages.schema.json", `fixtures/invalid/${name}`);
 }
 
-validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-full.json");
-validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-offline.json");
-validate("contracts/config.schema.json", "../AutoVoice/app/src/main/assets/demo-dev.json");
+for (const channel of ["iflytek", "open"]) {
+  for (const asset of ["demo-dev.json", "demo-full.json", "demo-offline.json"]) {
+    validate("contracts/config.schema.json", `../AutoVoice/app/src/${channel}/assets/${asset}`);
+  }
+}
+
+for (const name of fs.readdirSync(path.join(root, "fixtures/config"))) {
+  validate("contracts/config.schema.json", `fixtures/config/${name}`);
+}
+for (const name of fs.readdirSync(path.join(root, "fixtures/invalid-config"))) {
+  reject("contracts/config.schema.json", `fixtures/invalid-config/${name}`);
+}
 
 const actionFixture = readJson("fixtures/gateway-reply-action.json");
 validate("contracts/intent.schema.json", "fixtures/gateway-reply-action.json#payload.intent", actionFixture.payload.intent);

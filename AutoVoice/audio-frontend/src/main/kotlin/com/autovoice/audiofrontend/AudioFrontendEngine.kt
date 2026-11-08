@@ -23,6 +23,8 @@ data class AudioFrontendDiagnostics(
  * not know which denoiser or VAD implementation is installed.
  */
 interface AudioFrontendEngine : AutoCloseable {
+    /** Non-null only when audio processing itself cannot run; independent from ASR readiness. */
+    val unavailabilityReason: String? get() = null
     val vadAvailable: Boolean
     val diagnostics: AudioFrontendDiagnostics
 

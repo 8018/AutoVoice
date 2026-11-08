@@ -117,6 +117,31 @@ class AudioRecorderInjectionTest {
         recorder.close()
     }
 
+    @Test
+    fun `unavailable frontend refuses capture without processing and exposes reason`() = runTest {
+        var processed = 0
+        val frontend = object : AudioFrontendEngine {
+            override val unavailabilityReason = "frontend unavailable fixture"
+            override val vadAvailable = false
+            override val diagnostics = AudioFrontendDiagnostics()
+            override fun startTurn() { error("must not start") }
+            override fun process(block: ByteArray): AudioFrontendFrame { processed++; error("must not process") }
+            override fun finishProcessedAudio() = ByteArray(0)
+            override fun finishSegments() = emptyList<ByteArray>()
+            override fun close() = Unit
+        }
+        val recorder = AudioRecorder(
+            context = ContextWrapper(null), testAudioSource = TestAudioSource(ByteArray(1024)),
+            scope = backgroundScope, frontendFactory = { _, _, _ -> frontend },
+            vadFactory = { null }, captureEffectsFactory = { SelectedEffects() },
+        )
+        assertEquals("frontend unavailable fixture", recorder.frontendUnavailableReason)
+        assertFalse(recorder.start(false))
+        runCurrent()
+        assertEquals(0, processed)
+        recorder.close()
+    }
+
     private fun attachEffects(recorder: AudioRecorder, session: Int) {
         AudioRecorder::class.java.getDeclaredMethod("attachCaptureEffects", Int::class.javaPrimitiveType)
             .also { it.isAccessible = true }.invoke(recorder, session)
