@@ -77,4 +77,32 @@ class ComponentStatusRegistryTest {
         assertTrue(json.contains("MODEL_LOAD_FAILED"))
         assertFalse(json.contains("utteranceId"))
     }
+    @Test fun `resolved explicit dependency leaves unfinished child pending and ready child ready`() {
+        val registry = ComponentStatusRegistry()
+        val g = registry.beginGeneration("iflytek")
+        val parent = registry.reporter(ComponentDescriptor("iflytek.runtime", "aikit", "shared", ComponentScope.PROCESS), g)
+        val child = registry.reporter(ComponentDescriptor("wake", "iflytek.ivw", "iflytek"), g, setOf("iflytek.runtime"))
+        val p = parent.start("authorize");parent.report(p, ComponentUpdate.ready())
+        val c = child.start("resource_load")
+        parent.report(p, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.SDK_AUTH_FAILED)))
+        child.report(c, ComponentUpdate.blocked("iflytek.runtime"))
+        assertEquals(Lifecycle.BLOCKED, registry.snapshot.value.components.getValue("wake").lifecycle)
+        parent.report(p, ComponentUpdate.health(Health.HEALTHY))
+        val pending = registry.snapshot.value.components.getValue("wake")
+        assertEquals(Lifecycle.INITIALIZING, pending.lifecycle)
+        assertTrue(pending.blockedBy.isEmpty())
+        assertNull(pending.rootCauseId)
+        assertEquals("准备中", lifecycleLabel(pending))
+        assertEquals(CapabilityAvailability.PENDING, CapabilityEvaluator.evaluate(registry.snapshot.value, false).features["wake"])
+        val retry = child.start("resource_load");child.report(retry, ComponentUpdate.ready())
+        parent.report(p, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.SDK_AUTH_FAILED)))
+        child.report(retry, ComponentUpdate.blocked("iflytek.runtime"))
+        parent.report(p, ComponentUpdate.health(Health.HEALTHY))
+        val restored = registry.snapshot.value.components.getValue("wake")
+        assertEquals(Lifecycle.READY, restored.lifecycle)
+        assertEquals(Health.HEALTHY, restored.health)
+        assertTrue(restored.blockedBy.isEmpty())
+        assertEquals(CapabilityAvailability.AVAILABLE, CapabilityEvaluator.evaluate(registry.snapshot.value, false).features["wake"])
+    }
+
 }

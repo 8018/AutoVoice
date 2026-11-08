@@ -54,10 +54,13 @@ internal class ComponentStatusRegistry(private val eventLog: (ComponentStatusEve
         if (event.update.lifecycle != Lifecycle.INITIALIZING && old.attemptId.isNotBlank() && event.token.attemptId != old.attemptId) return
         if (old.lifecycle == Lifecycle.FAILED && event.token.attemptId == old.attemptId && event.update.lifecycle == Lifecycle.READY) return
         val u = event.update.copy(error = event.update.error?.sanitized())
+        // BLOCKED is an effective dependency view, not proof that own initialization ended.
+        val dependencyUpdate = u.lifecycle == Lifecycle.BLOCKED
         val next = old.copy(attemptId = event.token.attemptId, sequence = event.sequence,
-            lifecycle = u.lifecycle ?: old.lifecycle, health = u.health ?: old.health, stage = u.stage ?: old.stage,
+            lifecycle = if (dependencyUpdate) old.lifecycle else u.lifecycle ?: old.lifecycle,
+            health = if (dependencyUpdate) old.health else u.health ?: old.health, stage = u.stage ?: old.stage,
             startedAt = event.startedAt, updatedAt = event.updatedAt, durationMs = event.durationMs,
-            error = if (u.lifecycle != null || u.health != null) u.error else old.error,
+            error = if (dependencyUpdate) old.error else if (u.lifecycle != null || u.health != null) u.error else old.error,
             blockedBy = immutableSet(u.blockedBy), versions = immutableMap(if (u.versions.isEmpty()) old.versions else u.versions))
         entry.base = next
         if (u.lifecycle == null && u.health != null && old.health == next.health && old.error == next.error) { merged++;publish();return }
@@ -74,17 +77,17 @@ internal class ComponentStatusRegistry(private val eventLog: (ComponentStatusEve
             val entry = entries[id] ?: return null
             var s = entry.base
             if (id !in visiting && s.lifecycle !in setOf(Lifecycle.FAILED, Lifecycle.DISABLED, Lifecycle.RELEASED)) {
-                val blockers = entry.dependencies.filter { dep ->
+                val blockers = (entry.dependencies + s.blockedBy).filter { dep ->
                     val d = resolve(dep, visiting + id)
                     d == null || d.lifecycle != Lifecycle.READY || d.health == Health.UNAVAILABLE
-                }.toSet() + s.blockedBy
+                }.toSet()
                 if (blockers.isNotEmpty()) {
                     val cause = blockers.sorted().firstNotNullOfOrNull { dep ->
                         val d = effective[dep]
                         if (d?.lifecycle == Lifecycle.FAILED || d?.health == Health.UNAVAILABLE) d.rootCauseId ?: dep else null
                     } ?: blockers.sorted().first()
                     s = s.copy(lifecycle = Lifecycle.BLOCKED, health = Health.UNAVAILABLE, blockedBy = immutableSet(blockers), rootCauseId = cause, error = null)
-                }
+                } else s = s.copy(blockedBy = emptySet(), rootCauseId = null)
             }
             if (s.lifecycle == Lifecycle.FAILED) s = s.copy(rootCauseId = id)
             effective[id] = s;return s

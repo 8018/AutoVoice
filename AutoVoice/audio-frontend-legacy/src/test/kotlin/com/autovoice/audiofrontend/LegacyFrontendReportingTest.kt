@@ -55,4 +55,57 @@ class LegacyFrontendReportingTest {
         assertTrue(events.any { it.descriptor.componentId == "frontend" && it.update.error?.code == ErrorCode.NATIVE_LIBRARY_MISSING })
         frontend.close()
     }
+    @Test fun `real legacy success after initial failure uses a new token without resetting samples`() {
+        val events = mutableListOf<ComponentStatusEvent>()
+        val reporter = ComponentReporter(ComponentDescriptor("frontend", "rnnoise", "iflytek"), 1, ComponentStatusSink(events::add))
+        val frames = mutableListOf<ShortArray>()
+        val processor = object : com.autovoice.audiofrontend.ecnr.FrontendSignalProcessor {
+            override fun process(frame: ShortArray): ShortArray {
+                frames += frame.copyOf()
+                if (frames.size == 1) throw UnsatisfiedLinkError("first native call failed")
+                return frame
+            }
+            override fun close() = Unit
+        }
+        val engine = LocalAudioFrontendEngine(null, processor, true, reporter)
+        try {
+            assertThrows(LinkageError::class.java) { engine.process(pcm16ShortsToBytes(ShortArray(512) { 7 })) }
+            val failed = events.last().token
+            assertEquals(Lifecycle.FAILED, events.last().update.lifecycle)
+            val output = pcm16BytesToShorts(engine.process(pcm16ShortsToBytes(ShortArray(512) { 9 })).processedPcm)
+            assertNull(engine.unavailabilityReason)
+            val succeeded = events.lastOrNull { it.update.lifecycle == Lifecycle.READY }
+            assertNotNull(succeeded)
+            assertNotEquals(failed.attemptId, succeeded!!.token.attemptId)
+            assertEquals(Health.HEALTHY, succeeded!!.update.health)
+            assertFalse(reporter.report(failed, ComponentUpdate.ready()))
+            assertArrayEquals(ShortArray(512) { 7 } + ShortArray(448) { 9 }, output)
+            assertEquals(3, frames.size)
+            assertArrayEquals(ShortArray(480) { 7 }, frames[0])
+            assertArrayEquals(ShortArray(480) { 7 }, frames[1])
+            assertArrayEquals(ShortArray(32) { 7 } + ShortArray(448) { 9 }, frames[2])
+            assertArrayEquals(ShortArray(64) { 9 }, pcm16BytesToShorts(engine.finishProcessedAudio()))
+            assertEquals(4, frames.size)
+            assertEquals(2, events.count { it.update.lifecycle == Lifecycle.INITIALIZING })
+        } finally { engine.close() }
+    }
+
+    @Test fun `repeated failing legacy blocks do not create a new reported retry each block`() {
+        val events = mutableListOf<ComponentStatusEvent>()
+        val reporter = ComponentReporter(ComponentDescriptor("frontend", "rnnoise", "iflytek"), 1, ComponentStatusSink(events::add))
+        var calls = 0
+        val processor = object : com.autovoice.audiofrontend.ecnr.FrontendSignalProcessor {
+            override fun process(frame: ShortArray): ShortArray { calls++;throw UnsatisfiedLinkError("still unavailable") }
+            override fun close() = Unit
+        }
+        val engine = LocalAudioFrontendEngine(null, processor, true, reporter)
+        try {
+            repeat(3) { assertThrows(LinkageError::class.java) { engine.process(ByteArray(1024)) } }
+            assertEquals(3, calls)
+            assertEquals(1, events.count { it.update.lifecycle == Lifecycle.INITIALIZING })
+            assertEquals(1, events.count { it.update.lifecycle == Lifecycle.FAILED })
+            assertNotNull(engine.unavailabilityReason)
+        } finally { engine.close() }
+    }
+
 }

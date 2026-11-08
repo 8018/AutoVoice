@@ -107,4 +107,44 @@ class IflytekComponentReportingTest {
         } finally { replacement.close();runCurrent() }
     }
 
+    @Test fun `close waits active recognition off caller before releasing and initializing successor`() = runTest {
+        val calls = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        var created = 0
+        val channel = IflytekSpeechChannel(dispatcher) {
+            val id = ++created
+            object : IflytekCommand {
+                override fun initialize(context: Context) { calls += "init$id" }
+                override fun recognize(segment: ByteArray): String? {
+                    calls += "recognize$id"
+                    entered.countDown()
+                    check(finish.await(3, java.util.concurrent.TimeUnit.SECONDS))
+                    calls += "done$id"
+                    return null
+                }
+                override fun close() { calls += "close$id" }
+            }
+        }
+        val first = channel.createLocalEngines(ContextWrapper(null), config(), backgroundScope)
+        runCurrent()
+        val next = channel.createLocalEngines(ContextWrapper(null), config(), backgroundScope)
+        val result = worker.submit { kotlinx.coroutines.runBlocking { first.nlu.understand("first", byteArrayOf(1), null) } }
+        try {
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            first.close() // Must return even while recognition is blocked on the worker.
+            runCurrent()
+            assertEquals(listOf("init1", "recognize1"), calls.toList())
+            assertNull(first.nlu.understand("closed", byteArrayOf(1), null).recognizedText)
+            assertEquals(1, calls.count { it == "recognize1" })
+            finish.countDown();result.get(2, java.util.concurrent.TimeUnit.SECONDS);runCurrent()
+            assertEquals(listOf("init1", "recognize1", "done1", "close1", "init2"), calls.toList())
+        } finally {
+            finish.countDown();result.get(3, java.util.concurrent.TimeUnit.SECONDS)
+            first.close();next.close();runCurrent();worker.shutdownNow()
+        }
+    }
+
 }

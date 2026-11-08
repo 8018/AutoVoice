@@ -39,23 +39,26 @@ internal class IflytekRuntimeInitialization(
 
     fun ensure(key: String, credentialsPresent: Boolean, beforeAuth: () -> Unit = {},
         startBackend: (onAuth: (Int) -> Unit, onFailure: (Throwable) -> Unit) -> Unit) {
+        synchronized(lock) {
+            checkSharedStateLocked(key)
+            if (state == State.NEW && !credentialsPresent) {
+                this.key = key;state = State.INITIALIZING;token = reporter.start("authorize")
+                failLocked(ComponentError(ErrorCode.SDK_CREDENTIALS_MISSING))
+                throw RuntimeInitializationException(requireNotNull(error))
+            }
+        }
+        // Ability-local registration must succeed before claiming global initialization.
+        // Its failure belongs to this caller, including when the process runtime is READY.
+        beforeAuth()
         val owner = synchronized(lock) {
-            if (this.key.isNotEmpty() && this.key != key) throw RuntimeInitializationException(ComponentError(ErrorCode.SDK_AUTH_FAILED))
-            if (state == State.FAILED) throw RuntimeInitializationException(requireNotNull(error))
-            if (state == State.READY && health == Health.UNAVAILABLE) throw RuntimeInitializationException(requireNotNull(error))
+            checkSharedStateLocked(key)
             if (state == State.NEW) {
                 this.key = key;state = State.INITIALIZING;token = reporter.start("authorize")
-                if (!credentialsPresent) {
-                    failLocked(ComponentError(ErrorCode.SDK_CREDENTIALS_MISSING))
-                    throw RuntimeInitializationException(requireNotNull(error))
-                }
                 true
             } else false
         }
-        try {
-            beforeAuth()
-            if (owner) startBackend(::onAuth, ::onFailure)
-        } catch (failure: Throwable) {
+        if (owner) try { startBackend(::onAuth, ::onFailure) }
+        catch (failure: Throwable) {
             failure.rethrowCancellationOrFatal()
             onFailure(failure)
         }
@@ -67,6 +70,11 @@ internal class IflytekRuntimeInitialization(
             if (!completed && state == State.INITIALIZING) failLocked(ComponentError(ErrorCode.INIT_TIMEOUT))
             if (state != State.READY || health == Health.UNAVAILABLE) throw RuntimeInitializationException(error ?: ComponentError(ErrorCode.SDK_AUTH_FAILED))
         }
+    }
+    private fun checkSharedStateLocked(key: String) {
+        if (this.key.isNotEmpty() && this.key != key) throw RuntimeInitializationException(ComponentError(ErrorCode.SDK_AUTH_FAILED))
+        if (state == State.FAILED) throw RuntimeInitializationException(requireNotNull(error))
+        if (state == State.READY && health == Health.UNAVAILABLE) throw RuntimeInitializationException(requireNotNull(error))
     }
     private fun onAuth(code: Int) = synchronized(lock) {
         when (state) {

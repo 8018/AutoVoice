@@ -99,9 +99,15 @@ internal class IflytekSpeechChannel(
         var initializationFinished = command == null
         var released = false
         var ready = false
+        var activeUses = 0
+        var usesFinished: CompletableDeferred<Unit>? = null
         suspend fun releaseCommand() {
             // A cancelled queued owner must preserve the entire predecessor chain.
             lease?.first?.await()
+            val waitingUse = synchronized(lifecycleLock) {
+                if (activeUses == 0) null else usesFinished ?: CompletableDeferred<Unit>().also { usesFinished = it }
+            }
+            waitingUse?.await()
             val shouldRelease = synchronized(lifecycleLock) { if (released) false else { released = true;true } }
             if (shouldRelease) try { command?.close() } finally {
                 lease?.second?.complete(Unit)
@@ -137,9 +143,16 @@ internal class IflytekSpeechChannel(
         val nlu = LocalNluEngine(
             recognizeCommand = { segment ->
                 if (fake) recognizeLocalCommand(config.local.asr, segment) { null }
-                else if (synchronized(lifecycleLock) { ready && !closeRequested } && health?.runtimeBlocked() != true)
-                    recognizeLocalCommand(config.local.asr, segment) { command?.recognize(segment) }
-                else null
+                else {
+                    val accepted = synchronized(lifecycleLock) {
+                        if (ready && !closeRequested && health?.runtimeBlocked() != true) { activeUses++;true } else false
+                    }
+                    if (!accepted) null else try {
+                        recognizeLocalCommand(config.local.asr, segment) { command?.recognize(segment) }
+                    } finally {
+                        synchronized(lifecycleLock) { activeUses--;if (activeUses == 0) usesFinished?.complete(Unit) }
+                    }
+                }
             },
             understandCommand = RuleNluProvider::understand,
             onRecognizerFailure = { Log.w(TAG, "本地 2C 命令词异常，按未命中继续") },

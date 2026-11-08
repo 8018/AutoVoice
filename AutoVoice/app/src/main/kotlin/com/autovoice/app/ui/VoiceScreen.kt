@@ -55,7 +55,7 @@ fun VoiceScreen(
     onDismissTravelGuide: () -> Unit,
 ) {
     if (!state.assemblyReady) {
-        Column(Modifier.fillMaxSize().systemBarsPadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("语音暂未就绪", style = MaterialTheme.typography.titleLarge)
             Text(state.capabilities.summary)
             ComponentHealthPanel(state.componentHealth, alwaysExpanded = true)

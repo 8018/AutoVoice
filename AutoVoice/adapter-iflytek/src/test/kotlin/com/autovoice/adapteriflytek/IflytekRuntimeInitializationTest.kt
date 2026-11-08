@@ -90,4 +90,48 @@ class IflytekRuntimeInitializationTest {
         assertEquals(ErrorCode.SDK_AUTH_FAILED, authEvents.last().update.error!!.code)
         assertEquals(101, authEvents.last().update.error!!.vendorCode)
     }
+    @Test fun `new ability preflight failure stays local and another ability can initialize`() {
+        val events = mutableListOf<ComponentStatusEvent>()
+        val runtime = IflytekRuntimeInitialization()
+        runtime.bindReporter(reporter(events))
+        var starts = 0
+        val failure = IllegalStateException("ability registration failed")
+        assertSame(failure, assertThrows(IllegalStateException::class.java) {
+            runtime.ensure("same", true, beforeAuth = { throw failure }) { _, _ -> starts++ }
+        })
+        assertEquals(0, starts)
+        assertTrue(events.isEmpty())
+        val order = mutableListOf<String>()
+        runtime.ensure("same", true, beforeAuth = { order += "ability" }) { auth, _ ->
+            starts++;order += "global";auth(0)
+        }
+        assertEquals(listOf("ability", "global"), order)
+        assertEquals(1, starts)
+        assertEquals(Lifecycle.READY, events.last().update.lifecycle)
+    }
+    @Test fun `ready ability preflight failure is not swallowed or reported as auth failure`() {
+        val events = mutableListOf<ComponentStatusEvent>()
+        val runtime = IflytekRuntimeInitialization()
+        runtime.bindReporter(reporter(events))
+        var starts = 0
+        runtime.ensure("same", true) { auth, _ -> starts++;auth(0) }
+        val count = events.size
+        val failure = IllegalArgumentException("another ability failed")
+        assertSame(failure, assertThrows(IllegalArgumentException::class.java) {
+            runtime.ensure("same", true, beforeAuth = { throw failure }) { _, _ -> starts++ }
+        })
+        runtime.ensure("same", true) { _, _ -> starts++ }
+        assertEquals(1, starts)
+        assertEquals(count, events.size)
+        assertEquals(Health.HEALTHY, events.last().update.health)
+    }
+    @Test fun `missing credentials are rejected before ability preflight`() {
+        val runtime = IflytekRuntimeInitialization()
+        var registered = false
+        assertThrows(RuntimeInitializationException::class.java) {
+            runtime.ensure("missing", false, beforeAuth = { registered = true }) { _, _ -> error("unexpected SDK init") }
+        }
+        assertFalse(registered)
+    }
+
 }

@@ -140,7 +140,13 @@ internal class LocalAudioFrontendEngine(
     private fun processDenoiser(frame: ShortArray): ShortArray = try {
         if (frontendToken == null) frontendToken = frontendReporter.start("native_load")
         denoiser.process(frame).also {
-            if (!processorReady) { processorReady = true;frontendToken?.let { token -> frontendReporter.report(token, ComponentUpdate.ready()) } }
+            if (!processorReady) {
+                // Existing reader retries processing; only an actual success earns a new attempt.
+                // Repeated failed blocks keep the original failure instead of emitting retry loops.
+                if (frontendFailure != null) frontendToken = frontendReporter.start("native_load")
+                processorReady = true
+                frontendToken?.let { token -> frontendReporter.report(token, ComponentUpdate.ready()) }
+            }
             else if (frontendFailure != null) frontendToken?.let { frontendReporter.report(it, ComponentUpdate.health(Health.HEALTHY)) }
             frontendFailure = null
         }
