@@ -98,6 +98,7 @@ dependencies {
     implementation(project(":voice-business"))
     implementation(project(":tts"))
     implementation(project(":audio-frontend"))
+    implementation(project(":audio-frontend-legacy"))
     implementation(project(":adapter-iflytek"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)

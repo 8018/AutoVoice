@@ -21,6 +21,7 @@ include(
     ":voice-business",
     ":tts",
     ":audio-frontend",
+    ":audio-frontend-legacy",
     ":adapter-iflytek",
     ":iflytek-sdk-stub",
     ":app",

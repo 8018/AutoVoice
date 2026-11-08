@@ -13,7 +13,7 @@ import java.nio.LongBuffer
 /**
  * Silero VAD v5 的 onnxruntime 封装（16k 单声道 PCM16，一次一帧）。
  *
- * 模型：`audio-frontend/src/main/assets/silero_vad.onnx`（snakers4/silero-vad v5 导出，~2.3MB，
+ * 模型：`audio-frontend-legacy/src/main/assets/silero_vad.onnx`（snakers4/silero-vad v5 导出，~2.3MB，
  * 与官方仓库 `src/silero_vad/data/silero_vad.onnx` 逐字节一致）。
  * 图结构（Task 48 对照官方 [OnnxWrapper](https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/utils_vad.py) 实测）：
  *  - input:  float32 [1, 576]，**上一帧尾部 64 samples 的 context + 本帧 512 samples**——

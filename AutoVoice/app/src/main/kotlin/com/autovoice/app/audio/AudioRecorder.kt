@@ -8,8 +8,11 @@ import android.media.MediaRecorder
 import android.util.Log
 import com.autovoice.audiofrontend.AndroidCaptureEffects
 import com.autovoice.audiofrontend.AudioFrontendEngine
+import com.autovoice.audiofrontend.AudioFrontendEngineFactory
 import com.autovoice.audiofrontend.AudioFrontendFactory
 import com.autovoice.audiofrontend.CaptureEffects
+import com.autovoice.audiofrontend.CaptureEffectsFactory
+import com.autovoice.audiofrontend.VadEngineFactory
 import com.autovoice.audiofrontend.vad.OpenMicBargeInGate
 import com.autovoice.audiofrontend.vad.VadEvent
 import com.autovoice.app.RecordingCapture
@@ -51,7 +54,7 @@ object AudioFormat {
  * 录音通道（VOICE_COMMUNICATION 16k 单声道 PCM16）：只负责采集与发布流。
  *
  * 原始 1024B 块统一交给 [AudioFrontendEngine]；VAD、切段、RNNoise 网格和实现选择均在
- * `audio-frontend` 模块内闭环。recorder 仅发布处理后的 [pcmBlocks]、[vadEvents] 与原始
+ * 所选前端实现模块内闭环。recorder 仅发布处理后的 [pcmBlocks]、[vadEvents] 与原始
  * [rawPcmBlocks]，不依赖 Silero/RNNoise 具体类型。
  *
  * 测试模式（Task 58 云端联调）：demo-full.json 声明 testAudio asset 时，输入源从
@@ -74,9 +77,13 @@ class AudioRecorder(
     testAudioSource: TestAudioSource? = TestAudioSource.fromConfig(context, testAudioAsset),
     vadConfig: VadConfig = VadConfig(),
     ecnr: String = DemoConfig.ECNR_RNNOISE,
-    frontend: AudioFrontendEngine = AudioFrontendFactory.create(context, vadConfig, ecnr),
-    private val captureEffects: CaptureEffects = AndroidCaptureEffects(),
+    /** Optional initial instance override; subsequent mode changes use [frontendFactory]. */
+    frontend: AudioFrontendEngine? = null,
+    captureEffects: CaptureEffects? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val frontendFactory: AudioFrontendEngineFactory = AudioFrontendEngineFactory(AudioFrontendFactory::create),
+    vadFactory: VadEngineFactory = VadEngineFactory(AudioFrontendFactory::createVad),
+    captureEffectsFactory: CaptureEffectsFactory = CaptureEffectsFactory(::AndroidCaptureEffects),
 ) : RecordingCapture {
 
     @Volatile
@@ -86,7 +93,10 @@ class AudioRecorder(
     private var activeTestAudioAsset: String? = testAudioAsset
 
     @Volatile
-    private var frontend: AudioFrontendEngine = frontend
+    private var frontend: AudioFrontendEngine = frontend ?: frontendFactory.create(context, vadConfig, ecnr)
+
+    private val captureEffects: CaptureEffects = captureEffects ?: captureEffectsFactory.create()
+    private var closed = false
 
     @Volatile
     private var activeVadConfig: VadConfig = vadConfig
@@ -95,7 +105,7 @@ class AudioRecorder(
     private var activeEcnr: String = ecnr
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
-    private val bargeInVad = AudioFrontendFactory.createVad(context)
+    private val bargeInVad = vadFactory.create(context)
     private val bargeInGate = OpenMicBargeInGate()
     private val bargeInPreRoll = ArrayDeque<ByteArray>()
     private var pendingBargeInPreRoll: List<ByteArray> = emptyList()
@@ -139,7 +149,7 @@ class AudioRecorder(
             activeTestAudioAsset = testAudioAsset
         }
         if (vad != activeVadConfig || ecnr != activeEcnr) {
-            val replacement = AudioFrontendFactory.create(context, vad, ecnr)
+            val replacement = frontendFactory.create(context, vad, ecnr)
             val previous = synchronized(turnProcessingLock) {
                 val old = frontend
                 frontend = replacement
@@ -339,7 +349,10 @@ class AudioRecorder(
     }
 
     /** 释放统一音频前端与协程 scope（释放后不可再 [start]）。 */
+    @Synchronized
     override fun close() {
+        if (closed) return
+        closed = true
         monitoringRequested = false
         turnActive = false
         followUpListening = false

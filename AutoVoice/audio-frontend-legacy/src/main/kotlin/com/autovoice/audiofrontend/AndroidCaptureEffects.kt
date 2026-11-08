@@ -4,15 +4,6 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 
-/** AudioRecord-session front-end effects. Kept here with VAD and software signal processing. */
-interface CaptureEffects : AutoCloseable {
-    val echoCancellationActive: Boolean
-    val noiseSuppressionActive: Boolean
-    fun attach(audioSessionId: Int)
-    fun release()
-    override fun close() = release()
-}
-
 class AndroidCaptureEffects : CaptureEffects {
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null

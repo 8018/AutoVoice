@@ -89,6 +89,41 @@ class AudioFrontendEngineTest {
         assertEquals(1024, first.size + tail.size)
     }
 
+    @Test
+    fun `unavailable vad retains processed audio but yields no events or segments`() {
+        val frontend = LocalAudioFrontendEngine(null, FakeProcessor(mutableListOf()), true)
+        frontend.startTurn()
+        val result = frontend.process(pcmBlock())
+        assertTrue(!frontend.vadAvailable)
+        assertNull(result.vadEvent)
+        assertTrue(frontend.finishSegments().isEmpty())
+        assertEquals(AudioFrontendDiagnostics(), frontend.diagnostics)
+        assertEquals(1024, result.processedPcm.size + frontend.finishProcessedAudio().size)
+        assertTrue(frontend.finishProcessedAudio().isEmpty())
+    }
+
+    // Catches duplicate destruction when an owner and a mode-switch both release a frontend.
+    @Test
+    fun `close releases each dependency once even when a dependency fails`() {
+        var vadCloses = 0
+        var processorCloses = 0
+        val vad = object : VadEngine {
+            override val maxProbability = 0f
+            override fun feed(pcm16k: ByteArray) = 0f
+            override fun reset() = Unit
+            override fun close() { vadCloses++; error("close failure") }
+        }
+        val processor = object : FrontendSignalProcessor {
+            override fun process(frame: ShortArray) = frame
+            override fun close() { processorCloses++ }
+        }
+        val frontend = LocalAudioFrontendEngine(VadSegmenter(vad), processor, true)
+        frontend.close()
+        frontend.close()
+        assertEquals(1, vadCloses)
+        assertEquals(1, processorCloses)
+    }
+
     private fun pcmBlock(): ByteArray = ByteArray(1024).also { block ->
         for (sample in 0 until 512) {
             block[sample * 2] = (sample and 0xff).toByte()

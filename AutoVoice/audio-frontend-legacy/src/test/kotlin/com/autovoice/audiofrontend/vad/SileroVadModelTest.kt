@@ -11,13 +11,13 @@ import java.nio.ByteOrder
 /**
  * Silero VAD 真实推理冒烟测试（JVM 上用 ai.onnxruntime 加载本地模型文件）。
  *
- * 模型文件 `audio-frontend/src/main/assets/silero_vad.onnx` 由版本库带入；
+ * 模型文件 `audio-frontend-legacy/src/main/assets/silero_vad.onnx` 由版本库带入；
  * 不在时跳过（assumeTrue），编译与其余测试不受影响。
  */
 class SileroVadModelTest {
 
     private fun modelFile(): File {
-        // AGP 单测工作目录 = 模块目录（audio-frontend）
+        // AGP 单测工作目录 = 模块目录（audio-frontend-legacy）
         val rel = File("src/main/assets/silero_vad.onnx")
         if (rel.exists()) return rel
         return File(System.getProperty("user.dir"), "src/main/assets/silero_vad.onnx")
