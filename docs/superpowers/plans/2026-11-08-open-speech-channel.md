@@ -8,7 +8,7 @@
 
 **Tech Stack:** Kotlin 2.0.20、Java 21、AGP 8.5.2、Android API 26/34、WebRTC GN/JNI、sherpa-onnx Android JNI、FireRedASR2 CTC INT8。
 
-**Spec:** `docs/superpowers/specs/2026-11-08-open-speech-channel-design.md`；构建规约 `docs/webrtc-firered-android-build.md`。
+**Spec:** `docs/superpowers/specs/2026-11-08-open-speech-channel-design.md`；构建规约 `docs/webrtc-firered-android-build.md`。新增已批准的组件上报设计与实施计划见 `2026-11-08-component-initialization-reporting.md`；其 Task1 插入本计划 Task3 与 Task4 之间，其 Task2 分别纳入本计划 Task4–7。
 
 ## Global Constraints
 
@@ -123,4 +123,4 @@
 
 一个执行者每次只接收对应Task brief，完成后停止。报告写入本计划专属SDD目录，包含改动、RED/GREEN证据、命令/结果、提交SHA、依赖/硬件限制和自审；主agent以阶段基线到HEAD的完整diff审核规范符合性和实现质量，必要时要求修复同阶段，再允许下一阶段。
 
-当前主机是Mac arm64，没有已发现的Docker；WebRTC实际构建需要Linux主机或已验证制品。该限制不阻止可在当前环境完成的源码、脚本和Android构建，但阻止宣称全部native/实机验收完成。
+当前编辑主机是Mac arm64；已连接用户WSL Ubuntu26.04 x86_64（32CPU/约31GiB内存/约950GiB可用磁盘），用于native编译，工具链与源码正在准备。WebRTC/sherpa真实编译和8295实机验收仍分别记录，不因主机已连通宣称通过。
