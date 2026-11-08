@@ -124,7 +124,7 @@ class AudioRecorder(
     private var activeEcnr: String = ecnr
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
-    private val bargeInVad = run {
+    private val bargeInVad = if (this.frontend.ownsAuxiliaryVad) null else run {
         val token = auxVadReporter.start("model_create").also { auxVadToken = it }
         val vad = vadFactory.create(context)
         auxVadReporter.report(token, if (vad != null) ComponentUpdate.ready()
@@ -176,7 +176,7 @@ class AudioRecorder(
             testAudioSource = TestAudioSource.fromConfig(context, testAudioAsset)
             activeTestAudioAsset = testAudioAsset
         }
-        if (vad != activeVadConfig || ecnr != activeEcnr) {
+        if (vad.forProcessingComparison() != activeVadConfig.forProcessingComparison() || ecnr != activeEcnr) {
             val replacement = frontendFactory.create(context, vad, ecnr)
             val previous = synchronized(turnProcessingLock) {
                 val old = frontend
@@ -190,10 +190,13 @@ class AudioRecorder(
         pendingFrontendReporting = null
         pendingAuxReporting?.let { reporter ->
             auxVadReporter = reporter
+            if (frontend.ownsAuxiliaryVad) frontend.attachAuxiliaryReporting(reporter,aecReporter)
+            else {
             auxVadToken = reporter.start("reuse_existing")
             reporter.report(requireNotNull(auxVadToken), if (bargeInVad != null) ComponentUpdate.ready()
                 else if (this.frontend.unavailabilityReason != null) ComponentUpdate.blocked("frontend")
                 else ComponentUpdate.failed(ComponentError(ErrorCode.MODEL_LOAD_FAILED)))
+            }
         }
         pendingAuxReporting = null
         Log.i(
@@ -410,7 +413,7 @@ class AudioRecorder(
             bargeInVad?.close()
         } catch (_: Throwable) {
         }
-        captureReporter.close();aecReporter.close()
+        captureReporter.close();if (!frontend.ownsAuxiliaryVad) aecReporter.close()
         auxVadToken?.let { auxVadReporter.close(it) }
         scope.cancel()
     }
@@ -478,8 +481,10 @@ class AudioRecorder(
 
     private fun processTurnBlock(block: ByteArray) {
         val result = frontend.process(block)
-        result.vadEvent?.let { _vadEvents.tryEmit(it) }
-        _pcmBlocks.tryEmit(result.processedPcm)
+        for (observation in result.vadObservations) if (observation.purpose == com.autovoice.audiofrontend.VadPurpose.SEGMENTATION) {
+            for (event in observation.events) _vadEvents.tryEmit(event)
+        }
+        for (pcm in result.processedBlocks) _pcmBlocks.tryEmit(pcm.pcm)
     }
 
     // ------------------------------------------------------------------ 资源
@@ -547,9 +552,9 @@ class AudioRecorder(
 
     private fun attachCaptureEffects(audioSessionId: Int) {
         releaseCaptureEffects()
-        aecToken = aecReporter.start("effects")
+        if (!frontend.ownsAuxiliaryVad) aecToken = aecReporter.start("effects")
         captureEffects.attach(audioSessionId)
-        aecReporter.report(requireNotNull(aecToken), if (captureEffects.echoCancellationActive) ComponentUpdate.ready() else ComponentUpdate.disabled())
+        aecToken?.let { aecReporter.report(it, if (captureEffects.echoCancellationActive) ComponentUpdate.ready() else ComponentUpdate.disabled()) }
         openMicBargeInAvailable = captureEffects.echoCancellationActive && bargeInVad != null
         Log.i(
             TAG,
@@ -577,3 +582,7 @@ class AudioRecorder(
         const val BARGE_IN_PRE_ROLL_BLOCKS = 12
     }
 }
+
+/** Presence metadata is a config-validation concern; legacy only consumes its historical fields. */
+private fun VadConfig.forProcessingComparison() =
+    if (provider == "silero") copy(thresholdProvided = false,aggressiveness = 2) else this

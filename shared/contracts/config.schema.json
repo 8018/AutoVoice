@@ -45,6 +45,13 @@
             "webrtc.vad"
           ],
           "default": "silero"
+        },
+        "aggressiveness": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 2,
+          "description": "Classic WebRTC VAD mode; Open only, not a probability."
         }
       }
     },
@@ -202,6 +209,11 @@
               "provider": {
                 "const": "silero"
               }
+            },
+            "not": {
+              "required": [
+                "aggressiveness"
+              ]
             }
           },
           "local": {

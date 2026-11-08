@@ -75,4 +75,16 @@ class ComponentPresentationTest {
         assertEquals(Lifecycle.RELEASED, registry.snapshot.value.components.getValue("frontend").lifecycle)
     }
 
+    @Test fun `native initialized auxiliary detectors cannot imply an unwired app feature works`() {
+        val registry = ComponentStatusRegistry()
+        val h = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"));h.registerDefaults()
+        for (id in listOf("config","frontend","vad","vad.aux","aec")) {
+            val r = h.reporter(id);r.report(r.start("create"),ComponentUpdate.ready())
+        }
+        val c = CapabilityEvaluator.evaluate(registry.snapshot.value,false,auxiliaryBridgeAvailable = false)
+        assertEquals(CapabilityAvailability.UNAVAILABLE,c.features["follow_up"])
+        assertEquals(CapabilityAvailability.UNAVAILABLE,c.features["barge_in"])
+        assertTrue(c.canTriggerManual)
+    }
+
 }

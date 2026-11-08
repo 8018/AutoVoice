@@ -108,4 +108,34 @@ class LegacyFrontendReportingTest {
         } finally { engine.close() }
     }
 
+    @Test fun `legacy batches keep 512 sample probability and old event order without extra inference`() {
+        var calls = 0
+        val vad = object : com.autovoice.audiofrontend.vad.VadEngine {
+            override val maxProbability = 0.8f
+            override fun feed(pcm16k: ByteArray): Float { calls++;return if (calls == 1) 0.8f else 0.1f }
+            override fun reset() { calls = 0 }
+            override fun close() = Unit
+        }
+        val segmenter = com.autovoice.audiofrontend.vad.VadSegmenter(vad,
+            com.autovoice.audiofrontend.vad.VoiceActivityGate(minSpeechMs = 32,minSilenceMs = 32),minSegmentBytes = 0)
+        val processor = object : com.autovoice.audiofrontend.ecnr.FrontendSignalProcessor {
+            override fun process(frame: ShortArray) = error("denoise disabled")
+            override fun close() = Unit
+        }
+        val f = LocalAudioFrontendEngine(segmenter,processor,false)
+        try {
+            f.startTurn()
+            val a = f.process(ByteArray(1024) { 7 });val b = f.process(ByteArray(1024) { 9 })
+            assertEquals(0L,a.processedBlocks.single().startSample)
+            assertEquals(512L,b.processedBlocks.single().startSample)
+            assertEquals(512,a.vadObservations.single().validSamples)
+            assertEquals(0.8f,a.vadObservations.single().probability)
+            assertEquals(0.1f,b.vadObservations.single().probability)
+            assertEquals(listOf(com.autovoice.audiofrontend.vad.VadEvent.SpeechStart,com.autovoice.audiofrontend.vad.VadEvent.SpeechEnd),
+                (a.vadObservations + b.vadObservations).flatMap { it.events })
+            assertArrayEquals(ByteArray(1024) { 7 } + ByteArray(1024) { 9 },f.finishSegments().single())
+            assertEquals(2,calls)
+        } finally { f.close() }
+    }
+
 }

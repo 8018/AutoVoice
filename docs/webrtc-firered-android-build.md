@@ -2,7 +2,7 @@
 
 日期：2026-11-08。目标：8295、Android `arm64-v8a`，首版 CPU 推理。配套 [渠道架构设计](superpowers/specs/2026-11-08-open-speech-channel-design.md)。
 
-本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter 边界、双渠道 Gradle 任务和工具已实现；`autovoice_frontend_jni` 的实际 GN/JNI 源码仍待 Task 4。控制端已完成固定 sherpa 的 API27 Linux 实际编译并核验两库 ELF note=27；WebRTC JNI 目标尚未实现，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
+本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter、双渠道 Gradle、构建工具和 Task4 WebRTC GN/JNI/时间轴已实现。固定 WebRTC 已通过真实 GN/check/Ninja、严格开发包校验与独立 Android API33 JNI 探针；控制端也完成 sherpa API27 编译及独立模型探针。产品 FireRed/播放参考协同仍待后续任务，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
 
 ## 1 编译内容和产物
 
@@ -22,7 +22,7 @@ WebRTC Android 编译统一放在 Linux x86_64 构建机；使用其 DEPS 管理
 | 项目 | 本方案起始配置 | 约束 |
 | --- | --- | --- |
 | App | 现有 Java 21、AGP 8.5.2、Kotlin 2.0.20、compileSdk 34；讯飞/公共/legacy minSdk 26，Open/其适配器 minSdk 27 | 本次不顺带升级 Gradle/AGP |
-| WebRTC | 起始候选提交 `8838a7c28655afbf9336063b71a51429e7d72774` | 这是已定位的上游提交，尚未通过本项目构建；首次成功构建并验收后锁定提交、DEPS 工具链和本项目补丁摘要 |
+| WebRTC | 起始候选提交 `8838a7c28655afbf9336063b71a51429e7d72774` | 已按锁定参数真实编译并完成 API33 独立 JNI 探针；8295、声学质量及发行认证仍未完成 |
 | sherpa-onnx | `v2.0.1`，提交 `af2d8d81dbfa61c4cea4c568da78f3982edca005` | Kotlin API 和 native 必须同一提交；禁止跟随 master 自动升级 |
 | sherpa NDK | 工程建议从 r27c `27.2.12479018` 开始 | 控制端已用此版本完成 sherpa API27 编译，尚未经 Android 推理/设备认证 |
 | sherpa ONNX Runtime | 上述版本脚本默认指定 `1.28.2` | 脚本默认下载该版本 Android 预编译库；首版没有从源码重编 ORT，不套用项目旧 Silero 的 1.19.0 |
@@ -50,7 +50,7 @@ bash -n AutoVoice/tools/native/stage-native-artifacts.sh
 
 锁固定上述两个源码提交、arm64/Open API 27、GN 参数、sherpa 开关和 NDK 版本。
 `depot_tools` 固定为实际观测到的候选提交 `289a37bda3d848cfe16e6c1c599741ed3890ab55`，
-此提交与整个组合都尚未经过真实构建/设备验证。所有未生成的制品、manifest、逐库及验收报告摘要保持 `null`；
+WebRTC 组合已真实构建并通过独立 Android JNI/API 烟测；设备声学效果及整个产品组合尚未认证。lock 中可信发行制品及独立验收摘要保持 `null`；
 不存在虚构的“已认证 hash”。构建成功也只能输出 **unverified** 包，不能自动把 lock 改成 verified。
 
 完成依赖准备后，Linux 构建机可显式执行以下入口。`--fetch` 才允许新建固定提交的源码 checkout；
@@ -71,7 +71,7 @@ AutoVoice/tools/native/build-firered-android.sh --execute --fetch \
   --output /work/autovoice-native/artifacts/firered-run-001
 ```
 
-WebRTC 入口要求 Task 4 提供 `adapter-webrtc/native/BUILD.gn`、JNI/session 源码及
+WebRTC 入口消费 Task4 已提供的 `adapter-webrtc/native/BUILD.gn`、JNI/session 源码及
 `webrtc-root.patch`；可显式传 `--project-native-dir` / `--gn-patch` 指向受控输入。
 脚本先检查固定 depot_tools revision、源码/工具/许可证，再运行 checkout/hook 和 GN。
 它禁用 depot_tools 自动更新，使用 DEPS 管理的 Android 工具链，不套用本机 NDK。
@@ -145,7 +145,7 @@ staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symli
 API/NDK 元数据、ELF header/note 和摘要检查不证明导入符号的实际最低 API、16KB 页面或设备行为；这些仍需真实 readelf/link/装载与设备验收，
 不能仅靠工具测试把 candidate 标为 verified。制品目录、receipts、jniLibs 与 Python 缓存均已 gitignore。
 
-**API floor 用户裁定（2026-11-08）：** 实查固定 ORT 1.28.2 的 Android ELF note 为27，用户明确批准仅 Open 提升到 Android 8.1/API27；讯飞、公共模块与 legacy 仍为26。锁、GN、sherpa recipe 与 Open flavor/adapter 均同步27，不用 manifest 标签掩盖26构建。控制端已按27重编并核对两库 note=27；尚无 Android 模型推理/8295验收，runtime artifact 的 trusted hashes 继续留空/unverified。
+**API floor 用户裁定（2026-11-08）：** 实查固定 ORT 1.28.2 的 Android ELF note 为27，用户明确批准仅 Open 提升到 Android 8.1/API27；讯飞、公共模块与 legacy 仍为26。锁、GN、sherpa recipe 与 Open flavor/adapter 均同步27，不用 manifest 标签掩盖26构建。控制端已按27重编并核对两库 note=27；独立 Android 模型探针已通过，但尚无产品 FireRed 接线/8295验收，runtime artifact 的 trusted hashes 继续留空/unverified。
 
 ## 3 WebRTC 前端编译
 
@@ -170,22 +170,26 @@ git rev-parse HEAD
 
 ### 3.2 添加本项目 GN 与 JNI 目标
 
-Task 4 需新增 `AutoVoice/adapter-webrtc/native/`，存放 `BUILD.gn`、`frontend_jni.cc`、`frontend_session.cc`、头文件及导出符号规约。构建工具将该目录复制到 WebRTC checkout 的 `src/autovoice_frontend/`，并以受控补丁在根 `BUILD.gn` 的默认 group 中加入对该目标的依赖，使 GN 能发现它。
+Task4 已新增 `AutoVoice/adapter-webrtc/native/`，存放 `BUILD.gn`、`frontend_jni.cc`、`frontend_session.cc`、头文件及导出符号规约。构建工具将该目录复制到 WebRTC checkout 的 `src/autovoice_frontend/`，并以受控补丁在根 `BUILD.gn` 的默认 group 中加入对该目标的依赖，使 GN 能发现它。
 
-核心 GN 目标规约如下。这是本项目待编写的目标，不能在没有 JNI 实现时直接执行 Ninja：
+核心 GN 目标规约如下。这是已在固定 checkout 通过检查与编译的目标；实际文件还包含本库精确 JNI 导出配置：
 
 ```gn
 import("//webrtc.gni")
 
+config("autovoice_jni_exports") {
+  inputs = [ "frontend_jni.exports" ]
+  ldflags = [ "-Wl,--version-script=" + rebase_path("frontend_jni.exports", root_build_dir) ]
+}
+
 rtc_shared_library("autovoice_frontend_jni") {
   java_targets = []
-  configs += [ "//third_party/jni_zero:jni_include_dir" ]
-  sources = [
-    "frontend_jni.cc",
-    "frontend_session.cc",
-    "frontend_session.h",
-  ]
+  # Handwritten standard JNI has no generated JNI_OnLoad registration.
+  suppressed_configs = [ "//build/config/android:hide_all_but_jni_onload" ]
+  configs += [ "//third_party/jni_zero:jni_include_dir", ":autovoice_jni_exports" ]
+  sources = [ "frontend_jni.cc", "frontend_session.cc", "frontend_session.h" ]
   deps = [
+    "//api:scoped_refptr",
     "//api/audio:audio_processing",
     "//api/audio:builtin_audio_processing_builder",
     "//api/environment:environment_factory",
@@ -198,6 +202,8 @@ rtc_shared_library("autovoice_frontend_jni") {
 APM 使用 `api/audio/builtin_audio_processing_builder.h` 和 `api/audio/audio_processing.h`；经典 VAD 使用 `common_audio/vad/include/webrtc_vad.h`，其 C 实现在 `common_audio:common_audio_c`，不要把 APM 内部的 VAD helper 当成公开经典 VAD API。上游 JNI/shared-library 模板会保留 WebRTC 的编译配置和递归依赖，不能只把一个 `libaudio_processing.a` 拿到另一个 CMake 工程里并期待依赖自动齐全。[APM 构建目标](https://webrtc.googlesource.com/src/+/refs/heads/main/api/audio/BUILD.gn)、[VAD 所属目标](https://webrtc.googlesource.com/src/+/refs/heads/main/common_audio/BUILD.gn)、[GN 模板](https://webrtc.googlesource.com/src/+/refs/heads/main/webrtc.gni)
 
 根默认 group 新增的依赖为 `"//autovoice_frontend:autovoice_frontend_jni"`。只构建该目标及其依赖，不构建默认的完整 WebRTC SDK、PeerConnection、摄像头或第二套录音器。初次构建必须核对候选提交的实际 GN label，目标变更须更新补丁和版本清单，不关闭 GN 的依赖检查绕过问题。
+
+本库抑制上游 Android 默认 `hide_all_but_jni_onload`，改用专属 `frontend_jni.exports`，只导出五个标准 `Java_com_autovoice_adapterwebrtc_WebRtcNative_*` 入口；其余符号继续隐藏。仅 SOLINK 成功不足以证明 JNI 可用，必须检查实际 `nm -D` 并在 Android 调用五个入口。
 
 本项目采用手写标准 JNI：Kotlin `external` 声明由 Gradle 编译，native 导出 `JNIEXPORT` 标记的 `Java_com_autovoice_adapterwebrtc_WebRtcNative_*` 方法，不通过 GN 生成 Java 绑定。`java_targets=[]` 是 Android `rtc_shared_library` 包装层需要的显式空列表；省略会在其内部 JNI 目标生成时读取未定义变量。`<jni.h>` 来自 WebRTC Android 工具链的 NDK sysroot，GN 的 `jni_include_dir` 配置补足其 JNI 生成头搜索路径；不引用构建机桌面 JDK 头来代替 Android JNI。[JNI 构建模板](https://raw.githubusercontent.com/chromium/chromium/main/third_party/jni_zero/jni_zero.gni)
 
@@ -380,8 +386,38 @@ native 制品清单记录：WebRTC/sherpa 源码提交、depot_tools/DEPS、所�
 
 ## 9 当前执行记录与环境限制
 
-本阶段仅用本地微型合成 ELF/ZIP 验证工具策略，未生成真实 WebRTC/sherpa 制品，未填造制品摘要。
-开发机是 macOS arm64，最初检查本机 adb 时无连接 Android 设备；控制端后续已启动独立 `AutoVoice_Open_API_33`（arm64-v8a/API33）用于提交审核后的 Android 验证，尚无8295物理设备验收。本机没有所选 r27c NDK/GN/depot_tools。
-控制端已恢复到 Ubuntu 26.04 WSL2 x86_64 构建机的连接（32 logical CPU、约31GiB RAM、约950GiB可用磁盘）；
-Linux 主机并非缺失：控制端已准备基础构建包、Ninja/Java等工具并检出固定 depot_tools；NDK r27c 已经官方 SHA1 校验并安装（27.2.12479018），固定 sherpa API27 官方脚本构建退出0，两库 Android ELF note=27；WebRTC 源码准备由控制端跟进，Task 4 的 JNI/GN 源码尚未提供。
-H1 实现 worker 未探测服务器、远程安装或执行 native 编译；上述实际 Linux 构建由控制端独立完成。其 API27 JNI SHA256 为 `6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97`，ORT 为 `33847ad43bffe204699fd4a27f7f3603452a8cdaf2f9a44983a0bc31ffcf2da1`（观测摘要，非 trusted artifact）。模型/许可证/Android 推理/8295验收尚未完成，制品认证完成前不更新 trusted lock。
+Task4 worker 在专用 Ubuntu26.04/WSL2 x86_64 完成固定源码 hooks、GN `--check --fail-on-unused-args`、`gn check` 和1602任务的实际 Ninja 构建。使用 DEPS 的 Clang24/Android 工具链，未把 sherpa 的 r27c 强套给 WebRTC。真实产物867144 bytes，SHA256 `d05f2718af6342274fc99a5a1b721bb28df826dada1eeb6db9426296da7c48df`；这是开发观测值，非发行认证。
+
+已用 NDK llvm-readelf/nm 实查 ELF64/AArch64、Android note27、三个 LOAD 均0x4000、DT_NEEDED 仅 libc/libdl/libm/liblog、无 RPATH/RUNPATH、精确五个 JNI 导出。之前一次上游默认导出表隐藏了所有手写入口；该无效库未用于开发 staging，失败日志保留。最终 wrapper 完整构建和开发包校验通过，库进入工程外 devRoot，可信 lock 仍未改写。
+
+控制端在独立无网络权限的 arm64/API33 APK 调用同一 JNI：官方语音510帧、435个 speech 帧；真实 capture/render/三个独立 reset/release、部分有效尾帧返回未知判定、受控错误和释放后拒绝均通过。此证据只证明实际 JNI/APM/classic VAD 可调用；不等于产品 Android 时间轴/播放参考整合、车内 AEC 质量、双讲或8295验收。
+
+控制端也独立完成 sherpa API27 编译及 Android 模型探针；产品 FireRed adapter/文本规则仍是后续 Task5，播放/capture/cloud协同为 Task6。模型/运行库可信认证和8295资源、语音质量仍未完成；开发探针不能使完整 Open 渠道被标为就绪。Mac 本地主要运行 JVM/Gradle，native 实际编译在上述 Linux 主机，未部署服务器或安装系统依赖。
+
+### Task4 公共输出与用途边界
+
+`AudioFrontendEngine.process` 返回 `FrontendBatch(processedBlocks, vadObservations)`。PCM块带 startSample/validSamples/格式；观测带真实样本位置、有效长度、用途、speechDetected、可选 probability 和有序 events。Open 不制造 Silero 概率，512→160跨块 FIFO 保持所有有效样本；正常输入完成用 `finishBatch` 补齐DSP后截回有效尾部，尾部不补造VAD静音，随后再取分段。取消/设备关闭丢弃未提交尾部，不自动提交业务。
+
+Legacy 继续一次512-sample Silero概率推理，再按原顺序运行480-sample RNNoise，原事件/处理后PCM结果保持；包装增加坐标，不把其输出重新拆成10ms改变旧时序。旧 `AudioFrontendFrame` 构造别名只保留源码兼容；它的单事件视图不允许静默丢弃 Open 多事件。
+
+一个设备前端仅一个 APM，其配置/输入/关闭由有界单线程 backend 拥有；三份 classic VAD 与三份样本门控分属 main/followup/barge。resetVad/startTurn只重置对应检测/分段，不重置 APM。Legacy仍是原主VAD＋共享aux两实例。`attachReporting`/`attachAuxiliaryReporting`只重绑诊断，不重建引擎。
+
+Open 接受自己的 aggressiveness0..3（候选默认2），运行时拒绝显式 legacy vad.threshold，包括显式0.5。Schema、Open资产和解析器一致；legacy比较处理参数时忽略概率字段存在标记等不消费的元数据，避免无参数变化重建。Open首版门限沿用资产64ms/960ms但按有效样本计算；库候选预卷100ms、最大段10s、默认每轮保留上限30s（溢出显式失败），均未声称经过车内噪声调优。
+
+`RenderReferenceSink`接收单调播放代次、16k mono PCM16、样本位置和呈现时间，队列有界；旧代次、失序/过期或溢出撤销AEC参考健康。参考在capture处理线程消费一次；无播放为idle，不报声学故障。本阶段只完成库端协议，真实AudioTrack播放参考/延迟估计/连续capture协同由Task6接通。App当前明确 auxiliaryBridgeAvailable=false，不能因 native VAD READY 就宣称续听/普通话术打断可用。
+
+### 开发 JNI 与发行分离
+
+先使用严格工具生成开发 receipt，再显式打 Debug 包：
+
+```sh
+AutoVoice/tools/native/stage-native-artifacts.sh --mode dev \
+  --archive /work/webrtc-android-arm64-v8a-unverified.zip \
+  --expected-sha256 '<实际经核对的archive摘要>' \
+  --dev-output /private/tmp/autovoice-native-dev-20261108
+
+cd AutoVoice
+./gradlew :app:assembleOpenDebug -PnativeDevRoot=/private/tmp/autovoice-native-dev-20261108
+```
+
+该属性只将 `adapter-webrtc/src/main/jniLibs` 的工程外开发目录接到 Debug source set；不复制进生产源码。Release任务图明确拒绝 nativeDevRoot；完整跨Debug/Release测试不用该属性。默认生产制品仍只能沿可信校验/staging路径交付。Iflytek包不因该属性增加 WebRTC，Open不携带legacy RNNoise/ORT。Task5未来可在同一devRoot增加独立验证的FireRed目录，不代表现在已经集成。

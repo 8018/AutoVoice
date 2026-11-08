@@ -40,6 +40,8 @@ data class DemoConfig(
                     minSpeechMs = vad?.optLong("minSpeechMs") ?: VadConfig.DEFAULT_MIN_SPEECH_MS,
                     minSilenceMs = vad?.optLong("minSilenceMs") ?: VadConfig.DEFAULT_MIN_SILENCE_MS,
                     provider = vad?.optString("provider") ?: "silero",
+                    thresholdProvided = vad?.has("threshold") == true,
+                    aggressiveness = vad?.optInteger("aggressiveness") ?: 2,
                 ),
                 // 旧配置未声明时保持历史上的 RNNoise 实际行为。
                 ecnr = ecnr,
@@ -86,8 +88,13 @@ data class VadConfig(
     val minSpeechMs: Long = DEFAULT_MIN_SPEECH_MS,
     val minSilenceMs: Long = DEFAULT_MIN_SILENCE_MS,
     val provider: String = "silero",
+    /** JSON presence is distinct from the retained legacy default. */
+    val thresholdProvided: Boolean = false,
+    /** Classic WebRTC VAD mode, never a probability. Legacy does not consume this. */
+    val aggressiveness: Int = 2,
 ) {
     init {
+        require(aggressiveness in 0..3) { "config: vad.aggressiveness must be an integer in [0, 3]" }
         require(threshold.isFinite() && threshold in 0.0..1.0) {
             "config: vad.threshold must be a finite number in [0, 1], got $threshold"
         }
@@ -224,4 +231,12 @@ private fun JsonObject.optString(name: String): String? {
         "config: invalid optional string field '$name'"
     }
     return el.asString
+}
+
+private fun JsonObject.optInteger(name: String): Int? {
+    val el = get(name) ?: return null
+    require(el.isJsonPrimitive && el.asJsonPrimitive.isNumber) { "config: invalid integer field '$name'" }
+    val number = el.asDouble
+    require(number.isFinite() && number == number.toInt().toDouble()) { "config: invalid integer field '$name'" }
+    return number.toInt()
 }

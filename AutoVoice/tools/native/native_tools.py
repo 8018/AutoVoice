@@ -160,6 +160,28 @@ def create_package(component, lock, plan, libraries, auxiliary, toolchain, outpu
     return {"archive": str(archive), "archive_sha256": receipt["archive_sha256"], "verification": "UNVERIFIED DEVELOPMENT"}
 
 
+def select_webrtc_runtime_output(outputs, source, build_dir):
+    source, build_dir = Path(source).resolve(), Path(build_dir).resolve()
+    name = "libautovoice_frontend_jni.so"
+    runtime = []
+    for line in outputs.splitlines():
+        line = line.strip()
+        if not line.endswith("/" + name):
+            continue
+        path = source / line.removeprefix("//") if line.startswith("//") else Path(line)
+        if not path.is_absolute():
+            path = source / path
+        path = path.resolve()
+        require(path.is_relative_to(build_dir), "GN output escapes build directory")
+        if path == build_dir / "lib.unstripped" / name:
+            require(path.is_file(), "GN symbol output is missing")
+            continue
+        require(path == build_dir / name, "unexpected GN runtime output path")
+        runtime.append(path)
+    require(len(runtime) == 1 and runtime[0].is_file(), "GN did not report exactly one runtime JNI output")
+    return runtime[0]
+
+
 def execute_build(args, lock, plan):
     component = plan["component"]
     source, output = Path(plan["source_dir"]), Path(plan["output"])
@@ -245,17 +267,8 @@ def execute_build(args, lock, plan):
             for command in plan["commands"][:-1]:
                 runner.run(command, source, env)
             outputs = runner.run(plan["commands"][-1], source, env)
-            candidates = []
-            for line in outputs.splitlines():
-                line = line.strip()
-                if line.endswith("/libautovoice_frontend_jni.so"):
-                    path = source / line.removeprefix("//") if line.startswith("//") else Path(line)
-                    if not path.is_absolute():
-                        path = source / path
-                    require(path.resolve().is_relative_to(Path(plan["build_dir"]).resolve()), "GN output escapes build directory")
-                    candidates.append(path)
-            require(len(candidates) == 1 and candidates[0].is_file(), "GN did not report exactly one runtime JNI output")
-            libraries = {LIBRARIES[component][0]: candidates[0].read_bytes()}
+            runtime = select_webrtc_runtime_output(outputs, source, Path(plan["build_dir"]))
+            libraries = {LIBRARIES[component][0]: runtime.read_bytes()}
             symbols = Path(plan["build_dir"]) / "lib.unstripped" / LIBRARIES[component][0]
             if symbols.is_file():
                 auxiliary["symbols/arm64-v8a/" + LIBRARIES[component][0] + ".debug"] = symbols.read_bytes()

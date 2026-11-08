@@ -38,6 +38,19 @@ class SpeechChannelTest {
         }
     }
 
+    @Test fun `open rejects explicitly supplied Silero probability and leaves native aux bridge unavailable`() {
+        val cfg = config()
+        if (channel.id == "open") {
+            val explicit = cfg.copy(vad = cfg.vad.copy(thresholdProvided = true))
+            assertThrows(IllegalArgumentException::class.java) { channel.validateConfig(explicit) }
+            assertThrows(IllegalArgumentException::class.java) { channel.validateConfig(cfg.copy(vad = cfg.vad.copy(threshold = 0.8))) }
+            assertFalse(channel.capabilities.auxiliaryBridgeAvailable)
+        } else {
+            channel.validateConfig(cfg.copy(vad = cfg.vad.copy(threshold = 0.8,thresholdProvided = true)))
+            assertTrue(channel.capabilities.auxiliaryBridgeAvailable)
+        }
+    }
+
     @Test
     fun `only missing assets use channel fallback and invalid content never does`() {
         var notices = 0
@@ -72,7 +85,8 @@ class SpeechChannelTest {
         if (channel.id != "open") return@runTest
         val cfg = config()
         val frontend = channel.frontendFactory.create(ContextWrapper(null), cfg.vad, cfg.ecnr)
-        assertEquals(channel.capabilities.frontendUnavailableReason, frontend.unavailabilityReason)
+        assertNull(channel.capabilities.frontendUnavailableReason) // Actual native construction, not an optimistic static capability.
+        assertNotNull(frontend.unavailabilityReason) // JVM has no Android native library.
         assertFalse(frontend.vadAvailable)
         assertThrows(IllegalStateException::class.java) { frontend.process(ByteArray(1024)) }
         frontend.close()

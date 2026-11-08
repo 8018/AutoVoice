@@ -31,6 +31,10 @@ class VadSegmenter(
 
     /** 本段录音内 VAD 最高语音概率（诊断用，Task 55）。 */
     val maxProbability: Float get() = vad.maxProbability
+    /** The existing inference result, exposed without a second model invocation. */
+    var lastProbability: Float? = null
+        private set
+    val lastSpeechDetected: Boolean? get() = lastProbability?.let { it > gate.threshold }
 
     // ---- 诊断统计（Task 55：segments=0 但概率高，需要本轮事件明细）----
     var speechStartEvents = 0
@@ -47,6 +51,7 @@ class VadSegmenter(
         openStartIndex = -1
         speechStartEvents = 0
         speechEndEvents = 0
+        lastProbability = null
         gate.reset()
         vad.reset()
     }
@@ -62,7 +67,9 @@ class VadSegmenter(
         require(block.size == 1024) {
             "vad segmenter expects 1024-byte PCM16 frames @16k, got ${block.size} bytes"
         }
-        val event = gate.feed(vad.feed(block))
+        val probability = vad.feed(block)
+        lastProbability = probability
+        val event = gate.feed(probability)
         // 存副本：调用方（AudioRecorder 读循环）复用同一数组逐块重填，
         // 只存引用会让所有块指向同一数组的最终内容（段 = 最后一块重复，Task 58 联调发现）
         blocks.add(block.copyOf())

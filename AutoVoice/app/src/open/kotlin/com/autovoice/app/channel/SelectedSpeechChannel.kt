@@ -18,9 +18,10 @@ private class OpenSpeechChannel : SpeechChannel {
     override val id = "open"
     private var reporting: ChannelComponentReporting? = null
     override fun attachReporting(reporting: ChannelComponentReporting) { this.reporting = reporting }
-    override val frontendFactory = AudioFrontendEngineFactory { _, _, _ ->
-        reporting?.unavailable("frontend", ErrorCode.NATIVE_LIBRARY_MISSING)
-        WebRtcFrontend.createUnavailable()
+    override val frontendFactory = AudioFrontendEngineFactory { _, config, _ ->
+        WebRtcFrontend.create(config,reporting?.reporter("frontend") ?: ComponentReporter.none(),
+            reporting?.reporter("vad") ?: ComponentReporter.none(),reporting?.reporter("vad.aux") ?: ComponentReporter.none(),
+            reporting?.reporter("aec") ?: ComponentReporter.none())
     }
     override val vadFactory = VadEngineFactory { null }
     // Open APM owns EC/NS; never add Android system AEC/NS in parallel.
@@ -33,14 +34,14 @@ private class OpenSpeechChannel : SpeechChannel {
         }
     })
     override val capabilities = SpeechChannelCapabilities(
-        frontendUnavailableReason = WebRtcFrontend.UNAVAILABLE_REASON,
+        auxiliaryBridgeAvailable = false,
         localAsrUnavailableReason = FireRedAvailability.UNAVAILABLE_REASON,
         renderReferenceUnavailableReason = "PCM playback reference driver is not installed",
     )
     override fun validateConfig(config: DemoConfig) = config.validateProviders(
         frontend = setOf("webrtc.apm"), vad = setOf("webrtc.vad"), ecnr = setOf("none"),
         asr = setOf("firered.ctc.int8"), nlu = setOf("rule.text"),
-    )
+    ).also { WebRtcFrontend.validateVadConfig(it.vad) }
     override fun missingAssetConfig(asset: String, onlineAsset: String): DemoConfig =
         throw IllegalStateException("Open channel asset '$asset' is missing; no fallback is permitted")
 

@@ -87,6 +87,8 @@ internal class LocalAudioFrontendEngine(
     }
     private var processorReady = false
     private var pendingSamples = ShortArray(0)
+    private var inputPosition = 0L
+    private var outputPosition = 0L
     private var closed = false
     override val vadAvailable: Boolean get() = segmenter != null
 
@@ -103,6 +105,7 @@ internal class LocalAudioFrontendEngine(
 
     override fun startTurn() {
         pendingSamples = ShortArray(0)
+        inputPosition = 0;outputPosition = 0
         segmenter?.resetForTurn()
     }
 
@@ -111,7 +114,9 @@ internal class LocalAudioFrontendEngine(
             "audio frontend expects $INPUT_BLOCK_BYTES-byte PCM16 blocks, got ${block.size}"
         }
         val vadEvent = segmenter?.feed(block)
-        if (!denoiseEnabled) return AudioFrontendFrame(block.copyOf(), vadEvent)
+        val observation = segmenter?.let { VadObservation(inputPosition,512,it.lastSpeechDetected,it.lastProbability,listOfNotNull(vadEvent)) }
+        inputPosition += 512
+        if (!denoiseEnabled) return batch(block.copyOf(),observation)
 
         pendingSamples = pendingSamples + pcm16BytesToShorts(block)
         val completeFrames = pendingSamples.size / RnnoiseProcessor.FRAME_SIZE
@@ -123,10 +128,10 @@ internal class LocalAudioFrontendEngine(
             consumed += RnnoiseProcessor.FRAME_SIZE
         }
         pendingSamples = pendingSamples.copyOfRange(consumed, pendingSamples.size)
-        return AudioFrontendFrame(pcm16ShortsToBytes(output), vadEvent)
+        return batch(pcm16ShortsToBytes(output),observation)
     }
 
-    override fun finishProcessedAudio(): ByteArray {
+    private fun flushProcessedAudio(): ByteArray {
         if (!denoiseEnabled || pendingSamples.isEmpty()) {
             pendingSamples = ShortArray(0)
             return ByteArray(0)
@@ -136,6 +141,14 @@ internal class LocalAudioFrontendEngine(
         pendingSamples = ShortArray(0)
         return pcm16ShortsToBytes(processDenoiser(padded).copyOf(sampleCount))
     }
+
+    private fun batch(pcm: ByteArray, observation: VadObservation? = null): FrontendBatch {
+        val blocks = if (pcm.isEmpty()) emptyList() else listOf(PositionedPcmBlock(outputPosition,pcm))
+        outputPosition += pcm.size / 2
+        return FrontendBatch(blocks,listOfNotNull(observation))
+    }
+    override fun finishBatch() = batch(flushProcessedAudio())
+    override fun finishProcessedAudio() = finishBatch().processedPcm
 
     private fun processDenoiser(frame: ShortArray): ShortArray = try {
         if (frontendToken == null) frontendToken = frontendReporter.start("native_load")

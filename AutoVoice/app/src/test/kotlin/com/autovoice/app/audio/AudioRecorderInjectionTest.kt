@@ -12,6 +12,11 @@ import com.autovoice.audiofrontend.vad.VadEngine
 import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.VadConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.autovoice.audiofrontend.FrontendBatch
+import com.autovoice.audiofrontend.PositionedPcmBlock
+import com.autovoice.audiofrontend.VadObservation
+import com.autovoice.audiofrontend.vad.VadEvent
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -187,6 +192,59 @@ class AudioRecorderInjectionTest {
         oldAux.close()
         assertEquals(Lifecycle.READY, registry.snapshot.value.components.getValue("vad.aux").lifecycle)
         recorder.close()
+    }
+
+    @Test fun `recorder consumes all ordered batch events and variable pcm blocks`() = runTest {
+        val frontend = object : AudioFrontendEngine {
+            override val vadAvailable = true
+            override val diagnostics = AudioFrontendDiagnostics()
+            override fun startTurn() = Unit
+            override fun process(block: ByteArray) = FrontendBatch(listOf(PositionedPcmBlock(0,byteArrayOf(1,0)),PositionedPcmBlock(1,byteArrayOf(2,0))),
+                listOf(VadObservation(0,160,true,events = listOf(VadEvent.SpeechStart)),VadObservation(160,160,false,events = listOf(VadEvent.SpeechEnd))))
+            override fun finishProcessedAudio() = ByteArray(0)
+            override fun finishSegments() = emptyList<ByteArray>()
+            override fun close() = Unit
+        }
+        val recorder = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> frontend },vadFactory = { null },captureEffectsFactory = { SelectedEffects() })
+        val events = mutableListOf<VadEvent>();val pcm = mutableListOf<ByteArray>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { recorder.vadEvents.collect { events += it } }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { recorder.pcmBlocks.collect { pcm += it } }
+        try {
+            assertTrue(recorder.start(false));runCurrent()
+            assertEquals(listOf(VadEvent.SpeechStart,VadEvent.SpeechEnd),events)
+            assertEquals(2,pcm.size)
+            assertArrayEquals(byteArrayOf(1,0),pcm[0]);assertArrayEquals(byteArrayOf(2,0),pcm[1])
+        } finally { recorder.close() }
+    }
+    @Test fun `frontend owned auxiliary detectors do not allocate a second recorder detector`() = runTest {
+        val frontend = object : AudioFrontendEngine {
+            override val ownsAuxiliaryVad = true
+            override val vadAvailable = true
+            override val diagnostics = AudioFrontendDiagnostics()
+            override fun startTurn() = Unit
+            override fun process(block: ByteArray) = AudioFrontendFrame(block,null)
+            override fun finishProcessedAudio() = ByteArray(0)
+            override fun finishSegments() = emptyList<ByteArray>()
+            override fun close() = Unit
+        }
+        var auxCreations = 0
+        val recorder = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
+            frontendFactory = { _,_,_ -> frontend },vadFactory = { auxCreations++;null },captureEffectsFactory = { SelectedEffects() })
+        try { assertEquals(0,auxCreations);assertTrue(recorder.vadAvailable) } finally { recorder.close() }
+    }
+
+    @Test fun `legacy presence metadata alone never rebuilds the same audio processing`() = runTest {
+        val created = mutableListOf<SelectedFrontend>()
+        val recorder = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
+            frontendFactory = { _,_,_ -> SelectedFrontend().also(created::add) },vadFactory = { null },captureEffectsFactory = { SelectedEffects() })
+        try {
+            recorder.configureAudioProcessing(VadConfig(thresholdProvided = true),DemoConfig.ECNR_RNNOISE)
+            recorder.configureAudioProcessing(VadConfig(thresholdProvided = false),DemoConfig.ECNR_RNNOISE)
+            assertEquals(1,created.size)
+            assertEquals(0,created.single().closes)
+        } finally { recorder.close() }
+        assertEquals(1,created.single().closes)
     }
 
     private fun attachEffects(recorder: AudioRecorder, session: Int) {

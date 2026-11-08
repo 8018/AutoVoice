@@ -1,0 +1,12 @@
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -45,7 +45,7 @@ if (!build_with_chromium) {
+   # 'ninja default' and then 'ninja all', the second build should do no work.
+   group("default") {
+     testonly = true
+-    deps = [ ":webrtc" ]
++    deps = [ ":webrtc", "//autovoice_frontend:autovoice_frontend_jni" ]
+     if (rtc_build_examples) {
+       deps += [ "examples" ]
+     }

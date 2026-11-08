@@ -157,6 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val healthRegistry = ProcessComponentHealth.registry
     private var reporting = ChannelComponentReporting(healthRegistry, BuildConfig.FLAVOR, healthRegistry.beginGeneration(BuildConfig.FLAVOR))
     private lateinit var speechChannel: SpeechChannel
+    private val auxiliaryBridgeAvailable get() = ::speechChannel.isInitialized && speechChannel.capabilities.auxiliaryBridgeAvailable
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -231,7 +232,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         reporting.registerDefaults()
         viewModelScope.launch {
             healthRegistry.snapshot.collect { health ->
-                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL)
+                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable)
                 val vad = health.components["vad"]
                 val frontend = health.components["frontend"]
                 val wake = health.components["wake"]
@@ -281,7 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reporter = reporting.reporter("config")
             reporter.report(reporter.start("create"), ComponentUpdate.failed(initializationError(error, ErrorCode.CONFIG_INVALID)))
             _uiState.update { it.copy(assemblyReady = false, componentHealth = healthRegistry.snapshot.value,
-                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false)) }
+                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false,auxiliaryBridgeAvailable)) }
         }
     }
 
@@ -414,7 +415,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
         _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
-            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL)) }
+            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable)) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */

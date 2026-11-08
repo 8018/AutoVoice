@@ -224,6 +224,21 @@ class NativeToolsTest(unittest.TestCase):
         self.assertEqual(b"previous installed library fixture", previous.read_bytes())
         self.assertEqual(["arm64-v8a"], [p.name for p in target.parent.iterdir()])
 
+    def test_webrtc_runtime_output_is_distinct_from_allowlisted_symbol_copy(self):
+        from native_tools import select_webrtc_runtime_output
+        source = self.root / "checkout"
+        build = source / "out/AutoVoiceArm64"
+        build.mkdir(parents=True)
+        runtime = build / "libautovoice_frontend_jni.so"
+        runtime.write_bytes(b"runtime fixture")
+        symbols = build / "lib.unstripped/libautovoice_frontend_jni.so"
+        symbols.parent.mkdir();symbols.write_bytes(b"symbol fixture")
+        outputs = "//out/AutoVoiceArm64/libautovoice_frontend_jni.so\n//out/AutoVoiceArm64/libautovoice_frontend_jni.so.TOC\n//out/AutoVoiceArm64/lib.unstripped/libautovoice_frontend_jni.so\n"
+        self.assertEqual(runtime.resolve(), select_webrtc_runtime_output(outputs, source, build))
+        for bad in ["//out/AutoVoiceArm64/lib.unstripped/libautovoice_frontend_jni.so", outputs + "//out/other/libautovoice_frontend_jni.so\n", outputs + "//out/AutoVoiceArm64/libautovoice_frontend_jni.so\n"]:
+            with self.assertRaises(native_artifacts.NativeError):
+                select_webrtc_runtime_output(bad, source, build)
+
     def test_open_api27_profile_keeps_vendor_channel_outside_native_policy(self):
         lock = json.loads((TOOLS / "native-lock.json").read_text())
         self.assertEqual(27, lock["target"]["android_api"])

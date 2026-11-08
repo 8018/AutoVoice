@@ -1,13 +1,6 @@
 package com.autovoice.audiofrontend
 
-import com.autovoice.audiofrontend.vad.VadEvent
 import com.autovoice.voicecore.health.ComponentReporter
-
-/** A single frame emitted by the microphone audio front end. */
-data class AudioFrontendFrame(
-    val processedPcm: ByteArray,
-    val vadEvent: VadEvent?,
-)
 
 /** Diagnostic snapshot for the current capture turn. */
 data class AudioFrontendDiagnostics(
@@ -28,12 +21,17 @@ interface AudioFrontendEngine : AutoCloseable {
     val unavailabilityReason: String? get() = null
     /** Rebinds diagnostics only: never recreate/reset APM, VAD, recurrent state or audio grids. */
     fun attachReporting(frontendReporter: ComponentReporter, vadReporter: ComponentReporter) = Unit
+    /** Rebind diagnostics for native-owned auxiliary VAD and AEC without altering either engine. */
+    fun attachAuxiliaryReporting(auxVadReporter: ComponentReporter, aecReporter: ComponentReporter) = Unit
+    val ownsAuxiliaryVad: Boolean get() = false
     val vadAvailable: Boolean
     val diagnostics: AudioFrontendDiagnostics
 
     fun startTurn()
-    fun process(block: ByteArray): AudioFrontendFrame
+    fun process(block: ByteArray): FrontendBatch
     /** Flushes the sub-frame tail while preserving the exact input sample count. */
     fun finishProcessedAudio(): ByteArray
+    /** Normal input completion: flush before finishSegments; device cancellation discards pending input. */
+    fun finishBatch(): FrontendBatch = AudioFrontendFrame(finishProcessedAudio(), null)
     fun finishSegments(): List<ByteArray>
 }
