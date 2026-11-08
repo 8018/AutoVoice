@@ -2,7 +2,7 @@
 
 日期：2026-11-08。目标：8295、Android `arm64-v8a`，首版 CPU 推理。配套 [渠道架构设计](superpowers/specs/2026-11-08-open-speech-channel-design.md)。
 
-本文给出拟实施的构建规约，已核对上游构建入口和 API；本次未下载完整源码、运行 native 编译或生成 AAR。`autovoice_frontend_jni`、本项目 adapter 模块和双渠道 Gradle 任务均为待实施目标；必须先完成对应 JNI/Gradle 接线，再执行本文项目命令。上游构建成功、App 打包成功和真机语音可用分别验收。
+本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter 边界、双渠道 Gradle 任务和工具已实现；`autovoice_frontend_jni` 的实际 GN/JNI 源码仍待 Task 4。尚未下载完整源码、执行真实 native 编译或认证制品。上游构建成功、App 打包成功和真机语音可用分别验收。
 
 ## 1 编译内容和产物
 
@@ -33,6 +33,118 @@ WebRTC Android 编译统一放在 Linux x86_64 构建机；使用其 DEPS 管理
 
 所有命令中的 `/work` 和 `/opt/android-sdk` 为构建机示例目录，应替换成自己的目录。命令不是要求在当前用户电脑安装或修改系统工具链。
 
+## 2.1 仓库工具、候选锁与发行边界
+
+工具位于 `AutoVoice/tools/native/`，仅依赖 Bash 与 Python 3.10+ 标准库。三个入口与
+`native-lock.json` 一起维护，不安装系统依赖或远程配置构建机：
+
+```sh
+# 从仓库根执行；默认只打印JSON计划，不创建checkout/output、不下载、不写jniLibs。
+AutoVoice/tools/native/build-webrtc-android.sh
+AutoVoice/tools/native/build-firered-android.sh
+python3 -m unittest discover -s AutoVoice/tools/native/tests -v
+bash -n AutoVoice/tools/native/build-webrtc-android.sh
+bash -n AutoVoice/tools/native/build-firered-android.sh
+bash -n AutoVoice/tools/native/stage-native-artifacts.sh
+```
+
+锁固定上述两个源码提交、arm64/API 26、GN 参数、sherpa 开关和 NDK 版本。
+`depot_tools` 固定为实际观测到的候选提交 `289a37bda3d848cfe16e6c1c599741ed3890ab55`，
+此提交与整个组合都尚未经过真实构建/设备验证。所有未生成的制品、manifest、逐库及验收报告摘要保持 `null`；
+不存在虚构的“已认证 hash”。构建成功也只能输出 **unverified** 包，不能自动把 lock 改成 verified。
+
+完成依赖准备后，Linux 构建机可显式执行以下入口。`--fetch` 才允许新建固定提交的源码 checkout；
+已有固定且干净的独立 checkout 可省略该参数。`--licenses-dir` 是实际准备的依赖许可证清单，
+不需要为实验编译增加人工审批；法律清单完整性及可信来源属于最终制品评审。
+
+```sh
+AutoVoice/tools/native/build-webrtc-android.sh --execute --fetch \
+  --source-dir /work/autovoice-native/webrtc/src \
+  --depot-tools /work/autovoice-native/depot_tools \
+  --licenses-dir /work/autovoice-native/licenses/webrtc \
+  --output /work/autovoice-native/artifacts/webrtc-run-001
+
+AutoVoice/tools/native/build-firered-android.sh --execute --fetch \
+  --source-dir /work/autovoice-native/sherpa-onnx \
+  --ndk /opt/android-sdk/ndk/27.2.12479018 \
+  --licenses-dir /work/autovoice-native/licenses/firered \
+  --output /work/autovoice-native/artifacts/firered-run-001
+```
+
+WebRTC 入口要求 Task 4 提供 `adapter-webrtc/native/BUILD.gn`、JNI/session 源码及
+`webrtc-root.patch`；可显式传 `--project-native-dir` / `--gn-patch` 指向受控输入。
+脚本先检查固定 depot_tools revision、源码/工具/许可证，再运行 checkout/hook 和 GN。
+它禁用 depot_tools 自动更新，使用 DEPS 管理的 Android 工具链，不套用本机 NDK。
+GN 使用 `--check --fail-on-unused-args`、`gn check` 和指定单一目标；运行 `.so` 路径来自 `gn desc outputs`。
+sherpa 使用固定提交的原 Android 脚本，关闭 QNN/RKNN/TTS/diarization 等功能，使用动态 ORT。
+上游脚本当前固定 `make -j4`；这是已记录的 recipe，不会因宿主环境变量偷偷改变。
+外部 SHERPA/CMake/编译环境覆盖会被清理，再设置锁定开关，防止误用本地其他 ORT/QNN 配置。
+
+输出目录保存 `build-plan.json`、`build.log`、`commands.json`、`result.json`；成功时另有
+未认证 ZIP、`artifact-manifest.json` 和实测 `observed-checksums.json`。
+manifest 记录源码提交、实际 compiler/host/工具版本、DEPS 与 depot_tools、项目源码/补丁摘要，
+以及 sherpa 的实际 NDK、ORT 与同提交完整 Kotlin API 清单。ZIP 条目顺序/时间固定；
+上游 native 编译及跨机器路径差异尚未验证，不宣称位级可复现。
+
+**重试与调试：** wrapper 拒绝复用已有固定 build/out 目录和已存在的 output，避免把污染缓存冒充新构建。
+失败时保留 build/out 和日志，并仅尝试恢复该次调用自己写入的根 BUILD.gn/复制源码；若这些文件已被改动则保留供人工检查。
+安全的重新构建方式是使用新的独立 checkout 与新的 `--output`，不删除旧日志，不执行粗暴的
+`git reset` 或清理其他人的目录。需要在旧 checkout 手工 Ninja 调试时，先按该次 plan 重新放入相同的
+受控 native 源码/根 GN 补丁（用 `git apply --check` 并核对记录的摘要），再使用已记录的 GN/Ninja 参数；
+此类实验输出仍为 unverified，不能直接进入发行路径。
+
+### 制品格式与 staging
+
+native 包采用 ZIP，不接收任意 tar/解压目录。格式为：
+
+```text
+manifest.json
+jni/arm64-v8a/libautovoice_frontend_jni.so             # webrtc 包
+# 或 firered 包的 libsherpa-onnx-jni.so + libonnxruntime.so
+licenses/<license files>                             # 必需，逐文件摘要
+api/kotlin/<complete matching upstream API>           # firered 必需，逐文件摘要
+symbols/arm64-v8a/<allowlisted-library>.debug          # 可选，仅归档/校验，不安装
+provenance/build-plan.json / commands.json             # 构建溯源
+provenance/gclient-revinfo.txt                         # WebRTC DEPS实际revision清单
+```
+
+manifest 的 `component`、`source_revision`、`abi`、`android_api`、`recipe`、`toolchain`、
+`files` 与 `auxiliary` 都会验证。`files` 为固定库路径到 SHA-256 的映射，`auxiliary` 记录许可证、API、
+已列出的溯源文件及可选符号的摘要。仅这三种运行库可以写入各自 adapter，绝不写公共 App：
+WebRTC 的 `libautovoice_frontend_jni.so`，FireRed 的 `libsherpa-onnx-jni.so` 和 `libonnxruntime.so`。
+符号白名单只允许相应库的 `.debug` 路径，不复制到 jniLibs。完整 Kotlin API 保留在同版本包内，实际源码接线在后续适配器任务完成。
+
+开发验证必须显式指定模式、从可信传递渠道获得的预期 ZIP 摘要和生产工程外的目录：
+
+```sh
+AutoVoice/tools/native/stage-native-artifacts.sh --mode dev \
+  --archive /work/artifacts/webrtc-android-arm64-v8a-unverified.zip \
+  --expected-sha256 '<observed-and-checked-archive-sha256>' \
+  --dev-output /tmp/autovoice-native-dev
+```
+
+该路径会标记 **UNVERIFIED DEVELOPMENT**，不能写生产 jniLibs，也不会改 lock 状态。
+只计算下载文件自身 hash 并不等于验证来源；dev 明确不提供发行认证。
+
+认证发行仅使用受信任版本控制中的 lock，要求 `artifact.verification=verified`，且 ZIP、manifest、
+逐库、实际 toolchain 与独立验收报告摘要均已由真实结果记录和评审。未填摘要时默认拒绝：
+
+```sh
+AutoVoice/tools/native/stage-native-artifacts.sh --archive /work/verified/webrtc.zip
+AutoVoice/tools/native/stage-native-artifacts.sh --archive /work/verified/firered.zip
+```
+
+staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symlink/特殊文件、解压总量限制、
+固定库/辅助文件白名单与逐项摘要，再只读取已核对库。ELF 校验要求 little-endian ELF64 AArch64 shared object，
+拒绝 RPATH/RUNPATH、未声明 DT_NEEDED 和重复 ORT；若有 Android API note 则要求不高于 26。
+允许的平台依赖是 `libc/libm/libdl/liblog/libandroid/libz`，其余依赖必须由当前固定运行库集合闭包满足。
+若真实输出依赖 `libc++_shared.so` 或其他额外库，工具明确失败；必须先更新并评审依赖白名单/锁/测试及许可证，不能漏库或 pickFirst。
+它还检查 Open 两 adapter、公共 frontend 和 App source set 中的重复 ORT，不扫描/改写 legacy 渠道的独立 ORT 依赖。
+
+所有验证通过后，以 adapter 的 ABI 目录为单位替换；写入失败会恢复原目录。来源收据在 `.native/receipts`，不混入运行库目录。
+API/NDK 元数据、ELF header/note 和摘要检查不证明导入符号的实际最低 API、16KB 页面或设备行为；这些仍需真实 readelf/link/装载与设备验收，
+不能仅靠工具测试把 candidate 标为 verified。制品目录、receipts、jniLibs 与 Python 缓存均已 gitignore。
+
 ## 3 WebRTC 前端编译
 
 ### 3.1 获取 Android checkout
@@ -56,7 +168,7 @@ git rev-parse HEAD
 
 ### 3.2 添加本项目 GN 与 JNI 目标
 
-项目需新增 `AutoVoice/adapter-webrtc/native/`，存放 `BUILD.gn`、`frontend_jni.cc`、`frontend_session.cc`、头文件及导出符号规约。构建工具将该目录复制到 WebRTC checkout 的 `src/autovoice_frontend/`，并以受控补丁在根 `BUILD.gn` 的默认 group 中加入对该目标的依赖，使 GN 能发现它。
+Task 4 需新增 `AutoVoice/adapter-webrtc/native/`，存放 `BUILD.gn`、`frontend_jni.cc`、`frontend_session.cc`、头文件及导出符号规约。构建工具将该目录复制到 WebRTC checkout 的 `src/autovoice_frontend/`，并以受控补丁在根 `BUILD.gn` 的默认 group 中加入对该目标的依赖，使 GN 能发现它。
 
 核心 GN 目标规约如下。这是本项目待编写的目标，不能在没有 JNI 实现时直接执行 Ninja：
 
@@ -195,7 +307,7 @@ sha256sum sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt
 
 ## 6 Android 模块打包
 
-项目拟采用以下产物目录；JNI `.so` 不直接放进公共 `app/src/main/jniLibs`，防止两渠道一起携带全部算法：
+项目采用以下产物目录；JNI `.so` 不直接放进公共 `app/src/main/jniLibs`，防止两渠道一起携带全部算法：
 
 ```text
 AutoVoice/
@@ -263,3 +375,11 @@ native 制品清单记录：WebRTC/sherpa 源码提交、depot_tools/DEPS、所�
 6. 验证联网候选竞速、离线本地命令、识别关闭、下电、队列满、损坏模型和迟到结果；业务不重复执行，旧结果不能重启交互。
 
 以上均形成设备记录后才能把起始构建组合标为通过；文档中的版本选择与命令核对不替代实际编译及真机结果。
+
+## 9 当前执行记录与环境限制
+
+本阶段仅用本地微型合成 ELF/ZIP 验证工具策略，未生成真实 WebRTC/sherpa 制品，未填造制品摘要。
+开发机是 macOS arm64，已检查本机 adb：无连接 Android 设备；本机没有所选 r27c NDK/GN/depot_tools。
+控制端已恢复到 Ubuntu 26.04 WSL2 x86_64 构建机的连接（32 logical CPU、约31GiB RAM、约950GiB可用磁盘）；
+Linux 主机并非缺失：控制端已准备基础构建包、Ninja/Java等工具并检出固定 depot_tools；NDK r27c 下载校验和固定 WebRTC/sherpa 源码准备正在控制端进行，Task 4 的 JNI/GN 源码也尚未提供。
+本阶段没有探测服务器、远程安装或执行 native 编译。构建机依赖准备、首次真实构建、API/NDK/许可证核验、制品认证及设备验收分别记录后再更新 lock。

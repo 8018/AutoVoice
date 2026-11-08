@@ -66,3 +66,9 @@ coverage/
 
 # D07a 独立业务账本(运行期产物)
 AutoVoiceServer/app/action-ledger.db
+
+# Open-channel native build inputs, receipts and binary staging (never commit generated artifacts)
+/AutoVoice/.native/
+/AutoVoice/adapter-webrtc/src/main/jniLibs/
+/AutoVoice/adapter-firered/src/main/jniLibs/
+/AutoVoice/tools/native/**/__pycache__/
