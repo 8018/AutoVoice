@@ -87,4 +87,26 @@ class ComponentPresentationTest {
         assertTrue(c.canTriggerManual)
     }
 
+    @Test fun `native model READY cannot claim unwired local request bridge available`() {
+        val registry = ComponentStatusRegistry()
+        val h = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"));h.registerDefaults()
+        for (id in listOf("config","frontend","local.asr","local.nlu")) {
+            val r = h.reporter(id);r.report(r.start("create"),ComponentUpdate.ready())
+        }
+        assertEquals(CapabilityAvailability.AVAILABLE,CapabilityEvaluator.evaluate(registry.snapshot.value,false).features["local"])
+        val c = CapabilityEvaluator.evaluate(registry.snapshot.value,false,localBridgeAvailable = false)
+        assertEquals(CapabilityAvailability.UNAVAILABLE,c.features["local"])
+        assertTrue(c.summary.contains("本地语音尚未就绪"))
+    }
+    @Test fun `fixed model identity and digests survive diagnostics but paths arbitrary text and unknown metadata do not`() {
+        val d = ComponentDescriptor("local.asr","firered.ctc.int8","open")
+        val hash = "a".repeat(64)
+        val versions = mapOf("modelId" to "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25","modelSha256" to hash,
+            "tokensSha256" to hash,"sourceRevision" to "b".repeat(40),"runtime" to "2.0.1","path" to "/secret/model",
+            "model" to "private transcript","ort" to "https://private")
+        val json = ComponentLogSink.diagnosticsJson(ComponentHealthSnapshot(components = mapOf("local.asr" to ComponentStatus(d,1,versions = versions))))
+        assertTrue(json.contains(hash));assertTrue(json.contains(versions.getValue("modelId")))
+        assertFalse(json.contains("secret"));assertFalse(json.contains("private"))
+    }
+
 }

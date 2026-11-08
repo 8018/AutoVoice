@@ -2,7 +2,7 @@
 
 日期：2026-11-08。目标：8295、Android `arm64-v8a`，首版 CPU 推理。配套 [渠道架构设计](superpowers/specs/2026-11-08-open-speech-channel-design.md)。
 
-本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter、双渠道 Gradle、构建工具和 Task4 WebRTC GN/JNI/时间轴已实现。固定 WebRTC 已通过真实 GN/check/Ninja、严格开发包校验与独立 Android API33 JNI 探针；控制端也完成 sherpa API27 编译及独立模型探针。产品 FireRed/播放参考协同仍待后续任务，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
+本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter、双渠道 Gradle、构建工具和 Task4 WebRTC GN/JNI/时间轴已实现。固定 WebRTC 已通过真实 GN/check/Ninja、严格开发包校验与独立 Android API33 JNI 探针；控制端也完成 sherpa API27 编译及独立模型探针。产品 FireRed loader/有界识别/文本规则与 Android 测试入口已实现；完整请求准入/播放参考协同仍待 Task6，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
 
 ## 1 编译内容和产物
 
@@ -24,7 +24,7 @@ WebRTC Android 编译统一放在 Linux x86_64 构建机；使用其 DEPS 管理
 | App | 现有 Java 21、AGP 8.5.2、Kotlin 2.0.20、compileSdk 34；讯飞/公共/legacy minSdk 26，Open/其适配器 minSdk 27 | 本次不顺带升级 Gradle/AGP |
 | WebRTC | 起始候选提交 `8838a7c28655afbf9336063b71a51429e7d72774` | 已按锁定参数真实编译并完成 API33 独立 JNI 探针；8295、声学质量及发行认证仍未完成 |
 | sherpa-onnx | `v2.0.1`，提交 `af2d8d81dbfa61c4cea4c568da78f3982edca005` | Kotlin API 和 native 必须同一提交；禁止跟随 master 自动升级 |
-| sherpa NDK | 工程建议从 r27c `27.2.12479018` 开始 | 控制端已用此版本完成 sherpa API27 编译，尚未经 Android 推理/设备认证 |
+| sherpa NDK | 工程建议从 r27c `27.2.12479018` 开始 | 控制端已用此版本完成 sherpa API27 编译，已通过独立上游 Android 推理探针，8295/发行认证仍未完成 |
 | sherpa ONNX Runtime | 上述版本脚本默认指定 `1.28.2` | 脚本默认下载该版本 Android 预编译库；首版没有从源码重编 ORT，不套用项目旧 Silero 的 1.19.0 |
 | ABI 与 API | `arm64-v8a`；Open Android API 27（讯飞保持26） | ELF 实际依赖的 API 不得高于 App minSdk |
 | 模型 | `sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25` | 模型、tokens 和运行时组合通过实机后一起锁定 |
@@ -112,7 +112,7 @@ manifest 的 `component`、`source_revision`、`abi`、`android_api`、`recipe`�
 `files` 与 `auxiliary` 都会验证。`files` 为固定库路径到 SHA-256 的映射，`auxiliary` 记录许可证、API、
 已列出的溯源文件及可选符号的摘要。仅这三种运行库可以写入各自 adapter，绝不写公共 App：
 WebRTC 的 `libautovoice_frontend_jni.so`，FireRed 的 `libsherpa-onnx-jni.so` 和 `libonnxruntime.so`。
-符号白名单只允许相应库的 `.debug` 路径，不复制到 jniLibs。完整 Kotlin API 保留在同版本包内，实际源码接线在后续适配器任务完成。
+符号白名单只允许相应库的 `.debug` 路径，不复制到 jniLibs。完整 Kotlin API 保留在同版本包内，Task5 已接入 23 个逐文件摘要匹配且未修改的上游 API。
 
 开发验证必须显式指定模式、从可信传递渠道获得的预期 ZIP 摘要和生产工程外的目录：
 
@@ -136,7 +136,7 @@ AutoVoice/tools/native/stage-native-artifacts.sh --archive /work/verified/firere
 
 staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symlink/特殊文件、解压总量限制、
 固定库/辅助文件白名单与逐项摘要，再只读取已核对库。ELF 校验要求 little-endian ELF64 AArch64 shared object，
-拒绝 RPATH/RUNPATH、未声明 DT_NEEDED 和重复 ORT；若有 Android API note 则要求不高于 Open minSdk 27。
+拒绝非空 DT_RPATH，以及除精确 `$ORIGIN` 外的 DT_RUNPATH；拒绝未声明 DT_NEEDED 和重复 ORT；若有 Android API note 则要求不高于 Open minSdk 27。
 允许的平台依赖是 `libc/libm/libdl/liblog/libandroid/libz`，其余依赖必须由当前固定运行库集合闭包满足。
 若真实输出依赖 `libc++_shared.so` 或其他额外库，工具明确失败；必须先更新并评审依赖白名单/锁/测试及许可证，不能漏库或 pickFirst。
 它还检查 Open 两 adapter、公共 frontend 和 App source set 中的重复 ORT，不扫描/改写 legacy 渠道的独立 ORT 依赖。
@@ -145,7 +145,7 @@ staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symli
 API/NDK 元数据、ELF header/note 和摘要检查不证明导入符号的实际最低 API、16KB 页面或设备行为；这些仍需真实 readelf/link/装载与设备验收，
 不能仅靠工具测试把 candidate 标为 verified。制品目录、receipts、jniLibs 与 Python 缓存均已 gitignore。
 
-**API floor 用户裁定（2026-11-08）：** 实查固定 ORT 1.28.2 的 Android ELF note 为27，用户明确批准仅 Open 提升到 Android 8.1/API27；讯飞、公共模块与 legacy 仍为26。锁、GN、sherpa recipe 与 Open flavor/adapter 均同步27，不用 manifest 标签掩盖26构建。控制端已按27重编并核对两库 note=27；独立 Android 模型探针已通过，但尚无产品 FireRed 接线/8295验收，runtime artifact 的 trusted hashes 继续留空/unverified。
+**API floor 用户裁定（2026-11-08）：** 实查固定 ORT 1.28.2 的 Android ELF note 为27，用户明确批准仅 Open 提升到 Android 8.1/API27；讯飞、公共模块与 legacy 仍为26。锁、GN、sherpa recipe 与 Open flavor/adapter 均同步27，不用 manifest 标签掩盖26构建。控制端已按27重编并核对两库 note=27；独立 Android 模型探针已通过，产品 FireRed 已接线并提供 Android 测试入口，8295 验收仍未完成，runtime artifact 的 trusted hashes 继续留空/unverified。
 
 ## 3 WebRTC 前端编译
 
@@ -307,9 +307,9 @@ sha256sum sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx
 sha256sum sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt
 ```
 
-首次从上游制品取得资源后，记录经评审采用的实际文件摘要，后续下载及设备安装必须与锁定摘要比较。只计算刚下载文件的 hash 并不能自动证明它与预期版本一致；本说明没有填造尚未下载文件的 SHA。[模型目录和文件说明](https://k2-fsa.github.io/sherpa/onnx/FireRedAsr/pretrained.html)
+首次从上游制品取得资源后，记录经评审采用的实际文件摘要，后续下载及设备安装必须与锁定摘要比较。只计算刚下载文件的 hash 并不能自动证明它与预期版本一致；Task5 的 `adapter-firered/src/main/resources/firered-model-catalog.json` 固定已取得模型/tokens/许可证的实际摘要，准备工具与运行时共用此清单。[模型目录和文件说明](https://k2-fsa.github.io/sherpa/onnx/FireRedAsr/pretrained.html)
 
-生产资源包包含模型、tokens、model manifest、许可证；测试 wav 进入验收语料，避免无意打进正式资源。模型在 App 可读的版本化目录预装，并通过 `FireRedModelLoader` 的完整校验后原子激活。正式 APK 不内嵌这份大模型；设备预置/开发资源安装步骤应提供给模型管理工具，运行期不从未知路径任意搜索模型。
+生产资源包包含模型、tokens、model manifest、许可证；测试 wav 进入验收语料，避免无意打进正式资源。模型在 App 可读的版本化目录预装，并通过 `ModelResourceLoader` 的完整校验后原子激活。正式 APK 不内嵌这份大模型；设备预置/开发资源安装步骤应提供给模型管理工具，运行期不从未知路径任意搜索模型。
 
 验证时先在 8295 加载固定 wav 得到非空 final，再接麦克风。仅有 `.so` 加载成功不能证明模型兼容；仅跑通上游桌面命令也不能证明 Android 实机可用。
 
@@ -320,7 +320,7 @@ sha256sum sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt
 ```text
 AutoVoice/
   adapter-webrtc/
-    native/                               # 待实施 GN 和 JNI 源码
+    native/                               # Task4 已实现 GN 和 JNI 源码
     src/main/jniLibs/arm64-v8a/
       libautovoice_frontend_jni.so
   adapter-firered/
@@ -420,4 +420,10 @@ cd AutoVoice
 ./gradlew :app:assembleOpenDebug -PnativeDevRoot=/private/tmp/autovoice-native-dev-20261108
 ```
 
-该属性只将 `adapter-webrtc/src/main/jniLibs` 的工程外开发目录接到 Debug source set；不复制进生产源码。Release任务图明确拒绝 nativeDevRoot；完整跨Debug/Release测试不用该属性。默认生产制品仍只能沿可信校验/staging路径交付。Iflytek包不因该属性增加 WebRTC，Open不携带legacy RNNoise/ORT。Task5未来可在同一devRoot增加独立验证的FireRed目录，不代表现在已经集成。
+该属性分别将 `adapter-webrtc/src/main/jniLibs` 与 `adapter-firered/src/main/jniLibs` 的工程外开发目录接到相应 Debug source set；不复制进生产源码。Release任务图明确拒绝 nativeDevRoot；完整跨Debug/Release测试不用该属性。默认生产制品仍只能沿可信校验/staging路径交付。Iflytek包不因该属性增加 WebRTC，Open不携带legacy RNNoise/ORT。Task5 已在同一 devRoot 接入独立严格验证的 FireRed/ORT；trusted lock 仍保持 unverified。
+
+## Task5 资源、准入和规则边界
+
+见 [FireRed adapter 与真实 Android 测试说明](../AutoVoice/adapter-firered/README.md)。离线资源准备工具使用同一固定 catalog，完整校验后原子生成工程外版本目录；运行时再次校验。初始 CPU 单线程、单原生所有者、1 执行中 + 2 等待请求、每段最多 30 秒。关闭/超时令旧实例输出失效；运行中 JNI 完成后才释放。App 尚无 Task6 的真实准入桥，Open localBridgeAvailable 固定 false，模型 READY 不能显示整条本地链路可用。
+
+规则实际依赖为 `adapter-iflytek → local-command-rules → voice-core` 与 `voice-engine → local-command-rules`，避免厂商 adapter 依赖整套 engine/gateway。旧入口保持原历史行为；Open 仅整句支持既有车窗开关/退出，否定、多意图、引用偶提和其他文本 unknown。

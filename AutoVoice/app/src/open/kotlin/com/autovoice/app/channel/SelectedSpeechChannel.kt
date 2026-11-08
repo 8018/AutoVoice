@@ -4,7 +4,9 @@ import android.content.Context
 import android.media.MediaRecorder
 import com.autovoice.app.health.ChannelComponentReporting
 import com.autovoice.voicecore.health.*
-import com.autovoice.adapterfirered.FireRedAvailability
+import com.autovoice.adapterfirered.FireRedAsrEngine
+import com.autovoice.adapterfirered.FireRedAdmissionProvider
+import com.autovoice.voiceengine.local.TextRuleNluEngine
 import com.autovoice.adapterwebrtc.WebRtcFrontend
 import com.autovoice.audiofrontend.*
 import com.autovoice.voicecore.*
@@ -35,7 +37,7 @@ private class OpenSpeechChannel : SpeechChannel {
     })
     override val capabilities = SpeechChannelCapabilities(
         auxiliaryBridgeAvailable = false,
-        localAsrUnavailableReason = FireRedAvailability.UNAVAILABLE_REASON,
+        localBridgeAvailable = false,
         renderReferenceUnavailableReason = "PCM playback reference driver is not installed",
     )
     override fun validateConfig(config: DemoConfig) = config.validateProviders(
@@ -47,11 +49,14 @@ private class OpenSpeechChannel : SpeechChannel {
 
     override fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly {
         validateConfig(config)
-        reporting?.unavailable("local.asr", ErrorCode.NATIVE_LIBRARY_MISSING)
-        reporting?.unavailable("local.nlu", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
-        return LocalEngineAssembly(
-            asr = FireRedAvailability.createUnavailable(),
-            nlu = NluEngine { _, _, _ -> throw IllegalStateException("Text rule NLU implementation is not installed") },
-        )
+        val asr = FireRedAsrEngine.create(
+            requireNotNull(context.getExternalFilesDir("speech-models")),
+            // Task6 binds Coordinator-owned admission facts. Missing facts must deny native decode.
+            FireRedAdmissionProvider { null },reporting?.reporter("local.asr") ?: ComponentReporter.none())
+        val nluReporter = reporting?.reporter("local.nlu") ?: ComponentReporter.none()
+        val token = nluReporter.start("create")
+        val nlu = TextRuleNluEngine()
+        nluReporter.report(token,ComponentUpdate.ready())
+        return LocalEngineAssembly(asr,nlu) { asr.close();nluReporter.close(token) }
     }
 }

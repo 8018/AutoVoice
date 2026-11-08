@@ -5,7 +5,7 @@ import com.autovoice.voicecore.health.*
 data class CapabilitySummary(val features: Map<String, CapabilityAvailability> = emptyMap(), val summary: String = "",
     val canTriggerManual: Boolean = true, val configUsable: Boolean = false, val canSubmitText: Boolean = false)
 internal object CapabilityEvaluator {
-    fun evaluate(snapshot: ComponentHealthSnapshot, online: Boolean, auxiliaryBridgeAvailable: Boolean = true): CapabilitySummary {
+    fun evaluate(snapshot: ComponentHealthSnapshot, online: Boolean, auxiliaryBridgeAvailable: Boolean = true, localBridgeAvailable: Boolean = true): CapabilitySummary {
         val components = snapshot.components
         fun failed(id: String) = components[id]?.let { it.lifecycle in setOf(Lifecycle.FAILED, Lifecycle.RELEASED) ||
             (it.lifecycle != Lifecycle.BLOCKED && it.health == Health.UNAVAILABLE) ||
@@ -17,7 +17,7 @@ internal object CapabilityEvaluator {
             if (values.size < ids.size || values.any { it.lifecycle != Lifecycle.READY }) return CapabilityAvailability.PENDING
             return if (values.any { it.health == Health.DEGRADED }) CapabilityAvailability.LIMITED else CapabilityAvailability.AVAILABLE
         }
-        val features = mapOf("wake" to evaluate("wake"), "local" to evaluate("frontend", "local.asr", "local.nlu"),
+        val features = mapOf("wake" to evaluate("wake"), "local" to if (localBridgeAvailable) evaluate("frontend", "local.asr", "local.nlu") else CapabilityAvailability.UNAVAILABLE,
             "cloud" to if (online) evaluate("frontend", "vad", "cloud") else CapabilityAvailability.DISABLED,
             "playback" to evaluate("playback"), "barge_in" to if (auxiliaryBridgeAvailable) evaluate("frontend", "aec", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
             "follow_up" to if (auxiliaryBridgeAvailable) evaluate("frontend", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
@@ -30,6 +30,7 @@ internal object CapabilityEvaluator {
             components["capture"]?.error?.code == ErrorCode.MIC_PERMISSION_DENIED -> "需要录音权限，请允许麦克风访问"
             failures.isNotEmpty() -> "语音功能受限：${failures.joinToString("、")}暂不可用"
             components.values.any { it.lifecycle == Lifecycle.INITIALIZING } -> "语音组件准备中"
+            !localBridgeAvailable -> "本地语音尚未就绪"
             else -> ""
         }
         return CapabilitySummary(features, summary, !configFailed && !failed("frontend"), components["config"]?.lifecycle == Lifecycle.READY,

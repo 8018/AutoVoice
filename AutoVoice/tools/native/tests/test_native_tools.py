@@ -22,7 +22,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def elf(needed=("libc.so",), machine=183):
+def elf(needed=("libc.so",), machine=183, paths=()):
     # Independent fixed ELF64 fixture: two program headers, dynamic table and strings.
     data = bytearray(1024)
     ident = b"\x7fELF\x02\x01\x01" + b"\0" * 9
@@ -33,6 +33,9 @@ def elf(needed=("libc.so",), machine=183):
     for lib in needed:
         entries.append((1, len(strings)))
         strings.extend(lib.encode() + b"\0")
+    for tag, value in paths:
+        entries.append((tag, len(strings)))
+        strings.extend(value.encode() + b"\0")
     entries.extend([(5, 512), (10, len(strings)), (0, 0)])
     struct.pack_into("<IIQQQQQQ", data, 120, 2, 6, 256, 256, 256, len(entries) * 16, len(entries) * 16, 8)
     for i, entry in enumerate(entries):
@@ -223,6 +226,19 @@ class NativeToolsTest(unittest.TestCase):
                 native_artifacts.install_bundle(component, libraries, receipt, self.project)
         self.assertEqual(b"previous installed library fixture", previous.read_bytes())
         self.assertEqual(["arm64-v8a"], [p.name for p in target.parent.iterdir()])
+
+    def test_only_exact_origin_runpath_is_accepted(self):
+        info = native_artifacts.elf_info(elf(paths=[(29, "$ORIGIN")]))
+        self.assertEqual("$ORIGIN", info["runpath"])
+        self.assertEqual(["libc.so"], info["needed"])
+        for tag in [15, 29]:
+            native_artifacts.elf_info(elf(paths=[(tag, "")]))
+        for tag, value in [(15, "$ORIGIN"), (15, "/tmp/build"), (29, "/tmp/build"),
+                           (29, "relative"), (29, "./"), (29, "$ORIGIN/lib"), (29, "$ORIGIN/.."),
+                           (29, "${ORIGIN}"), (29, "$LIB"), (29, "$PLATFORM"),
+                           (29, "$ORIGIN:/vendor/lib"), (29, ":$ORIGIN"), (29, "$ORIGIN:"), (29, "$ORIGIN\\lib")]:
+            with self.subTest(tag=tag, value=value), self.assertRaises(native_artifacts.NativeError):
+                native_artifacts.elf_info(elf(paths=[(tag, value)]))
 
     def test_webrtc_runtime_output_is_distinct_from_allowlisted_symbol_copy(self):
         from native_tools import select_webrtc_runtime_output

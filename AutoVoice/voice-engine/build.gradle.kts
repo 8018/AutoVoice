@@ -7,6 +7,7 @@ kotlin { jvmToolchain(21) }
 dependencies {
     api(project(":voice-engine-api"))
     implementation(project(":voice-core"))
+    implementation(project(":local-command-rules"))
     implementation(project(":gateway-client"))
     implementation(project(":message-dispatch"))
     implementation(libs.coroutines.core)

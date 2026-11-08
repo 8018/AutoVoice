@@ -45,9 +45,11 @@ class SpeechChannelTest {
             assertThrows(IllegalArgumentException::class.java) { channel.validateConfig(explicit) }
             assertThrows(IllegalArgumentException::class.java) { channel.validateConfig(cfg.copy(vad = cfg.vad.copy(threshold = 0.8))) }
             assertFalse(channel.capabilities.auxiliaryBridgeAvailable)
+            assertFalse(channel.capabilities.localBridgeAvailable)
         } else {
             channel.validateConfig(cfg.copy(vad = cfg.vad.copy(threshold = 0.8,thresholdProvided = true)))
             assertTrue(channel.capabilities.auxiliaryBridgeAvailable)
+            assertTrue(channel.capabilities.localBridgeAvailable)
         }
     }
 
@@ -90,20 +92,22 @@ class SpeechChannelTest {
         assertFalse(frontend.vadAvailable)
         assertThrows(IllegalStateException::class.java) { frontend.process(ByteArray(1024)) }
         frontend.close()
-        val engines = channel.createLocalEngines(ContextWrapper(null), cfg, backgroundScope)
+        val root = java.nio.file.Files.createTempDirectory("open-channel-test").toFile()
+        val context = object : ContextWrapper(null) { override fun getExternalFilesDir(type: String?): File = root }
+        val engines = channel.createLocalEngines(context, cfg, backgroundScope)
         var transcripts = 0
         var established = 0
-        val failure = assertThrows(IllegalStateException::class.java) {
-            engines.asr.recognize("test", ByteArray(1024), object : AsrSink {
+        assertNull(engines.asr.recognize("test", ByteArray(1024), object : AsrSink {
                 override fun onTranscript(result: AsrResult) { transcripts++ }
                 override fun onTurnEstablished() { established++ }
-            })
-        }
-        assertNotNull(channel.capabilities.localAsrUnavailableReason)
-        assertTrue(failure.message!!.contains("FireRed"))
+            }))
+        assertNull(channel.capabilities.localAsrUnavailableReason)
         assertEquals(0, transcripts)
         assertEquals(0, established)
-        engines.close()
+        val semantic = engines.nlu.understand("test", ByteArray(0), AsrResult("打开车窗"))
+        assertEquals("power_on",semantic.intent.intent)
+        assertNull(semantic.recognizedText)
+        engines.close();root.deleteRecursively()
     }
 
     @Test

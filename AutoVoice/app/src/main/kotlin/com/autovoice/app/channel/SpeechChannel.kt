@@ -16,6 +16,7 @@ internal data class SpeechChannelCapabilities(
     val localAsrUnavailableReason: String? = null,
     val renderReferenceUnavailableReason: String? = null,
     val auxiliaryBridgeAvailable: Boolean = true,
+    val localBridgeAvailable: Boolean = true,
 )
 
 internal data class CapturePolicy(val audioSource: Int, val effectsFactory: CaptureEffectsFactory)

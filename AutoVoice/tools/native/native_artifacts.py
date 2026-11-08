@@ -131,6 +131,7 @@ def elf_info(data, symbols_only=False):
         require(len(matches) == 1, "invalid ELF string table address")
         strings = data[matches[0]:matches[0] + sizes[0]]
     needed = []
+    runpath = None
     for tag, value in tags:
         if tag not in (1, 15, 29):
             continue
@@ -138,7 +139,10 @@ def elf_info(data, symbols_only=False):
         end = strings.find(b"\0", value)
         require(end >= 0, "unterminated ELF string")
         value = strings[value:end].decode("ascii")
-        require(tag == 1 or not value, "ELF RPATH/RUNPATH is forbidden")
+        require(tag == 1 or not value or (tag == 29 and value == "$ORIGIN"),
+                "ELF RPATH/RUNPATH is forbidden except exact DT_RUNPATH $ORIGIN")
+        if tag == 29 and value:
+            runpath = value
         if tag == 1:
             require(value and "/" not in value and "\\" not in value, "unsafe ELF runtime dependency")
             needed.append(value)
@@ -158,7 +162,7 @@ def elf_info(data, symbols_only=False):
                 android_api_note = struct.unpack_from("<I", data, desc_start)[0]
                 require(1 <= android_api_note <= 27, "ELF Android API note exceeds minSdk 27")
             pos = (end + 3) & ~3
-    return {"machine": "AArch64", "needed": sorted(set(needed)), "android_api_note": android_api_note}
+    return {"machine": "AArch64", "needed": sorted(set(needed)), "android_api_note": android_api_note, "runpath": runpath}
 
 
 def auxiliary_allowed(path, component):

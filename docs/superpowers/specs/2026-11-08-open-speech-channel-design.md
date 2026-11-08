@@ -76,6 +76,7 @@ flowchart LR
 | `adapter-webrtc` | WebRTC APM/VAD native 库、JNI、10ms 重分帧、播放参考处理、AEC 健康状态 |
 | `adapter-firered` | sherpa-onnx Android 运行时、模型加载、分段识别、线程与资源收尾 |
 | `adapter-iflytek` | 首版两渠道共用其中的唤醒观察者和 AIKit runtime；讯飞渠道额外装配原命令识别器，Open 不初始化命令识别能力 |
+| `local-command-rules` | Task5 裁定的纯 Kotlin 规则叶子，只依赖 core；legacy 兼容入口与 Open 严格整句语法共享词表 |
 | `voice-engine` | 共用 ASR/NLU 能力入口、候选生产、许可和仲裁；新增通用文本规则 NLU 实现 |
 | `voice-business` | 共用 DM、语义采用、任务、执行和回复调度 |
 | `app` | 平台采集/播放适配、权限/UI，以及 flavor 专属 `SpeechChannelFactory` |

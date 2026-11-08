@@ -13,6 +13,7 @@ dependencyResolutionManagement {
 rootProject.name = "AutoVoice"
 include(
     ":voice-core",
+    ":local-command-rules",
     ":voice-engine-api",
     ":voice-engine",
     ":gateway-client",
