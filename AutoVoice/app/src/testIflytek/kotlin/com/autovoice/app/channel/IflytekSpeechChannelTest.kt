@@ -35,6 +35,7 @@ class IflytekSpeechChannelTest {
         assertNull(result.recognizedText)
         assertEquals("unknown", result.intent.intent)
         engines.close()
+        runCurrent()
         assertEquals(1, released)
     }
 
@@ -48,5 +49,6 @@ class IflytekSpeechChannelTest {
         val result = engines.nlu.understand("turn", byteArrayOf(1), null)
         assertEquals("打开空调", result.recognizedText)
         engines.close()
+        runCurrent()
     }
 }

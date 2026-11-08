@@ -6,7 +6,7 @@
 
 **Architecture:** 公共音频契约、具体前端、本地 ASR 和 App 渠道组合根分离；业务、DM、仲裁、云端和 TTS 策略共用。Open 使用同一个 AudioRecord，原始 PCM 供既有唤醒，处理后 PCM 供 VAD、本地识别和既有云端候选；平台播放提供 AEC render 参考。
 
-**Tech Stack:** Kotlin 2.0.20、Java 21、AGP 8.5.2、Android API 26/34、WebRTC GN/JNI、sherpa-onnx Android JNI、FireRedASR2 CTC INT8。
+**Tech Stack:** Kotlin 2.0.20、Java 21、AGP 8.5.2、Android minSdk 26(iflytek)/27(Open)、compileSdk 34、WebRTC GN/JNI、sherpa-onnx Android JNI、FireRedASR2 CTC INT8。
 
 **Spec:** `docs/superpowers/specs/2026-11-08-open-speech-channel-design.md`；构建规约 `docs/webrtc-firered-android-build.md`。新增已批准的组件上报设计与实施计划见 `2026-11-08-component-initialization-reporting.md`；其 Task1 插入本计划 Task3 与 Task4 之间，其 Task2 分别纳入本计划 Task4–7。
 
@@ -14,7 +14,7 @@
 
 - 旧讯飞渠道的识别、唤醒、音频处理、业务与失败行为保持；禁止真实 SDK 不可用时暗中切换 fake。
 - 两渠道复用 `IflytekWakeWordObserver` 和同一进程 AIKit runtime；Open 不初始化讯飞命令识别。
-- 目标 `arm64-v8a`，minSdk 26、compileSdk 34；不顺带升级 Gradle/AGP，不改变 dev/prod 环境规则。
+- 目标 `arm64-v8a`，讯飞/公共/legacy minSdk 26，Open及其适配器 minSdk 27、compileSdk 34；不顺带升级 Gradle/AGP，不改变 dev/prod 环境规则。
 - 首版 FireRedASR2 CTC INT8 + sherpa-onnx，CPU 分段 final；不把模拟流式或 QNN 作为已支持能力。
 - 一份采集、每帧只经过一份 APM；VAD、续听、打断门控状态独立，VAD 不直接建立业务轮或停播。
 - 未收口输入执行前复核输入许可；已正常收口的输入凭原请求和 deadline 继续，当前开关不统一过滤其执行/输出；DM 决定是否采用迟到结果。

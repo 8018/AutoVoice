@@ -141,7 +141,7 @@ def create_package(component, lock, plan, libraries, auxiliary, toolchain, outpu
     auxiliary["provenance/commands.json"] = json_bytes(runner.commands)
     files = {f"jni/arm64-v8a/{name}": data for name, data in libraries.items()}
     manifest = {"schema_version": 1, "component": component, "source_revision": plan["source_revision"],
-                "abi": "arm64-v8a", "android_api": 26, "recipe": lock["components"][component]["build"],
+                "abi": "arm64-v8a", "android_api": 27, "recipe": lock["components"][component]["build"],
                 "toolchain": toolchain, "files": {p: sha256(b) for p, b in files.items()},
                 "auxiliary": {p: sha256(b) for p, b in auxiliary.items()}}
     archive = output / (component + "-android-arm64-v8a-unverified.zip")

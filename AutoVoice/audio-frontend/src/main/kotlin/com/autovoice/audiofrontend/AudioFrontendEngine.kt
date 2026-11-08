@@ -1,6 +1,7 @@
 package com.autovoice.audiofrontend
 
 import com.autovoice.audiofrontend.vad.VadEvent
+import com.autovoice.voicecore.health.ComponentReporter
 
 /** A single frame emitted by the microphone audio front end. */
 data class AudioFrontendFrame(
@@ -25,6 +26,8 @@ data class AudioFrontendDiagnostics(
 interface AudioFrontendEngine : AutoCloseable {
     /** Non-null only when audio processing itself cannot run; independent from ASR readiness. */
     val unavailabilityReason: String? get() = null
+    /** Rebinds diagnostics only: never recreate/reset APM, VAD, recurrent state or audio grids. */
+    fun attachReporting(frontendReporter: ComponentReporter, vadReporter: ComponentReporter) = Unit
     val vadAvailable: Boolean
     val diagnostics: AudioFrontendDiagnostics
 

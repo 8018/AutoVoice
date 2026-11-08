@@ -17,6 +17,9 @@ import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.channel.SelectedSpeechChannel
 import com.autovoice.app.channel.WakeWordFactory
 import com.autovoice.app.channel.loadChannelConfig
+import com.autovoice.app.channel.SpeechChannel
+import com.autovoice.app.health.*
+import com.autovoice.voicecore.health.*
 import com.autovoice.app.audio.TtsPlayer
 import com.autovoice.voicecore.DecisionEntry
 import com.autovoice.voicecore.DemoConfig
@@ -122,6 +125,9 @@ data class UiState(
     val chatMode: Boolean = false,
     val textInputError: String? = null,
     val travelGuide: TravelGuideUiState = TravelGuideUiState(),
+    val componentHealth: ComponentHealthSnapshot = ComponentHealthSnapshot(),
+    val capabilities: CapabilitySummary = CapabilitySummary(),
+    val assemblyReady: Boolean = true,
 ) {
     val navigationCandidates: List<NavigationExecutor.NavigationCandidate> get() = navigation.candidates
 }
@@ -148,7 +154,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 录音器（Task 19 由 UI 驱动；Task 50 按住录音：VAD 云端段 + RNNoise 降噪整段）。 */
     private lateinit var recorder: AudioRecorder
-    private val speechChannel = SelectedSpeechChannel.create()
+    private val healthRegistry = ProcessComponentHealth.registry
+    private var reporting = ChannelComponentReporting(healthRegistry, BuildConfig.FLAVOR, healthRegistry.beginGeneration(BuildConfig.FLAVOR))
+    private lateinit var speechChannel: SpeechChannel
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
     val vehicleState = MockVehicleState()
@@ -160,25 +168,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * engine 在 init 完成装配，播放必然发生在引擎就绪之后。
      * 2026-08-15：全部播报统一走网络 TTS（TtsPlayer 播放服务端合成音频），不再用系统 TTS。
      */
-    private val ttsPlayer = TtsPlayer(application) { stage, level, payload ->
-        // 引擎先校验固定 playbackId，再通过 onPlaybackStage 改变监听状态。
-        engine.onTtsPlayEvent(stage, level, payload)
-    }
+    private var ttsPlayer: TtsPlayer? = null
 
     /** 端侧引擎：候选协调 + 仲裁流水线 + 单一对话状态机 + 播报/执行路由。 */
     private lateinit var engine: VoiceEngine
 
     /** 只观察共享 PCM，不自行创建 AudioRecord。 */
-    private val wakeObserver = WakeWordFactory.create(
-        context = application,
-        onWake = { keyword -> viewModelScope.launch { recordingCoordinator.deliverWake(keyword) } },
-        onError = { error -> viewModelScope.launch { recordingCoordinator.deliverWakeError(error) } },
-    )
+    private lateinit var wakeObserver: WakeWordPort
 
     /** 唯一麦克风使用权与音频流路由；不参与 ASR/NLU、仲裁或对话状态转换。 */
     private lateinit var recordingCoordinator: RecordingCoordinator
 
-    private val _uiState = MutableStateFlow(UiState())
+    private val _uiState = MutableStateFlow(UiState(assemblyReady = false))
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
         _uiState.update { it.copy(locationHint = hint) }
@@ -206,6 +207,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 候选状态仍由 [NavigationSession] 统一清理并上报撤销，避免只隐藏 UI。
      */
     fun dismissNavigationCandidates() {
+        if (!::engine.isInitialized) return
         val interactionId = engine.conversation.snapshot.value.interactionId
         dialogueManager.dismissSelection()
         interactionId?.let(engine::onFollowUpExpired)
@@ -213,6 +215,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** UI and voice selection converge on NavigationSession.claimSelection; first claimant wins. */
     fun selectNavigationCandidate(candidate: NavigationExecutor.NavigationCandidate) {
+        if (!::engine.isInitialized) return
         dialogueManager.selectCandidate(candidate, engine.conversation.snapshot.value.turnId ?: "ui-navigation")
     }
 
@@ -225,39 +228,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        // 默认装配与设置区默认模式一致（Task 19/21）：DEMO_OFFLINE → demo-offline 资产。
-        // Task 58：模式持久化（SharedPreferences）——重启/安装后保持用户上次选择；
-        // 否则每次重启回 DEMO_OFFLINE（cloud.enabled=false），云端链关闭，表现为
-        // "重启后云端失联"（每轮 cloud_unreachable、服务器零流量）。
-        val mode = restoreMode()
-        val config = loadConfig(mode)
-        _uiState.update { it.copy(mode = mode) }
-        recorder = AudioRecorder(
-            context = getApplication(),
-            testAudioAsset = config.testAudio,
-            vadConfig = config.vad,
-            ecnr = config.ecnr,
-            frontendFactory = speechChannel.frontendFactory,
-            vadFactory = speechChannel.vadFactory,
-            captureEffectsFactory = speechChannel.capturePolicy.effectsFactory,
-            audioSource = speechChannel.capturePolicy.audioSource,
-        )
-        _uiState.update { it.copy(speechFrontendUnavailable = recorder.frontendUnavailableReason != null) }
-        recorder.frontendUnavailableReason?.let { Log.w(TAG, it) }
-        engine = buildEngine(config)
-        recordingCoordinator = buildRecordingCoordinator()
+        reporting.registerDefaults()
+        viewModelScope.launch {
+            healthRegistry.snapshot.collect { health ->
+                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL)
+                val vad = health.components["vad"]
+                val frontend = health.components["frontend"]
+                val wake = health.components["wake"]
+                val capture = health.components["capture"]
+                _uiState.update { it.copy(componentHealth = health, capabilities = capabilities,
+                    vadUnavailable = vad?.lifecycle == Lifecycle.FAILED,
+                    speechFrontendUnavailable = frontend?.lifecycle == Lifecycle.FAILED,
+                    permissionHint = capture?.error?.code == ErrorCode.MIC_PERMISSION_DENIED,
+                    wakeError = wake?.error?.message ?: wake?.rootCauseId?.let { root -> health.components[root]?.error?.message }) }
+            }
+        }
+        initializeAssembly()
+    }
+
+    private fun initializeAssembly() {
+        try {
+            speechChannel = SelectedSpeechChannel.create()
+            speechChannel.attachReporting(reporting)
+            val mode = restoreMode()
+            val config = reporting.readConfig { loadConfig(mode) } ?: return
+            _uiState.update { it.copy(mode = mode) }
+            if (!config.cloud.enabled) reporting.disabled("cloud")
+            if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
+            else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
+            val playback = reporting.reporter("playback")
+            val playbackToken = playback.start("create")
+            try {
+                ttsPlayer = TtsPlayer(getApplication()) { stage, level, payload ->
+                    if (::engine.isInitialized) engine.onTtsPlayEvent(stage, level, payload)
+                }
+                playback.report(playbackToken, ComponentUpdate.ready())
+            } catch (error: Throwable) {
+                reporting.failure(playback, playbackToken, error)
+            }
+            recorder = AudioRecorder(context = getApplication(), testAudioAsset = config.testAudio, vadConfig = config.vad, ecnr = config.ecnr,
+                frontendFactory = reporting.safeFrontendFactory(speechChannel.frontendFactory), vadFactory = speechChannel.vadFactory,
+                captureEffectsFactory = speechChannel.capturePolicy.effectsFactory, audioSource = speechChannel.capturePolicy.audioSource,
+                captureReporter = reporting.reporter("capture"), aecReporter = reporting.reporter("aec"), auxVadReporter = reporting.reporter("vad.aux"))
+            wakeObserver = WakeWordFactory.create(context = getApplication(), reporting = { reporting },
+                onWake = { keyword -> viewModelScope.launch { if (::recordingCoordinator.isInitialized) recordingCoordinator.deliverWake(keyword) } },
+                onError = { error -> viewModelScope.launch { if (::recordingCoordinator.isInitialized) recordingCoordinator.deliverWakeError(error) } })
+            engine = buildEngine(config)
+            recordingCoordinator = buildRecordingCoordinator()
+            _uiState.update { it.copy(assemblyReady = true) }
+        } catch (error: Throwable) {
+            error.rethrowCancellationOrFatal()
+            val reporter = reporting.reporter("config")
+            reporter.report(reporter.start("create"), ComponentUpdate.failed(initializationError(error, ErrorCode.CONFIG_INVALID)))
+            _uiState.update { it.copy(assemblyReady = false, componentHealth = healthRegistry.snapshot.value,
+                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false)) }
+        }
     }
 
     // ------------------------------------------------------------------ 录音生命周期
 
     fun startRecording() {
+        if (!::recordingCoordinator.isInitialized || !_uiState.value.capabilities.canTriggerManual) return
         vehicleContext.refresh()
         recordingCoordinator.startManualTurn()
     }
 
-    fun stopRecording() = recordingCoordinator.stopTurn()
+    fun stopRecording() { if (::recordingCoordinator.isInitialized) recordingCoordinator.stopTurn() }
 
     fun submitText(text: String): Boolean {
+        if (!::engine.isInitialized) return false
         if (_uiState.value.chatMode || _uiState.value.recording) {
             _uiState.update { it.copy(textInputError = "当前正在语音输入，请稍后再发送文字") }
             return false
@@ -274,10 +313,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return outcome == TextSubmission.ACCEPTED
     }
 
-    private fun cancelRecording() = recordingCoordinator.cancelTurn()
+    private fun cancelRecording() { if (::recordingCoordinator.isInitialized) recordingCoordinator.cancelTurn() }
 
     /** Activity 回到前台时提前恢复 WebSocket 与共享麦克风。 */
     fun onForeground() {
+        if (!::recordingCoordinator.isInitialized || !::engine.isInitialized) return
         vehicleContext.refresh()
         engine.onForeground()
         recordingCoordinator.onForeground()
@@ -285,18 +325,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onAudioPermissionGranted() {
+        if (!::recordingCoordinator.isInitialized || !::engine.isInitialized) return
         vehicleContext.refresh()
         recordingCoordinator.onAudioPermissionGranted()
     }
 
     fun onBackground() {
+        if (!::recordingCoordinator.isInitialized || !::engine.isInitialized) return
         vehicleContext.stopRefresh()
         dialogueManager.abortPendingTask()
         recordingCoordinator.onBackground()
         Log.i(TAG, "App 进入后台：共享麦克风已停止，IVW 会话已暂停")
     }
 
-    fun onPermissionDenied() = recordingCoordinator.onPermissionDenied()
+    fun onPermissionDenied() {
+        if (::recorder.isInitialized) recorder.reportPermissionDenied()
+        if (::recordingCoordinator.isInitialized) recordingCoordinator.onPermissionDenied()
+    }
 
     fun clearPermissionHint() = onAudioPermissionGranted()
 
@@ -339,12 +384,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 重复点击当前模式为 no-op。
      */
     fun setMode(mode: DemoMode) {
-        if (_uiState.value.mode == mode) return
-        val config = loadConfig(mode)
+        if (_uiState.value.mode == mode || !::recordingCoordinator.isInitialized) return
+        val nextGeneration = healthRegistry.beginGeneration(speechChannel.id)
+        reporting = ChannelComponentReporting(healthRegistry, speechChannel.id, nextGeneration)
+        reporting.registerDefaults();speechChannel.attachReporting(reporting)
+        val config = reporting.readConfig { loadConfig(mode) } ?: run {
+            cancelRecording();recordingCoordinator.onBackground();engine.close()
+            _uiState.update { it.copy(assemblyReady = false) };return
+        }
+        if (!config.cloud.enabled) reporting.disabled("cloud")
+        if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
+        else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
+        val playback = reporting.reporter("playback")
+        playback.report(playback.start("create"), if (ttsPlayer != null) ComponentUpdate.ready() else ComponentUpdate.failed(ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED)))
         if (dialogueManager.isChatMode) setChatMode(false)
         else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
         engine.close()
         recordingCoordinator.reconfigureCapture {
+            recorder.configureReporting(reporting.reporter("capture"), reporting.reporter("aec"), reporting.safeFrontendFactory(speechChannel.frontendFactory),
+                reporting.reporter("frontend", if (speechChannel.id == "iflytek") config.ecnr else "webrtc.apm"), reporting.reporter("vad"), reporting.reporter("vad.aux"))
             recorder.configureAudioProcessing(config.vad, config.ecnr, config.testAudio)
         }
         engine = buildEngine(config)
@@ -355,11 +413,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
-        _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null) }
+        _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
+            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL)) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
     fun setWeakNetwork(enabled: Boolean) {
+        if (!::engine.isInitialized) return
         _uiState.update { it.copy(weakNetwork = enabled) }
         engine.weakNetwork = enabled
     }
@@ -449,16 +509,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         },
         scope = viewModelScope,
-        isPlaybackSpeaking = ttsPlayer::isSpeaking,
+        isPlaybackSpeaking = { ttsPlayer?.isSpeaking() == true },
         onState = { snapshot ->
             _uiState.update {
                 it.copy(
                     recording = snapshot.recording,
                     wakeListening = snapshot.wakeListening,
-                    permissionHint = snapshot.permissionRequired,
-                    vadUnavailable = snapshot.vadUnavailable,
                     openMicBargeInAvailable = snapshot.openMicBargeInAvailable,
-                    wakeError = snapshot.wakeError,
                     chatMode = snapshot.chatMode,
                 )
             }
@@ -479,25 +536,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cfg = cfg,
             context = getApplication(),
             channel = speechChannel,
+            reporting = reporting,
             sink = DecisionSink { addDecision(it) },
             player = object : AudioPlayer {
                 override fun play(reply: com.autovoice.voicecore.AudioReply) {
                     if (reply.speakText.isNotBlank()) {
                         _uiState.update { s -> s.copy(lastReplyText = reply.speakText) }
                     }
-                    ttsPlayer.play(reply)
+                    requireNotNull(ttsPlayer) { "playback unavailable" }.play(reply)
                 }
                 override fun stop() {
-                    ttsPlayer.stop()
+                    ttsPlayer?.stop()
                 }
                 override suspend fun playStream(reply: StreamingAudioReply) {
-                    ttsPlayer.playStream(reply)
+                    requireNotNull(ttsPlayer) { "playback unavailable" }.playStream(reply)
                 }
                 override fun play(reply: com.autovoice.voicecore.AudioReply, identity: PlaybackIdentity) {
-                    ttsPlayer.play(reply, identity)
+                    requireNotNull(ttsPlayer) { "playback unavailable" }.play(reply, identity)
                 }
                 override suspend fun playStream(reply: StreamingAudioReply, identity: PlaybackIdentity) {
-                    ttsPlayer.playStream(reply, identity)
+                    requireNotNull(ttsPlayer) { "playback unavailable" }.playStream(reply, identity)
                 }
             },
             vehicle = vehicleState,
@@ -540,6 +598,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun dismissTravelGuide() {
+        if (!::engine.isInitialized) return
         _uiState.update { it.copy(travelGuide = it.travelGuide.copy(visible = false)) }
     }
 
@@ -581,9 +640,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         vehicleContext.stopRefresh()
         dialogueManager.close()
-        recordingCoordinator.close()
-        engine.close() // 断开网关 + 取消引擎作用域（Task 21）
-        ttsPlayer.release()
+        if (::recordingCoordinator.isInitialized) recordingCoordinator.close()
+        else {
+            if (::wakeObserver.isInitialized) wakeObserver.close()
+            if (::recorder.isInitialized) recorder.close()
+        }
+        if (::engine.isInitialized) engine.close() // 断开网关 + 取消引擎作用域（Task 21）
+        ttsPlayer?.release()
+        healthRegistry.releaseGeneration(reporting.generation)
         super.onCleared()
     }
 

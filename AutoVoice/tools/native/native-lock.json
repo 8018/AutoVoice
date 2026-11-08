@@ -2,7 +2,7 @@
   "schema_version": 1,
   "target": {
     "abi": "arm64-v8a",
-    "android_api": 26
+    "android_api": 27
   },
   "components": {
     "webrtc": {
@@ -25,8 +25,8 @@
           "rtc_build_examples": false,
           "rtc_build_tools": false,
           "rtc_enable_protobuf": false,
-          "android_ndk_api_level": 26,
-          "default_min_sdk_version": 26,
+          "android_ndk_api_level": 27,
+          "default_min_sdk_version": 27,
           "use_siso": false,
           "enable_jni_multiplexing": false,
           "use_hashed_jni_names": false
@@ -58,7 +58,7 @@
         "ndk_revision": "27.2.12479018",
         "environment": {
           "BUILD_SHARED_LIBS": "ON",
-          "SHERPA_ONNX_ANDROID_PLATFORM": "android-26",
+          "SHERPA_ONNX_ANDROID_PLATFORM": "android-27",
           "SHERPA_ONNX_ENABLE_JNI": "ON",
           "SHERPA_ONNX_ENABLE_C_API": "OFF",
           "SHERPA_ONNX_ENABLE_BINARY": "OFF",

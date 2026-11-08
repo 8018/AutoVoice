@@ -2,6 +2,8 @@ package com.autovoice.app.channel
 
 import android.content.Context
 import android.media.MediaRecorder
+import com.autovoice.app.health.ChannelComponentReporting
+import com.autovoice.voicecore.health.*
 import com.autovoice.adapterfirered.FireRedAvailability
 import com.autovoice.adapterwebrtc.WebRtcFrontend
 import com.autovoice.audiofrontend.*
@@ -14,7 +16,12 @@ internal object SelectedSpeechChannel {
 
 private class OpenSpeechChannel : SpeechChannel {
     override val id = "open"
-    override val frontendFactory = AudioFrontendEngineFactory { _, _, _ -> WebRtcFrontend.createUnavailable() }
+    private var reporting: ChannelComponentReporting? = null
+    override fun attachReporting(reporting: ChannelComponentReporting) { this.reporting = reporting }
+    override val frontendFactory = AudioFrontendEngineFactory { _, _, _ ->
+        reporting?.unavailable("frontend", ErrorCode.NATIVE_LIBRARY_MISSING)
+        WebRtcFrontend.createUnavailable()
+    }
     override val vadFactory = VadEngineFactory { null }
     // Open APM owns EC/NS; never add Android system AEC/NS in parallel.
     override val capturePolicy = CapturePolicy(MediaRecorder.AudioSource.MIC, CaptureEffectsFactory {
@@ -39,6 +46,8 @@ private class OpenSpeechChannel : SpeechChannel {
 
     override fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly {
         validateConfig(config)
+        reporting?.unavailable("local.asr", ErrorCode.NATIVE_LIBRARY_MISSING)
+        reporting?.unavailable("local.nlu", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
         return LocalEngineAssembly(
             asr = FireRedAvailability.createUnavailable(),
             nlu = NluEngine { _, _, _ -> throw IllegalStateException("Text rule NLU implementation is not installed") },

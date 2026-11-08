@@ -6,6 +6,8 @@ import android.util.Log
 import com.autovoice.adapteriflytek.IflytekOfflineCommandAsrStage
 import com.autovoice.adapteriflytek.RuleNluProvider
 import com.autovoice.app.BuildConfig
+import com.autovoice.app.health.ChannelComponentReporting
+import com.autovoice.voicecore.health.*
 import com.autovoice.app.recognizeLocalCommand
 import com.autovoice.audiofrontend.*
 import com.autovoice.voicecore.*
@@ -15,6 +17,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 internal object SelectedSpeechChannel { fun create(): SpeechChannel = IflytekSpeechChannel() }
 
@@ -36,7 +41,13 @@ internal class IflytekSpeechChannel(
     },
 ) : SpeechChannel {
     override val id = "iflytek"
-    override val frontendFactory = AudioFrontendEngineFactory(AudioFrontendFactory::create)
+    private var reporting: ChannelComponentReporting? = null
+    override fun attachReporting(reporting: ChannelComponentReporting) { this.reporting = reporting }
+    override val frontendFactory = AudioFrontendEngineFactory { context, config, ecnr ->
+        val frontend = reporting?.reporter("frontend", if (ecnr == "none") "none" else "rnnoise") ?: ComponentReporter.none()
+        val vad = reporting?.reporter("vad") ?: ComponentReporter.none()
+        AudioFrontendFactory.create(context, config, ecnr, frontend, vad)
+    }
     override val vadFactory = VadEngineFactory(AudioFrontendFactory::createVad)
     override val capturePolicy = CapturePolicy(MediaRecorder.AudioSource.VOICE_COMMUNICATION, CaptureEffectsFactory(::AndroidCaptureEffects))
     override val capabilities = SpeechChannelCapabilities()
@@ -60,22 +71,85 @@ internal class IflytekSpeechChannel(
 
     override fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly {
         validateConfig(config)
-        val command = if (config.local.asr == DemoConfig.LOCAL_ASR_IFLYTEK) createCommand() else null
-        if (command != null) scope.launch(initializationDispatcher) {
-            try {
-                command.initialize(context)
-                Log.i(TAG, "讯飞离线命令词初始化完成（授权通过）")
-            } catch (error: Throwable) {
-                Log.w(TAG, "讯飞离线命令词初始化失败，本地真实候选保持不可用", error)
+        val health = reporting
+        val asrReporter = health?.reporter("local.asr", config.local.asr) ?: ComponentReporter.none()
+        val nluReporter = health?.reporter("local.nlu") ?: ComponentReporter.none()
+        val nluToken = nluReporter.start("parameters")
+        nluReporter.report(nluToken, ComponentUpdate.ready())
+        val token = asrReporter.start("initialize")
+        val fake = config.local.asr == DemoConfig.LOCAL_ASR_FAKE
+        var command: IflytekCommand? = null
+        if (fake) asrReporter.report(token, ComponentUpdate.disabled()) else {
+            try { command = createCommand() }
+            catch (error: Throwable) {
+                error.rethrowCancellationOrFatal()
+                health?.failure(asrReporter, token, error) ?: asrReporter.report(token, ComponentUpdate.failed(initializationError(error)))
             }
         }
+        val lease = if (command != null) synchronized(COMMAND_TAIL_LOCK) {
+            val previous = commandTail
+            val current = CompletableDeferred<Unit>()
+            commandTail = current
+            previous to current
+        } else null
+        val cleanupScope = CoroutineScope(SupervisorJob() + initializationDispatcher)
+        val lifecycleLock = Any()
+        var initializationStarted = false
+        var closeRequested = false
+        var initializationFinished = command == null
+        var released = false
+        var ready = false
+        suspend fun releaseCommand() {
+            // A cancelled queued owner must preserve the entire predecessor chain.
+            lease?.first?.await()
+            val shouldRelease = synchronized(lifecycleLock) { if (released) false else { released = true;true } }
+            if (shouldRelease) try { command?.close() } finally {
+                lease?.second?.complete(Unit)
+                cleanupScope.cancel()
+            }
+        }
+        val initializationJob = if (command != null) scope.launch(initializationDispatcher) {
+                lease?.first?.await()
+                synchronized(lifecycleLock) { initializationStarted = true }
+                try {
+                    if (!synchronized(lifecycleLock) { closeRequested }) {
+                        command!!.initialize(context.applicationContext ?: context)
+                        synchronized(lifecycleLock) {
+                            if (!closeRequested) { ready = true;asrReporter.report(token, ComponentUpdate.ready()) }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    error.rethrowCancellationOrFatal()
+                    health?.failure(asrReporter, token, error, runtimeDependent = true)
+                        ?: asrReporter.report(token, ComponentUpdate.failed(initializationError(error)))
+                    Log.w(TAG, "讯飞离线命令词初始化失败，本地真实候选保持不可用")
+                } finally {
+                    val close = synchronized(lifecycleLock) { initializationFinished = true;closeRequested }
+                    if (close) releaseCommand()
+                }
+        } else null
+        initializationJob?.invokeOnCompletion {
+            val release = synchronized(lifecycleLock) {
+                if (!initializationStarted) { initializationFinished = true;closeRequested } else false
+            }
+            if (release) cleanupScope.launch { releaseCommand() }
+        }
         val nlu = LocalNluEngine(
-            recognizeCommand = { segment -> recognizeLocalCommand(config.local.asr, segment) { command?.recognize(segment) } },
+            recognizeCommand = { segment ->
+                if (fake) recognizeLocalCommand(config.local.asr, segment) { null }
+                else if (synchronized(lifecycleLock) { ready && !closeRequested } && health?.runtimeBlocked() != true)
+                    recognizeLocalCommand(config.local.asr, segment) { command?.recognize(segment) }
+                else null
+            },
             understandCommand = RuleNluProvider::understand,
-            onRecognizerFailure = { Log.w(TAG, "本地 2C 命令词异常，按未命中继续", it) },
+            onRecognizerFailure = { Log.w(TAG, "本地 2C 命令词异常，按未命中继续") },
         )
-        return LocalEngineAssembly(LocalAsrEngine(), nlu) { command?.close() }
+        return LocalEngineAssembly(LocalAsrEngine(), nlu) {
+            val close = synchronized(lifecycleLock) { closeRequested = true;ready = false;initializationFinished }
+            asrReporter.close(token);nluReporter.close(nluToken)
+            if (close) cleanupScope.launch { releaseCommand() }
+        }
     }
 
-    private companion object { const val TAG = "VoiceEngineFactory" }
+    private companion object { const val TAG = "VoiceEngineFactory";val COMMAND_TAIL_LOCK = Any();var commandTail = CompletableDeferred<Unit>().apply { complete(Unit) } }
 }

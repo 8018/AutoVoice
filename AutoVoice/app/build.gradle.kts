@@ -52,6 +52,7 @@ android {
         create("iflytek") { dimension = "speechChannel" }
         create("open") {
             dimension = "speechChannel"
+            minSdk = 27
             applicationIdSuffix = ".open"
         }
     }

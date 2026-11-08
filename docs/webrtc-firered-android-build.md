@@ -2,7 +2,7 @@
 
 日期：2026-11-08。目标：8295、Android `arm64-v8a`，首版 CPU 推理。配套 [渠道架构设计](superpowers/specs/2026-11-08-open-speech-channel-design.md)。
 
-本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter 边界、双渠道 Gradle 任务和工具已实现；`autovoice_frontend_jni` 的实际 GN/JNI 源码仍待 Task 4。尚未下载完整源码、执行真实 native 编译或认证制品。上游构建成功、App 打包成功和真机语音可用分别验收。
+本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter 边界、双渠道 Gradle 任务和工具已实现；`autovoice_frontend_jni` 的实际 GN/JNI 源码仍待 Task 4。控制端已完成固定 sherpa 的 API27 Linux 实际编译并核验两库 ELF note=27；WebRTC JNI 目标尚未实现，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
 
 ## 1 编译内容和产物
 
@@ -21,12 +21,12 @@ WebRTC Android 编译统一放在 Linux x86_64 构建机；使用其 DEPS 管理
 
 | 项目 | 本方案起始配置 | 约束 |
 | --- | --- | --- |
-| App | 现有 Java 21、AGP 8.5.2、Kotlin 2.0.20、compileSdk 34、minSdk 26 | 本次不顺带升级 Gradle/AGP |
+| App | 现有 Java 21、AGP 8.5.2、Kotlin 2.0.20、compileSdk 34；讯飞/公共/legacy minSdk 26，Open/其适配器 minSdk 27 | 本次不顺带升级 Gradle/AGP |
 | WebRTC | 起始候选提交 `8838a7c28655afbf9336063b71a51429e7d72774` | 这是已定位的上游提交，尚未通过本项目构建；首次成功构建并验收后锁定提交、DEPS 工具链和本项目补丁摘要 |
 | sherpa-onnx | `v2.0.1`，提交 `af2d8d81dbfa61c4cea4c568da78f3982edca005` | Kotlin API 和 native 必须同一提交；禁止跟随 master 自动升级 |
-| sherpa NDK | 工程建议从 r27c `27.2.12479018` 开始 | 这是待构建验证的选择，不能当成已经认证的组合 |
+| sherpa NDK | 工程建议从 r27c `27.2.12479018` 开始 | 控制端已用此版本完成 sherpa API27 编译，尚未经 Android 推理/设备认证 |
 | sherpa ONNX Runtime | 上述版本脚本默认指定 `1.28.2` | 脚本默认下载该版本 Android 预编译库；首版没有从源码重编 ORT，不套用项目旧 Silero 的 1.19.0 |
-| ABI 与 API | `arm64-v8a`、Android API 26 | ELF 实际依赖的 API 不得高于 App minSdk |
+| ABI 与 API | `arm64-v8a`；Open Android API 27（讯飞保持26） | ELF 实际依赖的 API 不得高于 App minSdk |
 | 模型 | `sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25` | 模型、tokens 和运行时组合通过实机后一起锁定 |
 
 上游依据：[WebRTC 候选提交](https://webrtc.googlesource.com/src/+/8838a7c28655afbf9336063b71a51429e7d72774)、[sherpa v2.0.1](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1)、[同版本 Android 脚本](https://github.com/k2-fsa/sherpa-onnx/blob/v2.0.1/build-android-arm64-v8a.sh)。
@@ -48,7 +48,7 @@ bash -n AutoVoice/tools/native/build-firered-android.sh
 bash -n AutoVoice/tools/native/stage-native-artifacts.sh
 ```
 
-锁固定上述两个源码提交、arm64/API 26、GN 参数、sherpa 开关和 NDK 版本。
+锁固定上述两个源码提交、arm64/Open API 27、GN 参数、sherpa 开关和 NDK 版本。
 `depot_tools` 固定为实际观测到的候选提交 `289a37bda3d848cfe16e6c1c599741ed3890ab55`，
 此提交与整个组合都尚未经过真实构建/设备验证。所有未生成的制品、manifest、逐库及验收报告摘要保持 `null`；
 不存在虚构的“已认证 hash”。构建成功也只能输出 **unverified** 包，不能自动把 lock 改成 verified。
@@ -136,7 +136,7 @@ AutoVoice/tools/native/stage-native-artifacts.sh --archive /work/verified/firere
 
 staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symlink/特殊文件、解压总量限制、
 固定库/辅助文件白名单与逐项摘要，再只读取已核对库。ELF 校验要求 little-endian ELF64 AArch64 shared object，
-拒绝 RPATH/RUNPATH、未声明 DT_NEEDED 和重复 ORT；若有 Android API note 则要求不高于 26。
+拒绝 RPATH/RUNPATH、未声明 DT_NEEDED 和重复 ORT；若有 Android API note 则要求不高于 Open minSdk 27。
 允许的平台依赖是 `libc/libm/libdl/liblog/libandroid/libz`，其余依赖必须由当前固定运行库集合闭包满足。
 若真实输出依赖 `libc++_shared.so` 或其他额外库，工具明确失败；必须先更新并评审依赖白名单/锁/测试及许可证，不能漏库或 pickFirst。
 它还检查 Open 两 adapter、公共 frontend 和 App source set 中的重复 ORT，不扫描/改写 legacy 渠道的独立 ORT 依赖。
@@ -144,6 +144,8 @@ staging 不调用 extractall：它逐项检查 ZIP 路径、重复条目、symli
 所有验证通过后，以 adapter 的 ABI 目录为单位替换；写入失败会恢复原目录。来源收据在 `.native/receipts`，不混入运行库目录。
 API/NDK 元数据、ELF header/note 和摘要检查不证明导入符号的实际最低 API、16KB 页面或设备行为；这些仍需真实 readelf/link/装载与设备验收，
 不能仅靠工具测试把 candidate 标为 verified。制品目录、receipts、jniLibs 与 Python 缓存均已 gitignore。
+
+**API floor 用户裁定（2026-11-08）：** 实查固定 ORT 1.28.2 的 Android ELF note 为27，用户明确批准仅 Open 提升到 Android 8.1/API27；讯飞、公共模块与 legacy 仍为26。锁、GN、sherpa recipe 与 Open flavor/adapter 均同步27，不用 manifest 标签掩盖26构建。控制端已按27重编并核对两库 note=27；尚无 Android 模型推理/8295验收，runtime artifact 的 trusted hashes 继续留空/unverified。
 
 ## 3 WebRTC 前端编译
 
@@ -216,8 +218,8 @@ rtc_include_tests=false
 rtc_build_examples=false
 rtc_build_tools=false
 rtc_enable_protobuf=false
-android_ndk_api_level=26
-default_min_sdk_version=26
+android_ndk_api_level=27
+default_min_sdk_version=27
 use_siso=false
 enable_jni_multiplexing=false
 use_hashed_jni_names=false
@@ -259,7 +261,7 @@ git rev-parse HEAD
 
 ```bash
 export BUILD_SHARED_LIBS=ON
-export SHERPA_ONNX_ANDROID_PLATFORM=android-26
+export SHERPA_ONNX_ANDROID_PLATFORM=android-27
 export SHERPA_ONNX_ENABLE_JNI=ON
 export SHERPA_ONNX_ENABLE_C_API=OFF
 export SHERPA_ONNX_ENABLE_BINARY=OFF
@@ -333,7 +335,7 @@ add("openImplementation", project(":adapter-webrtc"))
 add("openImplementation", project(":adapter-firered"))
 ```
 
-`adapter-webrtc`、`adapter-firered` 都是 Android library，namespace 分别为 `com.autovoice.adapterwebrtc`、`com.autovoice.adapterfirered`，compileSdk 34、minSdk 26、ABI `arm64-v8a`，沿用项目 Kotlin/JVM 21。C++ bridge 在 WebRTC GN 内完成链接，Gradle 对这个模块只包装预构建 JNI，不二次使用 RNNoise 的 `ANDROID_STL=none` 配置链接它。
+`adapter-webrtc`、`adapter-firered` 都是 Android library，namespace 分别为 `com.autovoice.adapterwebrtc`、`com.autovoice.adapterfirered`，compileSdk 34；讯飞/公共/legacy minSdk 26，Open/其适配器 minSdk 27、ABI `arm64-v8a`，沿用项目 Kotlin/JVM 21。C++ bridge 在 WebRTC GN 内完成链接，Gradle 对这个模块只包装预构建 JNI，不二次使用 RNNoise 的 `ANDROID_STL=none` 配置链接它。
 
 Open 不再直接/间接引入 Silero 的 `com.microsoft.onnxruntime:onnxruntime-android:1.19.0`；由 sherpa 配套的 ORT 提供 native runtime。发现同名 `libonnxruntime.so` 时先修依赖图，不使用 `pickFirst` 随机消除冲突；Kotlin/Java API、JNI 和 ORT 必须是测试过的一组。
 
@@ -379,7 +381,7 @@ native 制品清单记录：WebRTC/sherpa 源码提交、depot_tools/DEPS、所�
 ## 9 当前执行记录与环境限制
 
 本阶段仅用本地微型合成 ELF/ZIP 验证工具策略，未生成真实 WebRTC/sherpa 制品，未填造制品摘要。
-开发机是 macOS arm64，已检查本机 adb：无连接 Android 设备；本机没有所选 r27c NDK/GN/depot_tools。
+开发机是 macOS arm64，最初检查本机 adb 时无连接 Android 设备；控制端后续已启动独立 `AutoVoice_Open_API_33`（arm64-v8a/API33）用于提交审核后的 Android 验证，尚无8295物理设备验收。本机没有所选 r27c NDK/GN/depot_tools。
 控制端已恢复到 Ubuntu 26.04 WSL2 x86_64 构建机的连接（32 logical CPU、约31GiB RAM、约950GiB可用磁盘）；
-Linux 主机并非缺失：控制端已准备基础构建包、Ninja/Java等工具并检出固定 depot_tools；NDK r27c 下载校验和固定 WebRTC/sherpa 源码准备正在控制端进行，Task 4 的 JNI/GN 源码也尚未提供。
-本阶段没有探测服务器、远程安装或执行 native 编译。构建机依赖准备、首次真实构建、API/NDK/许可证核验、制品认证及设备验收分别记录后再更新 lock。
+Linux 主机并非缺失：控制端已准备基础构建包、Ninja/Java等工具并检出固定 depot_tools；NDK r27c 已经官方 SHA1 校验并安装（27.2.12479018），固定 sherpa API27 官方脚本构建退出0，两库 Android ELF note=27；WebRTC 源码准备由控制端跟进，Task 4 的 JNI/GN 源码尚未提供。
+H1 实现 worker 未探测服务器、远程安装或执行 native 编译；上述实际 Linux 构建由控制端独立完成。其 API27 JNI SHA256 为 `6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97`，ORT 为 `33847ad43bffe204699fd4a27f7f3603452a8cdaf2f9a44983a0bc31ffcf2da1`（观测摘要，非 trusted artifact）。模型/许可证/Android 推理/8295验收尚未完成，制品认证完成前不更新 trusted lock。

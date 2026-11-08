@@ -156,6 +156,8 @@ FireRed 模型以独立资源包预装到 App 可读的版本化目录，不默�
 
 ## 10 编译选择和兼容策略
 
+用户已于2026-11-08明确批准：固定ORT 1.28.2实际Android ELF note为27，因此仅Open flavor、WebRTC/FireRed适配器与native profile使用minSdk/API27（Android8.1）；讯飞、公共模块和legacy继续26。不能只改manifest，GN/sherpa编译目标和制品校验一起同步27。
+
 App 增加 `speechChannel` flavor dimension，取值 `iflytek`、`open`。debug/release 和现有 dev/prod 配置策略保持独立，不把渠道名等同于环境或云端模型。
 
 ```kotlin

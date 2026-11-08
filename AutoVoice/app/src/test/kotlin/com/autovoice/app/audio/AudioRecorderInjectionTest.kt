@@ -1,5 +1,8 @@
 package com.autovoice.app.audio
 
+import com.autovoice.app.health.ChannelComponentReporting
+import com.autovoice.app.health.ComponentStatusRegistry
+import com.autovoice.voicecore.health.*
 import android.content.ContextWrapper
 import com.autovoice.audiofrontend.AudioFrontendDiagnostics
 import com.autovoice.audiofrontend.AudioFrontendEngine
@@ -139,6 +142,50 @@ class AudioRecorderInjectionTest {
         assertFalse(recorder.start(false))
         runCurrent()
         assertEquals(0, processed)
+        recorder.close()
+    }
+
+    @Test
+    fun `same configuration rebinds retained frontend and auxiliary detector without creating instances`() = runTest {
+        val registry = ComponentStatusRegistry()
+        fun assembly() = ChannelComponentReporting(registry, "iflytek", registry.beginGeneration("iflytek")).also {
+            it.registerDefaults()
+            val r = it.reporter("config");r.report(r.start("config_validate"), ComponentUpdate.ready())
+        }
+        val first = assembly()
+        var bindings = 0
+        var frontendCreations = 0
+        var vadCreations = 0
+        val frontend = object : AudioFrontendEngine {
+            override val vadAvailable = true
+            override val diagnostics = AudioFrontendDiagnostics()
+            override fun attachReporting(frontendReporter: ComponentReporter, vadReporter: ComponentReporter) {
+                bindings++
+                frontendReporter.report(frontendReporter.start("reuse_existing"), ComponentUpdate.ready())
+                vadReporter.report(vadReporter.start("reuse_existing"), ComponentUpdate.ready())
+            }
+            override fun startTurn() = Unit
+            override fun process(block: ByteArray) = AudioFrontendFrame(block, null)
+            override fun finishProcessedAudio() = ByteArray(0)
+            override fun finishSegments() = emptyList<ByteArray>()
+            override fun close() = Unit
+        }
+        val recorder = AudioRecorder(ContextWrapper(null), testAudioSource = null, scope = backgroundScope,
+            frontendFactory = { _, _, _ -> frontendCreations++;frontend },
+            vadFactory = { vadCreations++;SelectedVad() }, captureEffectsFactory = { SelectedEffects() },
+            auxVadReporter = first.reporter("vad.aux"))
+        val oldAux = first.reporter("vad.aux")
+        val second = assembly()
+        recorder.configureReporting(second.reporter("capture"), second.reporter("aec"),
+            frontend = second.reporter("frontend"), vad = second.reporter("vad"), auxVad = second.reporter("vad.aux"))
+        recorder.configureAudioProcessing(VadConfig(), DemoConfig.ECNR_RNNOISE)
+        assertEquals(1, frontendCreations)
+        assertEquals(1, vadCreations)
+        assertEquals(1, bindings)
+        assertEquals(Lifecycle.READY, registry.snapshot.value.components.getValue("vad.aux").lifecycle)
+        assertEquals("reuse_existing", registry.snapshot.value.components.getValue("frontend").stage)
+        oldAux.close()
+        assertEquals(Lifecycle.READY, registry.snapshot.value.components.getValue("vad.aux").lifecycle)
         recorder.close()
     }
 

@@ -40,6 +40,7 @@ android {
     testOptions {
         // 单测用 JUnit 5（与 voice-core 保持一致）
         unitTests.all { it.useJUnitPlatform() }
+        unitTests.isReturnDefaultValues = true
     }
 }
 

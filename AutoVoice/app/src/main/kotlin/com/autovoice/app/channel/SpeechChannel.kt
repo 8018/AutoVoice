@@ -30,6 +30,7 @@ internal class LocalEngineAssembly(
 /** App composition contract: provider types never escape the selected flavor. */
 internal interface SpeechChannel {
     val id: String
+    fun attachReporting(reporting: com.autovoice.app.health.ChannelComponentReporting)
     val frontendFactory: AudioFrontendEngineFactory
     val vadFactory: VadEngineFactory
     val capturePolicy: CapturePolicy

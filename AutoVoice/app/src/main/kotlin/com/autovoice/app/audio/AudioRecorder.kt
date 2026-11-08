@@ -6,6 +6,7 @@ import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
+import com.autovoice.voicecore.health.*
 import com.autovoice.audiofrontend.AudioFrontendEngine
 import com.autovoice.audiofrontend.AudioFrontendEngineFactory
 import com.autovoice.audiofrontend.CaptureEffects
@@ -79,10 +80,13 @@ class AudioRecorder(
     frontend: AudioFrontendEngine? = null,
     captureEffects: CaptureEffects? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    private val frontendFactory: AudioFrontendEngineFactory,
+    private var frontendFactory: AudioFrontendEngineFactory,
     vadFactory: VadEngineFactory,
     captureEffectsFactory: CaptureEffectsFactory,
     private val audioSource: Int = MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+    private var captureReporter: ComponentReporter = ComponentReporter.none(),
+    private var aecReporter: ComponentReporter = ComponentReporter.none(),
+    private var auxVadReporter: ComponentReporter = ComponentReporter.none(),
 ) : RecordingCapture {
 
     @Volatile
@@ -96,6 +100,22 @@ class AudioRecorder(
 
     private val captureEffects: CaptureEffects = captureEffects ?: captureEffectsFactory.create()
     private var closed = false
+    private var captureToken: ComponentToken? = null
+    private var aecToken: ComponentToken? = null
+    private var pendingFrontendReporting: Pair<ComponentReporter, ComponentReporter>? = null
+    private var pendingAuxReporting: ComponentReporter? = null
+    private var auxVadToken: ComponentToken? = null
+    fun configureReporting(capture: ComponentReporter, aec: ComponentReporter, factory: AudioFrontendEngineFactory = frontendFactory,
+        frontend: ComponentReporter? = null, vad: ComponentReporter? = null, auxVad: ComponentReporter? = null) {
+        frontendFactory = factory
+        pendingAuxReporting = auxVad
+        pendingFrontendReporting = if (frontend != null && vad != null) frontend to vad else null
+        captureReporter = capture;aecReporter = aec;captureToken = null;aecToken = null
+    }
+    fun reportPermissionDenied() {
+        val token = captureToken ?: captureReporter.start("waiting_permission").also { captureToken = it }
+        captureReporter.report(token, ComponentUpdate.failed(ComponentError(ErrorCode.MIC_PERMISSION_DENIED, retryable = true)))
+    }
 
     @Volatile
     private var activeVadConfig: VadConfig = vadConfig
@@ -104,7 +124,14 @@ class AudioRecorder(
     private var activeEcnr: String = ecnr
 
     /** 播报期开放式打断使用独立 VAD，不污染正式话语的切段状态。 */
-    private val bargeInVad = vadFactory.create(context)
+    private val bargeInVad = run {
+        val token = auxVadReporter.start("model_create").also { auxVadToken = it }
+        val vad = vadFactory.create(context)
+        auxVadReporter.report(token, if (vad != null) ComponentUpdate.ready()
+            else if (this.frontend.unavailabilityReason != null) ComponentUpdate.blocked("frontend")
+            else ComponentUpdate.failed(ComponentError(ErrorCode.MODEL_LOAD_FAILED)))
+        vad
+    }
     private val bargeInGate = OpenMicBargeInGate()
     private val bargeInPreRoll = ArrayDeque<ByteArray>()
     private var pendingBargeInPreRoll: List<ByteArray> = emptyList()
@@ -159,7 +186,16 @@ class AudioRecorder(
                 old
             }
             runCatching { previous.close() }
+        } else pendingFrontendReporting?.let { (front, vadReporter) -> frontend.attachReporting(front, vadReporter) }
+        pendingFrontendReporting = null
+        pendingAuxReporting?.let { reporter ->
+            auxVadReporter = reporter
+            auxVadToken = reporter.start("reuse_existing")
+            reporter.report(requireNotNull(auxVadToken), if (bargeInVad != null) ComponentUpdate.ready()
+                else if (this.frontend.unavailabilityReason != null) ComponentUpdate.blocked("frontend")
+                else ComponentUpdate.failed(ComponentError(ErrorCode.MODEL_LOAD_FAILED)))
         }
+        pendingAuxReporting = null
         Log.i(
             TAG,
             "audio config applied: vad.threshold=${vad.threshold} " +
@@ -281,6 +317,8 @@ class AudioRecorder(
         }
         val source = testAudioSource
         if (source != null) {
+            captureToken = captureReporter.start("capture_open")
+            captureReporter.report(requireNotNull(captureToken), ComponentUpdate.disabled())
             // 测试模式（Task 58）：屏蔽麦克风，预置语音按真实节奏喂双网格，无需录音权限
             Log.i(TAG, "测试音频源模式：${source.describe()}")
             source.reset() // 每轮从头播（游标跨轮不重置 → 段起点随机，Task 58 联调发现）
@@ -350,6 +388,7 @@ class AudioRecorder(
             // 未启动/已释放时 stop 抛异常，可忽略
         }
         audioRecord?.release()
+        if (audioRecord != null) captureToken?.let { captureReporter.report(it, ComponentUpdate.health(Health.UNKNOWN)) }
         releaseCaptureEffects()
     }
 
@@ -371,6 +410,8 @@ class AudioRecorder(
             bargeInVad?.close()
         } catch (_: Throwable) {
         }
+        captureReporter.close();aecReporter.close()
+        auxVadToken?.let { auxVadReporter.close(it) }
         scope.cancel()
     }
 
@@ -384,6 +425,7 @@ class AudioRecorder(
             try {
                 handleCapturedBlock(block)
             } catch (t: Throwable) {
+                t.rethrowCancellationOrFatal()
                 // 单块处理失败（RNNoise 异常）不中断录音，静默降级
                 Log.w(TAG, "block processing failed, degraded silently", t)
             }
@@ -395,11 +437,15 @@ class AudioRecorder(
         val block = ByteArray(AudioFormat.BLOCK_BYTES)
         while (currentCoroutineContext().isActive) {
             if (!readFully(audioRecord, block)) {
+                if (record === audioRecord && currentCoroutineContext().isActive) captureToken?.let {
+                    captureReporter.report(it, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.CAPTURE_OPEN_FAILED, retryable = true)))
+                }
                 break // 停止 / 读错误
             }
             try {
                 handleCapturedBlock(block)
             } catch (t: Throwable) {
+                t.rethrowCancellationOrFatal()
                 // 单块处理失败（RNNoise 异常）不中断录音，静默降级
                 Log.w(TAG, "block processing failed, degraded silently", t)
             }
@@ -462,6 +508,8 @@ class AudioRecorder(
                 .build()
         } catch (t: Throwable) {
             // 缺 RECORD_AUDIO 权限（SecurityException）/ 设备不支持（UnsupportedOperationException 等）
+            t.rethrowCancellationOrFatal()
+            if (t is SecurityException) captureToken?.let { captureReporter.report(it, ComponentUpdate.failed(ComponentError(ErrorCode.MIC_PERMISSION_DENIED, retryable = true))) }
             Log.w(TAG, "AudioRecord creation failed, degraded silently", t)
             null
         }
@@ -470,25 +518,38 @@ class AudioRecorder(
     /** 创建一次 AudioRecord 并持续读；唤醒/语音只切换观察分支，不重建麦克风。 */
     private fun ensureMicrophoneCapture(): Boolean {
         if (readJob?.isActive == true && record != null) return true
-        val audioRecord = createAudioRecord() ?: return false
+        captureToken = captureReporter.start("capture_open")
+        val audioRecord = try { createAudioRecord() } catch (error: Throwable) {
+            error.rethrowCancellationOrFatal()
+            captureReporter.report(requireNotNull(captureToken), ComponentUpdate.failed(initializationError(error, ErrorCode.CAPTURE_OPEN_FAILED)))
+            return false
+        } ?: run {
+            captureReporter.report(requireNotNull(captureToken), ComponentUpdate.failed(ComponentError(ErrorCode.CAPTURE_OPEN_FAILED, retryable = true)))
+            return false
+        }
         record = audioRecord
-        attachCaptureEffects(audioRecord.audioSessionId)
         try {
+            attachCaptureEffects(audioRecord.audioSessionId)
             audioRecord.startRecording()
         } catch (t: Throwable) {
+            t.rethrowCancellationOrFatal()
+            captureReporter.report(requireNotNull(captureToken), ComponentUpdate.failed(initializationError(t, ErrorCode.CAPTURE_OPEN_FAILED)))
             Log.w(TAG, "AudioRecord.startRecording failed, degraded silently", t)
             audioRecord.release()
             releaseCaptureEffects()
             record = null
             return false
         }
+        captureReporter.report(requireNotNull(captureToken), ComponentUpdate.ready())
         readJob = scope.launch { readLoop(audioRecord) }
         return true
     }
 
     private fun attachCaptureEffects(audioSessionId: Int) {
         releaseCaptureEffects()
+        aecToken = aecReporter.start("effects")
         captureEffects.attach(audioSessionId)
+        aecReporter.report(requireNotNull(aecToken), if (captureEffects.echoCancellationActive) ComponentUpdate.ready() else ComponentUpdate.disabled())
         openMicBargeInAvailable = captureEffects.echoCancellationActive && bargeInVad != null
         Log.i(
             TAG,
@@ -503,6 +564,7 @@ class AudioRecorder(
         bargeInGate.stop()
         openMicBargeInAvailable = false
         captureEffects.release()
+        aecToken?.let { aecReporter.report(it, ComponentUpdate.health(Health.UNKNOWN)) }
     }
 
     private companion object {

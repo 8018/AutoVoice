@@ -65,7 +65,7 @@ class NativeToolsTest(unittest.TestCase):
             toolchain.update(ndk_revision="27.2.12479018", ort_version="1.28.2", kotlin_api_revision=REV[component])
             auxiliary["api/kotlin/Recognizer.kt"] = b"// synthetic API fixture, not sherpa implementation\n"
         manifest = {"schema_version": 1, "component": component, "source_revision": REV[component],
-                    "abi": "arm64-v8a", "android_api": 26, "recipe": record["build"], "toolchain": toolchain,
+                    "abi": "arm64-v8a", "android_api": 27, "recipe": record["build"], "toolchain": toolchain,
                     "files": {p: digest(b) for p, b in paths.items()}, "auxiliary": {p: digest(b) for p, b in auxiliary.items()}}
         if mutate:
             mutate(manifest)
@@ -129,7 +129,7 @@ class NativeToolsTest(unittest.TestCase):
         self.fails("ELF must be AArch64", machine=62)
 
     def test_wrong_api_and_revision_fail(self):
-        self.fails("Android API mismatch", mutate=lambda m: m.update(android_api=27))
+        self.fails("Android API mismatch", mutate=lambda m: m.update(android_api=28))
         self.fails("source revision mismatch", mutate=lambda m: m.update(source_revision="2" * 40))
 
     def test_path_traversal_and_absolute_names_fail(self):
@@ -224,6 +224,13 @@ class NativeToolsTest(unittest.TestCase):
         self.assertEqual(b"previous installed library fixture", previous.read_bytes())
         self.assertEqual(["arm64-v8a"], [p.name for p in target.parent.iterdir()])
 
+    def test_open_api27_profile_keeps_vendor_channel_outside_native_policy(self):
+        lock = json.loads((TOOLS / "native-lock.json").read_text())
+        self.assertEqual(27, lock["target"]["android_api"])
+        self.assertEqual(27, lock["components"]["webrtc"]["build"]["gn_args"]["android_ndk_api_level"])
+        self.assertEqual(27, lock["components"]["webrtc"]["build"]["gn_args"]["default_min_sdk_version"])
+        self.assertEqual("android-27", lock["components"]["firered"]["build"]["environment"]["SHERPA_ONNX_ANDROID_PLATFORM"])
+
     def test_default_build_plans_have_no_filesystem_or_network_side_effects(self):
         for component in ["webrtc", "firered"]:
             before = set(self.root.rglob("*"))
@@ -239,7 +246,7 @@ class NativeToolsTest(unittest.TestCase):
             else:
                 self.assertEqual("OFF", plan["environment"]["SHERPA_ONNX_ENABLE_QNN"])
                 self.assertEqual("1.28.2", plan["environment"]["SHERPA_ONNX_ONNXRUNTIME_VERSION"])
-                self.assertEqual("android-26", plan["environment"]["SHERPA_ONNX_ANDROID_PLATFORM"])
+                self.assertEqual("android-27", plan["environment"]["SHERPA_ONNX_ANDROID_PLATFORM"])
 
 
 if __name__ == "__main__":

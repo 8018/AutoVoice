@@ -217,6 +217,24 @@ class RecordingCoordinatorTest {
         assertTrue(wake.armed)
     }
 
+    @Test fun `cancelled wake setup cannot arm or stop a replacement setup`() = runTest {
+        val capture = FakeCapture()
+        val wake = FakeWakeWord()
+        val states = mutableListOf<RecordingLifecycleSnapshot>()
+        val coordinator = coordinator(capture, wake, FakePipeline()) { states += it }
+        wake.onInitialize = {
+            wake.onInitialize = {}
+            coordinator.reconfigureCapture {}
+            coordinator.onForeground()
+        }
+        coordinator.onForeground()
+        runCurrent()
+        assertEquals(1, wake.armCalls)
+        assertTrue(capture.monitoring)
+        assertTrue(wake.armed)
+        assertTrue(states.none { it.wakeError != null })
+    }
+
     private fun kotlinx.coroutines.test.TestScope.coordinator(
         capture: FakeCapture,
         wake: FakeWakeWord,
@@ -281,8 +299,10 @@ class RecordingCoordinatorTest {
         override val keyword = "你好飞飞"
         var initialized = false
         var armed = false
-        override fun initialize() { initialized = true }
-        override fun arm() { armed = true }
+        var armCalls = 0
+        var onInitialize: () -> Unit = {}
+        override fun initialize() { initialized = true;onInitialize() }
+        override fun arm() { armed = true;armCalls++ }
         override fun accept(pcm: ByteArray) = Unit
         override fun pause() { armed = false }
         override fun disarm() { armed = false }

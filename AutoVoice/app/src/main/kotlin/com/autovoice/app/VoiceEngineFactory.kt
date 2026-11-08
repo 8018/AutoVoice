@@ -5,6 +5,8 @@ import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 import android.content.Context
 import com.autovoice.app.channel.SpeechChannel
 import com.autovoice.app.channel.LocalEngineAssembly
+import com.autovoice.app.health.ChannelComponentReporting
+import com.autovoice.voicecore.health.*
 import android.net.ConnectivityManager
 import android.util.Log
 import com.autovoice.voiceengine.local.LocalSpeechRoute
@@ -45,6 +47,7 @@ internal object VoiceEngineFactory {
         cfg: DemoConfig,
         context: Context,
         channel: SpeechChannel,
+        reporting: ChannelComponentReporting,
         networkAvailable: () -> Boolean = { context.hasActiveNetwork() },
         sink: DecisionSink,
         player: AudioPlayer,
@@ -150,7 +153,21 @@ internal object VoiceEngineFactory {
             if (text.isNotBlank()) onReplyText(text)
         }
         cloudRunner.onTravelDocument = onTravelDocument
+        val cloudReporter = reporting.reporter("cloud")
+        var cloudToken: ComponentToken? = null
+        var cloudInitialized = false
         cloudRunner.onConnectionEvent = { stage, level, payload ->
+            if (cfg.cloud.enabled) when (stage) {
+                TelemetryStages.WS_CONNECT_START -> {
+                    if (!cloudInitialized) cloudToken = cloudReporter.start("connect")
+                    else cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNKNOWN)) }
+                }
+                TelemetryStages.WS_READY -> cloudToken?.let {
+                    cloudReporter.report(it, if (cloudInitialized) ComponentUpdate.health(Health.HEALTHY) else ComponentUpdate.ready())
+                    cloudInitialized = true
+                }
+                TelemetryStages.WS_RECONNECT_FAILED -> cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED, retryable = true))) }
+            }
             telemetry.record(stage, level, payload)
         }
         // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
@@ -249,6 +266,7 @@ internal object VoiceEngineFactory {
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {
+                cloudReporter.close()
                 cloudRunner.close() // Task 21：模式切换时断开网关
                 localEngines.close() // Selected channel releases its own local resources.
             },
@@ -266,6 +284,7 @@ internal object VoiceEngineFactory {
         // （telemetry 为构造参数，构造即绑定），此处无需再装配
         // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
         cloudRunner.onCloudUnavailable = {
+            if (cfg.cloud.enabled) cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED, retryable = true))) }
             engine.candidates.onCloudUnavailable()
             // A transport break ends the local task. We intentionally do not resume or replay a
             // navigation selection after reconnect; the user must make a fresh request.

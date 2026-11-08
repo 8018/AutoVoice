@@ -1,7 +1,7 @@
 # 语音组件初始化结果与可用性上报设计
 
 日期：2026-11-08。基线：渠道改造 Task2，44ce525。
-状态：用户已于本会话批准按此实施；尚未实施。用户已选择 App 内可见＋结构化日志，本期不增加服务端上传。
+状态：用户已于本会话批准按此实施；统一报告基础、现有渠道和UI已实现待控制器审核，Open真实native/模型/参考健康仍按后续任务接入。用户已选择 App 内可见＋结构化日志，本期不增加服务端上传。
 
 ## 目标与现状
 
@@ -36,6 +36,7 @@
 | wake | 唤醒资源加载与能力初始化完成 | 依赖 runtime；是否正在监听另用运行态，暂停不等于初始化失败 |
 | frontend | 选中前端可创建并处理规定格式音频 | Open 为 WebRTC；iflytek 沿用原 legacy |
 | vad | 选中 VAD 创建与参数配置成功 | Open 为 WebRTC VAD；iflytek 为 Silero |
+| vad.aux | 现有续听/打断共用的辅助VAD实例结果，生命周期与主vad分离 | 不增加实例，不关闭主vad；功能投影按用途使用 |
 | render_reference | 播放驱动能提供时序、格式正确的参考音频 | 无播放时为 idle；非失败，不要求启动时已播一段音频 |
 | aec | AEC 初始化状态及参考链路健康 | APM 创建成功不等于 AEC 实际可用；健康随播放变化 |
 | local.asr | 讯飞命令能力初始化完成，或 FireRed runtime/模型成功加载 | iflytek 依赖 AIKit；Open 依赖 sherpa/JNI 与经校验的模型，不依赖讯飞授权 |
@@ -68,7 +69,7 @@ FireRed 内部校验子阶段：native_load、resource_validate、model_create�
 | 错误码示例 | 结果与建议 |
 | --- | --- |
 | CONFIG_INVALID / PROVIDER_MISMATCH | 阻断当前配置装配；显示配置问题，不切 fake |
-| MIC_PERMISSION_DENIED / CAPTURE_OPEN_FAILED | 语音输入不可用；允许文本，按原因引导授权/重试 |
+| MIC_PERMISSION_DENIED / CAPTURE_OPEN_FAILED | 语音输入不可用；文字仍取决于既有云端路由/模式，按原因引导授权/重试 |
 | NATIVE_LIBRARY_MISSING / NATIVE_ABI_MISMATCH / NATIVE_SYMBOL_MISMATCH | 对应组件不可用；显示缺少或不兼容的运行库，不反复自动重试 |
 | MODEL_MISSING / MODEL_HASH_MISMATCH / TOKENS_MISMATCH / MODEL_LOAD_FAILED | FireRed 不可用；保留其他链路，不静默下载、切讯飞或切 fake |
 | SDK_CREDENTIALS_MISSING / SDK_AUTH_FAILED / INIT_TIMEOUT | runtime 根因；wake 和讯飞命令能力显示被它阻断 |
@@ -82,8 +83,8 @@ FireRed 内部校验子阶段：native_load、resource_validate、model_create�
 | 失败项 | App 行为 |
 | --- | --- |
 | 唤醒或 AIKit 授权失败 | 关闭语音唤醒；前端和 ASR 可用时保留按键录音。Open 的 FireRed 不因 AIKit 失败停用 |
-| FireRed/本地 ASR 失败 | 关闭本地识别候选；云端已配置、连接可用且前端满足时保留云端语音。离线模式明确显示语音识别不可用，可用文本 |
-| 前端不可用 | 按渠道安全策略阻止处理后的语音输入，不透传 PCM 假装处理完成；文本独立可用；原始唤醒监测是否允许保持既有策略 |
+| FireRed/本地 ASR 失败 | 关闭本地识别候选；云端已配置、连接可用且前端满足时保留云端语音。离线模式明确显示语音识别不可用；文字独立于音频组件，但仍取决于既有文字路由/模式，当前离线无文字路由 |
+| 前端不可用 | 按渠道安全策略阻止处理后的语音输入，不透传 PCM 假装处理完成；文字独立于音频组件，但仅既有云端文字路由已配置/可按需连接时可用，离线不宣称文字可用；原始唤醒监测是否允许保持既有策略 |
 | VAD 失败 | 报告分段/自动结束/续听等受影响能力；iflytek 保留原降级行为。Open 仅保留经验证不依赖 VAD 的按键整段能力，否则阻断相关入口；不自动套旧 VAD |
 | AEC 或参考异常 | 关闭普通话术打断/相关开放麦克风能力，保留原有唤醒和按键策略；不把“APM 已创建”当作 AEC 健康证明 |
 | 云端断开 | 本地链可用则保留本地；离线配置中的云端 disabled 不是错误 |

@@ -1,6 +1,9 @@
 package com.autovoice.app
 
 import com.autovoice.audiofrontend.vad.VadEvent
+import com.autovoice.voicecore.health.rethrowCancellationOrFatal
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
 import kotlinx.coroutines.CoroutineScope
@@ -413,6 +416,7 @@ internal class RecordingCoordinator(
             try {
                 if (!wakeInitialized) {
                     wakeWord.initialize()
+                    currentCoroutineContext().ensureActive()
                     wakeInitialized = true
                 }
                 if (!canMonitorWake()) {
@@ -421,6 +425,7 @@ internal class RecordingCoordinator(
                     return@launch
                 }
                 wakeWord.arm()
+                currentCoroutineContext().ensureActive()
                 if (!canMonitorWake()) {
                     wakeWord.pause()
                     capture.stopMonitoring()
@@ -435,6 +440,7 @@ internal class RecordingCoordinator(
                 }
                 onLog("离线唤醒已启用：${wakeWord.keyword}")
             } catch (error: Throwable) {
+                error.rethrowCancellationOrFatal()
                 onWakeFailure(error)
             }
         }

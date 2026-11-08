@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "com.autovoice.adapterfirered"
     compileSdk = 34
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 27 }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

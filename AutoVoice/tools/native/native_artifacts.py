@@ -51,7 +51,7 @@ def json_bytes(value):
 def load_lock(path):
     data = json.loads(Path(path).read_text())
     require(data.get("schema_version") == 1, "unsupported lock schema")
-    require(data.get("target") == {"abi": "arm64-v8a", "android_api": 26}, "lock target must be arm64-v8a/API 26")
+    require(data.get("target") == {"abi": "arm64-v8a", "android_api": 27}, "lock target must be arm64-v8a/API 27")
     require(set(data.get("components", {})) == set(LIBRARIES), "lock components must be webrtc and firered")
     for component, record in data["components"].items():
         require(re.fullmatch(r"[0-9a-f]{40}", record["source"]["revision"]) is not None, "source revision must be an exact commit")
@@ -156,7 +156,7 @@ def elf_info(data, symbols_only=False):
             require(end <= stop, "invalid ELF note")
             if data[pos:name_end].rstrip(b"\0") == b"Android" and desc_size >= 4:
                 android_api_note = struct.unpack_from("<I", data, desc_start)[0]
-                require(1 <= android_api_note <= 26, "ELF Android API note exceeds minSdk 26")
+                require(1 <= android_api_note <= 27, "ELF Android API note exceeds minSdk 27")
             pos = (end + 3) & ~3
     return {"machine": "AArch64", "needed": sorted(set(needed)), "android_api_note": android_api_note}
 
@@ -197,7 +197,7 @@ def validate_bundle(archive, lock, mode, expected_sha256=None, requested_compone
         require(manifest.get("schema_version") == 1, "unsupported bundle schema")
         require(manifest.get("source_revision") == record["source"]["revision"], "source revision mismatch")
         require(manifest.get("abi") == "arm64-v8a", "ABI mismatch")
-        require(type(manifest.get("android_api")) is int and manifest["android_api"] == 26, "Android API mismatch")
+        require(type(manifest.get("android_api")) is int and manifest["android_api"] == 27, "Android API mismatch")
         require(manifest.get("recipe") == record["build"], "build recipe mismatch")
         toolchain = manifest.get("toolchain", {})
         require(toolchain.get("host") and toolchain.get("compiler_version"), "toolchain provenance is incomplete")
