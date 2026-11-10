@@ -5,6 +5,8 @@ import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 import android.content.Context
 import com.autovoice.app.channel.SpeechChannel
 import com.autovoice.app.channel.LocalEngineAssembly
+import com.autovoice.app.channel.PlaybackDriverPorts
+import com.autovoice.audiofrontend.RenderReferenceSink
 import com.autovoice.app.health.ChannelComponentReporting
 import com.autovoice.app.health.CloudConnectionReporting
 import com.autovoice.voicecore.health.*
@@ -35,6 +37,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import okhttp3.OkHttpClient
 
 private const val FACTORY_TAG = "VoiceEngineFactory"
@@ -73,6 +76,7 @@ internal object VoiceEngineFactory {
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
         bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
         onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
+        renderSink: RenderReferenceSink? = null,
     ): VoiceEngine {
         channel.validateConfig(cfg)
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -163,144 +167,168 @@ internal object VoiceEngineFactory {
         clockOffsetProvider.set(cloudRunner::clockOffsetMs)
         // TTS 缓存（架构变更：缓存从服务器移回端侧）：filesDir 持久目录（重启后仍命中）。
         // 缓存事件由 :tts 携带固定 turnId 上报，不读可变的当前轮。
-        val ttsOutput = createTtsOutput(
-            synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
-            cacheDir = File(context.filesDir, "tts_cache"),
-            driver = channel.createPlaybackDriver(player),
-            scope = scope,
-            isCurrentTurn = { turnId -> engineRef.get()?.conversation?.isCurrentTurn(turnId) ?: true },
-            isCurrentRealtime = cloudRunner::isCurrentRealtimeOutput,
-            events = TtsEventSink { stage, level, payload ->
-                val turnId = payload["turnId"] as? String ?: ""
-                telemetry.recordFor(turnId, stage, level, payload - "turnId")
-            },
-            onPlaybackStage = { identity, stage ->
-                engineRef.get()?.onPlaybackLifecycle(identity.turnId, stage)
-                onPlaybackStage(stage)
-            },
-            onEmptyOutput = { turnId -> engineRef.get()?.conversation?.onPlaybackEnded(turnId) },
-        )
-        // Lazy creation preserves the original local-chain initialization point below.
-        val localEngines by lazy { channel.createLocalEngines(context, cfg, scope) }
-        // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
-        // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
-        // 业务路由位于引擎之外。只有状态机与仲裁通过后的语义才会抵达此边界。
-        val business = AppBusinessHandler(
-            vehicle = vehicle,
-            navigation = navigation,
-            onVehicleApplied = onVehicleApplied,
-            onConversationMode = onConversationMode,
-            onExitDialogue = { engineRef.get()?.exitCurrentDialogue() },
-            onTravelGuideStarted = { turnId ->
-                onTravelGuideStarted(turnId)
-                cloudRunner.startTravelGuide(turnId)
-            },
-        )
-        val onDeviceArbiter = OnDeviceRaceArbiter(
-            cloudWaitMs = cfg.cloud.waitMs,
-            clock = System::currentTimeMillis,
-            sink = telemetrySink,
-            onTurnEvent = { turnId, event ->
-                when (event) {
-                    is OnDeviceArbiterEvent.Received -> telemetry.recordFor(turnId,
-                        TelemetryStages.DEVICE_ARBITER_RECEIVED,
-                        "info",
-                        mapOf("route" to event.route),
-                    )
-                    is OnDeviceArbiterEvent.Won -> telemetry.recordFor(turnId,
-                        TelemetryStages.DEVICE_ARBITER_WON,
-                        "info",
-                        mapOf("route" to event.route, "reason" to event.reason),
-                    )
-                    is OnDeviceArbiterEvent.Lost -> telemetry.recordFor(turnId,
-                        TelemetryStages.DEVICE_ARBITER_LOST,
-                        "warn",
-                        mapOf("route" to event.route, "reason" to event.reason),
-                    )
-                    is OnDeviceArbiterEvent.Pending -> telemetry.recordFor(turnId,
-                        TelemetryStages.DEVICE_ARBITER_PENDING,
-                        "info",
-                        mapOf("route" to event.route, "reason" to "llm_pending"),
-                    )
-                }
-            },
-        )
-        val engine = VoiceEngine(
-            cfg = cfg,
-            arbiter = onDeviceArbiter,
-            telemetry = telemetry,
-            networkAvailable = networkAvailable,
-            local = buildLocalChain(
-                localEngines,
-                { turnId, text, final ->
-                    if (!text.isNullOrBlank()) {
-                        engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
-                        if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
-                            cloudRunner.retireTravelIfDifferent(turnId)
-                        }
+        val localEnginesOwner = lazy { channel.createLocalEngines(context, cfg, scope) }
+        val localEngines by localEnginesOwner
+        var selectedPlaybackToClose: com.autovoice.tts.TtsPlaybackDriver? = null
+        var arbiterToClose: OnDeviceRaceArbiter? = null
+        var engineToClose: VoiceEngine? = null
+        try {
+            val selectedPlayback = channel.createPlaybackDriver(player,PlaybackDriverPorts(context,scope,renderSink,
+                { stage,level,payload -> engineRef.get()?.onTtsPlayEvent(stage,level,payload) },
+                reporting.reporter("playback"),reporting.reporter("render_reference")))
+            selectedPlaybackToClose = selectedPlayback
+            val ttsOutput = createTtsOutput(
+                synthesizer = TtsSynthesizer { text, turnId -> cloudRunner.request(text, turnId) },
+                cacheDir = File(context.filesDir, "tts_cache"),
+                driver = selectedPlayback,
+                scope = scope,
+                isCurrentTurn = { turnId -> engineRef.get()?.conversation?.isCurrentTurn(turnId) ?: true },
+                isCurrentRealtime = cloudRunner::isCurrentRealtimeOutput,
+                events = TtsEventSink { stage, level, payload ->
+                    val turnId = payload["turnId"] as? String ?: ""
+                    telemetry.recordFor(turnId, stage, level, payload - "turnId")
+                },
+                onPlaybackStage = { identity, stage ->
+                    engineRef.get()?.onPlaybackLifecycle(identity.turnId, stage)
+                    onPlaybackStage(stage)
+                },
+                onEmptyOutput = { turnId -> engineRef.get()?.conversation?.onPlaybackEnded(turnId) },
+            )
+            // T7：仲裁器 utteranceId provider 延迟读装配后 engine 的会话成员（session 在
+            // VoiceEngine init 里由本 arbiter 装配，构造时序上后者先于前者，用可空引用桥接）
+            // 业务路由位于引擎之外。只有状态机与仲裁通过后的语义才会抵达此边界。
+            val business = AppBusinessHandler(
+                vehicle = vehicle,
+                navigation = navigation,
+                onVehicleApplied = onVehicleApplied,
+                onConversationMode = onConversationMode,
+                onExitDialogue = { engineRef.get()?.exitCurrentDialogue() },
+                onTravelGuideStarted = { turnId ->
+                    onTravelGuideStarted(turnId)
+                    cloudRunner.startTravelGuide(turnId)
+                },
+            )
+            val onDeviceArbiter = OnDeviceRaceArbiter(
+                cloudWaitMs = cfg.cloud.waitMs,
+                clock = System::currentTimeMillis,
+                sink = telemetrySink,
+                onTurnEvent = { turnId, event ->
+                    when (event) {
+                        is OnDeviceArbiterEvent.Received -> telemetry.recordFor(turnId,
+                            TelemetryStages.DEVICE_ARBITER_RECEIVED,
+                            "info",
+                            mapOf("route" to event.route),
+                        )
+                        is OnDeviceArbiterEvent.Won -> telemetry.recordFor(turnId,
+                            TelemetryStages.DEVICE_ARBITER_WON,
+                            "info",
+                            mapOf("route" to event.route, "reason" to event.reason),
+                        )
+                        is OnDeviceArbiterEvent.Lost -> telemetry.recordFor(turnId,
+                            TelemetryStages.DEVICE_ARBITER_LOST,
+                            "warn",
+                            mapOf("route" to event.route, "reason" to event.reason),
+                        )
+                        is OnDeviceArbiterEvent.Pending -> telemetry.recordFor(turnId,
+                            TelemetryStages.DEVICE_ARBITER_PENDING,
+                            "info",
+                            mapOf("route" to event.route, "reason" to "llm_pending"),
+                        )
                     }
                 },
-                { turnId ->
-                    engineRef.get()?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
+            )
+            arbiterToClose = onDeviceArbiter
+            val engine = VoiceEngine(
+                cfg = cfg,
+                arbiter = onDeviceArbiter,
+                telemetry = telemetry,
+                networkAvailable = networkAvailable,
+                local = buildLocalChain(
+                    localEngines,
+                    { turnId, text, final ->
+                        if (!text.isNullOrBlank()) {
+                            engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                            if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
+                                cloudRunner.retireTravelIfDifferent(turnId)
+                            }
+                        }
+                    },
+                    { turnId ->
+                        engineRef.get()?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
+                    },
+                    telemetry,
+                    asrModule,
+                    nluModule,
+                ),
+                cloud = cloudRunner,
+                tts = ttsOutput,
+                business = business,
+                scope = scope,
+                recognitionGate = recognitionGate,
+                onLocalRecognized = onLocalRecognized,
+                onReplyText = onReplyText,
+                onClose = {
+                    selectedPlayback.close()
+                    cloudHealth.close()
+                    cloudRunner.close() // Task 21：模式切换时断开网关
+                    localEngines.close() // Selected channel releases its own local resources.
                 },
-                telemetry,
-                asrModule,
-                nluModule,
-            ),
-            cloud = cloudRunner,
-            tts = ttsOutput,
-            business = business,
-            scope = scope,
-            recognitionGate = recognitionGate,
-            onLocalRecognized = onLocalRecognized,
-            onReplyText = onReplyText,
-            onClose = {
-                cloudHealth.close()
-                cloudRunner.close() // Task 21：模式切换时断开网关
-                localEngines.close() // Selected channel releases its own local resources.
-            },
-            onForeground = cloudRunner::warmUp,
-            onCloudPending = onCloudPending,
-            onCloudWon = cloudRunner::releaseReplyText,
-            onDialogueState = onDialogueState,
-            onTextInputError = onTextInputError,
-            streamingCloud = cloudRunner,
-        )
-        engineRef.set(engine)
-        localEngines.bindAdmission(com.autovoice.voicecore.LocalRequestAdmissionProvider(engine.candidates::localAdmission))
-        cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
-        cloudRunner.onRealtimeSpeechStarted = engine::stopPlayback
-        // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
-        // （telemetry 为构造参数，构造即绑定），此处无需再装配
-        // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
-        cloudRunner.onCloudUnavailable = {
-            engine.candidates.onCloudUnavailable()
-            // A transport break ends the local task. We intentionally do not resume or replay a
-            // navigation selection after reconnect; the user must make a fresh request.
-            onNavigationTransportReset()
+                onForeground = cloudRunner::warmUp,
+                onCloudPending = onCloudPending,
+                onCloudWon = cloudRunner::releaseReplyText,
+                onDialogueState = onDialogueState,
+                onTextInputError = onTextInputError,
+                streamingCloud = cloudRunner,
+            )
+            engineToClose = engine
+            engineRef.set(engine)
+            localEngines.bindAdmission(com.autovoice.voicecore.LocalRequestAdmissionProvider(engine.candidates::localAdmission))
+            cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
+            cloudRunner.onRealtimeSpeechStarted = engine::stopPlayback
+            // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
+            // （telemetry 为构造参数，构造即绑定），此处无需再装配
+            // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
+            cloudRunner.onCloudUnavailable = {
+                engine.candidates.onCloudUnavailable()
+                // A transport break ends the local task. We intentionally do not resume or replay a
+                // navigation selection after reconnect; the user must make a fresh request.
+                onNavigationTransportReset()
+            }
+            cloudRunner.onNavigationContextMissing = { ref ->
+                if (navigation?.session?.contextMissing(ref) == true) onReplyText("地点选择已失效，请重新搜索")
+            }
+            // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
+            cloudRunner.onPendingReceived = { turnId ->
+                onDeviceArbiter.submitPending(turnId)
+                engine.setCloudPending(turnId, true)
+            }
+            // T6：云端链发帧时读取引擎当前话语的 utteranceId
+            cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
+            // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
+            cloudRunner.onReadySessionId = telemetry::onSessionId
+            // A ready frame establishes a new transport generation. Task-dialog state is deliberately
+            // not resumed across it, even when the logical server session itself was resumed.
+            cloudRunner.onSessionRecovery = { _, _ ->
+                onNavigationTransportReset()
+            }
+            // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
+            bindNavigationAdoptionSender { context ->
+                cloudRunner.sendNavigationSelectionStart(context)
+            }
+            return engine
+        } catch (error: Throwable) {
+            if (engineToClose != null) runCatching { engineToClose.close() }
+            else {
+                runCatching { selectedPlaybackToClose?.close() }
+                if (localEnginesOwner.isInitialized()) runCatching { localEngines.close() }
+                runCatching { arbiterToClose?.close() }
+                runCatching { cloudHealth.close() }
+                runCatching { cloudRunner.close() }
+                runCatching { telemetry.close() }
+                scope.cancel()
+            }
+            throw error
         }
-        cloudRunner.onNavigationContextMissing = { ref ->
-            if (navigation?.session?.contextMissing(ref) == true) onReplyText("地点选择已失效，请重新搜索")
-        }
-        // B5：收到 pending 帧 → 端侧"处理中…"UI 状态（清除由 onTurnResult / onListeningStart 收口）
-        cloudRunner.onPendingReceived = { turnId ->
-            onDeviceArbiter.submitPending(turnId)
-            engine.setCloudPending(turnId, true)
-        }
-        // T6：云端链发帧时读取引擎当前话语的 utteranceId
-        cloudRunner.utteranceIdProvider = { engine.conversation.captureId }
-        // T6 评审 C1：ready 的 sessionId 转发给遥测（与 utteranceIdProvider 同款绑定时机）
-        cloudRunner.onReadySessionId = telemetry::onSessionId
-        // A ready frame establishes a new transport generation. Task-dialog state is deliberately
-        // not resumed across it, even when the logical server session itself was resumed.
-        cloudRunner.onSessionRecovery = { _, _ ->
-            onNavigationTransportReset()
-        }
-        // D05b:采用确认属于导航业务与云端协议，不经过 VoiceEngine。
-        bindNavigationAdoptionSender { context ->
-            cloudRunner.sendNavigationSelectionStart(context)
-        }
-        return engine
     }
 
     internal fun bindCloudHealth(runner: GatewayCloudRunner, reporter: ComponentReporter, enabled: Boolean): CloudConnectionReporting =

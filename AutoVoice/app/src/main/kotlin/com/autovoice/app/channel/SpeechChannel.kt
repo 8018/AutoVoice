@@ -9,6 +9,8 @@ import com.autovoice.tts.TtsPlaybackDriver
 import com.autovoice.voicecore.*
 import kotlinx.coroutines.CoroutineScope
 import java.io.FileNotFoundException
+import com.autovoice.audiofrontend.RenderReferenceSink
+import com.autovoice.voicecore.health.ComponentReporter
 
 /** Known missing implementations at assembly time; runtime model/auth status remains adapter-owned. */
 internal data class SpeechChannelCapabilities(
@@ -21,6 +23,8 @@ internal data class SpeechChannelCapabilities(
 )
 
 internal data class CapturePolicy(val audioSource: Int, val effectsFactory: CaptureEffectsFactory)
+internal data class PlaybackDriverPorts(val context: Context,val scope: CoroutineScope,val render: RenderReferenceSink?,
+    val events: (String,String,Map<String,Any?>) -> Unit,val playbackReporter: ComponentReporter,val referenceReporter: ComponentReporter)
 
 internal class LocalEngineAssembly(
     val asr: AsrEngine,
@@ -44,7 +48,7 @@ internal interface SpeechChannel {
     fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly
 
     // Only adapts the platform driver port; all identity/cache/stop policy remains in :tts.
-    fun createPlaybackDriver(player: AudioPlayer): TtsPlaybackDriver = object : TtsPlaybackDriver {
+    fun createPlaybackDriver(player: AudioPlayer,ports: PlaybackDriverPorts? = null): TtsPlaybackDriver = object : TtsPlaybackDriver {
         override fun play(reply: AudioReply, identity: com.autovoice.tts.PlaybackIdentity) = player.play(reply, identity)
         override suspend fun playStream(reply: StreamingAudioReply, identity: com.autovoice.tts.PlaybackIdentity) =
             player.playStream(reply, identity)

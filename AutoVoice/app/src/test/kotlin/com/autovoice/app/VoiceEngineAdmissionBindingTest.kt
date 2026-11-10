@@ -18,6 +18,29 @@ import java.util.concurrent.atomic.AtomicReference
 
 class VoiceEngineAdmissionBindingTest {
     @TempDir lateinit var dir: File
+    @Test fun `factory failure closes the selected driver and its owned scope`() {
+        val selected = SelectedSpeechChannel.create()
+        val cfg = DemoConfig.fromJson(File("src/${selected.id}/assets/demo-offline.json").readText())
+        var closes = 0
+        val channel = object : SpeechChannel by selected {
+            override fun createPlaybackDriver(player: AudioPlayer,ports: PlaybackDriverPorts?) = object : com.autovoice.tts.TtsPlaybackDriver {
+                override fun play(reply: AudioReply,identity: com.autovoice.tts.PlaybackIdentity) = Unit
+                override fun close() { closes++ }
+            }
+            override fun createLocalEngines(context: android.content.Context,config: DemoConfig,scope: CoroutineScope): LocalEngineAssembly =
+                error("controlled assembly failure")
+        }
+        val context = object : ContextWrapper(null) { override fun getFilesDir() = dir }
+        val registry = ComponentStatusRegistry();val reporting = ChannelComponentReporting(registry,channel.id,registry.beginGeneration(channel.id));reporting.registerDefaults()
+        val scope = CoroutineScope(SupervisorJob()+Dispatchers.Default)
+        try {
+            assertThrows(IllegalStateException::class.java) {
+                VoiceEngineFactory.create(cfg,context,channel,reporting,networkAvailable = { false },sink = DecisionSink {},
+                    player = AudioPlayer {},vehicle = MockVehicleState(),scope = scope,vehicleContext = VehicleContextProvider { VehicleContext() })
+            }
+            assertEquals(1,closes);assertFalse(scope.isActive)
+        } finally { scope.cancel() }
+    }
     @Test fun `actual offline factory binds accepted facts before local work and final output is observed once`() = runBlocking {
         val selected = SelectedSpeechChannel.create()
         val cfg = DemoConfig.fromJson(File("src/${selected.id}/assets/demo-offline.json").readText())

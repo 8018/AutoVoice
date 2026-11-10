@@ -12,6 +12,10 @@ import com.autovoice.audiofrontend.*
 import com.autovoice.voicecore.*
 import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.atomic.AtomicReference
+import com.autovoice.app.AudioPlayer
+import com.autovoice.app.audio.AndroidPlaybackPcmPlatform
+import com.autovoice.app.audio.OpenPcmPlaybackDriver
+import com.autovoice.tts.TtsPlaybackDriver
 
 internal object SelectedSpeechChannel {
     fun create(): SpeechChannel = OpenSpeechChannel()
@@ -41,7 +45,7 @@ private class OpenSpeechChannel : SpeechChannel {
         auxiliaryBridgeAvailable = admissionBound,
         localBridgeAvailable = admissionBound,
         openMicDeviceValidated = false,
-        renderReferenceUnavailableReason = "PCM playback reference driver is not installed",
+        renderReferenceUnavailableReason = null,
     )
     override fun validateConfig(config: DemoConfig) = config.validateProviders(
         frontend = setOf("webrtc.apm"), vad = setOf("webrtc.vad"), ecnr = setOf("none"),
@@ -49,6 +53,12 @@ private class OpenSpeechChannel : SpeechChannel {
     ).also { WebRtcFrontend.validateVadConfig(it.vad) }
     override fun missingAssetConfig(asset: String, onlineAsset: String): DemoConfig =
         throw IllegalStateException("Open channel asset '$asset' is missing; no fallback is permitted")
+
+    override fun createPlaybackDriver(player: AudioPlayer,ports: PlaybackDriverPorts?): TtsPlaybackDriver {
+        val bound = requireNotNull(ports) { "Open playback ports are required" }
+        return OpenPcmPlaybackDriver(AndroidPlaybackPcmPlatform(bound.context),bound.scope,bound.render,bound.events,
+            bound.playbackReporter,bound.referenceReporter)
+    }
 
     override fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly {
         validateConfig(config)

@@ -44,6 +44,7 @@ fun interface TtsPlaybackDriver {
     }
 
     fun stop() = Unit
+    fun close() = stop()
 }
 
 /** Unified output API. Consumers do not coordinate synthesis, cache, stream or playback state. */

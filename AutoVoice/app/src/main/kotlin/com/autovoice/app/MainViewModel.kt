@@ -174,6 +174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 2026-08-15：全部播报统一走网络 TTS（TtsPlayer 播放服务端合成音频），不再用系统 TTS。
      */
     private var ttsPlayer: TtsPlayer? = null
+    @Volatile private var openPlaybackSpeaking = false
 
     /** 端侧引擎：候选协调 + 仲裁流水线 + 单一对话状态机 + 播报/执行路由。 */
     private lateinit var engine: VoiceEngine
@@ -261,7 +262,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(mode = mode) }
             if (!config.cloud.enabled) reporting.disabled("cloud")
             if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
-            else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
+            if (speechChannel.id == "iflytek") {
             val playback = reporting.reporter("playback")
             val playbackToken = playback.start("create")
             try {
@@ -271,6 +272,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 playback.report(playbackToken, ComponentUpdate.ready())
             } catch (error: Throwable) {
                 reporting.failure(playback, playbackToken, error)
+            }
             }
             recorder = AudioRecorder(context = getApplication(), testAudioAsset = config.testAudio, vadConfig = config.vad, ecnr = config.ecnr,
                 frontendFactory = reporting.safeFrontendFactory(speechChannel.frontendFactory), vadFactory = speechChannel.vadFactory,
@@ -404,11 +406,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!config.cloud.enabled) reporting.disabled("cloud")
         if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
         else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
-        val playback = reporting.reporter("playback")
-        playback.report(playback.start("create"), if (ttsPlayer != null) ComponentUpdate.ready() else ComponentUpdate.failed(ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED)))
+        if (speechChannel.id == "iflytek") {
+            val playback = reporting.reporter("playback")
+            playback.report(playback.start("create"), if (ttsPlayer != null) ComponentUpdate.ready() else ComponentUpdate.failed(ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED)))
+        }
         if (dialogueManager.isChatMode) setChatMode(false)
         else cancelRecording() // 录音中切模式：停录音不送识别（引擎随后释放/重建，幂等）
-        engine.close()
+        engine.close();openPlaybackSpeaking = false
         recordingCoordinator.reconfigureCapture {
             recorder.configureReporting(reporting.reporter("capture"), reporting.reporter("aec"), reporting.safeFrontendFactory(speechChannel.frontendFactory),
                 reporting.reporter("frontend", if (speechChannel.id == "iflytek") config.ecnr else "webrtc.apm"), reporting.reporter("vad"), reporting.reporter("vad.aux"))
@@ -518,7 +522,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         },
         scope = viewModelScope,
-        isPlaybackSpeaking = { ttsPlayer?.isSpeaking() == true },
+        isPlaybackSpeaking = { if (speechChannel.id == "open") openPlaybackSpeaking else ttsPlayer?.isSpeaking() == true },
         onState = { snapshot ->
             _uiState.update {
                 it.copy(
@@ -602,7 +606,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             // 只在身份有效的真实播放期打开普通话术 VAD；迟到回调不会改变录音状态。
-            onPlaybackStage = { stage -> recordingCoordinator.onPlaybackStage(stage) },
+            onPlaybackStage = { stage ->
+                openPlaybackSpeaking = stage == PlaybackStage.STARTED
+                recordingCoordinator.onPlaybackStage(stage)
+            },
+            renderSink = recorder,
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
             onNavigationTransportReset = dialogueManager::abortPendingTask,
         )

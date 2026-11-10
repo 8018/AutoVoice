@@ -119,6 +119,11 @@ class SpeechChannelTest {
             override fun play(reply: AudioReply, identity: PlaybackIdentity) { observed = identity }
             override fun stop() { stopped = true }
         }
+        if (channel.id == "open") {
+            assertThrows(IllegalArgumentException::class.java) { channel.createPlaybackDriver(player) }
+            assertFalse(channel.capabilities.openMicDeviceValidated)
+            return // Open's actual PCM driver/identity/resource path has separate controlled/platform tests.
+        }
         val driver = channel.createPlaybackDriver(player)
         val identity = PlaybackIdentity("turn", "playback")
         driver.play(AudioReply("audio/pcm", byteArrayOf(1)), identity)
