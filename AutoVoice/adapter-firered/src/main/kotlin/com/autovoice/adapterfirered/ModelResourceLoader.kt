@@ -18,7 +18,7 @@ class ModelResourceLoader internal constructor(private val root: File,private va
             val catalog = expected()
             val modelId = catalog.get("modelId").asString
             val revision = catalog.get("exporterRevision").asString
-            require(modelId.matches(Regex("[a-z0-9-]+")) && revision.matches(Regex("[0-9a-f]{40}")))
+            require(modelId.matches(Regex("[a-z0-9_-]+")) && revision.matches(Regex("[0-9a-f]{40}")))
             val directory = File(root,"$modelId/$revision").canonicalFile
             if (!directory.toPath().startsWith(root.canonicalFile.toPath())) fail(ErrorCode.RESOURCE_MISSING)
             val manifest = File(directory,"manifest.json")

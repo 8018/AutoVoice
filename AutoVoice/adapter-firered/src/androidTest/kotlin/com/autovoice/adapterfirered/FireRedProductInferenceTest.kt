@@ -1,6 +1,7 @@
 package com.autovoice.adapterfirered
 
 import android.util.Log
+import com.google.gson.Gson
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.autovoice.voicecore.*
@@ -29,7 +30,10 @@ class FireRedProductInferenceTest {
         val reporter = ComponentReporter(ComponentDescriptor("local.asr","firered.ctc.int8","open"),1,ComponentStatusSink { events.add(it) })
         val engine = FireRedAsrEngine.create(root(),FireRedAdmissionProvider { FireRedAdmission(System.nanoTime()/1_000_000 + 120_000,{true},{false}) },reporter)
         try {
-            assertTrue("Fixed external resources/native must initialize; events=$events",engine.awaitReady(120_000))
+            val ready = engine.awaitReady(120_000)
+            val finalState = Gson().toJson(events.toList())
+            Log.i(TAG,"INITIALIZATION ready=$ready events=$finalState")
+            assertTrue("Fixed external resources/native must initialize; finalEvents=$finalState",ready)
             val nlu = TextRuleNluEngine()
             val inputs = listOf(Triple("open-window.wav","打开车窗","power_on"),Triple("close-window.wav","关闭车窗","power_off"),
                 Triple("exit-dialogue.wav","退出对话","exit_dialogue"),Triple("negated-open-window.wav","不要打开车窗","unknown"),

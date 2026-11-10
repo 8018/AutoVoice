@@ -31,6 +31,28 @@ class ModelResourceLoaderTest {
             assertEquals(f.catalog.getAsJsonObject("files").getAsJsonObject("model.int8.onnx").get("sha256").asString,verified.metadata["modelSha256"])
         }
     }
+    @Test fun `actual pinned model ID with underscore validates tiny fixed resource fixture`() {
+        ModelFixture().use { f ->
+            val modelId = FireRedModelCatalog.read().get("modelId").asString
+            assertEquals("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",modelId)
+            f.catalog.addProperty("modelId",modelId)
+            val target = File(f.root,"$modelId/${f.catalog.get("exporterRevision").asString}")
+            target.parentFile.mkdirs()
+            Files.move(f.directory.toPath(),target.toPath())
+            File(target,"manifest.json").writeText(f.catalog.toString())
+            val verified = f.loader().load()
+            assertEquals(File(target,"model.int8.onnx").canonicalFile,verified.modelFile)
+            assertEquals(modelId,verified.metadata["modelId"])
+        }
+    }
+    @Test fun `unsafe catalog identifiers still fail validation before resource lookup`() {
+        for (unsafe in listOf("../fixture-ctc","fixture/ctc","fixture\\ctc","fixture.ctc","Fixture-ctc","fixture ctc","fixture:ctc","")) {
+            ModelFixture().use { f ->
+                f.catalog.addProperty("modelId",unsafe)
+                assertEquals(ErrorCode.MODEL_HASH_MISMATCH,assertThrows(ModelResourceException::class.java) { f.loader().load() }.error.code,unsafe)
+            }
+        }
+    }
     @Test fun `missing model corrupt model tokens mismatch and missing license are distinct failures`() {
         for ((name,expected) in listOf("model.int8.onnx" to ErrorCode.MODEL_HASH_MISMATCH,"tokens.txt" to ErrorCode.TOKENS_MISMATCH,"licenses/LICENSE" to ErrorCode.RESOURCE_MISSING)) {
             ModelFixture().use { f ->
