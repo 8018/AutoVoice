@@ -24,7 +24,7 @@ class FireRedProductInferenceTest {
         assertTrue(root().isDirectory)
         Log.i(TAG,"RESOURCE_ROOT=${root().absolutePath}")
     }
-    @Test fun fixedResourcesRealFinalAndStrictNlu() = runBlocking {
+    @Test fun fixedResourcesRealFinalAndStrictNlu(): Unit = runBlocking {
         val events = CopyOnWriteArrayList<ComponentStatusEvent>()
         val reporter = ComponentReporter(ComponentDescriptor("local.asr","firered.ctc.int8","open"),1,ComponentStatusSink { events.add(it) })
         val engine = FireRedAsrEngine.create(root(),FireRedAdmissionProvider { FireRedAdmission(System.nanoTime()/1_000_000 + 120_000,{true},{false}) },reporter)
