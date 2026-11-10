@@ -33,6 +33,11 @@ import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.autovoice.app.health.CloudConnectionDiagnostic
+import com.autovoice.app.health.CloudConnectionOutcome
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * VoiceEngine's cloud speech route backed by a shared gateway transport. It owns the cloud
@@ -55,6 +60,15 @@ internal class GatewayCloudRunner(
     private val asrModule: AsrModule,
     private val nluModule: NluModule,
 ) : CloudRunner, CloudTextNluEngine, TtsRequester, RealtimeChatRunner, StreamingCloudRunner {
+    private val connectLock = Mutex()
+    private val diagnosticLock = Any()
+    private val closed = AtomicBoolean(false)
+    private var connectionAttempt = 0L
+    private var readyAttempt = 0L
+    @Volatile var onConnectionDiagnostic: (CloudConnectionDiagnostic) -> Unit = {}
+    private fun diagnostic(outcome: CloudConnectionOutcome, attempt: Long = synchronized(diagnosticLock) { connectionAttempt }) {
+        if (!closed.get()) runCatching { onConnectionDiagnostic(CloudConnectionDiagnostic(attempt,outcome)) }
+    }
 
     private val client = GatewayClientFactory.create(
         url = cfg.gatewayUrl,
@@ -157,6 +171,11 @@ internal class GatewayCloudRunner(
 
     // Observe transport loss even when no recognition request is running (e.g. a displayed list).
     private val connectionObserver = observeConnectionLoss(scope, client.connectionState) {
+        synchronized(diagnosticLock) {
+            if (client.connectionState.value != GatewayConnectionState.READY && readyAttempt != 0L) {
+                diagnostic(CloudConnectionOutcome.LOST,readyAttempt);readyAttempt = 0
+            }
+        }
         readyReceived = false
         realtimeChatChannel.onTransportLost()
         onCloudUnavailable()
@@ -263,6 +282,7 @@ internal class GatewayCloudRunner(
 
     /** 释放：断开网关连接（幂等）；引擎 close() 时调用（Task 21 模式切换）。 */
     fun close() {
+        if (!closed.compareAndSet(false,true)) return
         travelInterceptor.clear()
         connectionObserver.cancel()
         speechRegistrations.forEach { it.unregister() }
@@ -279,24 +299,34 @@ internal class GatewayCloudRunner(
         if (!cfg.enabled || cfg.gatewayUrl.isBlank()) return
         scope.launch {
             runCatching { ensureReady() }
-                .onFailure { Log.w("GatewayCloudRunner", "foreground warm-up failed", it) }
+                .onFailure { Log.w("GatewayCloudRunner", "foreground warm-up failed; retry is available") }
         }
     }
 
-    private suspend fun ensureReady() {
+    private suspend fun ensureReady() = connectLock.withLock {
+        check(!closed.get()) { "gateway owner is closed" }
         if (client.connectionState.value == GatewayConnectionState.READY && sessionId.isNotBlank()) return
+        val attempt = synchronized(diagnosticLock) { readyAttempt = 0L;++connectionAttempt }
+        diagnostic(CloudConnectionOutcome.STARTED,attempt)
         readyReceived = false
         sessionId = ""
         onConnectionEvent(TelemetryStages.WS_CONNECT_START, "info", emptyMap())
+        try {
         client.connect()
         val ready = client.messages.first { it.type == "ready" }
         sessionId = ready.payload.get("sessionId")?.takeIf { it.isJsonPrimitive }?.asString
             ?: throw GatewayException("ready 事件缺少 sessionId")
         readyReceived = true
+        synchronized(diagnosticLock) { readyAttempt = attempt }
+        diagnostic(CloudConnectionOutcome.READY,attempt)
         val recovery = SessionRecovery.parse(ready.payload)
         onSessionRecovery(recovery.state, recovery.navigationCandidatesValid)
         onReadySessionId(sessionId)
         onConnectionEvent(TelemetryStages.WS_READY, "info", mapOf("sessionId" to sessionId))
+        } catch (error: Throwable) {
+            diagnostic(CloudConnectionOutcome.FAILED,attempt)
+            throw error
+        }
     }
 
     override fun beginStreamingTurn(utteranceId: String) {
@@ -320,14 +350,14 @@ internal class GatewayCloudRunner(
     override fun commitStreamingTurn(utteranceId: String) = businessSpeech.commitStreamingTurn(utteranceId)
 
     private fun onSpeechTransportFailure(error: Throwable, streaming: Boolean) {
+        diagnostic(CloudConnectionOutcome.LOST)
         readyReceived = false
         sessionId = ""
         client.disconnect()
         if (!streaming) {
             val details = mutableMapOf<String, Any?>(
-                "message" to (error.message ?: "unknown"), "turnRetried" to false,
+                "reason" to "transport_failed", "turnRetried" to false,
             )
-            if (error is GatewayRemoteException) details["code"] = error.code
             onConnectionEvent(TelemetryStages.WS_RECONNECT_FAILED, "error", details)
         }
         onCloudUnavailable()

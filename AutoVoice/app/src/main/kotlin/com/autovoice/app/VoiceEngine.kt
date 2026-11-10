@@ -270,7 +270,8 @@ class VoiceEngine(
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
         voiceBusiness.onCaptureStarted(interruptPlayback)
-        capturePermit = recognitionGate.admitInput()
+        val originalPermit = recognitionGate.admitInput()
+        capturePermit = originalPermit
         streamingTurnId = ""
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
@@ -280,7 +281,7 @@ class VoiceEngine(
         // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
         if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
         candidates.onCloudAvailable()
-        candidates.beginCapture(captureId)
+        candidates.beginCapture(captureId) { recognitionGate.accepts(originalPermit) }
     }
 
     /**
@@ -364,7 +365,6 @@ class VoiceEngine(
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
         // Capture-level endpoint may precede ASR admission; the gate retains that fact.
-        conversation.onInputFinalized(captureId)
         if (!hadCapture) {
             telemetry.begin(captureId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
@@ -381,7 +381,7 @@ class VoiceEngine(
             ),
         )
         telemetry.uploadAudio(captureId, segment)
-        candidates.submitTurn(captureId, segment)
+        candidates.submitTurn(captureId, segment) { conversation.onInputFinalized(captureId) }
     }
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */

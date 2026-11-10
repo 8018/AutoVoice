@@ -5,7 +5,7 @@ import com.autovoice.voicecore.health.*
 data class CapabilitySummary(val features: Map<String, CapabilityAvailability> = emptyMap(), val summary: String = "",
     val canTriggerManual: Boolean = true, val configUsable: Boolean = false, val canSubmitText: Boolean = false)
 internal object CapabilityEvaluator {
-    fun evaluate(snapshot: ComponentHealthSnapshot, online: Boolean, auxiliaryBridgeAvailable: Boolean = true, localBridgeAvailable: Boolean = true, cloudRouteEnabled: Boolean = online, capturePathUnavailable: Boolean = false): CapabilitySummary {
+    fun evaluate(snapshot: ComponentHealthSnapshot, online: Boolean, auxiliaryBridgeAvailable: Boolean = true, localBridgeAvailable: Boolean = true, cloudRouteEnabled: Boolean = online, capturePathUnavailable: Boolean = false, openMicDeviceValidated: Boolean = true): CapabilitySummary {
         val components = snapshot.components
         fun failed(id: String) = components[id]?.let { it.lifecycle in setOf(Lifecycle.FAILED, Lifecycle.RELEASED) ||
             (it.lifecycle != Lifecycle.BLOCKED && it.health == Health.UNAVAILABLE) ||
@@ -19,8 +19,8 @@ internal object CapabilityEvaluator {
         }
         val features = mapOf("wake" to evaluate("wake"), "local" to if (capturePathUnavailable) CapabilityAvailability.UNAVAILABLE else if (localBridgeAvailable) evaluate("frontend", "local.asr", "local.nlu") else CapabilityAvailability.UNAVAILABLE,
             "cloud" to if (online && cloudRouteEnabled) { if (capturePathUnavailable) CapabilityAvailability.UNAVAILABLE else evaluate("frontend", "vad", "cloud") } else CapabilityAvailability.DISABLED,
-            "playback" to evaluate("playback"), "barge_in" to if (auxiliaryBridgeAvailable) evaluate("frontend", "aec", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
-            "follow_up" to if (auxiliaryBridgeAvailable) evaluate("frontend", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
+            "playback" to evaluate("playback"), "barge_in" to if (auxiliaryBridgeAvailable && !capturePathUnavailable && openMicDeviceValidated) evaluate("frontend", "aec", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
+            "follow_up" to if (auxiliaryBridgeAvailable && !capturePathUnavailable) evaluate("frontend", "vad.aux") else CapabilityAvailability.UNAVAILABLE,
             "text" to if (online && cloudRouteEnabled) evaluate("config", "cloud") else CapabilityAvailability.DISABLED)
         val configFailed = failed("config")
         val failures = listOf("capture" to "麦克风", "local.asr" to "本地识别", "frontend" to "音频处理", "vad" to "语音分段", "wake" to "语音唤醒", "playback" to "语音播放")

@@ -17,6 +17,7 @@ internal data class SpeechChannelCapabilities(
     val renderReferenceUnavailableReason: String? = null,
     val auxiliaryBridgeAvailable: Boolean = true,
     val localBridgeAvailable: Boolean = true,
+    val openMicDeviceValidated: Boolean = true,
 )
 
 internal data class CapturePolicy(val audioSource: Int, val effectsFactory: CaptureEffectsFactory)
@@ -24,6 +25,7 @@ internal data class CapturePolicy(val audioSource: Int, val effectsFactory: Capt
 internal class LocalEngineAssembly(
     val asr: AsrEngine,
     val nlu: NluEngine<NluResult>,
+    val bindAdmission: (LocalRequestAdmissionProvider) -> Unit = {},
     private val release: () -> Unit = {},
 ) : AutoCloseable {
     override fun close() = release()

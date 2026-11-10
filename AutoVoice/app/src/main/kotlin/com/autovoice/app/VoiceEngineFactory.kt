@@ -6,6 +6,7 @@ import android.content.Context
 import com.autovoice.app.channel.SpeechChannel
 import com.autovoice.app.channel.LocalEngineAssembly
 import com.autovoice.app.health.ChannelComponentReporting
+import com.autovoice.app.health.CloudConnectionReporting
 import com.autovoice.voicecore.health.*
 import android.net.ConnectivityManager
 import android.util.Log
@@ -112,7 +113,7 @@ internal object VoiceEngineFactory {
         // 接收桥不被业务处理反压；信号只影响对应 turnId，不延迟云端语义入队。
         val pendingSignals = Channel<Unit>(Channel.BUFFERED)
         // ASR 文本与话语成立回调分别绑定：前者上屏，后者才做 capture→turn 准入。
-        var engineRef: VoiceEngine? = null
+        val engineRef = AtomicReference<VoiceEngine?>(null)
         val recognitionGate = RecognitionGate()
         val asrModule = AsrModule()
         val nluModule = NluModule()
@@ -140,34 +141,22 @@ internal object VoiceEngineFactory {
         )
         cloudRunner.onAsrResult = { text, final, turnId ->
             if (text.isNotBlank()) {
-                engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
-                if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
                     cloudRunner.retireTravelIfDifferent(turnId)
                 }
             }
         }
         cloudRunner.onAsrTurnEstablished = { turnId ->
-            engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.CLOUD_ASR)
+            engineRef.get()?.onAsrTurnEstablished(turnId, AdmissionEvidence.CLOUD_ASR)
         }
         cloudRunner.onReplyText = { text, _ ->
             if (text.isNotBlank()) onReplyText(text)
         }
         cloudRunner.onTravelDocument = onTravelDocument
         val cloudReporter = reporting.reporter("cloud")
-        var cloudToken: ComponentToken? = null
-        var cloudInitialized = false
+        val cloudHealth = bindCloudHealth(cloudRunner,cloudReporter,cfg.cloud.enabled)
         cloudRunner.onConnectionEvent = { stage, level, payload ->
-            if (cfg.cloud.enabled) when (stage) {
-                TelemetryStages.WS_CONNECT_START -> {
-                    if (!cloudInitialized) cloudToken = cloudReporter.start("connect")
-                    else cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNKNOWN)) }
-                }
-                TelemetryStages.WS_READY -> cloudToken?.let {
-                    cloudReporter.report(it, if (cloudInitialized) ComponentUpdate.health(Health.HEALTHY) else ComponentUpdate.ready())
-                    cloudInitialized = true
-                }
-                TelemetryStages.WS_RECONNECT_FAILED -> cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED, retryable = true))) }
-            }
             telemetry.record(stage, level, payload)
         }
         // 时钟同步：握手估算的时钟偏移（ready.serverTime）注入 telemetry 打戳
@@ -179,17 +168,17 @@ internal object VoiceEngineFactory {
             cacheDir = File(context.filesDir, "tts_cache"),
             driver = channel.createPlaybackDriver(player),
             scope = scope,
-            isCurrentTurn = { turnId -> engineRef?.conversation?.isCurrentTurn(turnId) ?: true },
+            isCurrentTurn = { turnId -> engineRef.get()?.conversation?.isCurrentTurn(turnId) ?: true },
             isCurrentRealtime = cloudRunner::isCurrentRealtimeOutput,
             events = TtsEventSink { stage, level, payload ->
                 val turnId = payload["turnId"] as? String ?: ""
                 telemetry.recordFor(turnId, stage, level, payload - "turnId")
             },
             onPlaybackStage = { identity, stage ->
-                engineRef?.onPlaybackLifecycle(identity.turnId, stage)
+                engineRef.get()?.onPlaybackLifecycle(identity.turnId, stage)
                 onPlaybackStage(stage)
             },
-            onEmptyOutput = { turnId -> engineRef?.conversation?.onPlaybackEnded(turnId) },
+            onEmptyOutput = { turnId -> engineRef.get()?.conversation?.onPlaybackEnded(turnId) },
         )
         // Lazy creation preserves the original local-chain initialization point below.
         val localEngines by lazy { channel.createLocalEngines(context, cfg, scope) }
@@ -201,7 +190,7 @@ internal object VoiceEngineFactory {
             navigation = navigation,
             onVehicleApplied = onVehicleApplied,
             onConversationMode = onConversationMode,
-            onExitDialogue = { engineRef?.exitCurrentDialogue() },
+            onExitDialogue = { engineRef.get()?.exitCurrentDialogue() },
             onTravelGuideStarted = { turnId ->
                 onTravelGuideStarted(turnId)
                 cloudRunner.startTravelGuide(turnId)
@@ -245,14 +234,14 @@ internal object VoiceEngineFactory {
                 localEngines,
                 { turnId, text, final ->
                     if (!text.isNullOrBlank()) {
-                        engineRef?.onRecognized(turnId, text) ?: onLocalRecognized(text)
-                        if (final && engineRef?.conversation?.isVisible(turnId) == true) {
+                        engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                        if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
                             cloudRunner.retireTravelIfDifferent(turnId)
                         }
                     }
                 },
                 { turnId ->
-                    engineRef?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
+                    engineRef.get()?.onAsrTurnEstablished(turnId, AdmissionEvidence.LOCAL_ASR)
                 },
                 telemetry,
                 asrModule,
@@ -266,7 +255,7 @@ internal object VoiceEngineFactory {
             onLocalRecognized = onLocalRecognized,
             onReplyText = onReplyText,
             onClose = {
-                cloudReporter.close()
+                cloudHealth.close()
                 cloudRunner.close() // Task 21：模式切换时断开网关
                 localEngines.close() // Selected channel releases its own local resources.
             },
@@ -277,14 +266,14 @@ internal object VoiceEngineFactory {
             onTextInputError = onTextInputError,
             streamingCloud = cloudRunner,
         )
-        engineRef = engine
+        engineRef.set(engine)
+        localEngines.bindAdmission(com.autovoice.voicecore.LocalRequestAdmissionProvider(engine.candidates::localAdmission))
         cloudRunner.onRealtimeReply = engine::playRealtimeChatReply
         cloudRunner.onRealtimeSpeechStarted = engine::stopPlayback
         // T7 评审 C1 注：onTtsPlayEvent 的网络事件绑定已在 VoiceEngine init 完成
         // （telemetry 为构造参数，构造即绑定），此处无需再装配
         // ready 后故障才 latch（连接前故障不 latch，Task 15 M1 裁定）
         cloudRunner.onCloudUnavailable = {
-            if (cfg.cloud.enabled) cloudToken?.let { cloudReporter.report(it, ComponentUpdate.health(Health.UNAVAILABLE, ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED, retryable = true))) }
             engine.candidates.onCloudUnavailable()
             // A transport break ends the local task. We intentionally do not resume or replay a
             // navigation selection after reconnect; the user must make a fresh request.
@@ -313,6 +302,11 @@ internal object VoiceEngineFactory {
         }
         return engine
     }
+
+    internal fun bindCloudHealth(runner: GatewayCloudRunner, reporter: ComponentReporter, enabled: Boolean): CloudConnectionReporting =
+        CloudConnectionReporting(reporter).also { binding ->
+            runner.onConnectionDiagnostic = { event -> if (enabled) binding.accept(event) }
+        }
 
     /**
      * 遥测 HTTP 基址推导（T6）：显式 telemetry.url 未配时由网关地址推导——

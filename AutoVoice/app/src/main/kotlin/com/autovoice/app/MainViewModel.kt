@@ -160,6 +160,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var cloudRouteEnabled = false
     private val capturePathUnavailable get() = ::recorder.isInitialized && recorder.frontendFailure != null
     private val localBridgeAvailable get() = ::speechChannel.isInitialized && speechChannel.capabilities.localBridgeAvailable
+    private val openMicDeviceValidated get() = ::speechChannel.isInitialized && speechChannel.capabilities.openMicDeviceValidated
     private val auxiliaryBridgeAvailable get() = ::speechChannel.isInitialized && speechChannel.capabilities.auxiliaryBridgeAvailable
 
     /** 模拟车控执行器（Task 20 的 executor 经 [applyVehicleIntent] 路由到这里）。 */
@@ -235,7 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         reporting.registerDefaults()
         viewModelScope.launch {
             healthRegistry.snapshot.collect { health ->
-                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)
+                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable,openMicDeviceValidated)
                 val vad = health.components["vad"]
                 val frontend = health.components["frontend"]
                 val wake = health.components["wake"]
@@ -280,13 +281,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onError = { error -> viewModelScope.launch { if (::recordingCoordinator.isInitialized) recordingCoordinator.deliverWakeError(error) } })
             engine = buildEngine(config)
             recordingCoordinator = buildRecordingCoordinator()
-            _uiState.update { it.copy(assemblyReady = true) }
+            _uiState.update { it.copy(assemblyReady = true,
+                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value,mode == DemoMode.DEMO_FULL,
+                    auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable,openMicDeviceValidated)) }
         } catch (error: Throwable) {
             error.rethrowCancellationOrFatal()
             val reporter = reporting.reporter("config")
             reporter.report(reporter.start("create"), ComponentUpdate.failed(initializationError(error, ErrorCode.CONFIG_INVALID)))
             _uiState.update { it.copy(assemblyReady = false, componentHealth = healthRegistry.snapshot.value,
-                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)) }
+                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable,openMicDeviceValidated)) }
         }
     }
 
@@ -420,7 +423,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
         _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
-            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)) }
+            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable,openMicDeviceValidated)) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
@@ -525,7 +528,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     chatMode = snapshot.chatMode,
                     speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
                     capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value,it.mode == DemoMode.DEMO_FULL,
-                        auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable),
+                        auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable,openMicDeviceValidated),
                 )
             }
         },

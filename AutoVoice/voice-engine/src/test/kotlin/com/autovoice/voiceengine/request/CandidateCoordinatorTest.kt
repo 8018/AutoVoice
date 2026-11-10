@@ -29,10 +29,62 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Test
 
 /** Candidate production tests. Dialogue lifecycle is deliberately tested in dialog/, not here. */
 class CandidateCoordinatorTest {
+    @Test fun `accepted native ownership has a fixed active bound and closes every outstanding ticket`() = runBlocking {
+        val release = CompletableDeferred<Unit>()
+        val c = CandidateCoordinator(cfg(false),OnDeviceRaceArbiter(cloudWaitMs = 1,sink = DecisionSink {}),
+            LocalChainRunner { release.await();intent() },CloudRunner { TextReply("unused") })
+        try {
+            repeat(64) { id -> c.beginCapture("id-$id") { true };assertTrue(c.submitTurn("id-$id",segment)) }
+            val oldest = requireNotNull(c.localAdmission("id-0"))
+            c.beginCapture("overflow") { true };assertFalse(c.submitTurn("overflow",segment));assertNull(c.localAdmission("overflow"))
+            c.close();assertFalse(oldest.ownerLive())
+            repeat(64) { assertNull(c.localAdmission("id-$it")) }
+        } finally { release.complete(Unit);c.close() }
+    }
+    @Test fun `actual accepted original request owns fixed bounded lifetime and finalization independent of next input`() = runBlocking {
+        var now = 100L
+        val permit = AtomicBoolean(true)
+        val release = CompletableDeferred<Unit>()
+        val entered = CompletableDeferred<Unit>()
+        val c = CandidateCoordinator(cfg(false),OnDeviceRaceArbiter(cloudWaitMs = 1,sink = DecisionSink {}),
+            LocalChainRunner { entered.complete(Unit);release.await();intent() },CloudRunner { TextReply("unused") },
+            localInferenceBudgetMs = 60_000,localClockMs = { now })
+        try {
+            assertNull(c.localAdmission("missing"))
+            c.beginCapture("old") { permit.get() }
+            assertFalse(c.submitTurn("wrong",segment));assertNull(c.localAdmission("wrong"))
+            assertTrue(c.submitTurn("old",segment) {
+                val unfinished = requireNotNull(c.localAdmission("old"))
+                assertFalse(unfinished.finalized());permit.set(false);assertFalse(unfinished.valid(now))
+            })
+            entered.await()
+            val facts = requireNotNull(c.localAdmission("old"))
+            assertTrue(facts.finalized());assertTrue(facts.valid(now));assertEquals(60_100,facts.deadlineMs)
+            c.beginCapture("new") { false }
+            assertTrue(facts.valid(now));now = 60_100;assertFalse(facts.valid(now))
+            assertFalse(c.submitTurn("new",segment));assertNull(c.localAdmission("new"))
+            assertFalse(c.submitTurn("old",segment));assertNull(c.localAdmission("new"))
+            c.close();assertFalse(facts.ownerLive());assertNull(c.localAdmission("old"))
+        } finally { release.complete(Unit);c.close() }
+    }
+
+    @Test fun `local ownership is removed when worker finishes and accepted id cannot be replayed`() = runBlocking {
+        val done = CompletableDeferred<Unit>()
+        val c = CandidateCoordinator(cfg(false),OnDeviceRaceArbiter(cloudWaitMs = 1,sink = DecisionSink {}),
+            LocalChainRunner { done.complete(Unit);intent() },CloudRunner { TextReply("unused") })
+        try {
+            c.beginCapture("one") { true };assertTrue(c.submitTurn("one",segment));done.await()
+            withTimeoutOrNull(1000) { while (c.localAdmission("one") != null) delay(1) }
+            assertNull(c.localAdmission("one"))
+            c.beginCapture("one") { true };assertFalse(c.submitTurn("one",segment))
+        } finally { c.close() }
+    }
     private val segment = ByteArray(16) { it.toByte() }
 
     private fun cfg(cloudEnabled: Boolean = true, cloudWaitMs: Long = 100) = DemoConfig(

@@ -5,6 +5,18 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class ComponentAssemblyTest {
+    @Test fun `bound auxiliary routes honor sticky capture failure while text and wake remain independent`() {
+        val registry = ComponentStatusRegistry();val reporting = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"))
+        reporting.registerDefaults()
+        for (id in listOf("config","iflytek.runtime","frontend","local.asr","local.nlu","vad.aux","aec","wake","cloud")) {
+            val r = reporting.reporter(id);r.report(r.start("fixture"),ComponentUpdate.ready())
+        }
+        val p = CapabilityEvaluator.evaluate(registry.snapshot.value,true,capturePathUnavailable = true,openMicDeviceValidated = false)
+        assertEquals(CapabilityAvailability.UNAVAILABLE,p.features["follow_up"])
+        assertEquals(CapabilityAvailability.UNAVAILABLE,p.features["barge_in"])
+        assertEquals(CapabilityAvailability.AVAILABLE,p.features["wake"])
+        assertEquals(CapabilityAvailability.AVAILABLE,p.features["text"])
+    }
     @Test
     fun `earliest invalid config remains observable without constructing any adapter`() {
         val registry = ComponentStatusRegistry()

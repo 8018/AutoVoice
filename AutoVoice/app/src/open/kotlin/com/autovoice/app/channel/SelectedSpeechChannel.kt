@@ -11,6 +11,7 @@ import com.autovoice.adapterwebrtc.WebRtcFrontend
 import com.autovoice.audiofrontend.*
 import com.autovoice.voicecore.*
 import kotlinx.coroutines.CoroutineScope
+import java.util.concurrent.atomic.AtomicReference
 
 internal object SelectedSpeechChannel {
     fun create(): SpeechChannel = OpenSpeechChannel()
@@ -35,9 +36,11 @@ private class OpenSpeechChannel : SpeechChannel {
             override fun release() = Unit
         }
     })
-    override val capabilities = SpeechChannelCapabilities(
-        auxiliaryBridgeAvailable = false,
-        localBridgeAvailable = false,
+    @Volatile private var admissionBound = false
+    override val capabilities get() = SpeechChannelCapabilities(
+        auxiliaryBridgeAvailable = admissionBound,
+        localBridgeAvailable = admissionBound,
+        openMicDeviceValidated = false,
         renderReferenceUnavailableReason = "PCM playback reference driver is not installed",
     )
     override fun validateConfig(config: DemoConfig) = config.validateProviders(
@@ -49,14 +52,30 @@ private class OpenSpeechChannel : SpeechChannel {
 
     override fun createLocalEngines(context: Context, config: DemoConfig, scope: CoroutineScope): LocalEngineAssembly {
         validateConfig(config)
+        admissionBound = false
+        val admission = OpenRequestAdmissionBinding()
         val asr = FireRedAsrEngine.create(
             requireNotNull(context.getExternalFilesDir("speech-models")),
             // Task6 binds Coordinator-owned admission facts. Missing facts must deny native decode.
-            FireRedAdmissionProvider { null },reporting?.reporter("local.asr") ?: ComponentReporter.none())
+            admission.nativeProvider,reporting?.reporter("local.asr") ?: ComponentReporter.none())
         val nluReporter = reporting?.reporter("local.nlu") ?: ComponentReporter.none()
         val token = nluReporter.start("create")
         val nlu = TextRuleNluEngine()
         nluReporter.report(token,ComponentUpdate.ready())
-        return LocalEngineAssembly(asr,nlu) { asr.close();nluReporter.close(token) }
+        return LocalEngineAssembly(asr,nlu,bindAdmission = { owner -> admission.bind(owner);admissionBound = true }) {
+            admission.close();admissionBound = false;asr.close();nluReporter.close(token)
+        }
     }
+}
+
+/** The native worker reads only atomic publication and original owner facts, never engineRef. */
+internal class OpenRequestAdmissionBinding : AutoCloseable {
+    private val provider = AtomicReference<LocalRequestAdmissionProvider?>(null)
+    fun bind(owner: LocalRequestAdmissionProvider) { provider.set(owner) }
+    val nativeProvider = FireRedAdmissionProvider { id -> provider.get()?.let { owner -> owner.capture(id)?.let { facts ->
+        com.autovoice.adapterfirered.FireRedAdmission(facts.deadlineMs,
+            { provider.get() === owner && facts.ownerLive() && facts.finalized() },
+            { provider.get() === owner && facts.ownerLive() && facts.originalPermitValid() })
+    } } }
+    override fun close() { provider.set(null) }
 }
