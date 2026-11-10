@@ -14,8 +14,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
+/** Recorder-owned input epoch; null means idle DSP. Positions remain original capture samples. */
+data class CaptureFrontendBatch(val inputEpoch: Long?, val batch: com.autovoice.audiofrontend.FrontendBatch,
+    val followUpEpoch: Long? = null, val bargeInEpoch: Long? = null, val speechConfirmedForInput: Boolean = false)
+data class CaptureFrontendFailure(val inputEpoch: Long?, val error: com.autovoice.voicecore.health.ComponentError)
+
 /** Android 采集驱动边界；实现只管理 AudioRecord/VAD/RNNoise 资源，不决定音频去向。 */
 interface RecordingCapture : AutoCloseable {
+    val frontendBatchSignal: kotlinx.coroutines.flow.StateFlow<Long>? get() = null
+    val inputEpoch: Long? get() = null
+    val frontendFailure: CaptureFrontendFailure? get() = null
+    fun drainFrontendBatches(): List<CaptureFrontendBatch> = emptyList()
+    fun abortInput() = stop()
+    fun detectAuxiliarySpeech(event: CaptureFrontendBatch, purpose: com.autovoice.audiofrontend.VadPurpose): Boolean = false
     val pcmBlocks: SharedFlow<ByteArray>
     val rawPcmBlocks: SharedFlow<ByteArray>
     val vadEvents: SharedFlow<VadEvent>
@@ -108,6 +119,10 @@ internal class RecordingCoordinator(
     private val jobs = mutableListOf<Job>()
     private val denoisedBlocks = mutableListOf<ByteArray>()
     private val cloudStreamLock = Any()
+    // Coordinator lock precedes Recorder locks. Recorder signals only outside its own locks.
+    private val captureBatchLock = Any()
+    private var activeInputEpoch: Long? = null
+    private var stopAfterOpenDrain = false
     private val cloudPreRoll = ArrayDeque<ByteArray>()
 
     @Volatile private var state = RecordingLifecycleSnapshot(vadUnavailable = !capture.vadAvailable)
@@ -136,6 +151,9 @@ internal class RecordingCoordinator(
 
     init {
         onState(state)
+        capture.frontendBatchSignal?.let { signal -> jobs += scope.launch {
+            signal.collect { synchronized(captureBatchLock) { consumeOpenBatches() } }
+        } }
         jobs += scope.launch {
             capture.pcmBlocks.collect(::onDenoisedBlock)
         }
@@ -184,6 +202,7 @@ internal class RecordingCoordinator(
             rearmWakeWhenIdle()
             return
         }
+        activeInputEpoch = capture.inputEpoch
         updateState {
             it.copy(
                 permissionRequired = false,
@@ -202,6 +221,7 @@ internal class RecordingCoordinator(
                 }
             }
         }
+        synchronized(captureBatchLock) { consumeOpenBatches() }
     }
 
     fun onForeground() {
@@ -258,16 +278,25 @@ internal class RecordingCoordinator(
         updateState { it.copy(wakeListening = false, openMicBargeInAvailable = false) }
     }
 
-    fun stopTurn() {
+    fun stopTurn() = synchronized(captureBatchLock) {
+        consumeOpenBatches(allowStop = false)
+        stopTurnAfterDrain()
+    }
+
+    private fun stopTurnAfterDrain() {
         if (!recording || chatLocked) return
         recording = false
-        resetCloudStreamGate()
+        if (capture.frontendBatchSignal == null) resetCloudStreamGate()
         wakeTurn = false
         wakeTurnTimeoutJob?.cancel()
         wakeTurnTimeoutJob = null
         capture.stop()
         updateState { it.copy(recording = false) }
         val tail = capture.finishProcessedAudio()
+        if (capture.frontendBatchSignal != null) {
+            if (cloudVadActive && tail.isNotEmpty()) pipeline.appendStreamingCloudAudio(tail)
+            resetCloudStreamGate()
+        }
         val denoised = synchronized(denoisedBlocks) {
             if (tail.isNotEmpty()) denoisedBlocks += tail
             concatBlocks(denoisedBlocks).also { denoisedBlocks.clear() }
@@ -301,7 +330,7 @@ internal class RecordingCoordinator(
         wakeTurn = false
         wakeTurnTimeoutJob?.cancel()
         wakeTurnTimeoutJob = null
-        capture.stop()
+        capture.abortInput()
         synchronized(denoisedBlocks) { denoisedBlocks.clear() }
         pipeline.cancelStreamingCloudAudio()
         pipeline.onListeningStop()
@@ -354,6 +383,45 @@ internal class RecordingCoordinator(
         return true
     }
 
+    private fun consumeOpenBatches(allowStop: Boolean = true) {
+        if (capture.frontendBatchSignal == null) return
+        val failure = capture.frontendFailure
+        if (failure != null) {
+            capture.drainFrontendBatches()
+            if (recording && !chatLocked && failure.inputEpoch == activeInputEpoch) {
+                onLog(failure.error.code.message)
+                cancelTurn(rearm = false)
+            }
+            return
+        }
+        for (event in capture.drainFrontendBatches()) {
+            if (chatLocked) {
+                if (recording) event.batch.processedBlocks.forEach { pipeline.appendRealtimeChatAudio(it.pcm) }
+                continue
+            }
+            if (event.inputEpoch == null) {
+                if (!recording && capture.detectAuxiliarySpeech(event,com.autovoice.audiofrontend.VadPurpose.BARGE_IN)) onOpenMicBargeInDetected()
+                else if (!recording && capture.detectAuxiliarySpeech(event,com.autovoice.audiofrontend.VadPurpose.FOLLOW_UP)) onFollowUpSpeechDetected()
+                continue
+            }
+            if (!recording || event.inputEpoch != activeInputEpoch) continue
+            if (event.speechConfirmedForInput && !cloudVadActive) onVadEvent(VadEvent.SpeechStart)
+            for (block in event.batch.processedBlocks) {
+                val observations = event.batch.vadObservations.filter {
+                    it.purpose == com.autovoice.audiofrontend.VadPurpose.SEGMENTATION &&
+                        it.startSample < block.startSample + block.validSamples &&
+                        it.startSample + it.validSamples > block.startSample
+                }
+                observations.flatMap { it.events }.filter { it == VadEvent.SpeechStart }.forEach(::onVadEvent)
+                onDenoisedBlock(block.pcm)
+                observations.flatMap { it.events }.filter { it == VadEvent.SpeechEnd }.forEach(::onVadEvent)
+            }
+        }
+        val stop = stopAfterOpenDrain
+        stopAfterOpenDrain = false
+        if (stop && allowStop && recording) stopTurn()
+    }
+
     private fun onDenoisedBlock(block: ByteArray) {
         if (!recording || chatLocked) return
         synchronized(denoisedBlocks) { denoisedBlocks.add(block) }
@@ -369,13 +437,14 @@ internal class RecordingCoordinator(
 
     private fun onRawBlock(block: ByteArray) {
         if (chatLocked) {
-            if (recording) pipeline.appendRealtimeChatAudio(block)
+            if (recording && capture.frontendBatchSignal == null) pipeline.appendRealtimeChatAudio(block)
             return
         }
         if (recording) return
         if (state.wakeListening) {
             runCatching { wakeWord.accept(block) }.onFailure(::onWakeFailure)
         }
+        if (capture.frontendBatchSignal != null) return // Open auxiliary observations come from the same processed batch, never raw PCM.
         if (capture.detectOpenMicBargeIn(block)) {
             scope.launch { onOpenMicBargeInDetected() }
         } else if (capture.detectFollowUpSpeech(block)) {
@@ -400,7 +469,9 @@ internal class RecordingCoordinator(
                     cloudPreRoll.clear()
                 }
                 pipeline.onVadEnd()
-                if (wakeTurn && recording) stopTurn()
+                if (wakeTurn && recording) {
+                    if (capture.frontendBatchSignal != null) stopAfterOpenDrain = true else stopTurn()
+                }
             }
         }
     }

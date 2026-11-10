@@ -157,6 +157,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val healthRegistry = ProcessComponentHealth.registry
     private var reporting = ChannelComponentReporting(healthRegistry, BuildConfig.FLAVOR, healthRegistry.beginGeneration(BuildConfig.FLAVOR))
     private lateinit var speechChannel: SpeechChannel
+    private var cloudRouteEnabled = false
+    private val capturePathUnavailable get() = ::recorder.isInitialized && recorder.frontendFailure != null
     private val localBridgeAvailable get() = ::speechChannel.isInitialized && speechChannel.capabilities.localBridgeAvailable
     private val auxiliaryBridgeAvailable get() = ::speechChannel.isInitialized && speechChannel.capabilities.auxiliaryBridgeAvailable
 
@@ -233,14 +235,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         reporting.registerDefaults()
         viewModelScope.launch {
             healthRegistry.snapshot.collect { health ->
-                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable)
+                val capabilities = CapabilityEvaluator.evaluate(health, _uiState.value.mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)
                 val vad = health.components["vad"]
                 val frontend = health.components["frontend"]
                 val wake = health.components["wake"]
                 val capture = health.components["capture"]
                 _uiState.update { it.copy(componentHealth = health, capabilities = capabilities,
                     vadUnavailable = vad?.lifecycle == Lifecycle.FAILED,
-                    speechFrontendUnavailable = frontend?.lifecycle == Lifecycle.FAILED,
+                    speechFrontendUnavailable = capturePathUnavailable || frontend?.lifecycle == Lifecycle.FAILED,
                     permissionHint = capture?.error?.code == ErrorCode.MIC_PERMISSION_DENIED,
                     wakeError = wake?.error?.message ?: wake?.rootCauseId?.let { root -> health.components[root]?.error?.message }) }
             }
@@ -254,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             speechChannel.attachReporting(reporting)
             val mode = restoreMode()
             val config = reporting.readConfig { loadConfig(mode) } ?: return
+            cloudRouteEnabled = config.cloud.enabled
             _uiState.update { it.copy(mode = mode) }
             if (!config.cloud.enabled) reporting.disabled("cloud")
             if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
@@ -283,7 +286,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reporter = reporting.reporter("config")
             reporter.report(reporter.start("create"), ComponentUpdate.failed(initializationError(error, ErrorCode.CONFIG_INVALID)))
             _uiState.update { it.copy(assemblyReady = false, componentHealth = healthRegistry.snapshot.value,
-                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false,auxiliaryBridgeAvailable,localBridgeAvailable)) }
+                capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, false,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)) }
         }
     }
 
@@ -394,6 +397,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cancelRecording();recordingCoordinator.onBackground();engine.close()
             _uiState.update { it.copy(assemblyReady = false) };return
         }
+        cloudRouteEnabled = config.cloud.enabled
         if (!config.cloud.enabled) reporting.disabled("cloud")
         if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
         else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
@@ -416,7 +420,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
         _uiState.update { it.copy(mode = mode, speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
-            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable)) }
+            capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value, mode == DemoMode.DEMO_FULL,auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable)) }
     }
 
     /** 模拟弱网（云端延迟 3s）开关；绑定到引擎的云端人为延迟 hook（Task 20，debug 构建）。 */
@@ -519,6 +523,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     wakeListening = snapshot.wakeListening,
                     openMicBargeInAvailable = snapshot.openMicBargeInAvailable,
                     chatMode = snapshot.chatMode,
+                    speechFrontendUnavailable = recorder.frontendUnavailableReason != null,
+                    capabilities = CapabilityEvaluator.evaluate(healthRegistry.snapshot.value,it.mode == DemoMode.DEMO_FULL,
+                        auxiliaryBridgeAvailable,localBridgeAvailable,cloudRouteEnabled,capturePathUnavailable),
                 )
             }
         },

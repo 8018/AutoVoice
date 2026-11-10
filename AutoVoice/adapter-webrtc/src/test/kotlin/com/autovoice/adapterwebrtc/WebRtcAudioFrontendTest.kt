@@ -25,6 +25,12 @@ class WebRtcAudioFrontendTest {
         override fun close() { closes++ }
     }
     private fun config() = VadConfig(provider = "webrtc.vad", minSpeechMs = 10, minSilenceMs = 10)
+    private fun history(f: WebRtcAudioFrontend, count: Int = 1): AudioInputHistory {
+        val batches = (0 until count).map { f.process(pcm(ShortArray(512) { 10 })) }
+        val observations = batches.flatMap { it.vadObservations }
+        val confirmed = observations.first { it.purpose == VadPurpose.FOLLOW_UP && VadEvent.SpeechStart in it.events }
+        return AudioInputHistory(FrontendBatch(batches.flatMap { it.processedBlocks },observations.filter { it.purpose == VadPurpose.SEGMENTATION }),confirmed.startSample+confirmed.validSamples)
+    }
     @Test fun `cross 32ms blocks conserve samples and monotonic 10ms coordinates`() {
         val backend = FakeBackend()
         val f = WebRtcAudioFrontend(backend, config())
@@ -89,6 +95,105 @@ class WebRtcAudioFrontendTest {
         bounded.startTurn();bounded.process(ByteArray(1024))
         assertThrows(IllegalStateException::class.java) { bounded.process(ByteArray(1024)) }
         bounded.close()
+    }
+    @Test fun `finished input releases retention while idle DSP continues and next input excludes pending idle samples`() {
+        val backend = FakeBackend()
+        val f = WebRtcAudioFrontend(backend,config(),preRollSamples = 0,maxSegmentSamples = 640,maxBufferedSamples = 640)
+        f.startTurn()
+        f.process(pcm(ShortArray(512) { 10 }));f.finishBatch()
+        assertEquals(512,f.finishSegments().single().size/2)
+        repeat(200) { f.process(pcm(ShortArray(512) { 20 })) }
+        f.process(pcm(ShortArray(512) { 30 })) // 32 real idle samples pending on the persistent frame grid.
+        f.startTurn()
+        val next = f.process(pcm(ShortArray(512) { 40 }))
+        f.finishBatch()
+        val segment = samples(f.finishSegments().single())
+        assertArrayEquals(ShortArray(512) { 41 },segment)
+        assertTrue(next.processedBlocks.first().startSample >= 512)
+        assertEquals(203*512,backend.valid.sum())
+        assertEquals(0,backend.closes)
+        f.close()
+    }
+    @Test fun `abort discards input without flushing resetting APM or retaining idle and preserves other purpose states`() {
+        val backend = FakeBackend();val f = WebRtcAudioFrontend(backend,config(),preRollSamples = 0,maxSegmentSamples = 640,maxBufferedSamples = 640)
+        f.startTurn();f.process(pcm(ShortArray(512) { 10 }))
+        val before = backend.capture.size
+        f.abortInput()
+        assertEquals(before,backend.capture.size)
+        assertTrue(f.finishSegments().isEmpty())
+        repeat(100) { f.process(pcm(ShortArray(512) { 20 })) }
+        f.startTurn();f.process(pcm(ShortArray(512) { 30 }));f.finishBatch()
+        assertArrayEquals(ShortArray(512) { 31 },samples(f.finishSegments().single()))
+        assertEquals(listOf(VadPurpose.SEGMENTATION,VadPurpose.SEGMENTATION),backend.resets)
+        assertEquals(102*512,backend.valid.sum());assertEquals(0,backend.closes);f.close()
+    }
+    @Test fun `failed processing cannot admit a fresh native input reset`() {
+        val backend = FakeBackend();val f = WebRtcAudioFrontend(backend,config())
+        f.startTurn();f.process(ByteArray(1024))
+        backend.speech = { _,_ -> error("controlled native failure") }
+        assertThrows(IllegalStateException::class.java) { f.process(ByteArray(1024)) }
+        val count = backend.capture.size;val resets = backend.resets.size
+        assertThrows(IllegalStateException::class.java) { f.startTurn() }
+        for (purpose in VadPurpose.entries) assertThrows(IllegalStateException::class.java) { f.resetVad(purpose) }
+        assertEquals(count,backend.capture.size);assertEquals(resets,backend.resets.size);f.close()
+    }
+    @Test fun `processed pre roll seeds an input without sending any sample through APM twice`() {
+        val backend = FakeBackend();val f = WebRtcAudioFrontend(backend,config(),preRollSamples = 1600)
+        val idle = history(f)
+        val calls = backend.capture.size
+        f.startTurn(idle)
+        assertEquals(calls,backend.capture.size)
+        f.process(pcm(ShortArray(512) { 20 }));f.finishBatch()
+        val segment = samples(f.finishSegments().single())
+        assertArrayEquals(ShortArray(512) { 11 }+ShortArray(512) { 21 },segment)
+        assertEquals(1024,backend.valid.sum());assertEquals(0,backend.closes);f.close()
+    }
+    @Test fun `confirmed seeded input retains the full seed even if new speech arrives later or has already ended`() {
+        for (continuedSpeech in listOf(true,false)) {
+            val backend = FakeBackend();val f = WebRtcAudioFrontend(backend,config(),preRollSamples = 1600)
+            val idle = history(f,5)
+            backend.speech = { _,_ -> continuedSpeech }
+            f.startTurn(idle)
+            f.process(pcm(ShortArray(512) { 20 }));f.finishBatch()
+            val segments = f.finishSegments()
+            assertEquals(1,segments.size,"seeded confirmed speech already exists")
+            val liveSamples = if (continuedSpeech) 512 else 160
+            assertArrayEquals(ShortArray(2560) { 11 }+ShortArray(liveSamples) { 21 },samples(segments.single()))
+            assertEquals(if (continuedSpeech) null else 2720L,f.diagnostics.observedInputEndSample)
+            assertEquals(if (continuedSpeech) 3072 else 3040,backend.valid.sum())
+            assertTrue(backend.resets.isEmpty());f.close()
+        }
+    }
+    @Test fun `already observed main end closes seeded audio at its original position without touching later idle pending samples`() {
+        val backend = FakeBackend().apply { speech = { frame,_ -> frame < 8 } }
+        val f = WebRtcAudioFrontend(backend,config())
+        val idle = history(f,5)
+        val extra = f.process(pcm(ShortArray(512) { 30 })) // 32 idle samples pending.
+        val source = AudioInputHistory(FrontendBatch(idle.batch.processedBlocks+extra.processedBlocks,
+            idle.batch.vadObservations+extra.vadObservations.filter { it.purpose == VadPurpose.SEGMENTATION }),idle.auxiliaryConfirmedAtSample)
+        val calls = backend.capture.size
+        f.startTurn(source)
+        assertEquals(1440L,f.diagnostics.observedInputEndSample)
+        assertTrue(f.finishBatch().processedBlocks.isEmpty())
+        assertArrayEquals(ShortArray(1440) { 11 },samples(f.finishSegments().single()))
+        assertEquals(calls,backend.capture.size);assertTrue(backend.resets.isEmpty())
+        f.startTurn();f.process(ByteArray(1024));f.finishBatch()
+        assertEquals(7*512,backend.valid.sum()) // pending idle sample tail is consumed once, never rewound.
+        f.close()
+    }
+    @Test fun `processed pre roll must be contiguous bounded and end at the actual DSP position`() {
+        for (variant in listOf("gap","stale","future","large")) {
+            val backend = FakeBackend();val f = WebRtcAudioFrontend(backend,config(),maxSegmentSamples = 640,maxBufferedSamples = 640)
+            f.process(ByteArray(1024));val before = backend.capture.size
+            val blocks = when (variant) {
+                "gap" -> listOf(PositionedPcmBlock(0,ByteArray(320)),PositionedPcmBlock(320,ByteArray(320)))
+                "stale" -> listOf(PositionedPcmBlock(0,ByteArray(320)))
+                "future" -> listOf(PositionedPcmBlock(480,ByteArray(320)))
+                else -> listOf(PositionedPcmBlock(0,ByteArray(1282)))
+            }
+            assertThrows(IllegalArgumentException::class.java, { f.startTurn(AudioInputHistory(FrontendBatch(blocks,emptyList()),160)) },variant)
+            assertEquals(before,backend.capture.size);assertTrue(backend.resets.isEmpty());f.close()
+        }
     }
     @Test fun `render queue consumes each real frame once and rejects old playback generation`() {
         val backend = FakeBackend()

@@ -57,4 +57,35 @@ class ComponentAssemblyTest {
         assertEquals(CapabilityAvailability.AVAILABLE, CapabilityEvaluator.evaluate(registry.snapshot.value, true).features["text"])
     }
 
+    @Test fun `online mode without configured text route disables text action while enabled route still allows actual retry`() {
+        val registry = ComponentStatusRegistry()
+        val h = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"));h.registerDefaults()
+        val config = h.reporter("config");config.report(config.start("config_validate"),ComponentUpdate.ready())
+        val disabled = CapabilityEvaluator.evaluate(registry.snapshot.value,true,cloudRouteEnabled = false)
+        assertFalse(disabled.canSubmitText)
+        assertEquals(CapabilityAvailability.DISABLED,disabled.features["text"])
+        h.unavailable("cloud",ErrorCode.COMPONENT_RUNTIME_FAILED,"connect")
+        val retry = CapabilityEvaluator.evaluate(registry.snapshot.value,true,cloudRouteEnabled = true)
+        assertTrue(retry.canSubmitText)
+        assertEquals(CapabilityAvailability.UNAVAILABLE,retry.features["text"])
+        assertFalse(CapabilityEvaluator.evaluate(registry.snapshot.value,false,cloudRouteEnabled = true).canSubmitText)
+    }
+
+    @Test fun `sticky processed capture failure blocks new speech but preserves raw native status text and microphone retry`() {
+        val registry = ComponentStatusRegistry();val h = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"));h.registerDefaults()
+        for (id in listOf("config","frontend","local.asr","local.nlu","cloud")) {
+            val r = h.reporter(id);r.report(r.start("create"),ComponentUpdate.ready())
+        }
+        val failedPath = CapabilityEvaluator.evaluate(registry.snapshot.value,true,cloudRouteEnabled = true,capturePathUnavailable = true)
+        assertFalse(failedPath.canTriggerManual)
+        assertEquals(CapabilityAvailability.UNAVAILABLE,failedPath.features["local"])
+        assertEquals(CapabilityAvailability.UNAVAILABLE,failedPath.features["cloud"])
+        assertTrue(failedPath.canSubmitText);assertEquals(CapabilityAvailability.AVAILABLE,failedPath.features["text"])
+        assertEquals(Lifecycle.READY,registry.snapshot.value.components.getValue("frontend").lifecycle)
+        h.unavailable("capture",ErrorCode.MIC_PERMISSION_DENIED,"capture_open")
+        val microphoneRetry = CapabilityEvaluator.evaluate(registry.snapshot.value,true,cloudRouteEnabled = true,capturePathUnavailable = false)
+        assertTrue(microphoneRetry.canTriggerManual)
+        assertTrue(microphoneRetry.summary.contains("录音权限"))
+    }
+
 }

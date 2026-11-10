@@ -41,7 +41,8 @@ object WebRtcFrontend {
         failure: ComponentError = ComponentError(ErrorCode.NATIVE_LIBRARY_MISSING)): AudioFrontendEngine = object : AudioFrontendEngine {
         private var reporter = initialReporter
         private var token = initialToken
-        override val ownsAuxiliaryVad = true
+        override val continuousProcessing = true
+    override val ownsAuxiliaryVad = true
         override val unavailabilityReason = reason
         override val vadAvailable = false
         override val diagnostics = AudioFrontendDiagnostics()

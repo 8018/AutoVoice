@@ -39,6 +39,8 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     private var position = 0L
     private var closed = false
     private var tracking = false
+    private var historySeeded = false
+    private var observedInputEnd: Long? = null
     private var retainedStart = 0L
     private class RetainedPcm : ByteArrayOutputStream() {
         fun slice(from: Int, until: Int): ByteArray {
@@ -91,16 +93,42 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
             throw error
         }
     }
+    override val continuousProcessing = true
     override val ownsAuxiliaryVad = true
     override val vadAvailable get() = !closed
-    override val diagnostics get() = AudioFrontendDiagnostics(speechStartEvents = startEvents, speechEndEvents = endEvents, inputBlocks = blocks)
+    override val diagnostics get() = AudioFrontendDiagnostics(speechStartEvents = startEvents, speechEndEvents = endEvents, inputBlocks = blocks,observedInputEndSample = observedInputEnd)
     @Synchronized override fun startTurn() {
-        check(!closed)
-        tracking = true;retainedStart = position;retained.reset();segments.clear();segmentStart = null
+        check(!closed);check(processingFailure == null) { "WebRTC capture unavailable" }
+        historySeeded = false;observedInputEnd = null
+        tracking = true;retainedStart = position + pending.size;retained.reset();segments.clear();segmentStart = null
         startEvents = 0;endEvents = 0;blocks = 0
         resetVad(VadPurpose.SEGMENTATION)
     }
-    @Synchronized fun resetVad(purpose: VadPurpose) { check(!closed);gates.getValue(purpose).reset();backend.resetVad(purpose) }
+    @Synchronized override fun startTurn(history: AudioInputHistory) {
+        val processedPreRoll = history.batch.processedBlocks
+        check(!closed);check(processingFailure == null) { "WebRTC capture unavailable" }
+        if (processedPreRoll.isEmpty()) { startTurn();return }
+        var next = processedPreRoll.first().startSample
+        var total = 0L
+        for (block in processedPreRoll) {
+            require(block.format == PcmFormat() && block.validSamples > 0 && block.startSample == next) { "pre-roll must be continuous processed capture PCM" }
+            next += block.validSamples;total += block.validSamples
+        }
+        require(next == position && total <= maxBufferedSamples) { "pre-roll must end at current DSP position and fit input capacity" }
+        val start = processedPreRoll.first().startSample
+        require(history.auxiliaryConfirmedAtSample in (start+1)..position) { "auxiliary confirmation outside processed history" }
+        val observations = history.batch.vadObservations
+        require(observations.all { it.purpose == VadPurpose.SEGMENTATION && it.validSamples > 0 && it.startSample >= 0 && it.startSample < position && it.startSample+it.validSamples <= position && it.startSample+it.validSamples > start }) { "history must carry original main observations" }
+        require(observations.zipWithNext().all { (a,b) -> a.startSample < b.startSample }) { "main history observations must be ordered" }
+        // History belongs to the already-running SAME main detector/gate. Never reset/replay DSP.
+        historySeeded = true;observedInputEnd = history.observedEndSample
+        tracking = observedInputEnd == null;retainedStart = start;retained.reset();segments.clear();segmentStart = start
+        startEvents = observations.sumOf { it.events.count { event -> event == VadEvent.SpeechStart } }
+        endEvents = if (observedInputEnd == null) 0 else 1;blocks = 0
+        history.batch.inSampleRange(start,observedInputEnd ?: position).processedBlocks.forEach { retained.write(it.pcm) }
+        observedInputEnd?.let(::closeSegment)
+    }
+    @Synchronized override fun resetVad(purpose: VadPurpose) { check(!closed);check(processingFailure == null) { "WebRTC capture unavailable" };gates.getValue(purpose).reset();backend.resetVad(purpose) }
     @Synchronized override fun process(block: ByteArray): FrontendBatch {
         check(!closed)
         require(block.size == 1024) { "capture requires 512 real PCM16 samples" }
@@ -120,20 +148,22 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
         }
     }
     private fun processFrame(input: ShortArray, valid: Int): FrontendBatch {
-        if (tracking) check(retained.size() / 2 + valid <= maxBufferedSamples) { "capture retention overflow" }
+        val inputOffset = (retainedStart - position).coerceIn(0L,valid.toLong()).toInt()
+        if (tracking) check(retained.size() / 2 + valid - inputOffset <= maxBufferedSamples) { "capture retention overflow" }
         val delayMs = consumeRender()
         val result = backend.processCapture(input,delayMs,valid)
         reportAec()
         check(result.pcm.size == 160) { "invalid native capture result" }
         val block = PositionedPcmBlock(position,encode(result.pcm.copyOf(valid)),valid)
-        if (tracking) retained.write(block.pcm)
+        if (tracking) retained.write(block.pcm,inputOffset*2,(valid-inputOffset)*2)
         val observations = if (valid < 160) emptyList() else VadPurpose.entries.map { purpose ->
             val speech = requireNotNull(result.speech[purpose]) { "missing native VAD result" }
             val events = gates.getValue(purpose).feed(speech,position,valid)
             if (tracking && purpose == VadPurpose.SEGMENTATION) {
                 for (event in events) when (event) {
-                    VadEvent.SpeechStart -> { startEvents++;segmentStart = maxOf(retainedStart,gates.getValue(purpose).onsetSample - preRollSamples) }
-                    VadEvent.SpeechEnd -> { endEvents++;closeSegment(position + valid) }
+                    VadEvent.SpeechStart -> { startEvents++;if (segmentStart == null) segmentStart = maxOf(retainedStart,gates.getValue(purpose).onsetSample - preRollSamples) }
+                    VadEvent.SpeechEnd -> { endEvents++;closeSegment(position + valid)
+                        if (historySeeded) { observedInputEnd = position+valid;tracking = false } }
                 }
             }
             VadObservation(position,valid,speech,events = events,purpose = purpose)
@@ -196,7 +226,7 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     }
     @Synchronized override fun finishBatch(): FrontendBatch {
         check(!closed)
-        if (pending.isEmpty()) return FrontendBatch.EMPTY
+        if (observedInputEnd != null || pending.isEmpty()) return FrontendBatch.EMPTY
         return captureOperation {
             val valid = pending.size
             val output = processFrame(pending.copyOf(160),valid)
@@ -207,7 +237,16 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     override fun finishProcessedAudio() = finishBatch().processedPcm
     @Synchronized override fun finishSegments(): List<ByteArray> {
         closeSegment(position)
-        return segments.toList().also { segments.clear() }
+        return segments.toList().also {
+            segments.clear();tracking = false;retained.reset()
+        }
+    }
+    @Synchronized override fun abortInput() {
+        if (closed) return
+        tracking = false;historySeeded = false;observedInputEnd = null
+        retained.reset();segments.clear();segmentStart = null
+        // No native reset/flush, so abort remains safe even after a native processing failure.
+        gates.getValue(VadPurpose.SEGMENTATION).reset()
     }
     private fun closeSegment(end: Long) {
         val start = segmentStart ?: return

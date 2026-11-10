@@ -39,3 +39,13 @@ interface RenderReferenceSink {
     fun acceptRender(frame: RenderReferenceFrame): Boolean
     fun invalidateRender(playbackId: Long)
 }
+
+/** Clips PCM only; surviving observations retain their original real sample positions/classifications. */
+fun FrontendBatch.inSampleRange(from: Long, until: Long = Long.MAX_VALUE): FrontendBatch {
+    require(from >= 0 && until >= from)
+    val selected = processedBlocks.mapNotNull { block ->
+        val start = maxOf(from,block.startSample);val end = minOf(until,block.startSample+block.validSamples)
+        if (end <= start) null else PositionedPcmBlock(start,block.pcm.copyOfRange(((start-block.startSample)*2).toInt(),((end-block.startSample)*2).toInt()),format = block.format)
+    }
+    return FrontendBatch(selected,vadObservations.filter { it.startSample < until && it.startSample+it.validSamples > from })
+}
