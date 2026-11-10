@@ -183,6 +183,8 @@ class VoiceEngine(
             },
             resultListener = ResultListener { utteranceId, winner -> voiceBusiness.onTurnResult(utteranceId, winner) },
             cloudText = cloud as? CloudTextNluEngine,
+            onLocalAdmissionPressure = { id -> telemetry.recordFor(id,"local_admission_pressure","warn",
+                mapOf("reason" to "local_request_capacity")) },
             onTextFailure = { requestId, error ->
                 Log.w(TAG, "text NLU request failed: $requestId", error)
                 if (voiceBusiness.onTextFailure(requestId)) onTextInputError("云端处理失败，请重试")

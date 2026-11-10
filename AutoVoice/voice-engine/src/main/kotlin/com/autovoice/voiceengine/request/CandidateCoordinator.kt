@@ -44,6 +44,7 @@ class CandidateCoordinator(
     private val onTextFailure: (String, Throwable) -> Unit = { _, _ -> },
     private val localInferenceBudgetMs: Long = DEFAULT_LOCAL_INFERENCE_BUDGET_MS,
     private val localClockMs: () -> Long = { System.nanoTime()/1_000_000 },
+    private val onLocalAdmissionPressure: (String) -> Unit = {},
 ) : TextInputPort {
     init { require(localInferenceBudgetMs in 1..300_000) }
     private val candidateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -106,15 +107,19 @@ class CandidateCoordinator(
     }
 
     fun submitTurn(captureId: String, localAudio: ByteArray, onAccepted: () -> Unit = {}): Boolean {
+        var localPressure = false
         val cloudAudio = synchronized(captureLock) {
-            if (!live.get() || captureId.isBlank() || currentCaptureId != captureId || captureId in acceptedAudioIds || localRequests.containsKey(captureId) ||
-                localRequests.size >= MAX_LOCAL_REQUESTS) return false
+            if (!live.get() || captureId.isBlank() || currentCaptureId != captureId || captureId in acceptedAudioIds || localRequests.containsKey(captureId)) return false
             if (originalPermit?.invoke() == false) return false
             originalPermit?.let { permit ->
+                if (localRequests.size >= MAX_LOCAL_REQUESTS) {
+                    localPressure = true
+                } else {
                 val finalized = AtomicBoolean(false);val active = AtomicBoolean(true)
                 val deadline = Math.addExact(localClockMs(),localInferenceBudgetMs)
                 localRequests[captureId] = OwnedRequest(finalized,active,LocalRequestAdmission(deadline,
                     finalized::get,permit,{ live.get() && active.get() }))
+                }
             }
             acceptedAudioIds.add(captureId)
             if (acceptedAudioIds.size > MAX_LOCAL_REQUESTS) acceptedAudioIds.remove(acceptedAudioIds.first())
@@ -126,6 +131,9 @@ class CandidateCoordinator(
             onAccepted() // Actual accepted endpoint, before any local worker can start.
             localRequests[captureId]?.finalized?.set(true)
         } catch (error: Throwable) { retireLocal(captureId);throw error }
+        // Pressure denies only fact-dependent native admission. Cloud and legacy local work
+        // still own this accepted request; diagnostics must never orphan their producers.
+        if (localPressure) runCatching { onLocalAdmissionPressure(captureId) }
         runTurn(captureId, localAudio, cloudAudio)
         return true
     }

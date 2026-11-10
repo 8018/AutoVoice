@@ -17,12 +17,13 @@ import java.util.concurrent.atomic.AtomicReference
 class GatewayConnectionHealthTest {
     @Test fun `real rejected warmup retry loss and recovery own fresh health attempts without initial business latch`() = runBlocking {
         val server = MockWebServer();val socket = AtomicReference<WebSocket>()
-        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+        fun rejectedResponse() = MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             override fun onClosing(ws: WebSocket,code: Int,reason: String) { ws.close(code,reason) }
             override fun onMessage(ws: WebSocket,text: String) {
                 ws.send("""{"type":"error","payload":{"code":"BAD_AUTH","message":"secret-url-token"}}""")
             }
-        }))
+        })
+        server.enqueue(rejectedResponse())
         fun readyResponse() = MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             override fun onClosing(ws: WebSocket,code: Int,reason: String) { ws.close(code,reason) }
             override fun onOpen(ws: WebSocket,response: Response) { socket.set(ws) }
@@ -30,7 +31,7 @@ class GatewayConnectionHealthTest {
                 ws.send("""{"type":"ready","payload":{"sessionId":"test-session"}}""")
             }
         })
-        server.enqueue(readyResponse());server.enqueue(readyResponse());server.start()
+        server.enqueue(readyResponse());server.enqueue(rejectedResponse());server.enqueue(readyResponse());server.start()
         val scope = CoroutineScope(SupervisorJob()+Dispatchers.Default)
         val runner = GatewayCloudRunner(CloudConfig(enabled = true,gatewayUrl = "ws://localhost:${server.port}/",waitMs = 10),
             DecisionSink {},scope,recognitionGate = RecognitionGate(),asrModule = AsrModule(),nluModule = NluModule())
@@ -38,6 +39,9 @@ class GatewayConnectionHealthTest {
         val reporting = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"));reporting.registerDefaults()
         val config = reporting.reporter("config");config.report(config.start("fixture"),ComponentUpdate.ready())
         val binding = VoiceEngineFactory.bindCloudHealth(runner,reporting.reporter("cloud"),true)
+        val diagnostics = java.util.concurrent.CopyOnWriteArrayList<CloudConnectionDiagnostic>()
+        val diagnosticBinding = runner.onConnectionDiagnostic
+        runner.onConnectionDiagnostic = { diagnostics.add(it);diagnosticBinding(it) }
         val losses = AtomicInteger();runner.onCloudUnavailable = { losses.incrementAndGet() }
         suspend fun awaitStatus(test: (ComponentStatus) -> Boolean): ComponentStatus = withTimeout(5000) {
             while (true) { val s = registry.snapshot.value.components.getValue("cloud");if (test(s)) return@withTimeout s;delay(5) }
@@ -52,18 +56,25 @@ class GatewayConnectionHealthTest {
             val ready = awaitStatus { it.lifecycle == Lifecycle.READY && it.health == Health.HEALTHY }
             assertNotEquals(failed.attemptId,ready.attemptId);assertEquals(2,server.requestCount)
             socket.get().close(1001,"controlled loss")
-            awaitStatus { it.health == Health.UNAVAILABLE }
+            val lost = awaitStatus { it.health == Health.UNAVAILABLE }
+            assertEquals(Lifecycle.READY,lost.lifecycle);assertEquals(ready.attemptId,lost.attemptId)
             withTimeout(1000) { while (losses.get() == 0) delay(5) }
             runner.warmUp()
+            withTimeout(5000) { while (diagnostics.none { it.attempt == 3L && it.outcome == CloudConnectionOutcome.FAILED }) delay(5) }
+            val retryFailed = awaitStatus { it.health == Health.UNAVAILABLE && it.sequence > lost.sequence }
+            assertEquals(Lifecycle.READY,retryFailed.lifecycle);assertEquals(ready.attemptId,retryFailed.attemptId)
+            runner.warmUp()
             val recovered = awaitStatus { it.lifecycle == Lifecycle.READY && it.health == Health.HEALTHY }
-            assertNotEquals(ready.attemptId,recovered.attemptId);assertEquals(3,server.requestCount)
+            assertEquals(ready.attemptId,recovered.attemptId);assertEquals(4,server.requestCount)
+            assertEquals(listOf(1L,2L,3L,4L),diagnostics.filter { it.outcome == CloudConnectionOutcome.STARTED }.map { it.attempt })
+            assertEquals(2,registry.snapshot.value.recentEvents.count { it.descriptor.componentId == "cloud" && it.update.lifecycle == Lifecycle.INITIALIZING })
             binding.accept(CloudConnectionDiagnostic(1,CloudConnectionOutcome.FAILED))
             assertEquals(recovered,registry.snapshot.value.components.getValue("cloud"))
             binding.close();runner.close()
             val closed = registry.snapshot.value.components.getValue("cloud")
             binding.accept(CloudConnectionDiagnostic(100,CloudConnectionOutcome.STARTED))
             runner.warmUp();delay(30)
-            assertEquals(closed,registry.snapshot.value.components.getValue("cloud"));assertEquals(3,server.requestCount)
+            assertEquals(closed,registry.snapshot.value.components.getValue("cloud"));assertEquals(4,server.requestCount)
             val generation = registry.beginGeneration("open")
             val newer = ChannelComponentReporting(registry,"open",generation);newer.registerDefaults()
             binding.accept(CloudConnectionDiagnostic(101,CloudConnectionOutcome.FAILED))

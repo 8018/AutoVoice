@@ -37,15 +37,43 @@ import org.junit.jupiter.api.Test
 class CandidateCoordinatorTest {
     @Test fun `accepted native ownership has a fixed active bound and closes every outstanding ticket`() = runBlocking {
         val release = CompletableDeferred<Unit>()
+        val legacyOverflow = CompletableDeferred<Unit>()
         val c = CandidateCoordinator(cfg(false),OnDeviceRaceArbiter(cloudWaitMs = 1,sink = DecisionSink {}),
-            LocalChainRunner { release.await();intent() },CloudRunner { TextReply("unused") })
+            LocalChainRunner { if (it[0] == 99.toByte()) legacyOverflow.complete(Unit) else release.await();intent() },CloudRunner { TextReply("unused") })
         try {
             repeat(64) { id -> c.beginCapture("id-$id") { true };assertTrue(c.submitTurn("id-$id",segment)) }
             val oldest = requireNotNull(c.localAdmission("id-0"))
-            c.beginCapture("overflow") { true };assertFalse(c.submitTurn("overflow",segment));assertNull(c.localAdmission("overflow"))
+            c.beginCapture("overflow") { true };assertTrue(c.submitTurn("overflow",byteArrayOf(99,0)));assertNull(c.localAdmission("overflow"))
+            kotlinx.coroutines.withTimeout(1000) { legacyOverflow.await() }
+            repeat(64) { assertTrue(requireNotNull(c.localAdmission("id-$it")).ownerLive()) }
             c.close();assertFalse(oldest.ownerLive())
             repeat(64) { assertNull(c.localAdmission("id-$it")) }
         } finally { release.complete(Unit);c.close() }
+    }
+    @Test fun `local fact pressure preserves one legitimate cloud request without replacing older native owners`() = runBlocking {
+        val release = CompletableDeferred<Unit>();val cloudCalled = CompletableDeferred<Unit>();val rejectedNative = CompletableDeferred<Unit>()
+        val accepted = AtomicInteger();val cloudCalls = AtomicInteger();val pressure = mutableListOf<String>()
+        lateinit var c: CandidateCoordinator
+        c = CandidateCoordinator(cfg(true),OnDeviceRaceArbiter(cloudWaitMs = 1,sink = DecisionSink {}),
+            object : LocalChainRunner {
+                override suspend fun run(segment: ByteArray) = error("original identity required")
+                override suspend fun run(segment: ByteArray,utteranceId: String): com.autovoice.voicecore.NluResult {
+                    if (utteranceId == "overflow") {
+                        assertNull(c.localAdmission(utteranceId));rejectedNative.complete(Unit)
+                    } else release.await()
+                    return com.autovoice.voicecore.NluResult(intent())
+                }
+            },CloudRunner { assertTrue(it.contentEquals(segment));cloudCalls.incrementAndGet();cloudCalled.complete(Unit);TextReply("ok") },
+            onLocalAdmissionPressure = pressure::add)
+        try {
+            repeat(64) { id -> c.beginCapture("id-$id") { true };assertTrue(c.submitTurn("id-$id",segment)) }
+            c.beginCapture("overflow") { true };assertTrue(c.appendCloudSegment("overflow",segment))
+            assertTrue(c.submitTurn("overflow",segment) { accepted.incrementAndGet() })
+            kotlinx.coroutines.withTimeout(1000) { cloudCalled.await();rejectedNative.await() }
+            assertEquals(1,accepted.get());assertEquals(1,cloudCalls.get());assertEquals(listOf("overflow"),pressure)
+            assertNull(c.localAdmission("overflow"))
+            repeat(64) { assertTrue(requireNotNull(c.localAdmission("id-$it")).valid(System.nanoTime()/1_000_000)) }
+        } finally { c.close();release.complete(Unit) }
     }
     @Test fun `actual accepted original request owns fixed bounded lifetime and finalization independent of next input`() = runBlocking {
         var now = 100L
