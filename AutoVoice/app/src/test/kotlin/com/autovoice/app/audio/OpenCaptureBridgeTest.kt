@@ -34,7 +34,8 @@ class OpenCaptureBridgeTest {
             check(!released);rendered.add(frame.playbackId);return true
         }
         override fun invalidateRender(playbackId: Long) { check(!released);invalidated.add(playbackId) }
-        var calls = 0;var position = 0L;var aborts = 0;var fail = false;var finishes = 0
+        var calls = 0;var position = 0L;var aborts = 0;var fail = false;var finishes = 0;var starts = 0
+        var retentionBudget = Int.MAX_VALUE
         val resets = mutableListOf<VadPurpose>()
         var auxiliary = emptySet<VadPurpose>()
         var mainEndAt: Long? = null
@@ -47,12 +48,12 @@ class OpenCaptureBridgeTest {
         }
         private var tracking = false
         private val input = java.io.ByteArrayOutputStream()
-        override fun startTurn() { tracking = true;observedEnd = null;input.reset() }
+        override fun startTurn() { starts++;tracking = true;observedEnd = null;input.reset() }
         override fun process(block: ByteArray): FrontendBatch {
             calls++;check(!fail) { "controlled native failure" }
             val processed = ByteArray(block.size) { (block[it]+1).toByte() }
             val first = tracking && input.size() == 0
-            if (tracking) input.write(processed)
+            if (tracking) { check(input.size()+processed.size <= retentionBudget);input.write(processed) }
             val observations = (if (first) listOf(VadObservation(position,512,true,events = listOf(VadEvent.SpeechStart))) else emptyList()) +
                 auxiliary.map { VadObservation(position,512,true,events = listOf(VadEvent.SpeechStart),purpose = it) } +
                 (if (position+512 == mainEndAt) listOf(VadObservation(position,512,false,events = listOf(VadEvent.SpeechEnd))) else emptyList())
@@ -130,9 +131,10 @@ class OpenCaptureBridgeTest {
         override fun cancelStreamingCloudAudio() { cancels++ }
         override fun onCloudSegment(segment: ByteArray) { cloud.add(segment) }
         override fun onTurnSegment(segment: ByteArray) { local.add(segment) }
-        override fun appendRealtimeChatAudio(block: ByteArray) = Unit
-        override fun startRealtimeChat() = Unit
-        override fun finishRealtimeChat() = Unit
+        val realtime = mutableListOf<ByteArray>();var chatStarts = 0;var chatFinishes = 0
+        override fun appendRealtimeChatAudio(block: ByteArray) { realtime.add(block) }
+        override fun startRealtimeChat() { chatStarts++ }
+        override fun finishRealtimeChat() { chatFinishes++ }
         override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) = Unit
         override fun onInteractionExpired(interactionId: String) = Unit
         override fun resetDialogue() = Unit
@@ -363,4 +365,96 @@ class OpenCaptureBridgeTest {
         assertFalse(r.start(false));c.close()
     }
 
+    @Test fun `chat admits only current processed owner and clips pending idle prefix across restart`() = runTest {
+        val f = Front();val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val late = mutableListOf<CaptureFrontendBatch>()
+        val capture = object : RecordingCapture by r {
+            override fun startMonitoring() = true
+            override fun drainFrontendBatches() = r.drainFrontendBatches()+late.toList().also { late.clear() }
+        }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        sourceBlock(r,1) // Idle queue before acceptance, start cutoff is 512 samples.
+        c.onForeground();c.setChatMode(true)
+        f.position = 256 // Simulates an idle partial DSP frame emitted after admission.
+        sourceBlock(r,2)
+        val accepted = r.drainFrontendBatches()
+        assertEquals(512L,accepted.last().batch.processedBlocks.first().startSample)
+        assertNotNull(accepted.last().inputEpoch)
+        late.addAll(accepted);runCurrent()
+        assertArrayEquals(ByteArray(512) { 3 },p.realtime.single())
+        c.setChatMode(false);c.setChatMode(true)
+        late.addAll(accepted);sourceBlock(r,3);runCurrent()
+        assertEquals(2,p.realtime.size);assertArrayEquals(ByteArray(512) { 4 },p.realtime.last())
+        assertEquals(0,f.starts);assertTrue(p.local.isEmpty());assertEquals(0,p.finish)
+        c.setChatMode(false);assertEquals(2,p.chatFinishes);c.close()
+    }
+
+    @Test fun `current chat native or queue failure closes session once without normal finalization`() = runTest {
+        for (overflow in listOf(false,true)) {
+            val currentScope = kotlinx.coroutines.CoroutineScope(backgroundScope.coroutineContext +
+                kotlinx.coroutines.SupervisorJob(backgroundScope.coroutineContext[kotlinx.coroutines.Job]))
+            val f = Front();val p = Pipeline();val states = mutableListOf<RecordingLifecycleSnapshot>()
+            val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = currentScope,
+                frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() },frontendQueueCapacity = 1)
+            val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
+            val c = RecordingCoordinator(capture,wake(),p,currentScope,{false},states::add,elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+            c.onForeground();c.setChatMode(true);sourceBlock(r,1);runCurrent()
+            if (overflow) { sourceBlock(r,2);sourceBlock(r,3) } else { f.fail = true;sourceBlock(r,2) }
+            val calls = f.calls;sourceBlock(r,4);runCurrent()
+            assertFalse(c.isRecording);assertFalse(c.isChatLocked)
+            assertFalse(states.last().recording);assertFalse(states.last().chatMode)
+            assertEquals(1,p.chatFinishes);assertEquals(1,p.realtime.size)
+            assertTrue(p.local.isEmpty());assertTrue(p.cloud.isEmpty());assertEquals(0,p.finish);assertEquals(0,f.finishes)
+            assertEquals(calls,f.calls);assertNotNull(r.frontendFailure)
+            c.onBackground();c.setChatMode(false);assertEquals(1,p.chatFinishes);c.close()
+        }
+    }
+
+    @Test fun `long chat has bounded history without retained turn or duplicate DSP`() = runTest {
+        val f = Front().apply { retentionBudget = 2048 };val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        c.onForeground();c.setChatMode(true)
+        repeat(2000) { sourceBlock(r,1);runCurrent() } // 64 seconds; controlled ordinary retention budget is only 2 blocks.
+        assertEquals(2000,f.calls);assertEquals(2000,p.realtime.size);assertEquals(0,f.starts)
+        assertNull(r.frontendFailure);assertTrue(c.isRecording)
+        val history = AudioRecorder::class.java.getDeclaredField("historySamples").apply { isAccessible = true }.getInt(r)
+        assertTrue(history <= 77*512)
+        c.onBackground();assertEquals(1,p.chatFinishes);assertEquals(0,f.finishes)
+        assertTrue(p.local.isEmpty());assertTrue(p.cloud.isEmpty());c.close()
+    }
+
+    @Test fun `later chat failure preserves previously closed ordinary completion`() = runTest {
+        val f = Front();val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        assertTrue(r.start(false));repeat(10) { sourceBlock(r,it) }
+        val closed = requireNotNull(r.stopAndSnapshot())
+        val expected = (0..9).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
+        val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        c.onForeground();c.setChatMode(true);f.fail = true;sourceBlock(r,99);runCurrent()
+        assertFalse(c.isRecording);assertEquals(1,p.chatFinishes)
+        assertNotEquals(closed.inputEpoch,r.frontendFailure?.inputEpoch)
+        assertEquals(10,closed.batches.size);assertArrayEquals(expected,closed.segments.single());assertNull(closed.failure)
+        assertTrue(p.local.isEmpty());assertTrue(p.cloud.isEmpty());assertEquals(0,p.finish);c.close()
+    }
+
+    @Test fun `switching unfinished ordinary capture to chat creates a fresh streaming owner`() = runTest {
+        val f = Front();val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        c.onForeground();c.startManualTurn();val ordinary = r.inputEpoch;sourceBlock(r,1)
+        c.setChatMode(true);sourceBlock(r,2);runCurrent()
+        assertNotEquals(ordinary,r.inputEpoch);assertEquals(1,p.chatStarts)
+        assertArrayEquals(ByteArray(1024) { 3 },p.realtime.single())
+        assertTrue(p.local.isEmpty());assertTrue(p.cloud.isEmpty());assertEquals(0,f.finishes)
+        c.close();assertEquals(1,p.chatFinishes)
+    }
 }

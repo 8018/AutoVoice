@@ -18,6 +18,7 @@ import com.autovoice.app.RecordingCapture
 import com.autovoice.app.CaptureFrontendBatch
 import com.autovoice.app.CaptureFrontendFailure
 import com.autovoice.app.CaptureCompletion
+import com.autovoice.app.CaptureStreamingInput
 import com.autovoice.audiofrontend.FrontendBatch
 import com.autovoice.audiofrontend.VadPurpose
 import com.autovoice.audiofrontend.VadObservation
@@ -178,6 +179,7 @@ class AudioRecorder(
     @Volatile override var frontendFailure: CaptureFrontendFailure? = null
         private set
     private var inputCounter = 0L
+    private var streamingInput: CaptureStreamingInput? = null
     private var capturedSamples = 0L
     private var inputStartSample = 0L
     private var completedTail = ByteArray(0)
@@ -230,6 +232,18 @@ class AudioRecorder(
     override fun drainFrontendBatches(): List<CaptureFrontendBatch> = synchronized(turnProcessingLock) {
         orderedBatches.toList().also { orderedBatches.clear() }
     }
+    override fun beginStreamingInput(): CaptureStreamingInput? = synchronized(turnProcessingLock) {
+        if (closed || !frontend.continuousProcessing || turnActive || streamingInput != null ||
+            frontendFailure != null || frontend.unavailabilityReason != null) return@synchronized null
+        CaptureStreamingInput(++inputCounter,captureStreamEpoch.get(),capturedSamples).also {
+            streamingInput = it;inputEpoch = it.inputEpoch
+            followUpListening = false;bargeInListening = false
+        }
+    }
+    override fun endStreamingInput() = synchronized(turnProcessingLock) {
+        streamingInput?.let { owner -> orderedBatches.removeAll { it.inputEpoch == owner.inputEpoch } }
+        streamingInput = null;inputEpoch = null
+    }
     private fun beginFrontendInput(includeProcessedPreRoll: Boolean) {
         if (!frontend.continuousProcessing) { frontend.startTurn();return }
         val history = if (includeProcessedPreRoll) selectedProcessedPreRoll() else null
@@ -256,7 +270,8 @@ class AudioRecorder(
     private fun failOpenInput(error: Throwable) {
         if (frontendFailure != null) return
         val failure = initializationError(error)
-        frontendFailure = CaptureFrontendFailure(if (turnActive) inputEpoch else null,failure)
+        frontendFailure = CaptureFrontendFailure(streamingInput?.inputEpoch ?: if (turnActive) inputEpoch else null,failure)
+        streamingInput = null
         turnActive = false;completedTail = ByteArray(0);completedSegments = emptyList();orderedBatches.clear()
         frontend.abortInput()
         captureToken?.let { captureReporter.report(it,ComponentUpdate.health(Health.UNAVAILABLE,failure)) }
@@ -303,6 +318,7 @@ class AudioRecorder(
     fun configureAudioProcessing(vad: VadConfig, ecnr: String, testAudioAsset: String? = null) {
         check(!closed) { "audio recorder is closed" }
         require(!turnActive) { "audio processing cannot be reconfigured during an active turn" }
+        require(streamingInput == null) { "audio processing cannot be reconfigured during streaming input" }
         require(!monitoringRequested) { "audio processing cannot be reconfigured while monitoring" }
         if (testAudioAsset != activeTestAudioAsset) {
             testAudioSource = TestAudioSource.fromConfig(context, testAudioAsset)
@@ -483,6 +499,7 @@ class AudioRecorder(
     @Synchronized
     override fun start(includeBargeInPreRoll: Boolean): Boolean {
         if (closed) return false
+        if (streamingInput != null) return false
         if (turnActive) return false
         frontendUnavailableReason?.let {
             Log.w(TAG, "audio frontend unavailable: $it")
@@ -579,7 +596,10 @@ class AudioRecorder(
     }
 
     private fun stopCapture() {
-        synchronized(turnProcessingLock) { captureStreamEpoch.incrementAndGet() }
+        synchronized(turnProcessingLock) {
+            captureStreamEpoch.incrementAndGet()
+            if (streamingInput != null) endStreamingInput()
+        }
         readJob?.cancel()
         readJob = null
         val audioRecord = record
@@ -600,6 +620,7 @@ class AudioRecorder(
         if (closed) return
         synchronized(turnProcessingLock) {
             closed = true
+            streamingInput = null
             captureStreamEpoch.incrementAndGet()
             monitoringRequested = false
             turnActive = false
@@ -691,7 +712,10 @@ class AudioRecorder(
                     try {
                         val result = frontend.process(block);capturedSamples += block.size/2
                         rememberProcessed(result)
-                        val event = CaptureFrontendBatch(if (turnActive) inputEpoch else null,if (turnActive) activePcm(result) else result,
+                        val streaming = streamingInput
+                        val event = CaptureFrontendBatch(streaming?.inputEpoch ?: if (turnActive) inputEpoch else null,
+                            if (streaming != null) result.inSampleRange(streaming.startSample,Long.MAX_VALUE)
+                            else if (turnActive) activePcm(result) else result,
                             if (followUpListening) followUpEpoch else null,if (bargeInListening) bargeInEpoch else null)
                         check(orderedBatches.size < frontendQueueCapacity) { "capture queue overflow" }
                         orderedBatches.addLast(event)
