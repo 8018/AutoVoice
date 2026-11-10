@@ -17,7 +17,7 @@ internal class CloudConnectionReporting(private val reporter: ComponentReporter)
             if (event.attempt <= attempt) return
             attempt = event.attempt
             if (!initialized) token = reporter.start("connect")
-            else token?.let { reporter.report(it,ComponentUpdate.health(Health.UNKNOWN)) }
+            else token?.let { reporter.report(it,ComponentUpdate.health(Health.UNAVAILABLE)) }
             return
         }
         if (event.attempt != attempt) return
