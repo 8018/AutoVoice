@@ -17,6 +17,7 @@ import com.autovoice.audiofrontend.vad.VadEvent
 import com.autovoice.app.RecordingCapture
 import com.autovoice.app.CaptureFrontendBatch
 import com.autovoice.app.CaptureFrontendFailure
+import com.autovoice.app.CaptureCompletion
 import com.autovoice.audiofrontend.FrontendBatch
 import com.autovoice.audiofrontend.VadPurpose
 import com.autovoice.audiofrontend.VadObservation
@@ -565,6 +566,18 @@ class AudioRecorder(
         if (testAudioSource != null || !monitoringRequested) stopCapture()
     }
 
+    @Synchronized
+    override fun stopAndSnapshot(): CaptureCompletion? {
+        if (!frontend.continuousProcessing) return null
+        return synchronized(turnProcessingLock) {
+            stop()
+            CaptureCompletion(inputEpoch,orderedBatches.toList(),completedTail.copyOf(),
+                completedSegments.map { it.copyOf() },frontendFailure).also {
+                orderedBatches.clear();completedTail = ByteArray(0);completedSegments = emptyList()
+            }
+        }
+    }
+
     private fun stopCapture() {
         synchronized(turnProcessingLock) { captureStreamEpoch.incrementAndGet() }
         readJob?.cancel()
@@ -666,9 +679,13 @@ class AudioRecorder(
     }
 
     private fun handleCapturedBlock(block: ByteArray, streamEpoch: Long) {
+        val admitted = synchronized(turnProcessingLock) { !closed && streamEpoch == captureStreamEpoch.get() }
+        if (!admitted) return
+        // Raw observers may start/stop capture inline. Preserve legacy raw-before-DSP ordering,
+        // then recheck the original producer token rather than adopting any new owner.
+        _rawPcmBlocks.tryEmit(block.copyOf())
         val changed = synchronized(turnProcessingLock) {
             if (closed || streamEpoch != captureStreamEpoch.get()) return@synchronized false
-            _rawPcmBlocks.tryEmit(block.copyOf())
             if (frontend.continuousProcessing) {
                 if (frontendFailure != null || frontend.unavailabilityReason != null) false else {
                     try {

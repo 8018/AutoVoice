@@ -8,6 +8,9 @@ import kotlinx.coroutines.test.runCurrent
 import com.autovoice.audiofrontend.*
 import com.autovoice.voicecore.health.ErrorCode
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
@@ -289,6 +292,75 @@ class OpenCaptureBridgeTest {
         sourceBlock(r,3);assertEquals(1,second.calls)
         assertArrayEquals(ByteArray(1024) { 4 },r.drainFrontendBatches().single().batch.processedPcm)
         r.close()
+    }
+
+    @Test fun `inline raw observer runs after processing lock and rejected blocks publish nothing`() = runTest {
+        val f = Front()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val lock = AudioRecorder::class.java.getDeclaredField("turnProcessingLock").apply { isAccessible = true }.get(r)
+        val held = mutableListOf<Boolean>()
+        val processedBeforeRaw = mutableListOf<Int>()
+        val observer = backgroundScope.launch(Dispatchers.Unconfined,start = CoroutineStart.UNDISPATCHED) {
+            r.rawPcmBlocks.collect {
+                held.add(Thread.holdsLock(lock));processedBeforeRaw.add(f.calls)
+                if (it[0] == 2.toByte()) r.close()
+            }
+        }
+        val delayed = AudioRecorder::class.java.getDeclaredMethod("handleCapturedBlock",ByteArray::class.java,Long::class.javaPrimitiveType).apply { isAccessible = true }
+        delayed.invoke(r,ByteArray(1024),-1L);assertTrue(held.isEmpty())
+        sourceBlock(r,1)
+        assertEquals(listOf(false),held);assertEquals(listOf(0),processedBeforeRaw);assertEquals(1,f.calls)
+        sourceBlock(r,2) // Inline observer closes capture: the original admitted owner cannot enter DSP.
+        assertEquals(listOf(false,false),held);assertEquals(listOf(0,1),processedBeforeRaw);assertEquals(1,f.calls)
+        sourceBlock(r,3);assertEquals(2,held.size)
+        observer.cancel()
+    }
+
+    @Test fun `block arriving after initial drain joins atomic normal completion exactly once`() = runTest {
+        val f = Front();val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        var inject = false
+        val capture = object : RecordingCapture by r {
+            override fun drainFrontendBatches(): List<CaptureFrontendBatch> {
+                val drained = r.drainFrontendBatches()
+                if (inject) { inject = false;sourceBlock(r,10) }
+                return drained
+            }
+        }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        c.startManualTurn();repeat(10) { sourceBlock(r,it) };inject = true
+        c.stopTurn()
+        val expected = (0..10).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
+        assertArrayEquals(expected,p.local.single());assertArrayEquals(expected,p.cloud.single())
+        assertArrayEquals(expected,p.streamed.toByteArray());assertEquals(1,p.finish)
+        c.close()
+    }
+
+    @Test fun `idle failure after snapshot cannot erase normally closed input before consumption`() = runTest {
+        val f = Front();val p = Pipeline()
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val capture = object : RecordingCapture by r {
+            override fun stopAndSnapshot(): CaptureCompletion? {
+                val snapshot = r.stopAndSnapshot()
+                f.fail = true;sourceBlock(r,99)
+                return snapshot
+            }
+            override fun finishProcessedAudio(): ByteArray {
+                f.fail = true;sourceBlock(r,99)
+                return r.finishProcessedAudio()
+            }
+        }
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        c.startManualTurn();val epoch = r.inputEpoch;repeat(10) { sourceBlock(r,it) }
+        c.stopTurn()
+        val expected = (0..9).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
+        assertArrayEquals(expected,p.local.single());assertArrayEquals(expected,p.cloud.single())
+        assertArrayEquals(expected,p.streamed.toByteArray());assertEquals(1,p.finish)
+        assertNotNull(r.frontendFailure);assertNull(r.frontendFailure?.inputEpoch);assertNotNull(epoch)
+        assertFalse(r.start(false));c.close()
     }
 
 }

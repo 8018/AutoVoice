@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 data class CaptureFrontendBatch(val inputEpoch: Long?, val batch: com.autovoice.audiofrontend.FrontendBatch,
     val followUpEpoch: Long? = null, val bargeInEpoch: Long? = null, val speechConfirmedForInput: Boolean = false)
 data class CaptureFrontendFailure(val inputEpoch: Long?, val error: com.autovoice.voicecore.health.ComponentError)
+data class CaptureCompletion(val inputEpoch: Long?, val batches: List<CaptureFrontendBatch>,
+    val tail: ByteArray, val segments: List<ByteArray>, val failure: CaptureFrontendFailure? = null)
 
 /** Android 采集驱动边界；实现只管理 AudioRecord/VAD/RNNoise 资源，不决定音频去向。 */
 interface RecordingCapture : AutoCloseable {
@@ -25,6 +27,8 @@ interface RecordingCapture : AutoCloseable {
     val inputEpoch: Long? get() = null
     val frontendFailure: CaptureFrontendFailure? get() = null
     fun drainFrontendBatches(): List<CaptureFrontendBatch> = emptyList()
+    /** Null preserves the legacy stop/getter path. Open implementations freeze ownership atomically. */
+    fun stopAndSnapshot(): CaptureCompletion? = null
     fun abortInput() = stop()
     fun detectAuxiliarySpeech(event: CaptureFrontendBatch, purpose: com.autovoice.audiofrontend.VadPurpose): Boolean = false
     val pcmBlocks: SharedFlow<ByteArray>
@@ -285,14 +289,23 @@ internal class RecordingCoordinator(
 
     private fun stopTurnAfterDrain() {
         if (!recording || chatLocked) return
+        val completion = capture.stopAndSnapshot()
+        if (completion != null) {
+            if (completion.inputEpoch != activeInputEpoch || completion.failure != null) {
+                cancelTurn(rearm = false)
+                return
+            }
+            // Snapshot owns its accepted range even if ongoing idle capture fails now.
+            consumeCapturedBatches(completion.batches,allowStop = false)
+        }
         recording = false
         if (capture.frontendBatchSignal == null) resetCloudStreamGate()
         wakeTurn = false
         wakeTurnTimeoutJob?.cancel()
         wakeTurnTimeoutJob = null
-        capture.stop()
+        if (completion == null) capture.stop()
         updateState { it.copy(recording = false) }
-        val tail = capture.finishProcessedAudio()
+        val tail = completion?.tail ?: capture.finishProcessedAudio()
         if (capture.frontendBatchSignal != null) {
             if (cloudVadActive && tail.isNotEmpty()) pipeline.appendStreamingCloudAudio(tail)
             resetCloudStreamGate()
@@ -301,7 +314,7 @@ internal class RecordingCoordinator(
             if (tail.isNotEmpty()) denoisedBlocks += tail
             concatBlocks(denoisedBlocks).also { denoisedBlocks.clear() }
         }
-        val cloudSegments = capture.finishSegments()
+        val cloudSegments = completion?.segments ?: capture.finishSegments()
         if (denoised.size >= MIN_SEGMENT_BYTES && cloudSegments.isNotEmpty()) {
             pipeline.finishStreamingCloudAudio()
         } else {
@@ -394,7 +407,11 @@ internal class RecordingCoordinator(
             }
             return
         }
-        for (event in capture.drainFrontendBatches()) {
+        consumeCapturedBatches(capture.drainFrontendBatches(),allowStop)
+    }
+
+    private fun consumeCapturedBatches(batches: List<CaptureFrontendBatch>, allowStop: Boolean) {
+        for (event in batches) {
             if (chatLocked) {
                 if (recording) event.batch.processedBlocks.forEach { pipeline.appendRealtimeChatAudio(it.pcm) }
                 continue
