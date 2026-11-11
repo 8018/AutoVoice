@@ -44,4 +44,7 @@ internal class ChannelComponentReporting(val registry: ComponentStatusRegistry, 
         val r = reporter(id);r.report(r.start(stage), ComponentUpdate.failed(ComponentError(code)))
     }
     fun disabled(id: String) { val r = reporter(id);r.report(r.start("disabled"), ComponentUpdate.disabled()) }
+    fun preparePlayback() {
+        if (channel == "iflytek") disabled("render_reference")
+    }
 }

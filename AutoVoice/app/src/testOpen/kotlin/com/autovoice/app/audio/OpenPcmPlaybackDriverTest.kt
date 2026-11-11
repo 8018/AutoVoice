@@ -30,7 +30,7 @@ class OpenPcmPlaybackDriverTest {
         val pcm = ByteArrayOutputStream();var head = 0L;var autoDrain = true;var result: Int? = null
         val partials = ArrayDeque<Int>();var closed = 0;var interrupted = 0;var gain = 1f
         var onWrite: () -> Unit = {};var changed: () -> Unit = {}
-        override fun play() = Unit
+        override fun play(queuedFrames: Int) = Unit
         override fun write(pcm: ByteArray,offset: Int,size: Int): Int {
             val n = (partials.removeFirstOrNull() ?: result ?: size).coerceAtMost(size)
             if (n > 0) this.pcm.write(pcm,offset,n)
@@ -43,8 +43,9 @@ class OpenPcmPlaybackDriverTest {
     }
     private class Platform(val track: Track = Track()) : PlaybackPcmPlatform {
         var opens = 0;var closes = 0
+        var failProbe = false
         override fun openTrack(onRouteChanged: () -> Unit): PlaybackPcmTrack {
-            if (++opens == 1) return Track().also { closes++ }
+            if (++opens == 1) { check(!failProbe) { "controlled initial probe failure" };return Track().also { closes++ } }
             track.changed = onRouteChanged;return track
         }
         override suspend fun decode(reply: AudioReply,emit: suspend (PlaybackPcmFormat,ByteArray) -> Unit) {
@@ -163,5 +164,38 @@ class OpenPcmPlaybackDriverTest {
         val currentEpoch = r.frames.last().playbackId;oldCallback()
         assertEquals(Health.DEGRADED,updates.last().update.health);assertTrue(r.cutoff < currentEpoch)
         d.close();runCurrent()
+    }
+    @Test fun `terminal observer exception cannot strand stream completion or duplicate termination`() = runTest {
+        val p = Platform();val reference = Reference();var terminalAttempts = 0
+        val d = OpenPcmPlaybackDriver(p,backgroundScope,reference,{ stage,_,_ ->
+            if (stage != "start") { terminalAttempts++;error("controlled observer exception") }
+        },dispatcher = StandardTestDispatcher(testScheduler),nowMs = { testScheduler.currentTime },stallMs = 50)
+        val chunks = Channel<ByteArray>(1);chunks.send(ByteArray(320));chunks.close()
+        val end = CompletableDeferred(AudioStreamEnd())
+        val playing = backgroundScope.launch { d.playStream(StreamingAudioReply("audio/pcm",16000,1,"pcm_s16le",chunks,end),PlaybackIdentity("observer")) }
+        try {
+            runCurrent();assertTrue(playing.isCompleted);assertEquals(1,p.track.closed)
+            d.stop();d.close();runCurrent();assertEquals(1,terminalAttempts)
+        } finally { playing.cancel();runCatching { d.close() } }
+    }
+    @Test fun `actual successful output retries failed probe with fresh initialization then uses runtime health`() = runTest {
+        val updates = mutableListOf<ComponentStatusEvent>()
+        val reporter = ComponentReporter(ComponentDescriptor("playback","audio.track","open"),1,ComponentStatusSink { updates.add(it) })
+        val p = Platform().apply { failProbe = true };val reference = Reference();val stages = mutableListOf<String>()
+        val d = OpenPcmPlaybackDriver(p,backgroundScope,reference,{ stage,_,_ -> stages.add(stage) },playbackReporter = reporter,
+            dispatcher = StandardTestDispatcher(testScheduler),nowMs = { testScheduler.currentTime },stallMs = 50)
+        try {
+            runCurrent();val failed = updates.last();assertEquals(Lifecycle.FAILED,failed.update.lifecycle)
+            d.play(AudioReply("audio/pcm",ByteArray(640)),PlaybackIdentity("recovered"));runCurrent()
+            val ready = updates.lastOrNull { it.update.lifecycle == Lifecycle.READY }
+            assertNotNull(ready);assertNotEquals(failed.token.attemptId,ready!!.token.attemptId)
+            assertEquals(listOf("start","completed"),stages)
+            p.track.result = -1;d.play(AudioReply("audio/pcm",ByteArray(640)),PlaybackIdentity("runtime-failed"));runCurrent()
+            assertEquals(Health.UNAVAILABLE,updates.last().update.health);assertNull(updates.last().update.lifecycle)
+            assertEquals(ready.token,updates.last().token)
+            p.track.result = null;d.play(AudioReply("audio/pcm",ByteArray(640)),PlaybackIdentity("runtime-recovery"));runCurrent()
+            assertEquals(Health.HEALTHY,updates.last().update.health);assertEquals(ready.token,updates.last().token)
+            assertEquals(2,updates.count { it.update.lifecycle == Lifecycle.INITIALIZING })
+        } finally { d.close();runCurrent() }
     }
 }

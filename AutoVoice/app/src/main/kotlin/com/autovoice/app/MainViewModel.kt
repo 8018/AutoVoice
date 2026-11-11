@@ -261,7 +261,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cloudRouteEnabled = config.cloud.enabled
             _uiState.update { it.copy(mode = mode) }
             if (!config.cloud.enabled) reporting.disabled("cloud")
-            if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
+            reporting.preparePlayback()
             if (speechChannel.id == "iflytek") {
             val playback = reporting.reporter("playback")
             val playbackToken = playback.start("create")
@@ -404,8 +404,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         cloudRouteEnabled = config.cloud.enabled
         if (!config.cloud.enabled) reporting.disabled("cloud")
-        if (speechChannel.id == "iflytek") reporting.disabled("render_reference")
-        else reporting.unavailable("render_reference", ErrorCode.IMPLEMENTATION_UNAVAILABLE, "create")
+        reporting.preparePlayback()
         if (speechChannel.id == "iflytek") {
             val playback = reporting.reporter("playback")
             playback.report(playback.start("create"), if (ttsPlayer != null) ComponentUpdate.ready() else ComponentUpdate.failed(ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED)))

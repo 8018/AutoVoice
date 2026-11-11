@@ -5,6 +5,20 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class ComponentAssemblyTest {
+    @Test fun `mode construction leaves Open reference outcomes to actual driver and keeps legacy disabled`() {
+        for (channel in listOf("open","iflytek")) {
+            val registry = ComponentStatusRegistry()
+            repeat(2) {
+                val reporting = ChannelComponentReporting(registry,channel,registry.beginGeneration(channel));reporting.registerDefaults()
+                val config = reporting.reporter("config");config.report(config.start("fixture"),ComponentUpdate.ready())
+                reporting.preparePlayback()
+                val reference = registry.snapshot.value.components.getValue("render_reference")
+                assertEquals(if (channel == "open") Lifecycle.NOT_STARTED else Lifecycle.DISABLED,reference.lifecycle)
+                assertFalse(registry.snapshot.value.recentEvents.any { e -> e.token.generation == registry.snapshot.value.generation &&
+                    e.descriptor.componentId == "render_reference" && e.update.lifecycle == Lifecycle.FAILED })
+            }
+        }
+    }
     @Test fun `bound auxiliary routes honor sticky capture failure while text and wake remain independent`() {
         val registry = ComponentStatusRegistry();val reporting = ChannelComponentReporting(registry,"open",registry.beginGeneration("open"))
         reporting.registerDefaults()

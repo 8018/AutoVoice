@@ -152,6 +152,8 @@ private class AndroidTrack(private val context: Context,private val track: Audio
         }
     }
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val transportLock = Any()
+    private var interrupted = false
     private var routeObserved = false;private var volumeObserved = false
     private var headWrap = 0L;private var previousHead = 0L
     init {
@@ -162,13 +164,27 @@ private class AndroidTrack(private val context: Context,private val track: Audio
             else context.registerReceiver(volume,filter)
         }.isSuccess
     }
-    override fun play() { track.play() }
+    override fun play(queuedFrames: Int) = synchronized(transportLock) {
+        if (closed.get() || interrupted) return
+        // Start from real queued PCM even when the entire output is shorter than the track buffer.
+        if (Build.VERSION.SDK_INT >= 31) {
+            if (queuedFrames < track.startThresholdInFrames) track.setStartThresholdInFrames(queuedFrames)
+        } else if (queuedFrames < track.bufferSizeInFrames) {
+            track.setBufferSizeInFrames(queuedFrames)
+        }
+        track.play()
+    }
     override fun write(pcm: ByteArray,offset: Int,size: Int) = track.write(pcm,offset,size,AudioTrack.WRITE_NON_BLOCKING)
     override fun playedFrames(): Long {
         val head = track.playbackHeadPosition.toLong() and 0xffffffffL
         if (head < previousHead) headWrap += 1L shl 32
         previousHead = head;return headWrap+head
     }
+    override fun diagnostics(): Map<String,Any?> = mapOf(
+        "playedFrames" to playedFrames(),"bufferFrames" to track.bufferSizeInFrames,
+        "bufferCapacityFrames" to track.bufferCapacityInFrames,"playState" to track.playState,
+        "underruns" to track.underrunCount,
+        "startThresholdFrames" to if (Build.VERSION.SDK_INT >= 31) track.startThresholdInFrames else null)
     override fun renderTiming(frame: Long): PlaybackRenderTiming? {
         if (!routeObserved || !volumeObserved) return null
         val route = track.routedDevice ?: return null
@@ -188,11 +204,21 @@ private class AndroidTrack(private val context: Context,private val track: Audio
         }
         return PlaybackRenderTiming(nanos,gain,route.id)
     }
-    override fun interrupt() { runCatching { track.pause() };runCatching { track.flush() } }
+    override fun interrupt() = synchronized(transportLock) {
+        interrupted = true
+        if (!closed.get()) pauseAndFlush()
+    }
+    private fun pauseAndFlush() {
+        runCatching { track.pause() }
+        runCatching { track.flush() }
+    }
     override fun close() {
         if (!closed.compareAndSet(false,true)) return
         if (routeObserved) runCatching { track.removeOnRoutingChangedListener(routing) }
         if (volumeObserved) runCatching { context.unregisterReceiver(volume) }
-        runCatching { track.pause() };runCatching { track.flush() };track.release()
+        synchronized(transportLock) {
+            pauseAndFlush()
+            track.release()
+        }
     }
 }

@@ -18,11 +18,12 @@ internal data class PlaybackPcmFormat(val rate: Int,val channels: Int,val encodi
 }
 internal data class PlaybackRenderTiming(val timestampNanos: Long,val gain: Float,val route: Int)
 internal interface PlaybackPcmTrack : AutoCloseable {
-    fun play()
+    fun play(queuedFrames: Int)
     /** Nonblocking bytes accepted; zero means backpressure, negative means failure. */
     fun write(pcm: ByteArray,offset: Int,size: Int): Int
     fun playedFrames(): Long
     fun renderTiming(frame: Long): PlaybackRenderTiming?
+    fun diagnostics(): Map<String,Any?> = emptyMap()
     fun interrupt()
 }
 internal interface PlaybackPcmPlatform {
@@ -51,14 +52,18 @@ internal class OpenPcmPlaybackDriver(
         @Volatile var referenceRevoked = false
         var route: Int? = null;var gain: Float? = null
         var frames = 0L;var started = false
+        var phase = "track_create"
     }
     private val lock = Any()
     private val ownerJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + dispatcher + ownerJob)
     private val pending = Channel<Output>(Channel.CONFLATED)
     private var current: Output? = null
-    private var closed = false
-    private val playbackToken = playbackReporter.start("audio_track_create")
+    @Volatile private var closed = false
+    private val playbackHealthLock = Any()
+    private var playbackToken = playbackReporter.start("audio_track_create")
+    private var playbackInitialized = false
+    private var playbackInitFailed = false
     private val referenceToken = referenceReporter.start("awaiting_playback")
     init {
         require(stallMs in 1..10_000)
@@ -67,10 +72,10 @@ internal class OpenPcmPlaybackDriver(
         scope.launch {
             try {
                 platform.openTrack {}.close()
-                playbackReporter.report(playbackToken,ComponentUpdate.ready())
+                playbackConfigured()
             } catch (e: Throwable) {
                 e.rethrowCancellationOrFatal()
-                playbackReporter.report(playbackToken,ComponentUpdate.failed(ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED,retryable = true)))
+                playbackUnavailable()
             }
             for (output in pending) {
                 if (!output.active.get()) continue
@@ -105,7 +110,28 @@ internal class OpenPcmPlaybackDriver(
     override fun close() {
         synchronized(lock) { if (closed) return;closed = true }
         stop();pending.cancel();ownerJob.cancel()
-        playbackReporter.close(playbackToken);referenceReporter.close(referenceToken)
+        synchronized(playbackHealthLock) { playbackReporter.close(playbackToken) }
+        referenceReporter.close(referenceToken)
+    }
+    private fun beginPlaybackAttempt() = synchronized(playbackHealthLock) {
+        if (!closed && !playbackInitialized && playbackInitFailed) {
+            playbackToken = playbackReporter.start("audio_track_retry");playbackInitFailed = false
+        }
+    }
+    private fun playbackConfigured() = synchronized(playbackHealthLock) {
+        if (!closed && !playbackInitialized) {
+            playbackReporter.report(playbackToken,ComponentUpdate.ready());playbackInitialized = true
+        }
+    }
+    private fun playbackUnavailable() = synchronized(playbackHealthLock) {
+        if (!closed) {
+            val error = ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED,retryable = true)
+            if (playbackInitialized) playbackReporter.report(playbackToken,ComponentUpdate.health(Health.UNAVAILABLE,error))
+            else { playbackInitFailed = true;playbackReporter.report(playbackToken,ComponentUpdate.failed(error)) }
+        }
+    }
+    private fun playbackHealthy() = synchronized(playbackHealthLock) {
+        if (!closed) playbackReporter.report(playbackToken,ComponentUpdate.health(Health.HEALTHY))
     }
     private fun interrupt(output: Output) {
         output.active.set(false);output.job?.cancel()
@@ -122,21 +148,28 @@ internal class OpenPcmPlaybackDriver(
     private fun finish(output: Output,stage: String) {
         if (!output.terminal.compareAndSet(false,true)) return
         output.active.set(false)
-        events(stage,if (stage == "failed") "error" else if (stage == "interrupted") "warn" else "info",
+        try { events(stage,if (stage == "failed") "error" else if (stage == "interrupted") "warn" else "info",
             output.identity.payload()+mapOf("frames" to output.frames,"sampleRate" to 16000,"channels" to 1,
-                "errorCode" to if (stage == "failed") "PLAYBACK_FAILED" else null))
-        output.done.complete(Unit)
-        synchronized(lock) { if (current === output) current = null }
+                "failureStage" to if (stage == "failed") output.phase else null,
+                "errorCode" to if (stage == "failed") "PLAYBACK_FAILED" else null)+
+                (if (stage == "failed") runCatching { output.track?.diagnostics() ?: emptyMap() }.getOrDefault(emptyMap()) else emptyMap()))
+        } catch (e: Throwable) { e.rethrowCancellationOrFatal() }
+        finally {
+            output.done.complete(Unit)
+            synchronized(lock) { if (current === output) current = null }
+        }
     }
     private suspend fun runOutput(output: Output) {
         var track: PlaybackPcmTrack? = null
         try {
             currentCoroutineContext().ensureActive()
             check(output.active.get())
+            beginPlaybackAttempt()
             track = platform.openTrack { revokeReference(output) }
             output.track = track
             if (!output.active.get()) return
-            track.play()
+            playbackConfigured()
+            output.phase = "decode"
             var converter: PlaybackPcmConverter? = null
             var format: PlaybackPcmFormat? = null
             suspend fun accept(spec: PlaybackPcmFormat,bytes: ByteArray) {
@@ -161,6 +194,7 @@ internal class OpenPcmPlaybackDriver(
             }
             requireNotNull(converter) { "empty playback" }.finish().forEach { write(output,track,it) }
             require(output.frames > 0) { "empty PCM playback" }
+            output.phase = "drain"
             var progress = track.playedFrames();var lastProgress = nowMs()
             while (track.playedFrames() < output.frames) {
                 currentCoroutineContext().ensureActive();check(output.active.get())
@@ -169,13 +203,14 @@ internal class OpenPcmPlaybackDriver(
                 check(nowMs()-lastProgress < stallMs) { "playback drain stalled" }
                 delay(5)
             }
+            output.phase = "semantic_wait"
             output.stream?.completion?.await() // Physical drain alone never finalizes stream semantics.
             if (output.active.get()) finish(output,"completed")
         } catch (e: CancellationException) { finish(output,"interrupted");throw e }
         catch (e: Throwable) {
             e.rethrowCancellationOrFatal()
             if (output.active.get()) {
-                playbackReporter.report(playbackToken,ComponentUpdate.health(Health.UNAVAILABLE,ComponentError(ErrorCode.COMPONENT_RUNTIME_FAILED,retryable = true)))
+                playbackUnavailable()
                 finish(output,"failed")
             }
         } finally {
@@ -186,6 +221,7 @@ internal class OpenPcmPlaybackDriver(
         }
     }
     private suspend fun write(output: Output,track: PlaybackPcmTrack,pcm: ByteArray) {
+        output.phase = "write"
         var offset = 0;var lastProgress = nowMs()
         while (offset < pcm.size) {
             currentCoroutineContext().ensureActive();check(output.active.get())
@@ -194,12 +230,15 @@ internal class OpenPcmPlaybackDriver(
             if (n == 0) { check(nowMs()-lastProgress < stallMs) { "PCM write stalled" };delay(5);continue }
             lastProgress = nowMs()
             if (!output.active.get()) return
+            val start = output.frames
+            output.frames += n / 2
             if (!output.started) {
+                track.play(n / 2)
+                if (!output.active.get()) return
                 output.started = true
-                playbackReporter.report(playbackToken,ComponentUpdate.health(Health.HEALTHY))
+                playbackHealthy()
                 events("start","info",output.identity.payload())
             }
-            val start = output.frames;output.frames += n/2
             if (!output.referenceRevoked) {
                 var timing = runCatching { track.renderTiming(start) }.getOrNull()
                 val waitStart = nowMs()

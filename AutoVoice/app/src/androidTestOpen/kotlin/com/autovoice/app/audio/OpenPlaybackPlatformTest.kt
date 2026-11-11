@@ -70,7 +70,10 @@ class OpenPlaybackPlatformTest {
         val terminal = CompletableDeferred<Pair<String,Map<String,Any?>>>()
         val reference = Reference();val identity = PlaybackIdentity("platform:stream")
         val driver = SelectedSpeechChannel.create().createPlaybackDriver(AudioPlayer { error("unused legacy playback") },
-            PlaybackDriverPorts(instrumentation.targetContext,scope,reference,{ stage,_,payload -> if (stage != "start") terminal.complete(stage to payload) },ComponentReporter.none(),ComponentReporter.none()))
+            PlaybackDriverPorts(instrumentation.targetContext,scope,reference,{ stage,_,payload ->
+                Log.i("OpenPlaybackProbe","stream event=$stage counters=$payload")
+                if (stage != "start") terminal.complete(stage to payload)
+            },ComponentReporter.none(),ComponentReporter.none()))
         val chunks = Channel<ByteArray>(2);val end = CompletableDeferred<AudioStreamEnd>()
         try {
             val playing = scope.launch { driver.playStream(StreamingAudioReply("audio/pcm",24000,1,"pcm_s16le",chunks,end),identity) }
