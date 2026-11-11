@@ -1,5 +1,6 @@
 package com.autovoice.app.audio
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.Intent
@@ -192,6 +193,8 @@ private class AndroidTrack(private val context: Context,private val track: Audio
         val manager = audio ?: return null
         if (Build.VERSION.SDK_INT < 28) return null // No reliable system gain observation.
         val gain = if (manager.isStreamMute(AudioManager.STREAM_MUSIC)) 0f else {
+            // AudioTrack resolves its routed device from outputs only. The type annotation also lists inputs.
+            @SuppressLint("WrongConstant")
             val db = manager.getStreamVolumeDb(AudioManager.STREAM_MUSIC,manager.getStreamVolume(AudioManager.STREAM_MUSIC),route.type)
             if (db == Float.NEGATIVE_INFINITY) 0f else 10.0.pow(db/20.0).toFloat().coerceIn(0f,1f)
         }
