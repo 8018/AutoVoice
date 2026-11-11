@@ -176,6 +176,15 @@ def auxiliary_allowed(path, component):
     return path in {f"symbols/arm64-v8a/{lib}.debug" for lib in LIBRARIES[component]}
 
 
+def trusted_artifact(lock, component):
+    artifact = lock["components"][component]["artifact"]
+    require(artifact.get("verification") == "verified", f"{component} artifact is not verified for release")
+    digests = [artifact.get("archive_sha256"), artifact.get("manifest_sha256"),
+               artifact.get("validation_report_sha256"), *artifact["files"].values()]
+    require(all(is_digest(d) for d in digests), "release digest is unknown")
+    return artifact
+
+
 def validate_bundle(archive, lock, mode, expected_sha256=None, requested_component=None):
     z, members = inventory(archive)
     with z:
@@ -188,9 +197,7 @@ def validate_bundle(archive, lock, mode, expected_sha256=None, requested_compone
         artifact = record["artifact"]
         actual_archive_hash = file_sha256(archive)
         if mode == "release":
-            require(artifact.get("verification") == "verified", "artifact is not verified for release")
-            digests = [artifact.get("archive_sha256"), artifact.get("manifest_sha256"), artifact.get("validation_report_sha256"), *artifact["files"].values()]
-            require(all(is_digest(d) for d in digests), "release digest is unknown")
+            trusted_artifact(lock, component)
             require(expected_sha256 is None, "release expected digest must come from the trusted lock")
             expected_sha256 = artifact["archive_sha256"]
         else:
@@ -270,6 +277,34 @@ def duplicate_ort(root):
             require(not libs.is_symlink(), "native library directory symlink is forbidden")
             for path in libs.rglob("libonnxruntime.so"):
                 require(path == canonical and not path.is_symlink(), f"duplicate ORT library: {path}")
+
+
+def verify_release_staging(lock, project_root):
+    root = Path(project_root).absolute()
+    artifacts = {component: trusted_artifact(lock, component) for component in LIBRARIES}
+    duplicate_ort(root)
+    for component, artifact in artifacts.items():
+        receipt_path = root / ".native/receipts" / f"{component}.json"
+        reject_symlink_parents(receipt_path, root)
+        require(receipt_path.is_file(), f"missing release staging receipt: {component}")
+        require(receipt_path.stat().st_size <= MAX_MANIFEST * 2, "release staging receipt exceeds size limit")
+        receipt = json.loads(receipt_path.read_text())
+        require(receipt.get("schema_version") == 1 and receipt.get("component") == component
+                and receipt.get("mode") == "release" and receipt.get("verification") == "verified",
+                f"invalid release staging receipt: {component}")
+        for field in ("archive_sha256", "manifest_sha256"):
+            require(receipt.get(field) == artifact[field], f"release staging receipt {field} mismatch: {component}")
+
+        destination = root / MODULES[component] / "src/main/jniLibs/arm64-v8a"
+        reject_symlink_parents(destination, root)
+        require(destination.is_dir(), f"missing release library directory: {component}")
+        require({path.name for path in destination.iterdir()} == set(LIBRARIES[component]),
+                f"release library set mismatch: {component}")
+        for name, digest in artifact["files"].items():
+            path = destination / name
+            reject_symlink_parents(path, root)
+            require(path.is_file() and path.stat().st_size <= MAX_UNPACKED, f"invalid release library: {name}")
+            require(file_sha256(path) == digest, f"release library SHA-256 mismatch: {name}")
 
 
 def install_bundle(component, libraries, receipt, project_root, dev_output=None):

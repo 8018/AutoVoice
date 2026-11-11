@@ -12,6 +12,7 @@ VENDOR_LIBS = {"libAIKIT.so", "libeabb2f029_v10170_aee.so", "libef7d69542_v10260
 LEGACY_LIBS = {"libonnxruntime.so", "libonnxruntime4j_jni.so", "librnnoise_jni.so"}
 OPEN_LIBS = {"libonnxruntime.so", "libautovoice_frontend_jni.so", "libsherpa-onnx-jni.so"}
 COMMON_ASSETS = {"cloud-test.pcm", "demo-dev.json", "demo-full.json", "demo-offline.json"}
+BASELINE_PROFILE = {"assets/dexopt/baseline.prof", "assets/dexopt/baseline.profm"}
 PROFILES = {
     "open-real": (OPEN_LIBS | VENDOR_LIBS, {"supplierconfig.json"}),
     "iflytek-real": (LEGACY_LIBS | VENDOR_LIBS, {"supplierconfig.json", "silero_vad.onnx"}),
@@ -31,6 +32,8 @@ def verify(apk: Path, profile: str) -> list[str]:
         files = {entry.filename for entry in entries if not entry.is_dir()}
         libraries = {name for name in files if name.startswith("lib/") or name.lower().endswith(".so")}
         assets = {name for name in files if name.startswith("assets/")}
+        if profile.endswith("-real") and BASELINE_PROFILE <= assets:
+            expected_assets |= BASELINE_PROFILE
         for label, actual, expected in (("library", libraries, expected_libs), ("asset", assets, expected_assets)):
             issues.extend(f"missing {label}: {name}" for name in sorted(expected - actual))
             issues.extend(f"unexpected {label}: {name}" for name in sorted(actual - expected))

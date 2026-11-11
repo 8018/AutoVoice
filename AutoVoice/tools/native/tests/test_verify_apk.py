@@ -65,3 +65,12 @@ class ApkVerificationTest(unittest.TestCase):
         apk = self.archive([], self.assets,
                            [("lib/arm64-v8a/libandroidx.graphics.path.so", self.elf[:-2] + b"\x3e\x00")])
         self.assertTrue(any("ELF" in issue for issue in verify(apk, "open-ci")))
+
+    def test_real_profile_accepts_only_the_complete_standard_baseline_pair(self):
+        libraries = self.common + self.vendor + self.opened
+        assets = self.assets + ["supplierconfig.json", "dexopt/baseline.prof"]
+        self.assertTrue(verify(self.archive(libraries, assets), "open-real"))
+        assets.append("dexopt/baseline.profm")
+        self.assertEqual([], verify(self.archive(libraries, assets), "open-real"))
+        assets.append("dexopt/custom.prof")
+        self.assertTrue(verify(self.archive(libraries, assets), "open-real"))

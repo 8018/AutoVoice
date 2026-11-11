@@ -14,7 +14,8 @@ import sys
 import zipfile
 
 from native_artifacts import (LIBRARIES, NativeError, elf_info, file_sha256, install_bundle,
-                              json_bytes, load_lock, require, safe_name, sha256, validate_bundle)
+                              json_bytes, load_lock, require, safe_name, sha256, validate_bundle,
+                              verify_release_staging)
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
@@ -347,6 +348,9 @@ def parser():
     stage.add_argument("--project-root", default=str(PROJECT))
     stage.add_argument("--expected-sha256")
     stage.add_argument("--dev-output")
+    verify = commands.add_parser("verify-release-staging", help="verify staged Open release inputs")
+    verify.add_argument("--lock", default=str(HERE / "native-lock.json"))
+    verify.add_argument("--project-root", default=str(PROJECT))
     return p
 
 
@@ -358,6 +362,9 @@ def main():
             component, libraries, receipt = validate_bundle(args.archive, lock, args.mode, args.expected_sha256, args.component)
             installed = install_bundle(component, libraries, receipt, args.project_root, args.dev_output)
             print(json.dumps({"component": component, "verification": receipt["verification"], "installed": installed}, indent=2))
+        elif args.command == "verify-release-staging":
+            verify_release_staging(lock, args.project_root)
+            print("Open release staging verified")
         else:
             plan = plan_build(args, lock)
             print(json.dumps(execute_build(args, lock, plan) if args.execute else plan, indent=2))

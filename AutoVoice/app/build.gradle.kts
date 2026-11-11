@@ -100,6 +100,24 @@ kotlin {
     }
 }
 
+val openReleaseVendorAar = rootProject.file("adapter-iflytek/libs/AIKit.aar")
+val openReleaseForceStub = providers.gradleProperty("useIflytekStub").map { it == "true" }.orElse(false)
+val verifyOpenReleaseInputs by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Checks trusted staged native inputs before Open Release APK or bundle packaging."
+    workingDir(rootProject.projectDir)
+    commandLine("python3", "tools/native/native_tools.py", "verify-release-staging")
+    doLast {
+        check(!openReleaseForceStub.get() && openReleaseVendorAar.isFile) {
+            "Open Release requires the real adapter-iflytek/libs/AIKit.aar and cannot use useIflytekStub=true"
+        }
+    }
+}
+
+tasks.matching { it.name == "packageOpenRelease" || it.name == "packageOpenReleaseBundle" }.configureEach {
+    dependsOn(verifyOpenReleaseInputs)
+}
+
 dependencies {
     implementation(project(":voice-core"))
     implementation(project(":voice-engine"))

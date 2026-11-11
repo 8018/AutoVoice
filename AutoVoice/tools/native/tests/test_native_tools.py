@@ -112,6 +112,42 @@ class NativeToolsTest(unittest.TestCase):
         self.assertEqual([], list((self.project / "app").rglob("*.so")))
         self.assertEqual([], list(self.project.rglob("*.kt")))
 
+    def test_release_packaging_gate_requires_trusted_complete_unchanged_staging(self):
+        lock = None
+        for component in LIBS:
+            archive, fixture_lock = self.fixture(component)
+            result = self.stage(archive, fixture_lock)
+            self.assertEqual(0, result.returncode, result.stderr)
+            current = native_artifacts.load_lock(fixture_lock)
+            if lock is None:
+                lock = current
+            else:
+                lock["components"][component] = current["components"][component]
+
+        native_artifacts.verify_release_staging(lock, self.project)
+        with self.assertRaisesRegex(native_artifacts.NativeError, "not verified for release"):
+            native_artifacts.verify_release_staging(native_artifacts.load_lock(TOOLS / "native-lock.json"), self.project)
+
+        receipt = self.project / ".native/receipts/webrtc.json"
+        original = receipt.read_bytes()
+        receipt.unlink()
+        with self.assertRaisesRegex(native_artifacts.NativeError, "missing release staging receipt"):
+            native_artifacts.verify_release_staging(lock, self.project)
+        changed = json.loads(original)
+        changed["archive_sha256"] = "0" * 64
+        receipt.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(native_artifacts.NativeError, "receipt archive_sha256 mismatch"):
+            native_artifacts.verify_release_staging(lock, self.project)
+        receipt.write_bytes(original)
+
+        library = self.project / "adapter-firered/src/main/jniLibs/arm64-v8a/libonnxruntime.so"
+        library.unlink()
+        with self.assertRaisesRegex(native_artifacts.NativeError, "library set mismatch"):
+            native_artifacts.verify_release_staging(lock, self.project)
+        library.write_bytes(b"tampered")
+        with self.assertRaisesRegex(native_artifacts.NativeError, "library SHA-256 mismatch"):
+            native_artifacts.verify_release_staging(lock, self.project)
+
     def test_missing_library_fails_before_install(self):
         self.fails("missing archive member", missing="jni/arm64-v8a/libautovoice_frontend_jni.so")
 

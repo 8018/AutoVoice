@@ -9,7 +9,7 @@
 | WebRTC `8838a7c28655afbf9336063b71a51429e7d72774` | `10b7cffc1b4c65fdb42b767fff2bdb588c7dec843f74e95c966ea37517cca55b` |
 | sherpa `v2.0.1`，ORT `1.28.2` | `006c2a53fc4bb078c59e98f1a743e5930b09dfb429e7d9181275566582366c37` |
 
-这些是开发暂存回执记录的摘要。发行需要受信锁定摘要和 `stage-native-artifacts.sh` 的 release 校验。当前 lock 仍未验证。`nativeDevRoot` 仅用于 Debug。直接 `assembleOpenRelease` 可能在库缺失时产出不完整 APK，发行操作应先通过严格暂存并运行 `open-real` APK 布局检查。布局检查只验证成员及 ELF 架构，发行签名、来源信任和实机验收各有独立证据。
+这些是开发暂存回执记录的摘要。Open Release APK/AAB 打包前强制验证受信 lock、严格 release 暂存回执和已安装库摘要，并要求真实 AIKit AAR。当前 lock 尚未验证，打包会失败。`nativeDevRoot` 仅用于 Debug。发行操作还应运行 `open-real` APK 布局检查。布局检查只验证成员及 ELF 架构，发行签名、来源信任和实机验收各有独立证据。
 
 ## Open App Debug 模型安装与验证
 

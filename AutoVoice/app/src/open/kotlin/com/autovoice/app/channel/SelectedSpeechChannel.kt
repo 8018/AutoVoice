@@ -6,6 +6,7 @@ import com.autovoice.app.health.ChannelComponentReporting
 import com.autovoice.voicecore.health.*
 import com.autovoice.adapterfirered.FireRedAsrEngine
 import com.autovoice.adapterfirered.FireRedAdmissionProvider
+import com.autovoice.adapterfirered.ModelResourceException
 import com.autovoice.voiceengine.local.TextRuleNluEngine
 import com.autovoice.adapterwebrtc.WebRtcFrontend
 import com.autovoice.audiofrontend.*
@@ -64,16 +65,30 @@ private class OpenSpeechChannel : SpeechChannel {
         validateConfig(config)
         admissionBound = false
         val admission = OpenRequestAdmissionBinding()
-        val asr = FireRedAsrEngine.create(
-            requireNotNull(context.getExternalFilesDir("speech-models")),
-            // Task6 binds Coordinator-owned admission facts. Missing facts must deny native decode.
-            admission.nativeProvider,reporting?.reporter("local.asr") ?: ComponentReporter.none())
+        val asrReporter = reporting?.reporter("local.asr") ?: ComponentReporter.none()
+        var failedToken: ComponentToken? = null
+        val asr = try {
+            val modelRoot = context.getExternalFilesDir("speech-models")
+                ?: throw ModelResourceException(ComponentError(ErrorCode.MODEL_MISSING))
+            FireRedAsrEngine.create(modelRoot, admission.nativeProvider, asrReporter)
+        } catch (error: Exception) {
+            error.rethrowCancellationOrFatal()
+            val failure = (error as? ModelResourceException)?.error ?: ComponentError(ErrorCode.RESOURCE_MISSING)
+            failedToken = asrReporter.start("resource_validate").also {
+                asrReporter.report(it, ComponentUpdate.failed(failure))
+            }
+            null
+        }
         val nluReporter = reporting?.reporter("local.nlu") ?: ComponentReporter.none()
         val token = nluReporter.start("create")
         val nlu = TextRuleNluEngine()
         nluReporter.report(token,ComponentUpdate.ready())
-        return LocalEngineAssembly(asr,nlu,bindAdmission = { owner -> admission.bind(owner);admissionBound = true }) {
-            admission.close();admissionBound = false;asr.close();nluReporter.close(token)
+        return LocalEngineAssembly(asr ?: AsrEngine { _, _, _ -> null },nlu,bindAdmission = { owner -> admission.bind(owner);admissionBound = true }) {
+            admission.close()
+            admissionBound = false
+            asr?.close()
+            failedToken?.let(asrReporter::close)
+            nluReporter.close(token)
         }
     }
 }
