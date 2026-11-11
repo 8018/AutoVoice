@@ -109,4 +109,15 @@ class ComponentPresentationTest {
         assertFalse(json.contains("secret"));assertFalse(json.contains("private"))
     }
 
+    @Test fun `playback stages survive diagnostics while arbitrary stage text is hidden`() {
+        val descriptor = ComponentDescriptor("playback", "android", "open")
+        fun diagnostics(stage: String) = ComponentLogSink.diagnosticsJson(
+            ComponentHealthSnapshot(components = mapOf("playback" to ComponentStatus(descriptor, 1, stage = stage))),
+        )
+        for (stage in listOf("audio_track_create", "audio_track_retry", "awaiting_playback")) {
+            assertTrue(diagnostics(stage).contains(stage))
+        }
+        assertFalse(diagnostics("/private/track").contains("/private/track"))
+    }
+
 }

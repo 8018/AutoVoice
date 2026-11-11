@@ -395,7 +395,8 @@ class AudioRecorder(
     val isRecording: Boolean get() = turnActive
 
     /**
-     * 启动待机监听的共享麦克风。不会启用 VAD/RNNoise，也不会积累一轮语音。
+     * 启动待机监听的共享麦克风。Open 持续处理 APM 及其观测，待机时不保留整轮 PCM。
+     * Legacy 待机保持原始唤醒流，不开启录音轮的 VAD/RNNoise。
      * 测试音频源不支持常驻唤醒，避免 fixture 在后台无限循环触发。
      */
     @Synchronized

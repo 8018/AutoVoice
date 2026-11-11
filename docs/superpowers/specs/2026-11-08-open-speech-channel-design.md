@@ -1,6 +1,6 @@
 # 8295 端侧开放语音渠道架构与构建设计
 
-日期：2026-11-08。状态：方案已整理，功能尚未实施，native 构建和实机验收尚未执行。源码基线：`67508b5`。
+日期：2026-11-08。设计源码基线 `67508b5`。2026-11-12 实施更新见 [构建与验收状态](../../webrtc-firered-android-build.md)。双渠道、Open 语音链和 PCM 参考已接通，WSL native 构建及 arm64 模拟器验证已完成。物理 8295、授权唤醒、声学与发行制品仍待验收。
 
 在保留现有讯飞渠道行为的前提下，新增编译时选择的 `open` 渠道：复用现有独立讯飞唤醒，WebRTC 负责端侧信号处理和 VAD，FireRedASR2 负责端侧语音转写，现有业务、对话、仲裁、云端服务和 TTS 继续复用。`open` 表示前端与 ASR 使用开源实现，不表示 APK 完全移除讯飞 SDK。目标设备由用户指定为 8295；设备内存、Android 版本和车厂音频接口在设备验证阶段确认。
 
@@ -42,7 +42,7 @@ FireRed 官方仓库的云端方案可自建部署，不等于已有公共托管
 
 首版 Open 使用 WebRTC VAD 分段后识别，仅交付真实 final，不承诺逐字 partial。sherpa-onnx 的模拟流式示例基于非流式模型运行；若后续增加周期性重识别，partial 可修订，仍以最终分段结果为准。[模拟流式定义](https://k2-fsa.github.io/sherpa/onnx/android/prebuilt-apk.html)
 
-唤醒与 ASR 分开。用户要求在现有唤醒独立时复用；源码确认其观察者和端口独立，因此首版 Open 继续使用 `IflytekWakeWordObserver`，保留现有 UI 按键及硬件按键事件。报告是否支持唤醒及其实际初始化/授权状态，不通过持续全量 ASR 模拟唤醒。两个渠道均需要讯飞唤醒的有效凭据、资源和授权。
+唤醒与 ASR 分开。首版 Open 继续使用独立的 `IflytekWakeWordObserver`。基线和当前 `MainActivity` 都没有手动录音按钮，App 探针使用 `MainViewModel` 的录音入口。两个渠道均需要讯飞唤醒的有效凭据、资源和授权，能力状态取决于真实初始化与授权结果。
 
 本次不改端云补槽/确认协议，不更换云端 ASR 或业务模型，不建设第二套 DM，不引入运行时切渠道，也不将 QNN 加速、模拟流式或多麦阵列波束形成作为首版前提。
 
@@ -178,7 +178,7 @@ productFlavors {
 ./gradlew :app:assembleOpenDebug
 ```
 
-以上任务是目标设计，当前工程尚不存在。所有引用原 `assembleDebug`、测试、manifest 和 APK 路径的 CI、部署脚本需要同步；旧发布入口应显式绑定讯飞，避免升级后默认发布两个渠道。Open 真机包因复用唤醒仍需要真实讯飞 AAR、唤醒资源和凭据，PR CI 可沿用显式 stub，但不得以 stub 包验证唤醒。讯飞包不得初始化 sherpa/WebRTC；Open 不初始化讯飞命令识别器。
+这些 flavor 任务已接入 CI，包含两套单测、APK、lint、发行 manifest 与覆盖率。既有人工发行入口显式选 `iflytek`。Open 设备包复用真实讯飞 AAR，授权唤醒还需资源和凭据。CI stub 包仅用于构建和测试，发行信任与设备验收另行核对。
 
 默认保留现有讯飞 applicationId 和签名约定；Open 的联调包可加独立 suffix 以便并装。Open 正式 applicationId 及对应外部授权需在发行配置时明确，不在本次擅自替换已安装正式客户端。
 

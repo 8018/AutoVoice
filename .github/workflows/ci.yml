@@ -122,13 +122,24 @@ jobs:
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
       - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: ./gradlew test lint :app:assembleDebug androidUnitTestCoverage -PuseIflytekStub=true
+      - name: Test both Android flavors and build compile-only CI APKs
+        run: |
+          ./gradlew test lint :app:testIflytekDebugUnitTest :app:testOpenDebugUnitTest \
+            :app:lintIflytekDebug :app:lintOpenDebug :app:assembleIflytekDebug :app:assembleOpenDebug \
+            androidUnitTestCoverage -PuseIflytekStub=true
+      - name: Verify native tooling and CI APK contents
+        run: |
+          python3 -m unittest discover -s tools/native/tests
+          python3 tools/native/verify_apk.py iflytek-ci app/build/outputs/apk/iflytek/debug/app-iflytek-debug.apk
+          python3 tools/native/verify_apk.py open-ci app/build/outputs/apk/open/debug/app-open-debug.apk
       - name: Verify release build disables cleartext traffic
         run: |
-          ./gradlew :app:processReleaseMainManifest -PuseIflytekStub=true
-          MERGED=$(find app/build/intermediates/merged_manifest -path "*release*" -name "AndroidManifest.xml" | head -1)
-          test -n "$MERGED" || { echo "::error::merged release manifest not found"; exit 1; }
-          grep -q 'usesCleartextTraffic="false"' "$MERGED" || { echo "::error::release manifest must disable cleartext traffic"; exit 1; }
+          ./gradlew :app:processIflytekReleaseMainManifest :app:processOpenReleaseMainManifest -PuseIflytekStub=true
+          for manifest in \
+            app/build/intermediates/merged_manifest/iflytekRelease/processIflytekReleaseMainManifest/AndroidManifest.xml \
+            app/build/intermediates/merged_manifest/openRelease/processOpenReleaseMainManifest/AndroidManifest.xml; do
+            grep -q 'usesCleartextTraffic="false"' "$manifest" || { echo "::error::$manifest must disable cleartext traffic"; exit 1; }
+          done
       - name: Enforce Android line coverage baselines
         run: |
           node ../shared/verify-jacoco-coverage.mjs 70 \
@@ -141,9 +152,13 @@ jobs:
           node ../shared/verify-jacoco-coverage.mjs 70 \
             voice-engine/build/reports/jacoco/test/jacocoTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 25 \
-            app/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
+            app/build/reports/jacoco/jacocoIflytekDebugUnitTestReport/jacocoIflytekDebugUnitTestReport.xml
+          node ../shared/verify-jacoco-coverage.mjs 25 \
+            app/build/reports/jacoco/jacocoOpenDebugUnitTestReport/jacocoOpenDebugUnitTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 70 \
             audio-frontend/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
+          node ../shared/verify-jacoco-coverage.mjs 70 \
+            audio-frontend-legacy/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
           node ../shared/verify-jacoco-coverage.mjs 20 \
             adapter-iflytek/build/reports/jacoco/jacocoDebugUnitTestReport/jacocoDebugUnitTestReport.xml
       - name: Upload Android reports

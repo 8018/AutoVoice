@@ -72,6 +72,14 @@ fun Project.configureAndroidUnitTestCoverage(variant: String = "debug") {
                 )
             },
         )
+        if (project.name == "audio-frontend" && variant == "debug") {
+            // Legacy VadSegmenter tests exercise the same public frontend classes.
+            val legacy = project(":audio-frontend-legacy")
+            dependsOn(":audio-frontend-legacy:testDebugUnitTest")
+            executionData.from(legacy.layout.buildDirectory.file(
+                "outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec",
+            ))
+        }
     }
 }
 

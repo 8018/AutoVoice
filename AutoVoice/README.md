@@ -18,8 +18,8 @@ AutoVoice/                      Android 端（Kotlin）
 ├── gateway-client/             WS 网关客户端（连接/重连、事件桥、segmentId 对账）
 ├── audio-frontend/             公共音频契约、分段与门控
 ├── audio-frontend-legacy/      讯飞渠道的 RNNoise/Silero/Android系统效果
-├── adapter-webrtc/             Open前端边界（当前明确不可用，待真实native实现）
-├── adapter-firered/            FireRed ASR边界（当前明确不可用，待真实runtime/模型）
+├── adapter-webrtc/             Open WebRTC APM/VAD 前端及 JNI 边界
+├── adapter-firered/            Open FireRed CTC 本地 ASR、模型校验与 JNI 边界
 ├── adapter-iflytek/            讯飞离线唤醒 IVW + 离线命令词 AIKit（共享运行时）+
 │                               FakeCommandAsr + RuleNlu（规则意图映射表）
 └── app/                        Compose UI（决策日志/模拟车控/录音）、AudioRecorder、
@@ -63,13 +63,15 @@ cd AutoVoice
 ### 渠道与环境
 
 `speechChannel` 有 `iflytek` / `open` 两个 flavor，均以 arm64-v8a 为目标；
-讯飞 applicationId 保持 `com.autovoice.app`，Open 联调包使用 `.open` suffix。
+默认人工构建与既有安装入口选 `iflytek`，applicationId 为 `com.autovoice.app`，最低 API 26。
+Open 单独选择，applicationId 为 `com.autovoice.app.open`，最低 API 27。
 `debug` 仍默认读取 `demo-dev.json`（`AUTOVOICE_APP_ENV=prod` 可选 `demo-full.json`），
 `release` 固定读取 `demo-full.json`，离线模式读取 `demo-offline.json`。
 各渠道的同名资产分别位于 `app/src/iflytek/assets` 与 `app/src/open/assets`。
 
 ```sh
-./gradlew :app:assembleIflytekDebug :app:assembleOpenDebug
+./gradlew :app:assembleIflytekDebug # app/build/outputs/apk/iflytek/debug/app-iflytek-debug.apk
+./gradlew :app:assembleOpenDebug   # app/build/outputs/apk/open/debug/app-open-debug.apk
 ./gradlew :app:testIflytekDebugUnitTest :app:testOpenDebugUnitTest
 ./gradlew :app:lintIflytekDebug :app:lintOpenDebug
 ```
@@ -83,10 +85,10 @@ Open 资产不声明 Silero 概率 `vad.threshold`，schema 也禁止该字段�
 解析器只检查通用格式/数值，所选渠道在装配前拒绝未知或串渠道 provider。
 两渠道复用公共 `WakeWordFactory` 和原进程级 AIKit runtime；Open 不构造讯飞命令识别器。
 
-当前 Open 只建立装配边界，WebRTC APM/VAD、FireRed runtime/模型、文本规则 NLU、
-PCM 播放参考尚未就绪。能力诊断明确列出原因，录音启动返回失败且不输出模拟识别；
-共享原始麦克风监听/讯飞唤醒仍走原通路，在线模式文字输入仍可使用。
-后续实现会替换这些过渡状态，当前 APK 不代表真实 Open 语音能力验收完成。
+Open 已接通 WebRTC APM/VAD、FireRed final、可替换规则 NLU 和 PCM 播放参考。首版离线规则限于车窗开关与退出。
+CI 的 Open 包仅用于构建检查。实用 Debug 包需要已暂存的 native 库、真实 AIKit AAR 与单独安装的模型。API33 arm64 的 App 探针使用合成录音识别「打开车窗」并打开模拟车窗，API30/API33 验证了 PCM 播放参考和 100 ms 短流。
+物理 8295、真实麦克风与双讲、唤醒授权、全车混音参考和发行信任仍待验证。
+构建、校验和 App UID 安装步骤见 [Open Android 构建与安装](../docs/webrtc-firered-android-build.md)。
 
 仅讯飞资产文件缺失时保留历史内置 Demo fallback 并记录日志；Open 缺资产明确失败。
 非法 JSON、未知 provider、SDK/授权/模型失败均不会触发 fake fallback。
@@ -94,7 +96,7 @@ PCM 播放参考尚未就绪。能力诊断明确列出原因，录音启动返�
 ### 离线唤醒
 
 前台运行且取得录音权限后，App 默认监听“你好飞飞”。唤醒与语音链共享唯一
-`AudioRecord`：待机 IVW 直接消费原始 PCM，唤醒后才启用 Silero VAD/RNNoise 分支，
+`AudioRecord`：待机 IVW 直接消费原始 PCM。讯飞渠道唤醒后才启用 Silero VAD/RNNoise 分支，Open 待机也持续运行 APM，
 VAD `SpeechEnd` 自动提交本轮。退到后台会停止麦克风，若要
 后台常驻唤醒需另行改成 Android 前台服务。
 
@@ -129,5 +131,5 @@ adb push <离线唤醒SDK>/resource/ivw /sdcard/iflytek/
 
 ```bash
 cd AutoVoiceServer && ./gradlew test                       # 云端 64 项测试（含 EndToEndGatewayTest）
-cd AutoVoice && ./gradlew test :app:assembleDebug          # 端侧全部单测（debug/release 变体）+ APK
+cd AutoVoice && ./gradlew test :app:assembleIflytekDebug :app:assembleOpenDebug -PuseIflytekStub=true
 ```

@@ -2,7 +2,68 @@
 
 日期：2026-11-08。目标：8295、Android `arm64-v8a`，首版 CPU 推理。配套 [渠道架构设计](superpowers/specs/2026-11-08-open-speech-channel-design.md)。
 
-本文给出构建规约及仓库中的构建/制品校验工具。公共 adapter、双渠道 Gradle、构建工具和 Task4 WebRTC GN/JNI/时间轴已实现。固定 WebRTC 已通过真实 GN/check/Ninja、严格开发包校验与独立 Android API33 JNI 探针；控制端也完成 sherpa API27 编译及独立模型探针。产品 FireRed loader/有界识别/文本规则与 Android 测试入口已实现；完整请求准入/播放参考协同仍待 Task6，native 制品尚未认证。上游构建成功、App 打包成功和真机语音可用分别验收。
+2026-11-12 状态。双渠道、Open 请求准入和 PCM 参考已接通。WebRTC GN/check/Ninja 及 sherpa API27 编译在 Linux x86_64 WSL 完成。arm64 模拟器覆盖 API33 的本地 App 合成音频识别与 API30/API33 的 PCM 播放。物理 8295、授权唤醒、真实麦克风、双讲、全车混音参考和生产发行信任仍待验收。
+
+| WSL 开发归档 | 已观察 SHA256 |
+| --- | --- |
+| WebRTC `8838a7c28655afbf9336063b71a51429e7d72774` | `10b7cffc1b4c65fdb42b767fff2bdb588c7dec843f74e95c966ea37517cca55b` |
+| sherpa `v2.0.1`，ORT `1.28.2` | `006c2a53fc4bb078c59e98f1a743e5930b09dfb429e7d9181275566582366c37` |
+
+这些是开发暂存回执记录的摘要。发行需要受信锁定摘要和 `stage-native-artifacts.sh` 的 release 校验。当前 lock 仍未验证。`nativeDevRoot` 仅用于 Debug。直接 `assembleOpenRelease` 可能在库缺失时产出不完整 APK，发行操作应先通过严格暂存并运行 `open-real` APK 布局检查。布局检查只验证成员及 ELF 架构，发行签名、来源信任和实机验收各有独立证据。
+
+## Open App Debug 模型安装与验证
+
+在仓库根目录从已验证资源准备固定版本目录。构建使用真实 AIKit AAR 和已暂存的开发 native 库。
+
+```sh
+python3 AutoVoice/tools/native/prepare_firered_resources.py \
+  --model-source /path/to/model-cache --attribution-source /path/to/attribution \
+  --output-root /tmp/autovoice-model
+cd AutoVoice
+./gradlew :app:assembleOpenDebug :app:assembleOpenDebugAndroidTest \
+  -PnativeDevRoot=/path/to/verified-development-staging --offline
+APP=app/build/outputs/apk/open/debug/app-open-debug.apk
+TEST=app/build/outputs/apk/androidTest/open/debug/app-open-debug-androidTest.apk
+python3 tools/native/verify_apk.py open-real "$APP"
+SERIAL=emulator-5554 # 换成指定的开发设备序列号
+adb -s "$SERIAL" install -r "$APP"
+adb -s "$SERIAL" install -r "$TEST"
+adb -s "$SERIAL" shell am instrument -w -r -e class \
+  'com.autovoice.app.audio.OpenModelProvisioningTest#prepareCatalogPaths' \
+  com.autovoice.app.open.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+测试方法以目标 App UID 创建固定目录和六个空占位文件，已有文件保留。确认输出 `catalogFiles=6` 和 `modelCatalog`，用该输出确定目标路径。在 Android 13 arm64 模拟器上，未提权的 adb shell（UID 2000）逐个写入 App 预建的文件并校验成功。以下路径以当次探针为例。
+
+```sh
+MODEL=sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25
+REV=423be1acfdc5d8aaa5a485fb6263fe4ea8570b06
+SOURCE="/tmp/autovoice-model/$MODEL/$REV"
+DEST="/storage/emulated/0/Android/data/com.autovoice.app.open/files/speech-models/$MODEL/$REV"
+adb -s "$SERIAL" shell am force-stop com.autovoice.app.open
+for file in manifest.json model.int8.onnx tokens.txt licenses/FireRedASR2S-LICENSE \
+    licenses/original-model-card.md licenses/source-attribution.json; do
+  adb -s "$SERIAL" push "$SOURCE/$file" "$DEST/$file" || exit 1
+  local_hash=$(shasum -a 256 "$SOURCE/$file" | cut -d ' ' -f 1)
+  device_hash=$(adb -s "$SERIAL" shell sha256sum "$DEST/$file" | cut -d ' ' -f 1)
+  test "$local_hash" = "$device_hash" || exit 1
+done
+adb -s "$SERIAL" shell am start -n com.autovoice.app.open/com.autovoice.app.MainActivity
+```
+
+设备路径与 shell 权限因 OEM 和 Android 用户而异。失败时保留输出并使用该设备批准的 App UID 资源导入方式。生产安装由有资源权限的交付流程预置同一版本目录，确保所有者为 App、目录可遍历且仅授予必要读取权限。测试 APK 只用于调试，模型、tokens、manifest 和许可证独立安装。
+
+启动后在组件状态页检查 frontend、local.asr 和 local.nlu，保留结构化的缺失、摘要错误、native 加载或模型初始化状态。离线模式 cloud 应为 `DISABLED`。真实 App 探针基于 Debug 派生包，仅修改离线 `testAudio` 配置并加入公开合成 PCM。基线及当前 `MainActivity` 没有手动录音按钮，探针在主线程调用 `MainViewModel.startRecording()` / `stopRecording()`。API33 中 WebRTC、ASR 和 NLU 就绪，识别「打开车窗」，端侧结果打开模拟车窗。首版离线规则为车窗开关和退出，NLU 端口可替换。当前权重文件 775,861,420 字节是磁盘大小。车机冷启动、峰值 PSS/RSS 和热稳态仍需在 8295 测量。
+
+播放探针可在 API30/API33 上运行同一个真实 Debug 测试类：
+
+```sh
+adb -s "$SERIAL" shell am instrument -w -r -e class \
+  com.autovoice.app.audio.OpenPlaybackPlatformTest \
+  com.autovoice.app.open.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+两个版本均通过 WAV、AAC、48 kHz 双声道 WAV 与 100 ms 短流，验证真实输出与参考坐标、播放完成及流语义。Open 保持设备打断能力不可用，直到真实声学和全车参考验收。
 
 ## 1 编译内容和产物
 
@@ -392,19 +453,19 @@ Task4 worker 在专用 Ubuntu26.04/WSL2 x86_64 完成固定源码 hooks、GN `--
 
 控制端在独立无网络权限的 arm64/API33 APK 调用同一 JNI：官方语音510帧、435个 speech 帧；真实 capture/render/三个独立 reset/release、部分有效尾帧返回未知判定、受控错误和释放后拒绝均通过。此证据只证明实际 JNI/APM/classic VAD 可调用；不等于产品 Android 时间轴/播放参考整合、车内 AEC 质量、双讲或8295验收。
 
-控制端也独立完成 sherpa API27 编译及 Android 模型探针；产品 FireRed adapter/文本规则仍是后续 Task5，播放/capture/cloud协同为 Task6。模型/运行库可信认证和8295资源、语音质量仍未完成；开发探针不能使完整 Open 渠道被标为就绪。Mac 本地主要运行 JVM/Gradle，native 实际编译在上述 Linux 主机，未部署服务器或安装系统依赖。
+当时控制端也独立完成 sherpa API27 编译及 Android 模型探针。随后 Task5 实现产品 FireRed adapter/文本规则，Task6 接通播放、采集和云端协同。当前验收范围见本文开头。Mac 本地主要运行 JVM/Gradle，native 实际编译在上述 Linux 主机。
 
 ### Task4 公共输出与用途边界
 
 `AudioFrontendEngine.process` 返回 `FrontendBatch(processedBlocks, vadObservations)`。PCM块带 startSample/validSamples/格式；观测带真实样本位置、有效长度、用途、speechDetected、可选 probability 和有序 events。Open 不制造 Silero 概率，512→160跨块 FIFO 保持所有有效样本；正常输入完成用 `finishBatch` 补齐DSP后截回有效尾部，尾部不补造VAD静音，随后再取分段。取消/设备关闭丢弃未提交尾部，不自动提交业务。
 
-Legacy 继续一次512-sample Silero概率推理，再按原顺序运行480-sample RNNoise，原事件/处理后PCM结果保持；包装增加坐标，不把其输出重新拆成10ms改变旧时序。旧 `AudioFrontendFrame` 构造别名只保留源码兼容；它的单事件视图不允许静默丢弃 Open 多事件。
+Legacy 继续一次512-sample Silero概率推理，再按原顺序运行480-sample RNNoise。包装坐标是兼容元数据，Legacy 消费者保留原事件、处理后 PCM 和时序。旧 `AudioFrontendFrame` 构造别名只保留源码兼容；它的单事件视图不允许静默丢弃 Open 多事件。
 
 一个设备前端仅一个 APM，其配置/输入/关闭由有界单线程 backend 拥有；三份 classic VAD 与三份样本门控分属 main/followup/barge。resetVad/startTurn只重置对应检测/分段，不重置 APM。Legacy仍是原主VAD＋共享aux两实例。`attachReporting`/`attachAuxiliaryReporting`只重绑诊断，不重建引擎。
 
 Open 接受自己的 aggressiveness0..3（候选默认2），运行时拒绝显式 legacy vad.threshold，包括显式0.5。Schema、Open资产和解析器一致；legacy比较处理参数时忽略概率字段存在标记等不消费的元数据，避免无参数变化重建。Open首版门限沿用资产64ms/960ms但按有效样本计算；库候选预卷100ms、最大段10s、默认每轮保留上限30s（溢出显式失败），均未声称经过车内噪声调优。
 
-`RenderReferenceSink`接收单调播放代次、16k mono PCM16、样本位置和呈现时间，队列有界；旧代次、失序/过期或溢出撤销AEC参考健康。参考在capture处理线程消费一次；无播放为idle，不报声学故障。本阶段只完成库端协议，真实AudioTrack播放参考/延迟估计/连续capture协同由Task6接通。App当前明确 auxiliaryBridgeAvailable=false，不能因 native VAD READY 就宣称续听/普通话术打断可用。
+`RenderReferenceSink`接收单调播放代次、16k mono PCM16、样本位置和呈现时间，队列有界；旧代次、失序/过期或溢出撤销AEC参考健康。参考在capture处理线程消费一次；无播放为idle，不报声学故障。Task4 完成库端协议，Task6 接通 AudioTrack 参考和持续采集。辅助桥和设备打断分别门控，native VAD READY 本身不决定设备打断可用性。
 
 ### 开发 JNI 与发行分离
 
@@ -424,6 +485,6 @@ cd AutoVoice
 
 ## Task5 资源、准入和规则边界
 
-见 [FireRed adapter 与真实 Android 测试说明](../AutoVoice/adapter-firered/README.md)。离线资源准备工具使用同一固定 catalog，完整校验后原子生成工程外版本目录；运行时再次校验。初始 CPU 单线程、单原生所有者、1 执行中 + 2 等待请求、每段最多 30 秒。关闭/超时令旧实例输出失效；运行中 JNI 完成后才释放。App 尚无 Task6 的真实准入桥，Open localBridgeAvailable 固定 false，模型 READY 不能显示整条本地链路可用。
+见 [FireRed adapter 与真实 Android 测试说明](../AutoVoice/adapter-firered/README.md)。离线资源准备工具使用同一固定 catalog，完整校验后原子生成工程外版本目录；运行时再次校验。初始 CPU 单线程、单原生所有者、1 执行中 + 2 等待请求、每段最多 30 秒。关闭/超时令旧实例输出失效；运行中 JNI 完成后才释放。Task5 初版桥为关闭状态，Task6 已绑定 Coordinator 的真实请求事实。模型 READY 与完整本地路径可用性分别报告。
 
 规则实际依赖为 `adapter-iflytek → local-command-rules → voice-core` 与 `voice-engine → local-command-rules`，避免厂商 adapter 依赖整套 engine/gateway。旧入口保持原历史行为；Open 仅整句支持既有车窗开关/退出，否定、多意图、引用偶提和其他文本 unknown。

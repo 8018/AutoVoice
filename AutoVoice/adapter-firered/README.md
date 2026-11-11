@@ -70,9 +70,9 @@ adb shell am instrument -w -e class \
 ```
 
 Missing resources fail with no assume/skip. Log tag: FireRedProductProbe. The
-App uses its own package's model root. Task5 assembly deliberately provides no
-admission snapshot and advertises localBridgeAvailable=false; Task6 binds real
-Coordinator facts. Model/native READY and end-to-end local availability differ.
+App uses its own package's model root. Its Open assembly binds real Coordinator
+admission facts. Model/native READY and end-to-end local availability differ.
+For App model installation use the [Open App provisioning instructions](../../docs/webrtc-firered-android-build.md#open-app-debug-模型安装与验证).
 
 Shared lexical policy resides in :local-command-rules (depends only on core).
 TextRuleNluEngine consumes actual finals; the old iFlytek provider delegates to
