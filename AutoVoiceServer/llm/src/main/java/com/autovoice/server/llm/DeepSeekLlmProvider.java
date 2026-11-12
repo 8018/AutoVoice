@@ -92,7 +92,7 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
     static final int MAX_LLM_ROUNDS = 7;
 
     /** OpenAI 兼容 model 名。 */
-    static final String MODEL = "deepseek-chat";
+    public static final String MODEL = "deepseek-flash";
 
     /** 系统提示词：车控指令 → car_control 工具，其余口语回答。 */
     static final String DEFAULT_SYSTEM_PROMPT =
@@ -412,6 +412,8 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
                               AtomicReference<Call> activeCall) throws IOException {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", MODEL);
+        // Flash defaults to thinking; this voice tool loop uses ordinary assistant messages.
+        root.putObject("thinking").put("type", "disabled");
         ArrayNode messagesArr = root.putArray("messages");
         messages.forEach(messagesArr::add);
         if (!tools.isEmpty()) {

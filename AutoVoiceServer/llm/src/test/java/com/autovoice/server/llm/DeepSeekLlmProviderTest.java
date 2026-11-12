@@ -81,7 +81,8 @@ class DeepSeekLlmProviderTest {
 
         // 请求体：平台 prompt 后追加不可配置的本地会话控制约束。
         JsonNode body = mapper.readTree(req.getBody().readUtf8());
-        assertEquals("deepseek-chat", body.path("model").asText());
+        assertEquals("deepseek-flash", body.path("model").asText());
+        assertEquals("disabled", body.path("thinking").path("type").asText());
         assertTrue(body.path("messages").isArray());
         assertEquals(2, body.path("messages").size());
         assertEquals("system", body.path("messages").get(0).path("role").asText());

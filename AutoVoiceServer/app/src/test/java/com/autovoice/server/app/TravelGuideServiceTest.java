@@ -63,8 +63,10 @@ class TravelGuideServiceTest {
                 assertTrue(searchRequest.getHeader("Authorization").startsWith(
                         "TC3-HMAC-SHA256 Credential=AKIDdemo/"));
                 assertTrue(searchRequest.getBody().readUtf8().contains("北京 2日游"));
-                assertTrue(llm.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8()
-                        .contains("https://example.org/gugong"));
+                var llmBody = JSON.readTree(llm.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8());
+                assertEquals("deepseek-flash", llmBody.path("model").asText());
+                assertEquals("disabled", llmBody.path("thinking").path("type").asText());
+                assertTrue(llmBody.toString().contains("https://example.org/gugong"));
             }
         }
     }

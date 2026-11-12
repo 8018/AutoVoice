@@ -181,7 +181,8 @@ final class TravelGuideService implements TravelGuideProvider, AutoCloseable {
 
     private void streamGuide(Task task, String sources) throws IOException {
         var body = JSON.createObjectNode();
-        body.put("model", "deepseek-chat");
+        body.put("model", com.autovoice.server.llm.DeepSeekLlmProvider.MODEL);
+        body.putObject("thinking").put("type", "disabled");
         body.put("stream", true);
         var messages = body.putArray("messages");
         messages.addObject().put("role", "system").put("content",
