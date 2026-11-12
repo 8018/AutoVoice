@@ -23,10 +23,10 @@ class FireRedAsrEngineTest {
     private val admitted = FireRedAdmissionProvider { FireRedAdmission(Long.MAX_VALUE,{ true },{ false }) }
     private fun runtime(f: ModelFixture,d: Decoder,loads: AtomicInteger = AtomicInteger()) = FireRedRuntime({ f.loader().load() },{ loads.incrementAndGet();d },{})
     private fun engine(r: FireRedRuntime,p: FireRedAdmissionProvider = admitted, timeout: Long = 5000) = FireRedAsrEngine(r,p,ComponentReporter.none(),timeout)
-    private fun awaitQueued(r: FireRedRuntime,n: Int) {
+    private fun awaitPendingRequests(runtime: FireRedRuntime, expected: Int) {
         val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-        while (r.pendingRequests < n && System.nanoTime() < until) Thread.yield()
-        assertEquals(n,r.pendingRequests)
+        while (runtime.pendingRequests != expected && System.nanoTime() < until) Thread.sleep(1)
+        assertEquals(expected, runtime.pendingRequests)
     }
     private fun async(block: () -> AsrResult?) = CompletableFuture.supplyAsync(block)
 
@@ -55,7 +55,7 @@ class FireRedAsrEngineTest {
             val active = async { e.recognize("active",byteArrayOf(0,0),Sink()) };assertTrue(d.entered!!.await(2,TimeUnit.SECONDS))
             val pending = async { e.recognize("pending",byteArrayOf(0,0),Sink()) }
             val finalized = async { e.recognize("finalized",byteArrayOf(0,0),Sink()) }
-            awaitQueued(r,3)
+            awaitPendingRequests(r, 3)
             valid.set(false);d.proceed!!.countDown()
             assertNull(active.get(2,TimeUnit.SECONDS));assertNull(pending.get(2,TimeUnit.SECONDS));assertNotNull(finalized.get(2,TimeUnit.SECONDS))
             assertEquals(2,d.calls.get());e.close()
@@ -84,11 +84,13 @@ class FireRedAsrEngineTest {
             val old = engine(r);assertTrue(old.awaitReady(2000));val sink = Sink()
             val first = async { old.recognize("a",byteArrayOf(0,0),sink) };assertTrue(d.entered!!.await(2,TimeUnit.SECONDS))
             val q1 = async { old.recognize("b",byteArrayOf(0,0),sink) };val q2 = async { old.recognize("c",byteArrayOf(0,0),sink) }
-            awaitQueued(r,3)
+            awaitPendingRequests(r, 3)
             assertThrows(RejectedExecutionException::class.java) { old.recognize("overflow",byteArrayOf(0,0),sink) }
             val start = System.nanoTime();old.close();assertTrue((System.nanoTime()-start)/1_000_000 < 200)
             assertEquals(1,d.closed.count);val next = engine(r)
             d.proceed!!.countDown();assertNull(first.get(2,TimeUnit.SECONDS));assertNull(q1.get(2,TimeUnit.SECONDS));assertNull(q2.get(2,TimeUnit.SECONDS))
+            // Cancellation wakes the callers before the owner releases their queue slots.
+            awaitPendingRequests(r, 0)
             assertTrue(next.awaitReady(2000));assertNotNull(next.recognize("new",byteArrayOf(0,0),Sink()))
             assertEquals(1,loads.get());assertEquals(2,d.calls.get());assertTrue(sink.transcripts.isEmpty())
             next.close();assertTrue(d.closed.await(2,TimeUnit.SECONDS))
