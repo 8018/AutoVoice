@@ -21,9 +21,12 @@ class IflytekWakeWordObserver(
     private val apiSecret: String,
     val keyword: String = DEFAULT_KEYWORD,
     private val workDir: String = DEFAULT_WORK_DIR,
-    private val onWake: (String) -> Unit,
-    private val onError: (Throwable) -> Unit = {},
+    onWake: (String) -> Unit,
+    onError: (Throwable) -> Unit = {},
 ) : AutoCloseable {
+    @Volatile private var wakeCallback: ((String) -> Unit)? = onWake
+    @Volatile private var errorCallback: ((Throwable) -> Unit)? = onError
+    @Volatile private var closed = false
     @Volatile
     private var initialized = false
 
@@ -36,16 +39,24 @@ class IflytekWakeWordObserver(
     private val wakeDelivered = AtomicBoolean(false)
 
     fun init(context: Context) {
+        check(!closed) { "wake observer released" }
         if (initialized) return
-        checkCredentials()
-        AiHelper.getInst().registerListener(ABILITY_ID, listener)
-        IflytekAiKitRuntime.ensureInitialized(context, appId, apiKey, apiSecret, workDir)
+        try {
+            IflytekAiKitRuntime.ensureInitialized(context, appId, apiKey, apiSecret, workDir) {
+                AiHelper.getInst().registerListener(ABILITY_ID, listener)
+            }
+        } catch (error: RuntimeInitializationException) {
+            if (error.componentError.code == com.autovoice.voicecore.health.ErrorCode.SDK_CREDENTIALS_MISSING) throw IllegalStateException(NOT_CONFIGURED_MSG)
+            throw error
+        }
+        if (closed) throw java.util.concurrent.CancellationException("wake observer released during initialization")
         initialized = true
     }
 
     /** 装载唤醒词并启用观察；可在每轮结束后重复调用。 */
     @Synchronized
     fun arm() {
+        check(!closed) { "wake observer released" }
         check(initialized) { "$NOT_CONFIGURED_MSG（尚未初始化）" }
         // IVW 是持续会话：命中一次后官方 demo 仍复用同一个 handle。业务轮次期间只暂停
         // 喂帧，重新布防时恢复该会话，避免 end/start 触发 SDK 10005 状态冲突。
@@ -135,7 +146,11 @@ class IflytekWakeWordObserver(
         wakeDelivered.set(false)
     }
 
-    override fun close() = disarm()
+    override fun close() {
+        closed = true
+        wakeCallback = null;errorCallback = null
+        disarm()
+    }
 
     /** 写入 SDK 需要的 UTF-8 唤醒词文件；资源模型仍按官方布局放在 workDir/ivw。 */
     fun ensureKeywordFile() {
@@ -175,17 +190,18 @@ class IflytekWakeWordObserver(
                 it.key == WAKE_RESULT_KEY && it.value?.isNotEmpty() == true
             }
             if (wake && armed.compareAndSet(true, false) && wakeDelivered.compareAndSet(false, true)) {
-                onWake(keyword)
+                wakeCallback?.invoke(keyword)
             }
         }
 
         override fun onEvent(i: Int, i1: Int, list: List<AiResponse>?, o: Any?) = Unit
 
         override fun onError(i: Int, i1: Int, s: String?, o: Any?) {
+            if (closed) return
             armed.set(false)
             wakeDelivered.set(true)
             handle = null
-            onError(IllegalStateException(s ?: "讯飞离线唤醒失败 code=$i1"))
+            errorCallback?.invoke(IllegalStateException(s ?: "讯飞离线唤醒失败 code=$i1"))
         }
     }
 

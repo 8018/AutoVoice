@@ -33,6 +33,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        ndk { abiFilters += "arm64-v8a" }
 
         // 真机 instrumented 测试（Task 48：Silero VAD 真机验证）
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -44,6 +45,16 @@ android {
         // 接入令牌不进入配置资产；本地从 local.properties 注入，CI/发行从环境变量注入。
         buildConfigField("String", "GATEWAY_AUTH_TOKEN", quoted(gatewayAuthToken()))
 
+    }
+
+    flavorDimensions += "speechChannel"
+    productFlavors {
+        create("iflytek") { dimension = "speechChannel" }
+        create("open") {
+            dimension = "speechChannel"
+            minSdk = 27
+            applicationIdSuffix = ".open"
+        }
     }
 
     compileOptions {
@@ -89,6 +100,24 @@ kotlin {
     }
 }
 
+val openReleaseVendorAar = rootProject.file("adapter-iflytek/libs/AIKit.aar")
+val openReleaseForceStub = providers.gradleProperty("useIflytekStub").map { it == "true" }.orElse(false)
+val verifyOpenReleaseInputs by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Checks trusted staged native inputs before Open Release APK or bundle packaging."
+    workingDir(rootProject.projectDir)
+    commandLine("python3", "tools/native/native_tools.py", "verify-release-staging")
+    doLast {
+        check(!openReleaseForceStub.get() && openReleaseVendorAar.isFile) {
+            "Open Release requires the real adapter-iflytek/libs/AIKit.aar and cannot use useIflytekStub=true"
+        }
+    }
+}
+
+tasks.matching { it.name == "packageOpenRelease" || it.name == "packageOpenReleaseBundle" }.configureEach {
+    dependsOn(verifyOpenReleaseInputs)
+}
+
 dependencies {
     implementation(project(":voice-core"))
     implementation(project(":voice-engine"))
@@ -98,6 +127,9 @@ dependencies {
     implementation(project(":voice-business"))
     implementation(project(":tts"))
     implementation(project(":audio-frontend"))
+    "iflytekImplementation"(project(":audio-frontend-legacy"))
+    "openImplementation"(project(":adapter-webrtc"))
+    "openImplementation"(project(":adapter-firered"))
     implementation(project(":adapter-iflytek"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
@@ -111,6 +143,11 @@ dependencies {
     implementation(libs.gson)
     implementation("io.noties.markwon:core:4.6.2")
 
+    // compileOnly SDK interfaces do not propagate to the App JVM test runtime.
+    if (providers.gradleProperty("useIflytekStub").orNull == "true" ||
+        !rootProject.file("adapter-iflytek/libs/AIKit.aar").isFile) {
+        testImplementation(project(":iflytek-sdk-stub"))
+    }
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     // 桥接对账测试：MockWebServer 假扮网关推送 reply/error（Task 20 fix round）

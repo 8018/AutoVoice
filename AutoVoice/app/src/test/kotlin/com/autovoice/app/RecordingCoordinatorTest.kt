@@ -6,7 +6,6 @@ import com.autovoice.voicebusiness.dialog.DialogueState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.*
@@ -72,29 +71,29 @@ class RecordingCoordinatorTest {
         assertTrue(wake.armed)
     }
 
-    @Test fun `follow up timer expires only matching interaction`() = runTest {
+    @Test fun `dialogue exit disables follow up and rearms wake`() = runTest {
         val capture = FakeCapture()
+        val wake = FakeWakeWord()
         val pipeline = FakePipeline()
-        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        val coordinator = coordinator(capture, wake, pipeline) {}
         runCurrent()
         coordinator.onForeground()
         runCurrent()
 
         val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, taskDirective = null)
+        coordinator.onDialogueState(waiting)
         assertTrue(capture.followUpEnabled)
 
-        advanceTimeBy(999)
+        pipeline.dialogueSnapshot = DialogueSnapshot()
+        coordinator.onDialogueState(pipeline.dialogueSnapshot)
         runCurrent()
-        assertTrue(pipeline.expiredInteractions.isEmpty())
-        advanceTimeBy(1)
-        runCurrent()
-        assertEquals(listOf("interaction"), pipeline.expiredInteractions)
-        assertEquals(listOf<Long?>(null), pipeline.expiredTaskRevisions)
+
+        assertFalse(capture.followUpEnabled)
+        assertTrue(wake.armed)
     }
 
-    @Test fun `microphone readiness failure closes interaction rather than starting listen timer`() = runTest {
+    @Test fun `microphone readiness failure closes the interaction`() = runTest {
         val capture = FakeCapture()
         val pipeline = FakePipeline()
         val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
@@ -104,11 +103,9 @@ class RecordingCoordinatorTest {
         capture.monitoringResult = false
         val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, null)
+        coordinator.onDialogueState(waiting)
         assertEquals(listOf("interaction"), pipeline.hardExpiredInteractions)
         assertFalse(capture.followUpEnabled)
-        advanceTimeBy(1_000); runCurrent()
-        assertTrue(pipeline.expiredInteractions.isEmpty())
     }
 
     @Test fun `queued follow up detection cannot reopen capture after dialogue exit`() = runTest {
@@ -121,11 +118,11 @@ class RecordingCoordinatorTest {
         runCurrent()
         val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, null)
+        coordinator.onDialogueState(waiting)
         capture.detectFollowUp = {
             // Detection was already in flight when the exit semantic reset the dialogue.
             pipeline.dialogueSnapshot = DialogueSnapshot()
-            coordinator.onDialogueState(pipeline.dialogueSnapshot, null)
+            coordinator.onDialogueState(pipeline.dialogueSnapshot)
             true
         }
         capture.raw.emit(byteArrayOf(1, 2))
@@ -135,9 +132,6 @@ class RecordingCoordinatorTest {
         assertFalse(capture.followUpEnabled)
         assertTrue(capture.startPreRoll.isEmpty())
         assertTrue(wake.armed)
-        advanceTimeBy(1_001)
-        runCurrent()
-        assertTrue(pipeline.expiredInteractions.isEmpty())
     }
 
     @Test fun `follow up detection still starts capture while dialogue is listening`() = runTest {
@@ -149,32 +143,11 @@ class RecordingCoordinatorTest {
         runCurrent()
         val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
         pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, null)
+        coordinator.onDialogueState(waiting)
         capture.raw.emit(byteArrayOf(1, 2))
         runCurrent()
         assertTrue(coordinator.isRecording)
         assertEquals(listOf(true), capture.startPreRoll)
-    }
-
-    @Test fun `task listening directive controls window and preserves revision`() = runTest {
-        val capture = FakeCapture()
-        val pipeline = FakePipeline()
-        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
-        runCurrent()
-        coordinator.onForeground()
-        runCurrent()
-
-        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
-        pipeline.dialogueSnapshot = waiting
-        coordinator.onDialogueState(waiting, TaskListeningDirective(revision = 7, listenWindowMs = 2_000))
-
-        advanceTimeBy(1_000)
-        runCurrent()
-        assertTrue(pipeline.expiredInteractions.isEmpty())
-        advanceTimeBy(1_000)
-        runCurrent()
-        assertEquals(listOf("interaction"), pipeline.expiredInteractions)
-        assertEquals(listOf<Long?>(7), pipeline.expiredTaskRevisions)
     }
 
     @Test fun `capture start failure rolls back pipeline and reports permission`() = runTest {
@@ -211,10 +184,28 @@ class RecordingCoordinatorTest {
 
         assertFalse(wake.armed)
         assertTrue(states.last().vadUnavailable)
-        coordinator.onDialogueState(DialogueSnapshot(), taskDirective = null)
+        coordinator.onDialogueState(DialogueSnapshot())
         runCurrent()
         assertTrue(capture.monitoring)
         assertTrue(wake.armed)
+    }
+
+    @Test fun `cancelled wake setup cannot arm or stop a replacement setup`() = runTest {
+        val capture = FakeCapture()
+        val wake = FakeWakeWord()
+        val states = mutableListOf<RecordingLifecycleSnapshot>()
+        val coordinator = coordinator(capture, wake, FakePipeline()) { states += it }
+        wake.onInitialize = {
+            wake.onInitialize = {}
+            coordinator.reconfigureCapture {}
+            coordinator.onForeground()
+        }
+        coordinator.onForeground()
+        runCurrent()
+        assertEquals(1, wake.armCalls)
+        assertTrue(capture.monitoring)
+        assertTrue(wake.armed)
+        assertTrue(states.none { it.wakeError != null })
     }
 
     private fun kotlinx.coroutines.test.TestScope.coordinator(
@@ -230,12 +221,6 @@ class RecordingCoordinatorTest {
         scope = backgroundScope,
         isPlaybackSpeaking = { false },
         onState = onState,
-        elapsedRealtimeMs = { testScheduler.currentTime },
-        timing = RecordingTiming(
-            wakeTurnTimeoutMs = 5_000,
-            followUpListenMs = 1_000,
-            maxInteractionMs = 10_000,
-        ),
         ioDispatcher = StandardTestDispatcher(testScheduler),
     )
 
@@ -281,8 +266,10 @@ class RecordingCoordinatorTest {
         override val keyword = "你好飞飞"
         var initialized = false
         var armed = false
-        override fun initialize() { initialized = true }
-        override fun arm() { armed = true }
+        var armCalls = 0
+        var onInitialize: () -> Unit = {}
+        override fun initialize() { initialized = true;onInitialize() }
+        override fun arm() { armed = true;armCalls++ }
         override fun accept(pcm: ByteArray) = Unit
         override fun pause() { armed = false }
         override fun disarm() { armed = false }
@@ -300,9 +287,7 @@ class RecordingCoordinatorTest {
         var startRealtime = 0
         var finishRealtime = 0
         var dialogueResets = 0
-        val expiredInteractions = mutableListOf<String>()
         val hardExpiredInteractions = mutableListOf<String>()
-        val expiredTaskRevisions = mutableListOf<Long?>()
 
         override fun onWake() { events += "wake" }
         override fun onListeningStart(interruptPlayback: Boolean) { events += "listening:$interruptPlayback" }
@@ -317,10 +302,6 @@ class RecordingCoordinatorTest {
         override fun appendRealtimeChatAudio(block: ByteArray) { realtimeBlocks += block }
         override fun startRealtimeChat() { startRealtime++ }
         override fun finishRealtimeChat() { finishRealtime++ }
-        override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) {
-            expiredInteractions += interactionId
-            expiredTaskRevisions += taskRevision
-        }
         override fun onInteractionExpired(interactionId: String) {
             hardExpiredInteractions += interactionId
         }

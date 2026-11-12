@@ -1,0 +1,10 @@
+{
+  global:
+    Java_com_autovoice_adapterwebrtc_WebRtcNative_create;
+    Java_com_autovoice_adapterwebrtc_WebRtcNative_processCapture;
+    Java_com_autovoice_adapterwebrtc_WebRtcNative_processRender;
+    Java_com_autovoice_adapterwebrtc_WebRtcNative_resetVad;
+    Java_com_autovoice_adapterwebrtc_WebRtcNative_release;
+  local:
+    *;
+};

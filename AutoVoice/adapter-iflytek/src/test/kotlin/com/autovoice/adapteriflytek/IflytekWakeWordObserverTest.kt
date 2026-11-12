@@ -54,6 +54,16 @@ class IflytekWakeWordObserverTest {
     }
 
     @Test
+    fun `released observer ignores late SDK errors without retaining callbacks`() {
+        var errors = 0
+        val observer = IflytekWakeWordObserver("", "", "", onWake = {}, onError = { errors++ })
+        val listener = observer.javaClass.getDeclaredField("listener").also { it.isAccessible = true }.get(observer) as com.iflytek.aikit.core.AiListener
+        observer.close()
+        listener.onError(0, 19, "private sdk text", null)
+        assertEquals(0, errors)
+    }
+
+    @Test
     fun `required model list excludes demo audio and generated keyword cache`() {
         assertEquals(
             setOf("IVW_GRAM_1", "IVW_KEYWORD_1", "IVW_MLP_1", "IVW_FILLER_1"),

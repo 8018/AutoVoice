@@ -288,15 +288,17 @@ Omni 若在同一模型轮返回音频与 `tool_calls`，网关不再中断在�
 
 ```bash
 cd AutoVoice
-./gradlew :app:installDebug   # 连接手机后安装 debug 包（含弱网开关）
+./gradlew :app:installIflytekDebug   # 默认讯飞渠道，含 debug 弱网开关
 ```
 
-**期望**：安装成功（`app-debug.apk`），手机桌面出现 AutoVoice 图标。首次启动：
+**期望**：安装成功（`app/build/outputs/apk/iflytek/debug/app-iflytek-debug.apk`），手机桌面出现 AutoVoice 图标。首次启动：
 
 - 弹出 **RECORD_AUDIO 录音权限**授权框（§4.4 检查项）→ 允许；
 - 设置区默认“在线”；debug APK 连接 dev、release APK 连接生产，设置区不提供环境切换；
   在线模式下可开「模拟弱网（云端延迟 3s）」；
-- 按住录音按钮说话，VAD 自动分帧，决策日志逐条出现在屏幕（哪条链路赢、为什么）。
+- 当前 `MainActivity` 没有手动录音按钮。唤醒需有效的讯飞授权。开发探针可调用 `MainViewModel.startRecording()` / `stopRecording()`，并读取决策日志。
+
+Open 独立包和模型安装步骤见 [Open Android 构建与安装](webrtc-firered-android-build.md)。下文涉及手动按钮的验收剧本描述历史操作方式，当前需要授权唤醒或开发探针进入录音。
 
 ---
 

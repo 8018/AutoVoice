@@ -70,7 +70,7 @@ class VoiceEngine(
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
-    thinkingTimeoutMs: Long = 60_000,
+    dialogueIdleTimeoutMs: Long = 10_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
     /**
@@ -131,7 +131,7 @@ class VoiceEngine(
         tts = tts,
         business = business,
         scope = scope,
-        thinkingTimeoutMs = thinkingTimeoutMs,
+        dialogueIdleTimeoutMs = dialogueIdleTimeoutMs,
         recognition = recognitionGate,
         onExecution = { turnId, intent, result ->
             telemetry.recordFor(
@@ -163,6 +163,9 @@ class VoiceEngine(
         onTurnAdmitted = { streamingCloud?.commitStreamingTurn(it) },
         finishOpenRounds = telemetry::finishOpenRounds,
         endRound = telemetry::end,
+        onDialogueIdleTimeout = { snapshot ->
+            Log.i(TAG, "对话状态停留 ${dialogueIdleTimeoutMs}ms，退出对话（state=${snapshot.state}）")
+        },
     )
     val conversation: ConversationController get() = voiceBusiness.conversation
 
@@ -183,6 +186,11 @@ class VoiceEngine(
             },
             resultListener = ResultListener { utteranceId, winner -> voiceBusiness.onTurnResult(utteranceId, winner) },
             cloudText = cloud as? CloudTextNluEngine,
+            onLocalAdmissionPressure = { id -> telemetry.recordFor(id,"local_admission_pressure","warn",
+                mapOf("reason" to "local_request_capacity")) },
+            onTurnUnrecognized = if (cfg.frontend == "webrtc.apm") { turnId ->
+                if (voiceBusiness.onTurnUnrecognized(turnId)) Log.i(TAG, "本轮未识别到可执行指令，结束处理")
+            } else null,
             onTextFailure = { requestId, error ->
                 Log.w(TAG, "text NLU request failed: $requestId", error)
                 if (voiceBusiness.onTextFailure(requestId)) onTextInputError("云端处理失败，请重试")
@@ -270,7 +278,8 @@ class VoiceEngine(
         telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "recording_start"))
         // 明确的新轮立即停播；开放式 VAD 候选由 ASR/NLU 在 confirmTurn 中停播。
         voiceBusiness.onCaptureStarted(interruptPlayback)
-        capturePermit = recognitionGate.admitInput()
+        val originalPermit = recognitionGate.admitInput()
+        capturePermit = originalPermit
         streamingTurnId = ""
         // T7 vad 聚合统计：本轮从零开始
         turnSegmentCount = 0
@@ -280,7 +289,7 @@ class VoiceEngine(
         // WebSocket 的真实 connect/send 结果才是云端是否可用的权威信号。
         if (!networkAvailable()) Log.w(TAG, "activeNetwork unavailable; probing gateway directly")
         candidates.onCloudAvailable()
-        candidates.beginCapture(captureId)
+        candidates.beginCapture(captureId) { recognitionGate.accepts(originalPermit) }
     }
 
     /**
@@ -364,7 +373,6 @@ class VoiceEngine(
         val hadCapture = currentUtteranceId.isNotBlank()
         val captureId = conversation.ensureOpenCapture()
         // Capture-level endpoint may precede ASR admission; the gate retains that fact.
-        conversation.onInputFinalized(captureId)
         if (!hadCapture) {
             telemetry.begin(captureId)
             telemetry.record(TelemetryStages.UTTERANCE_START, "info", mapOf("source" to "button"))
@@ -381,7 +389,7 @@ class VoiceEngine(
             ),
         )
         telemetry.uploadAudio(captureId, segment)
-        candidates.submitTurn(captureId, segment)
+        candidates.submitTurn(captureId, segment) { conversation.onInputFinalized(captureId) }
     }
 
     /** 进入闲聊域后建立 Realtime 会话；麦克风数据由 [appendRealtimeChatAudio] 连续上送。 */

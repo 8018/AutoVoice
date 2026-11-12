@@ -13,6 +13,7 @@ dependencyResolutionManagement {
 rootProject.name = "AutoVoice"
 include(
     ":voice-core",
+    ":local-command-rules",
     ":voice-engine-api",
     ":voice-engine",
     ":gateway-client",
@@ -21,6 +22,9 @@ include(
     ":voice-business",
     ":tts",
     ":audio-frontend",
+    ":audio-frontend-legacy",
+    ":adapter-webrtc",
+    ":adapter-firered",
     ":adapter-iflytek",
     ":iflytek-sdk-stub",
     ":app",

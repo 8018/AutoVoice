@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.autovoice.app.DemoMode
 import com.autovoice.app.UiState
 import com.autovoice.app.VoiceUiPhase
+import com.autovoice.app.health.ComponentHealthPanel
 
 /** 语音交互首页。设置是二级页面，首页只展示真实状态与已有操作。 */
 @Composable
@@ -53,6 +54,14 @@ fun VoiceScreen(
     onSelectNavigationCandidate: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
     onDismissTravelGuide: () -> Unit,
 ) {
+    if (!state.assemblyReady) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("语音暂未就绪", style = MaterialTheme.typography.titleLarge)
+            Text(state.capabilities.summary)
+            ComponentHealthPanel(state.componentHealth, alwaysExpanded = true)
+        }
+        return
+    }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier
@@ -75,6 +84,7 @@ fun VoiceScreen(
                 onModeChange = onModeChange,
                 onWeakNetworkChange = onWeakNetworkChange,
             )
+            ComponentHealthPanel(state.componentHealth)
         } else {
             Text(
                 text = "车辆概览",
@@ -88,24 +98,17 @@ fun VoiceScreen(
             InteractionHeadline(state)
             ConversationCard(state)
             TextInputCard(
-                enabled = !state.chatMode && !state.recording,
+                enabled = state.capabilities.canSubmitText && !state.chatMode && !state.recording,
                 error = state.textInputError,
                 onSubmit = onSubmitText,
             )
             NavigationStatus(state)
             WakeGuidance(state)
         }
-        if (state.permissionHint || state.vadUnavailable || state.wakeError != null) {
-            Text(
-                text = when {
-                    state.permissionHint -> "需要录音权限，请在系统弹窗中允许麦克风访问。"
-                    state.vadUnavailable -> "语音检测不可用，语音控制暂时失效。"
-                    else -> "唤醒不可用：${state.wakeError}"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
+        if (state.capabilities.summary.isNotBlank()) {
+            Text(state.capabilities.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
+
     }
     if (state.navigationCandidates.isNotEmpty()) {
         NavigationCandidateDialog(

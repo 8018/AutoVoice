@@ -1,0 +1,30 @@
+{
+  "source": "macOS local say/Tingting synthetic public command phrases, no human recording or accuracy benchmark",
+  "format": "16kmono PCM16",
+  "files": [
+    {
+      "file": "open-window.wav",
+      "text": "打开车窗",
+      "seconds": 1.118875,
+      "sha256": "f4f62616e14e71c1b6d283c774a40de51a012b2973221bb98d83cb333cc145b5"
+    },
+    {
+      "file": "close-window.wav",
+      "text": "关闭车窗",
+      "seconds": 1.0555,
+      "sha256": "4f064ecdcefe257008e29c7ddbe98d734e0d8dea5b1371bfa6171a61650eb8c7"
+    },
+    {
+      "file": "exit-dialogue.wav",
+      "text": "退出对话",
+      "seconds": 0.9785,
+      "sha256": "fe31eed82aa4e1bee4398821c6f02de3297991e2ef2d3b9eb53efb0c82dc9b0b"
+    },
+    {
+      "file": "negated-open-window.wav",
+      "text": "不要打开车窗",
+      "seconds": 1.4860625,
+      "sha256": "e80134e16ad5036363fe465b30ce7c21de3154574e2aff0a55141cb9ae8e4cbe"
+    }
+  ]
+}

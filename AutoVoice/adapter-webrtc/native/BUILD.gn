@@ -1,0 +1,22 @@
+import("//webrtc.gni")
+
+config("autovoice_jni_exports") {
+  inputs = [ "frontend_jni.exports" ]
+  ldflags = [ "-Wl,--version-script=" + rebase_path("frontend_jni.exports", root_build_dir) ]
+}
+
+rtc_shared_library("autovoice_frontend_jni") {
+  java_targets = []
+  # Handwritten standard JNI has no generated JNI_OnLoad registration.
+  suppressed_configs = [ "//build/config/android:hide_all_but_jni_onload" ]
+  configs += [ "//third_party/jni_zero:jni_include_dir", ":autovoice_jni_exports" ]
+  sources = [ "frontend_jni.cc", "frontend_session.cc", "frontend_session.h" ]
+  deps = [
+    "//api:scoped_refptr",
+    "//api/audio:audio_processing",
+    "//api/audio:builtin_audio_processing_builder",
+    "//api/environment:environment_factory",
+    "//common_audio:common_audio_c",
+  ]
+  allow_poison = [ "environment_construction" ]
+}

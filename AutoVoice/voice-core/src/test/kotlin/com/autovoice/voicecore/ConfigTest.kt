@@ -104,6 +104,8 @@ class ConfigTest {
         )
 
         assertEquals(DemoConfig.ECNR_RNNOISE, cfg.ecnr)
+        assertEquals("legacy", cfg.frontend)
+        assertEquals("silero", cfg.vad.provider)
         assertNull(cfg.testAudio)
     }
 
@@ -119,31 +121,13 @@ class ConfigTest {
     }
 
     @Test
-    fun `unsupported providers and reserved mock switch fail with field name`() {
-        fun base(extra: String = "", asr: String = "iflytek.fake-cmd", nlu: String = "rule.nlu") =
-            """{"mode":"full","ecnr":"rnnoise","local":{"asr":"$asr","nlu":"$nlu"},
-               "cloud":{"enabled":true,"gatewayUrl":"ws://gateway/ws","waitMs":100},
-               "mock":{"executor":false}$extra}"""
-
-        val asrError = assertThrows(IllegalArgumentException::class.java) {
-            DemoConfig.fromJson(base(asr = "unknown"))
+    fun `reserved mock switch remains rejected by common validation`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DemoConfig.fromJson(
+                """{"mode":"offline","local":{"asr":"iflytek.offline","nlu":"rule.nlu"},
+                   "cloud":{"enabled":false,"gatewayUrl":"","waitMs":3000},"mock":{"executor":true}}""",
+            )
         }
-        assertTrue(asrError.message!!.contains("local.asr"))
-
-        val nluError = assertThrows(IllegalArgumentException::class.java) {
-            DemoConfig.fromJson(base(nlu = "unknown"))
-        }
-        assertTrue(nluError.message!!.contains("local.nlu"))
-
-        val ecnrError = assertThrows(IllegalArgumentException::class.java) {
-            DemoConfig.fromJson(base().replace("rnnoise", "unknown"))
-        }
-        assertTrue(ecnrError.message!!.contains("ecnr"))
-
-        val mockError = assertThrows(IllegalArgumentException::class.java) {
-            DemoConfig.fromJson(base().replace("\"executor\":false", "\"executor\":true"))
-        }
-        assertTrue(mockError.message!!.contains("mock.executor"))
     }
 
     @Test

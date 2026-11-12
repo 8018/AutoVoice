@@ -1,18 +1,39 @@
 package com.autovoice.app
 
 import com.autovoice.audiofrontend.vad.VadEvent
+import com.autovoice.voicecore.health.rethrowCancellationOrFatal
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
+/** Recorder-owned input epoch; null means idle DSP. Positions remain original capture samples. */
+data class CaptureFrontendBatch(val inputEpoch: Long?, val batch: com.autovoice.audiofrontend.FrontendBatch,
+    val followUpEpoch: Long? = null, val bargeInEpoch: Long? = null, val speechConfirmedForInput: Boolean = false)
+data class CaptureFrontendFailure(val inputEpoch: Long?, val error: com.autovoice.voicecore.health.ComponentError)
+data class CaptureCompletion(val inputEpoch: Long?, val batches: List<CaptureFrontendBatch>,
+    val tail: ByteArray, val segments: List<ByteArray>, val failure: CaptureFrontendFailure? = null)
+data class CaptureStreamingInput(val inputEpoch: Long, val captureStreamEpoch: Long, val startSample: Long)
+
 /** Android 采集驱动边界；实现只管理 AudioRecord/VAD/RNNoise 资源，不决定音频去向。 */
 interface RecordingCapture : AutoCloseable {
+    val frontendBatchSignal: kotlinx.coroutines.flow.StateFlow<Long>? get() = null
+    val inputEpoch: Long? get() = null
+    val frontendFailure: CaptureFrontendFailure? get() = null
+    fun drainFrontendBatches(): List<CaptureFrontendBatch> = emptyList()
+    /** Null preserves the legacy stop/getter path. Open implementations freeze ownership atomically. */
+    fun stopAndSnapshot(): CaptureCompletion? = null
+    /** Continuous processed streaming ownership, without ordinary whole-turn retention. */
+    fun beginStreamingInput(): CaptureStreamingInput? = null
+    fun endStreamingInput() = Unit
+    fun abortInput() = stop()
+    fun detectAuxiliarySpeech(event: CaptureFrontendBatch, purpose: com.autovoice.audiofrontend.VadPurpose): Boolean = false
     val pcmBlocks: SharedFlow<ByteArray>
     val rawPcmBlocks: SharedFlow<ByteArray>
     val vadEvents: SharedFlow<VadEvent>
@@ -57,11 +78,7 @@ internal interface RecordingPipeline {
     fun appendRealtimeChatAudio(block: ByteArray)
     fun startRealtimeChat()
     fun finishRealtimeChat()
-    fun onFollowUpExpired(interactionId: String, taskRevision: Long?)
     fun onInteractionExpired(interactionId: String)
-    fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
-        expected.interactionId?.let { onFollowUpExpired(it, taskRevision) }
-    }
     fun resetDialogue()
 }
 
@@ -74,15 +91,6 @@ internal data class RecordingLifecycleSnapshot(
     val wakeError: String? = null,
     val chatMode: Boolean = false,
 )
-
-internal data class RecordingTiming(
-    val wakeTurnTimeoutMs: Long = 10_000L,
-    val followUpListenMs: Long = 10_000L,
-    val maxInteractionMs: Long = 60_000L,
-)
-
-/** Opaque task listening policy. The recorder executes it without knowing the business domain. */
-internal typealias TaskListeningDirective = com.autovoice.voicebusiness.dialog.TaskListeningDirective
 
 /**
  * Owns the microphone-use lifecycle, not dialogue state, ASR/NLU, arbitration or playback.
@@ -98,13 +106,16 @@ internal class RecordingCoordinator(
     private val onLocalSegment: (ByteArray) -> Unit = {},
     private val onLog: (String) -> Unit = {},
     private val onWakeError: (Throwable) -> Unit = {},
-    private val elapsedRealtimeMs: () -> Long,
-    private val timing: RecordingTiming = RecordingTiming(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AutoCloseable {
     private val jobs = mutableListOf<Job>()
     private val denoisedBlocks = mutableListOf<ByteArray>()
     private val cloudStreamLock = Any()
+    // Coordinator lock precedes Recorder locks. Recorder signals only outside its own locks.
+    private val captureBatchLock = Any()
+    private var activeInputEpoch: Long? = null
+    private var realtimeSessionActive = false
+    private var stopAfterOpenDrain = false
     private val cloudPreRoll = ArrayDeque<ByteArray>()
 
     @Volatile private var state = RecordingLifecycleSnapshot(vadUnavailable = !capture.vadAvailable)
@@ -117,22 +128,15 @@ internal class RecordingCoordinator(
     @Volatile private var dialogueSnapshot = DialogueSnapshot()
     private var wakeInitialized = false
     private var wakeSetupJob: Job? = null
-    private var wakeTurnTimeoutJob: Job? = null
-    private var taskListeningDirective: TaskListeningDirective? = null
-    private val listening = com.autovoice.voicebusiness.dialog.DialogueListeningController(
-        scope, elapsedRealtimeMs, { pipeline.dialogueSnapshot },
-        { expected, revision ->
-            capture.setFollowUpListening(false)
-            pipeline.onListeningExpired(expected, revision)
-        }, timing.followUpListenMs, timing.maxInteractionMs,
-        onInteractionExpired = { interactionId -> pipeline.onInteractionExpired(interactionId) },
-    )
 
     val isRecording: Boolean get() = recording
     val isChatLocked: Boolean get() = chatLocked
 
     init {
         onState(state)
+        capture.frontendBatchSignal?.let { signal -> jobs += scope.launch {
+            signal.collect { synchronized(captureBatchLock) { consumeOpenBatches() } }
+        } }
         jobs += scope.launch {
             capture.pcmBlocks.collect(::onDenoisedBlock)
         }
@@ -181,6 +185,7 @@ internal class RecordingCoordinator(
             rearmWakeWhenIdle()
             return
         }
+        activeInputEpoch = capture.inputEpoch
         updateState {
             it.copy(
                 permissionRequired = false,
@@ -189,16 +194,7 @@ internal class RecordingCoordinator(
                 wakeListening = false,
             )
         }
-        wakeTurnTimeoutJob?.cancel()
-        if (fromWake) {
-            wakeTurnTimeoutJob = scope.launch {
-                delay(timing.wakeTurnTimeoutMs)
-                if (wakeTurn && recording && !chatLocked) {
-                    onLog("唤醒后等待命令超时，自动收口")
-                    stopTurn()
-                }
-            }
-        }
+        synchronized(captureBatchLock) { consumeOpenBatches() }
     }
 
     fun onForeground() {
@@ -235,17 +231,13 @@ internal class RecordingCoordinator(
         }
     }
 
-    fun onBackground() {
+    fun onBackground() = synchronized(captureBatchLock) {
         foreground = false
         stopFollowUpListening(resetDialogue = true)
         wakeSetupJob?.cancel()
         wakeSetupJob = null
         if (chatLocked) {
-            recording = false
-            capture.stop()
-            pipeline.finishRealtimeChat()
-            synchronized(denoisedBlocks) { denoisedBlocks.clear() }
-            updateState { it.copy(recording = false) }
+            endChatCapture()
         } else if (recording) {
             cancelTurn(rearm = false)
         } else {
@@ -255,21 +247,37 @@ internal class RecordingCoordinator(
         updateState { it.copy(wakeListening = false, openMicBargeInAvailable = false) }
     }
 
-    fun stopTurn() {
+    fun stopTurn() = synchronized(captureBatchLock) {
+        consumeOpenBatches(allowStop = false)
+        stopTurnAfterDrain()
+    }
+
+    private fun stopTurnAfterDrain() {
         if (!recording || chatLocked) return
+        val completion = capture.stopAndSnapshot()
+        if (completion != null) {
+            if (completion.inputEpoch != activeInputEpoch || completion.failure != null) {
+                cancelTurn(rearm = false)
+                return
+            }
+            // Snapshot owns its accepted range even if ongoing idle capture fails now.
+            consumeCapturedBatches(completion.batches,allowStop = false)
+        }
         recording = false
-        resetCloudStreamGate()
+        if (capture.frontendBatchSignal == null) resetCloudStreamGate()
         wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        wakeTurnTimeoutJob = null
-        capture.stop()
+        if (completion == null) capture.stop()
         updateState { it.copy(recording = false) }
-        val tail = capture.finishProcessedAudio()
+        val tail = completion?.tail ?: capture.finishProcessedAudio()
+        if (capture.frontendBatchSignal != null) {
+            if (cloudVadActive && tail.isNotEmpty()) pipeline.appendStreamingCloudAudio(tail)
+            resetCloudStreamGate()
+        }
         val denoised = synchronized(denoisedBlocks) {
             if (tail.isNotEmpty()) denoisedBlocks += tail
             concatBlocks(denoisedBlocks).also { denoisedBlocks.clear() }
         }
-        val cloudSegments = capture.finishSegments()
+        val cloudSegments = completion?.segments ?: capture.finishSegments()
         if (denoised.size >= MIN_SEGMENT_BYTES && cloudSegments.isNotEmpty()) {
             pipeline.finishStreamingCloudAudio()
         } else {
@@ -286,7 +294,7 @@ internal class RecordingCoordinator(
         // The input capture has released the microphone. If it was only noise, the same
         // LISTENING snapshot can now start an actual follow-up window.
         if (dialogueSnapshot.state == DialogueState.LISTENING && dialogueSnapshot.turnId == null) {
-            onDialogueState(pipeline.dialogueSnapshot, taskListeningDirective)
+            onDialogueState(pipeline.dialogueSnapshot)
         }
         rearmWakeWhenIdle()
     }
@@ -296,9 +304,7 @@ internal class RecordingCoordinator(
         recording = false
         resetCloudStreamGate()
         wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        wakeTurnTimeoutJob = null
-        capture.stop()
+        capture.abortInput()
         synchronized(denoisedBlocks) { denoisedBlocks.clear() }
         pipeline.cancelStreamingCloudAudio()
         pipeline.onListeningStop()
@@ -310,27 +316,23 @@ internal class RecordingCoordinator(
         capture.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
     }
 
-    fun onDialogueState(snapshot: DialogueSnapshot, taskDirective: TaskListeningDirective?) {
+    fun onDialogueState(snapshot: DialogueSnapshot) {
         dialogueSnapshot = snapshot
-        taskListeningDirective = taskDirective
-        if (foreground && !chatLocked) listening.update(snapshot, taskDirective, listeningReady = false)
         val waiting = snapshot.state == DialogueState.LISTENING && snapshot.turnId == null
-        if (!waiting) {
+        if (waiting) {
+            armFollowUpListening(snapshot)
+        } else {
             capture.setFollowUpListening(false)
         }
-        if (waiting) {
-            if (armFollowUpListening(snapshot) && pipeline.dialogueSnapshot == snapshot &&
-                foreground && !chatLocked
-            ) listening.update(snapshot, taskDirective, listeningReady = true)
-        } else if (snapshot.state == DialogueState.DORMANT) {
+        if (snapshot.state == DialogueState.DORMANT) {
             if (recording && !chatLocked) cancelTurn(rearm = false)
-            stopFollowUpListening(resetDialogue = false)
             rearmWakeWhenIdle()
         }
     }
 
-    fun setChatMode(enabled: Boolean): Boolean {
+    fun setChatMode(enabled: Boolean): Boolean = synchronized(captureBatchLock) {
         if (chatLocked == enabled) return false
+        if (enabled && recording) cancelTurn(rearm = false)
         chatLocked = enabled
         updateState { it.copy(chatMode = enabled) }
         if (enabled) {
@@ -338,17 +340,58 @@ internal class RecordingCoordinator(
             capture.setOpenMicBargeInListening(false)
             startChatCapture()
         } else {
-            pipeline.finishRealtimeChat()
-            if (recording) {
-                recording = false
-                capture.stop()
-                synchronized(denoisedBlocks) { denoisedBlocks.clear() }
-                updateState { it.copy(recording = false) }
-            }
+            endChatCapture()
             pipeline.resetDialogue()
             rearmWakeWhenIdle()
         }
         return true
+    }
+
+    private fun consumeOpenBatches(allowStop: Boolean = true) {
+        if (capture.frontendBatchSignal == null) return
+        val failure = capture.frontendFailure
+        if (failure != null) {
+            capture.drainFrontendBatches()
+            if (recording && failure.inputEpoch == activeInputEpoch) {
+                onLog(failure.error.code.message)
+                if (chatLocked) {
+                    endChatCapture(clearMode = true)
+                    capture.stopMonitoring()
+                } else cancelTurn(rearm = false)
+            }
+            return
+        }
+        consumeCapturedBatches(capture.drainFrontendBatches(),allowStop)
+    }
+
+    private fun consumeCapturedBatches(batches: List<CaptureFrontendBatch>, allowStop: Boolean) {
+        for (event in batches) {
+            if (chatLocked) {
+                if (recording && event.inputEpoch == activeInputEpoch && activeInputEpoch != null)
+                    event.batch.processedBlocks.forEach { pipeline.appendRealtimeChatAudio(it.pcm) }
+                continue
+            }
+            if (event.inputEpoch == null) {
+                if (!recording && capture.detectAuxiliarySpeech(event,com.autovoice.audiofrontend.VadPurpose.BARGE_IN)) onOpenMicBargeInDetected()
+                else if (!recording && capture.detectAuxiliarySpeech(event,com.autovoice.audiofrontend.VadPurpose.FOLLOW_UP)) onFollowUpSpeechDetected()
+                continue
+            }
+            if (!recording || event.inputEpoch != activeInputEpoch) continue
+            if (event.speechConfirmedForInput && !cloudVadActive) onVadEvent(VadEvent.SpeechStart)
+            for (block in event.batch.processedBlocks) {
+                val observations = event.batch.vadObservations.filter {
+                    it.purpose == com.autovoice.audiofrontend.VadPurpose.SEGMENTATION &&
+                        it.startSample < block.startSample + block.validSamples &&
+                        it.startSample + it.validSamples > block.startSample
+                }
+                observations.flatMap { it.events }.filter { it == VadEvent.SpeechStart }.forEach(::onVadEvent)
+                onDenoisedBlock(block.pcm)
+                observations.flatMap { it.events }.filter { it == VadEvent.SpeechEnd }.forEach(::onVadEvent)
+            }
+        }
+        val stop = stopAfterOpenDrain
+        stopAfterOpenDrain = false
+        if (stop && allowStop && recording) stopTurn()
     }
 
     private fun onDenoisedBlock(block: ByteArray) {
@@ -366,13 +409,14 @@ internal class RecordingCoordinator(
 
     private fun onRawBlock(block: ByteArray) {
         if (chatLocked) {
-            if (recording) pipeline.appendRealtimeChatAudio(block)
+            if (recording && capture.frontendBatchSignal == null) pipeline.appendRealtimeChatAudio(block)
             return
         }
         if (recording) return
         if (state.wakeListening) {
             runCatching { wakeWord.accept(block) }.onFailure(::onWakeFailure)
         }
+        if (capture.frontendBatchSignal != null) return // Open auxiliary observations come from the same processed batch, never raw PCM.
         if (capture.detectOpenMicBargeIn(block)) {
             scope.launch { onOpenMicBargeInDetected() }
         } else if (capture.detectFollowUpSpeech(block)) {
@@ -397,7 +441,9 @@ internal class RecordingCoordinator(
                     cloudPreRoll.clear()
                 }
                 pipeline.onVadEnd()
-                if (wakeTurn && recording) stopTurn()
+                if (wakeTurn && recording) {
+                    if (capture.frontendBatchSignal != null) stopAfterOpenDrain = true else stopTurn()
+                }
             }
         }
     }
@@ -413,6 +459,7 @@ internal class RecordingCoordinator(
             try {
                 if (!wakeInitialized) {
                     wakeWord.initialize()
+                    currentCoroutineContext().ensureActive()
                     wakeInitialized = true
                 }
                 if (!canMonitorWake()) {
@@ -421,6 +468,7 @@ internal class RecordingCoordinator(
                     return@launch
                 }
                 wakeWord.arm()
+                currentCoroutineContext().ensureActive()
                 if (!canMonitorWake()) {
                     wakeWord.pause()
                     capture.stopMonitoring()
@@ -435,6 +483,7 @@ internal class RecordingCoordinator(
                 }
                 onLog("离线唤醒已启用：${wakeWord.keyword}")
             } catch (error: Throwable) {
+                error.rethrowCancellationOrFatal()
                 onWakeFailure(error)
             }
         }
@@ -478,21 +527,19 @@ internal class RecordingCoordinator(
         startTurn(fromWake = true, includeBargeInPreRoll = true)
     }
 
-    private fun armFollowUpListening(snapshot: DialogueSnapshot): Boolean {
-        val interactionId = snapshot.interactionId ?: return false
-        if (startingTurn || chatLocked || !foreground || recording) return false
+    private fun armFollowUpListening(snapshot: DialogueSnapshot) {
+        val interactionId = snapshot.interactionId ?: return
+        if (startingTurn || chatLocked || !foreground || recording) return
         pauseWakeObservation()
         if (!capture.startMonitoring()) {
             updateState { it.copy(permissionRequired = true) }
             pipeline.onInteractionExpired(interactionId)
-            return false
+            return
         }
         capture.setFollowUpListening(true)
-        return true
     }
 
     private fun stopFollowUpListening(resetDialogue: Boolean) {
-        listening.close()
         capture.setFollowUpListening(false)
         if (resetDialogue) pipeline.resetDialogue()
     }
@@ -515,7 +562,7 @@ internal class RecordingCoordinator(
         }
     }
 
-    private fun startChatCapture() {
+    private fun startChatCapture() = synchronized(captureBatchLock) {
         if (!chatLocked || !foreground || recording) return
         pauseWakeObservation()
         synchronized(denoisedBlocks) { denoisedBlocks.clear() }
@@ -523,7 +570,17 @@ internal class RecordingCoordinator(
             updateState { it.copy(permissionRequired = true) }
             return
         }
+        if (capture.frontendBatchSignal != null) {
+            val owner = capture.beginStreamingInput()
+            if (owner == null) {
+                capture.stopMonitoring()
+                updateState { it.copy(recording = false,permissionRequired = false) }
+                return
+            }
+            activeInputEpoch = owner.inputEpoch
+        }
         recording = true
+        realtimeSessionActive = true
         pipeline.startRealtimeChat()
         updateState {
             it.copy(
@@ -534,6 +591,21 @@ internal class RecordingCoordinator(
                 vadUnavailable = !capture.vadAvailable,
             )
         }
+    }
+
+    private fun endChatCapture(clearMode: Boolean = false) {
+        if (recording) {
+            recording = false
+            if (capture.frontendBatchSignal != null) capture.endStreamingInput() else capture.stop()
+        }
+        activeInputEpoch = null
+        if (realtimeSessionActive) {
+            realtimeSessionActive = false
+            pipeline.finishRealtimeChat()
+        }
+        if (clearMode) chatLocked = false
+        synchronized(denoisedBlocks) { denoisedBlocks.clear() }
+        updateState { it.copy(recording = false,chatMode = chatLocked) }
     }
 
     private fun resetCloudStreamGate() = synchronized(cloudStreamLock) {
@@ -551,9 +623,8 @@ internal class RecordingCoordinator(
     override fun close() {
         foreground = false
         wakeSetupJob?.cancel()
-        wakeTurnTimeoutJob?.cancel()
-        listening.close()
         jobs.forEach(Job::cancel)
+        synchronized(captureBatchLock) { if (realtimeSessionActive) endChatCapture() }
         runCatching { wakeWord.close() }
         capture.close()
     }

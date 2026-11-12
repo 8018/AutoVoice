@@ -1,11 +1,8 @@
 # audio-frontend
 
-麦克风采集后的统一音频前端模块，负责两类原子能力及其组合：
+公共音频契约与门控模块。保留 `AudioFrontendEngine`、`FrontendSignalProcessor`、
+`CaptureEffects`、`VadEngine`，以及公共分段和门控逻辑；不包含具体算法、模型、ORT 或 native 构建。
 
-- `FrontendSignalProcessor`：软件前端信号处理接口；当前实现为 RNNoise。
-- `CaptureEffects`：绑定 `AudioRecord` session 的硬件/系统 AEC 与降噪资源。
-- `VadEngine`：逐帧语音活动检测接口；当前实现为 Silero VAD。
-- `AudioFrontendEngine`：一次接收原始 PCM，同时产出处理后 PCM、VAD 事件和语音切段。
-
-`app` 只管理 `AudioRecord` 生命周期并消费 `AudioFrontendEngine` 输出，不直接创建或编排
-RNNoise、Silero、VAD 门控和切段器。ASR/NLU、仲裁、会话状态与业务处理均不属于本模块。
+App 通过 `AudioFrontendEngineFactory`、`VadEngineFactory`、`CaptureEffectsFactory` 选择实现。
+模式重配复用所选 factory；续听与打断使用独立于正式分段的 VAD。
+旧实现位于 `audio-frontend-legacy`。

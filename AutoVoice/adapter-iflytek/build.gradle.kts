@@ -41,6 +41,7 @@ kotlin {
 
 dependencies {
     implementation(project(":voice-core"))
+    implementation(project(":local-command-rules"))
     implementation(libs.coroutines.core)
     implementation(libs.okhttp)
     // 讯飞离线命令词 AIKit AEE SDK（aar 内含 jni so），经 settings 的 flatDir 仓库解析；

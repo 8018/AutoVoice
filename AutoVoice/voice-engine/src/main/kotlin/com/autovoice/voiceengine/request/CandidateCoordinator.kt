@@ -1,6 +1,9 @@
 package com.autovoice.voiceengine.request
 
 import com.autovoice.voicecore.DemoConfig
+import com.autovoice.voicecore.LocalRequestAdmission
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import com.autovoice.voicecore.arbiter.ArbitrationOutput
 import com.autovoice.voicecore.arbiter.LocalAdmission
 import com.autovoice.voicecore.arbiter.OnDeviceRaceArbiter
@@ -39,12 +42,23 @@ class CandidateCoordinator(
     private val resultListener: ResultListener = ResultListener { _, _ -> },
     private val cloudText: CloudTextNluEngine? = null,
     private val onTextFailure: (String, Throwable) -> Unit = { _, _ -> },
+    private val localInferenceBudgetMs: Long = DEFAULT_LOCAL_INFERENCE_BUDGET_MS,
+    private val localClockMs: () -> Long = { System.nanoTime()/1_000_000 },
+    private val onLocalAdmissionPressure: (String) -> Unit = {},
+    private val onTurnUnrecognized: ((String) -> Unit)? = null,
 ) : TextInputPort {
+    init { require(localInferenceBudgetMs in 1..300_000) }
     private val candidateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val captureLock = Any()
     private val textInFlight = AtomicInteger()
     private val acceptedTextIds = LinkedHashSet<String>()
     private val textInputFinalized = HashMap<String, CompletableDeferred<Unit>>()
+    private val live = AtomicBoolean(true)
+    private class OwnedRequest(val finalized: AtomicBoolean, val active: AtomicBoolean, val facts: LocalRequestAdmission)
+    private val localRequests = ConcurrentHashMap<String,OwnedRequest>()
+    private val acceptedAudioIds = LinkedHashSet<String>()
+    private var originalPermit: (() -> Boolean)? = null
+    fun localAdmission(requestId: String): LocalRequestAdmission? = localRequests[requestId]?.facts?.takeIf { it.ownerLive() }
 
     @Volatile
     var currentCaptureId: String = ""
@@ -64,10 +78,11 @@ class CandidateCoordinator(
      */
     private val cloudSegments = ArrayList<ByteArray>()
 
-    fun beginCapture(captureId: String) {
+    fun beginCapture(captureId: String, originalPermitValid: (() -> Boolean)? = null) {
         require(captureId.isNotBlank())
         synchronized(captureLock) {
             currentCaptureId = captureId
+            originalPermit = originalPermitValid
             cloudSegments.clear()
         }
     }
@@ -92,12 +107,34 @@ class CandidateCoordinator(
         }
     }
 
-    fun submitTurn(captureId: String, localAudio: ByteArray): Boolean {
+    fun submitTurn(captureId: String, localAudio: ByteArray, onAccepted: () -> Unit = {}): Boolean {
+        var localPressure = false
         val cloudAudio = synchronized(captureLock) {
-            if (captureId.isBlank() || currentCaptureId != captureId) return false
+            if (!live.get() || captureId.isBlank() || currentCaptureId != captureId || captureId in acceptedAudioIds || localRequests.containsKey(captureId)) return false
+            if (originalPermit?.invoke() == false) return false
+            originalPermit?.let { permit ->
+                if (localRequests.size >= MAX_LOCAL_REQUESTS) {
+                    localPressure = true
+                } else {
+                val finalized = AtomicBoolean(false);val active = AtomicBoolean(true)
+                val deadline = Math.addExact(localClockMs(),localInferenceBudgetMs)
+                localRequests[captureId] = OwnedRequest(finalized,active,LocalRequestAdmission(deadline,
+                    finalized::get,permit,{ live.get() && active.get() }))
+                }
+            }
+            acceptedAudioIds.add(captureId)
+            if (acceptedAudioIds.size > MAX_LOCAL_REQUESTS) acceptedAudioIds.remove(acceptedAudioIds.first())
             currentCaptureId = ""
+            originalPermit = null
             takeCloudAudioLocked()
         }
+        try {
+            onAccepted() // Actual accepted endpoint, before any local worker can start.
+            localRequests[captureId]?.finalized?.set(true)
+        } catch (error: Throwable) { retireLocal(captureId);throw error }
+        // Pressure denies only fact-dependent native admission. Cloud and legacy local work
+        // still own this accepted request; diagnostics must never orphan their producers.
+        if (localPressure) runCatching { onLocalAdmissionPressure(captureId) }
         runTurn(captureId, localAudio, cloudAudio)
         return true
     }
@@ -164,40 +201,58 @@ class CandidateCoordinator(
         if (cloudAudio == null) {
             val reason = if (cloudRouteActive()) "no_cloud_segment" else "cloud_unreachable"
             candidateScope.launch {
+                val result = runLocal(segment, utteranceId)
                 arbiter.submitLocal(
                     utteranceId,
-                    local.run(segment, utteranceId),
+                    result,
                     admission = LocalAdmission.IMMEDIATE,
                     immediateReason = reason,
                 )
+                if (result.intent.isUnknown()) onTurnUnrecognized?.invoke(utteranceId)
             }
             return
         }
 
         // Start the cloud producer first. FIFO order is determined by actual submitted messages;
         // a synchronous cloud failure must open the local gate before a fast local result is held.
+        val cloudSubmitted = onTurnUnrecognized?.let { CompletableDeferred<Boolean>() }
         candidateScope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 arbiter.submitCloud(utteranceId, cloud.run(cloudAudio, utteranceId))
+                cloudSubmitted?.complete(true)
             } catch (error: CloudUnavailableException) {
                 onCloudUnavailable()
                 arbiter.submitCloudUnavailable(utteranceId, "cloud_unreachable")
             } catch (error: CloudRequestFailedException) {
                 arbiter.submitCloudUnavailable(utteranceId, "cloud_request_failed")
+            } finally {
+                // Completion is ignored if a cloud result was already submitted.
+                cloudSubmitted?.complete(false)
             }
         }
         candidateScope.launch {
-            arbiter.submitLocal(utteranceId, local.run(segment, utteranceId))
+            val result = runLocal(segment, utteranceId)
+            arbiter.submitLocal(utteranceId, result)
+            if (result.intent.isUnknown() && cloudSubmitted?.await() == false) {
+                onTurnUnrecognized?.invoke(utteranceId)
+            }
         }
     }
 
+    private suspend fun runLocal(segment: ByteArray, id: String) = try { local.run(segment,id) }
+        finally { retireLocal(id) }
+    private fun retireLocal(id: String) { localRequests.remove(id)?.active?.set(false) }
+
     fun close() {
-        candidateScope.cancel()
-        arbiter.close()
         synchronized(captureLock) {
+            live.set(false)
+            localRequests.keys.forEach(::retireLocal)
             currentCaptureId = ""
+            originalPermit = null
             cloudSegments.clear()
         }
+        candidateScope.cancel()
+        arbiter.close()
     }
 
     /** 原子取走本轮 VAD 片段并按时间顺序拼接；空片段轮返回 null，走本地链。 */
@@ -221,6 +276,8 @@ class CandidateCoordinator(
     companion object {
         private const val MAX_TEXT_IN_FLIGHT = 2
         private const val MAX_RETAINED_TEXT_IDS = 64
+        const val DEFAULT_LOCAL_INFERENCE_BUDGET_MS = 60_000L
+        private const val MAX_LOCAL_REQUESTS = 64
     }
 
 }

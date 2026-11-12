@@ -85,11 +85,16 @@ class IflytekOfflineCommandAsrStage(
 
     /** 授权（initEntry）+ 引擎初始化 + 命令词加载。调用一次即可，幂等。 */
     fun init(context: Context) {
-        checkCredentials()
         if (initialized) return
         // 能力结果回调先注册；SDK 鉴权由进程级 runtime 与唤醒能力共享。
-        AiHelper.getInst().registerListener(ABILITY_ID, abilityListener)
-        IflytekAiKitRuntime.ensureInitialized(context, appId, apiKey, apiSecret, workDir)
+        try {
+            IflytekAiKitRuntime.ensureInitialized(context, appId, apiKey, apiSecret, workDir) {
+                AiHelper.getInst().registerListener(ABILITY_ID, abilityListener)
+            }
+        } catch (error: RuntimeInitializationException) {
+            if (error.componentError.code == com.autovoice.voicecore.health.ErrorCode.SDK_CREDENTIALS_MISSING) throw IllegalStateException(NOT_CONFIGURED_MSG)
+            throw error
+        }
         val initRet = runOnEngine { initEngine() }
         if (initRet != 0) {
             throw IllegalStateException("$NOT_CONFIGURED_MSG（引擎初始化失败 code=$initRet，请确认离线资源已推送到 $workDir（SDK 归档 resource/CNENESR））")

@@ -1,24 +1,6 @@
 package com.autovoice.audiofrontend
 
-import android.content.Context
-import android.util.Log
-import com.autovoice.audiofrontend.ecnr.RnnoiseProcessor
-import com.autovoice.audiofrontend.ecnr.FrontendSignalProcessor
-import com.autovoice.audiofrontend.vad.SileroVad
-import com.autovoice.audiofrontend.vad.VadEngine
-import com.autovoice.audiofrontend.vad.VadEvent
-import com.autovoice.audiofrontend.vad.VadSegmenter
-import com.autovoice.audiofrontend.vad.createSegmentationGate
-import com.autovoice.voicecore.DemoConfig
-import com.autovoice.voicecore.VadConfig
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
-/** A single frame emitted by the microphone audio front end. */
-data class AudioFrontendFrame(
-    val processedPcm: ByteArray,
-    val vadEvent: VadEvent?,
-)
+import com.autovoice.voicecore.health.ComponentReporter
 
 /** Diagnostic snapshot for the current capture turn. */
 data class AudioFrontendDiagnostics(
@@ -27,7 +9,18 @@ data class AudioFrontendDiagnostics(
     val speechEndEvents: Int = 0,
     val inputBlocks: Int = 0,
     val openSegmentStart: Int? = null,
+    /** Genuine segmentation observation, not business input finalization/admission. */
+    val observedInputEndSample: Long? = null,
 )
+
+/** Bounded processed history and original main observations following a genuine auxiliary confirmation.
+ * No request ownership, admission or finalized flag belongs to this audio fact. */
+data class AudioInputHistory(val batch: FrontendBatch, val auxiliaryConfirmedAtSample: Long) {
+    val observedEndSample: Long? get() = batch.vadObservations.firstOrNull {
+        it.purpose == VadPurpose.SEGMENTATION && com.autovoice.audiofrontend.vad.VadEvent.SpeechEnd in it.events &&
+            it.startSample+it.validSamples > auxiliaryConfirmedAtSample
+    }?.let { it.startSample+it.validSamples }
+}
 
 /**
  * Microphone front-end boundary: raw PCM enters once, signal processing and VAD run together, and
@@ -35,127 +28,29 @@ data class AudioFrontendDiagnostics(
  * not know which denoiser or VAD implementation is installed.
  */
 interface AudioFrontendEngine : AutoCloseable {
+    /** Non-null only when audio processing itself cannot run; independent from ASR readiness. */
+    val unavailabilityReason: String? get() = null
+    /** Rebinds diagnostics only: never recreate/reset APM, VAD, recurrent state or audio grids. */
+    fun attachReporting(frontendReporter: ComponentReporter, vadReporter: ComponentReporter) = Unit
+    /** Rebind diagnostics for native-owned auxiliary VAD and AEC without altering either engine. */
+    fun attachAuxiliaryReporting(auxVadReporter: ComponentReporter, aecReporter: ComponentReporter) = Unit
+    val ownsAuxiliaryVad: Boolean get() = false
+    /** Persistent signal processing continues outside business inputs. Legacy remains turn-only. */
+    val continuousProcessing: Boolean get() = false
     val vadAvailable: Boolean
     val diagnostics: AudioFrontendDiagnostics
 
     fun startTurn()
-    fun process(block: ByteArray): AudioFrontendFrame
+    /** Already processed continuous pre-roll; never send it through DSP again. Legacy accepts empty only. */
+    fun startTurn(history: AudioInputHistory) { require(history.batch.processedBlocks.isEmpty());startTurn() }
+    /** Independent auxiliary state only; never reset APM or another purpose. */
+    fun resetVad(purpose: VadPurpose) = Unit
+    fun process(block: ByteArray): FrontendBatch
     /** Flushes the sub-frame tail while preserving the exact input sample count. */
     fun finishProcessedAudio(): ByteArray
+    /** Normal input completion: flush before finishSegments; device cancellation discards pending input. */
+    fun finishBatch(): FrontendBatch = AudioFrontendFrame(finishProcessedAudio(), null)
     fun finishSegments(): List<ByteArray>
-}
-
-/** Production composition for the local RNNoise + Silero front end. */
-object AudioFrontendFactory {
-    private const val SILERO_VAD_ASSET = "silero_vad.onnx"
-
-    fun create(
-        context: Context,
-        vadConfig: VadConfig,
-        ecnr: String,
-    ): AudioFrontendEngine {
-        val denoiseEnabled = when (ecnr) {
-            DemoConfig.ECNR_RNNOISE -> true
-            DemoConfig.ECNR_NONE -> false
-            else -> error("unsupported ECNR provider '$ecnr'; supported: rnnoise, none")
-        }
-        val segmenter = try {
-            VadSegmenter(
-                vad = SileroVad(context, SILERO_VAD_ASSET),
-                gate = vadConfig.createSegmentationGate(),
-            )
-        } catch (error: Throwable) {
-            Log.w(TAG, "Silero VAD model unavailable; signal processing remains active", error)
-            null
-        }
-        return LocalAudioFrontendEngine(segmenter, RnnoiseProcessor(), denoiseEnabled)
-    }
-
-    fun createVad(context: Context): VadEngine? = try {
-        SileroVad(context, SILERO_VAD_ASSET)
-    } catch (error: Throwable) {
-        Log.w(TAG, "Silero VAD model unavailable", error)
-        null
-    }
-
-    private const val TAG = "AudioFrontendFactory"
-}
-
-internal class LocalAudioFrontendEngine(
-    private val segmenter: VadSegmenter?,
-    private val denoiser: FrontendSignalProcessor,
-    private val denoiseEnabled: Boolean,
-) : AudioFrontendEngine {
-    private var pendingSamples = ShortArray(0)
-    override val vadAvailable: Boolean get() = segmenter != null
-
-    override val diagnostics: AudioFrontendDiagnostics
-        get() = segmenter?.let {
-            AudioFrontendDiagnostics(
-                maxVadProbability = it.maxProbability,
-                speechStartEvents = it.speechStartEvents,
-                speechEndEvents = it.speechEndEvents,
-                inputBlocks = it.blockCount,
-                openSegmentStart = it.openStart.takeIf { index -> index >= 0 },
-            )
-        } ?: AudioFrontendDiagnostics()
-
-    override fun startTurn() {
-        pendingSamples = ShortArray(0)
-        segmenter?.resetForTurn()
-    }
-
-    override fun process(block: ByteArray): AudioFrontendFrame {
-        require(block.size == INPUT_BLOCK_BYTES) {
-            "audio frontend expects $INPUT_BLOCK_BYTES-byte PCM16 blocks, got ${block.size}"
-        }
-        val vadEvent = segmenter?.feed(block)
-        if (!denoiseEnabled) return AudioFrontendFrame(block.copyOf(), vadEvent)
-
-        pendingSamples = pendingSamples + pcm16BytesToShorts(block)
-        val completeFrames = pendingSamples.size / RnnoiseProcessor.FRAME_SIZE
-        val output = ShortArray(completeFrames * RnnoiseProcessor.FRAME_SIZE)
-        var consumed = 0
-        repeat(completeFrames) {
-            val frame = pendingSamples.copyOfRange(consumed, consumed + RnnoiseProcessor.FRAME_SIZE)
-            denoiser.process(frame).copyInto(output, consumed)
-            consumed += RnnoiseProcessor.FRAME_SIZE
-        }
-        pendingSamples = pendingSamples.copyOfRange(consumed, pendingSamples.size)
-        return AudioFrontendFrame(pcm16ShortsToBytes(output), vadEvent)
-    }
-
-    override fun finishProcessedAudio(): ByteArray {
-        if (!denoiseEnabled || pendingSamples.isEmpty()) {
-            pendingSamples = ShortArray(0)
-            return ByteArray(0)
-        }
-        val sampleCount = pendingSamples.size
-        val padded = pendingSamples.copyOf(RnnoiseProcessor.FRAME_SIZE)
-        pendingSamples = ShortArray(0)
-        return pcm16ShortsToBytes(denoiser.process(padded).copyOf(sampleCount))
-    }
-
-    override fun finishSegments(): List<ByteArray> = segmenter?.finish() ?: emptyList()
-
-    override fun close() {
-        runCatching { segmenter?.close() }
-        runCatching { denoiser.close() }
-    }
-
-    private companion object {
-        const val INPUT_BLOCK_BYTES = 1024
-    }
-}
-
-internal fun pcm16BytesToShorts(bytes: ByteArray): ShortArray {
-    val samples = ShortArray(bytes.size / 2)
-    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(samples)
-    return samples
-}
-
-internal fun pcm16ShortsToBytes(shorts: ShortArray): ByteArray {
-    val out = ByteArray(shorts.size * 2)
-    ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(shorts)
-    return out
+    /** Discard only the unfinished input; persistent DSP and pending real samples remain intact. */
+    fun abortInput() = Unit
 }

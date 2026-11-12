@@ -4,7 +4,6 @@ import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.TaskEndReason
-import com.autovoice.voicebusiness.dialog.TaskListeningDirective
 
 /** Application-level task coordination. Recognition, arbitration and transport remain outside. */
 class AppDialogueManager(
@@ -53,18 +52,6 @@ class AppDialogueManager(
     }
 
     fun onDialogueState(snapshot: DialogueSnapshot) = navigationSession.onDialogueState(snapshot)
-
-    fun listeningDirective(): TaskListeningDirective? =
-        navigationSession.activeIdentity()?.let { identity ->
-            TaskListeningDirective(identity.revision,
-                navigationSession.activeExpectation()?.listenWindowMs ?: return@let null)
-        }
-
-    fun matchesTaskRevision(revision: Long): Boolean =
-        navigationSession.activeIdentity()?.revision == revision
-
-    fun onFollowUpExpired(revision: Long?): Boolean =
-        revision == null || navigationSession.expire(revision)
 
     fun dismissSelection() = navigationSession.cancelSelection()
 

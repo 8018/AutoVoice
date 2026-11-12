@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "target": {
+    "abi": "arm64-v8a",
+    "android_api": 27
+  },
+  "components": {
+    "webrtc": {
+      "source": {
+        "url": "https://webrtc.googlesource.com/src",
+        "revision": "8838a7c28655afbf9336063b71a51429e7d72774",
+        "status": "candidate-unverified"
+      },
+      "build": {
+        "host": "Linux x86_64",
+        "depot_tools_revision": "289a37bda3d848cfe16e6c1c599741ed3890ab55",
+        "gn_target": "//autovoice_frontend:autovoice_frontend_jni",
+        "gn_args": {
+          "target_os": "android",
+          "target_cpu": "arm64",
+          "is_debug": false,
+          "is_component_build": false,
+          "symbol_level": 1,
+          "rtc_include_tests": false,
+          "rtc_build_examples": false,
+          "rtc_build_tools": false,
+          "rtc_enable_protobuf": false,
+          "android_ndk_api_level": 27,
+          "default_min_sdk_version": 27,
+          "use_siso": false,
+          "enable_jni_multiplexing": false,
+          "use_hashed_jni_names": false
+        }
+      },
+      "artifact": {
+        "verification": "unverified",
+        "archive_sha256": null,
+        "manifest_sha256": null,
+        "files": {
+          "libautovoice_frontend_jni.so": null
+        },
+        "toolchain": null,
+        "validation_report_sha256": null
+      }
+    },
+    "firered": {
+      "source": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx.git",
+        "revision": "af2d8d81dbfa61c4cea4c568da78f3982edca005",
+        "status": "candidate-unverified"
+      },
+      "build": {
+        "hosts": [
+          "Linux x86_64",
+          "Darwin x86_64",
+          "Darwin arm64"
+        ],
+        "ndk_revision": "27.2.12479018",
+        "environment": {
+          "BUILD_SHARED_LIBS": "ON",
+          "SHERPA_ONNX_ANDROID_PLATFORM": "android-27",
+          "SHERPA_ONNX_ENABLE_JNI": "ON",
+          "SHERPA_ONNX_ENABLE_C_API": "OFF",
+          "SHERPA_ONNX_ENABLE_BINARY": "OFF",
+          "SHERPA_ONNX_ENABLE_TTS": "OFF",
+          "SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION": "OFF",
+          "SHERPA_ONNX_ENABLE_QNN": "OFF",
+          "SHERPA_ONNX_ENABLE_RKNN": "OFF",
+          "SHERPA_ONNX_ONNXRUNTIME_VERSION": "1.28.2"
+        },
+        "upstream_script": "build-android-arm64-v8a.sh",
+        "parallel_jobs": 4
+      },
+      "artifact": {
+        "verification": "unverified",
+        "archive_sha256": null,
+        "manifest_sha256": null,
+        "files": {
+          "libsherpa-onnx-jni.so": null,
+          "libonnxruntime.so": null
+        },
+        "toolchain": null,
+        "validation_report_sha256": null
+      }
+    }
+  }
+}

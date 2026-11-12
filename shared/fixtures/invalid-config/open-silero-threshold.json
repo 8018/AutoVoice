@@ -1,0 +1,23 @@
+{
+  "mode": "offline",
+  "frontend": "webrtc.apm",
+  "vad": {
+    "provider": "webrtc.vad",
+    "threshold": 0.5,
+    "minSpeechMs": 64,
+    "minSilenceMs": 960
+  },
+  "ecnr": "none",
+  "local": {
+    "asr": "firered.ctc.int8",
+    "nlu": "rule.text"
+  },
+  "cloud": {
+    "enabled": false,
+    "gatewayUrl": "",
+    "waitMs": 3000
+  },
+  "mock": {
+    "executor": false
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "modelId": "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25",
+  "exporterRevision": "423be1acfdc5d8aaa5a485fb6263fe4ea8570b06",
+  "runtimeRevision": "af2d8d81dbfa61c4cea4c568da78f3982edca005",
+  "runtimeVersion": "2.0.1",
+  "ortVersion": "1.28.2",
+  "androidApi": 27,
+  "provider": "cpu",
+  "numThreads": 1,
+  "sampleRate": 16000,
+  "files": {
+    "model.int8.onnx": {
+      "size": 775861420,
+      "sha256": "ca3dbabd82170110cc0b343c2890866d449984bc9cd92b9a18371ff80a81bb99"
+    },
+    "tokens.txt": {
+      "size": 79172,
+      "sha256": "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b"
+    },
+    "licenses/FireRedASR2S-LICENSE": {
+      "size": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "licenses/original-model-card.md": {
+      "size": 3137,
+      "sha256": "53fedc7d3cb8ae87845862d4d5fb94ba32a4f320cbe46393c93b05dd3d1c2e22"
+    },
+    "licenses/source-attribution.json": {
+      "size": 875,
+      "sha256": "cac6257660ffbe01426c2206f5d30e1ea34c4a0c696de1f0bad7ede91432958a"
+    }
+  }
+}

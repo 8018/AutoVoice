@@ -18,6 +18,7 @@ import com.autovoice.voicecore.DemoConfig
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.LocalConfig
 import com.autovoice.voicecore.MockConfig
+import com.autovoice.voicecore.NluResult
 import com.autovoice.voicecore.Reply
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicecore.TextReply
@@ -46,6 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -99,6 +101,69 @@ class VoiceEngineTest {
     }
 
     private val segment = ByteArray(960) { 7 }
+
+    @Test
+    fun `Open offline unmatched command ends processing without waiting for timeout`() =
+        verifyUnmatchedOpenCommand(online = false)
+
+    @Test
+    fun `Open online unmatched command waits for cloud then ends processing when it fails`() =
+        verifyUnmatchedOpenCommand(online = true)
+
+    private fun verifyUnmatchedOpenCommand(online: Boolean) = runBlocking {
+        val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val localFinished = CompletableDeferred<DialogueState>()
+        val cloudMayFail = CompletableDeferred<Unit>()
+        val decisions = java.util.concurrent.CopyOnWriteArrayList<DecisionEntry>()
+        lateinit var voiceEngine: VoiceEngine
+        val local = object : LocalChainRunner {
+            override suspend fun run(segment: ByteArray): NluResult = error("Expected a capture ID")
+
+            override suspend fun run(segment: ByteArray, utteranceId: String): NluResult {
+                voiceEngine.onAsrTurnEstablished(utteranceId, AdmissionEvidence.LOCAL_ASR)
+                localFinished.complete(voiceEngine.conversation.snapshot.value.state)
+                return NluResult(Intent.unknown("rule.text"))
+            }
+        }
+        val base = cfg(100)
+        val (engine, vehicle) = engine(
+            scope = engineScope,
+            local = local,
+            cloud = CloudRunner {
+                check(online) { "Offline capture must not reach the cloud" }
+                cloudMayFail.await()
+                throw CloudUnavailableException("Controlled gateway failure")
+            },
+            config = base.copy(mode = if (online) "full" else "offline", frontend = "webrtc.apm",
+                cloud = base.cloud.copy(enabled = online)),
+            dialogueIdleTimeoutMs = 10_000,
+            sink = DecisionSink(decisions::add),
+        )
+        voiceEngine = engine
+        try {
+            engine.onWake()
+            engine.onListeningStart()
+            engine.onVadStart()
+            if (online) engine.onCloudSegment(segment)
+            engine.onVadEnd()
+            engine.onTurnSegment(segment)
+            assertEquals(DialogueState.PROCESSING, withTimeout(2_000) { localFinished.await() })
+            if (online) {
+                assertNull(withTimeoutOrNull(200) {
+                    engine.conversation.snapshot.first { it.state == DialogueState.DORMANT }
+                }, "A pending cloud candidate can still resolve this turn")
+                cloudMayFail.complete(Unit)
+            }
+            val settled = withTimeoutOrNull(1_000) {
+                engine.conversation.snapshot.first { it.state == DialogueState.DORMANT }
+            }
+            assertNotNull(settled, "A turn with no remaining candidate must end processing immediately")
+            assertTrue(decisions.isEmpty())
+            assertFalse(vehicle.isWindowsOpen)
+        } finally {
+            engine.close()
+        }
+    }
 
     @Test
     fun `capture before explicit interaction does not open recognition or invoke speech routes`() = runBlocking {
@@ -504,6 +569,8 @@ class VoiceEngineTest {
          *  Channel 同时是 Send+Receive：桥写、仲裁器读。 */
         pending: Channel<Unit>? = null,
         streamingCloud: StreamingCloudRunner? = null,
+        config: DemoConfig = cfg(cloudWaitMs),
+        dialogueIdleTimeoutMs: Long = 500,
     ): Pair<VoiceEngine, MockVehicleState> {
         val vehicle = MockVehicleState()
         // B2：仲裁器 utteranceId 延迟绑定引擎会话（生产 create() 同款 engineRef 模式，
@@ -559,7 +626,7 @@ class VoiceEngineTest {
             },
         )
         val engine = VoiceEngine(
-            cfg = cfg(cloudWaitMs),
+            cfg = config,
             arbiter = onDeviceArbiter,
             telemetry = telemetry,
             networkAvailable = networkAvailable,
@@ -573,7 +640,7 @@ class VoiceEngineTest {
             ),
             scope = scope,
             debugBuild = debugBuild,
-            thinkingTimeoutMs = 500,
+            dialogueIdleTimeoutMs = dialogueIdleTimeoutMs,
             onLocalRecognized = onRecognized,
             onCloudPending = onCloudPending,
             onCloudWon = onCloudWon,
@@ -755,6 +822,7 @@ class VoiceEngineTest {
         server.enqueue(MockResponse().setResponseCode(200)) // round POST
         server.enqueue(MockResponse().setResponseCode(200)) // /events POST
         val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         lateinit var engine: VoiceEngine
         lateinit var playbackIdentity: PlaybackIdentity
         try {
@@ -767,7 +835,7 @@ class VoiceEngineTest {
                     enabled = true,
                 )
                 val pair = engine(
-                    scope = this,
+                    scope = engineScope,
                     local = LocalChainRunner { powerOnIntent() },
                     cloud = CloudRunner {
                         AudioReply(
@@ -778,6 +846,7 @@ class VoiceEngineTest {
                         )
                     },
                     telemetry = telemetry,
+                    dialogueIdleTimeoutMs = 10_000,
                     player = object : AudioPlayer {
                         override fun play(reply: AudioReply) = Unit
                         override fun play(reply: AudioReply, identity: PlaybackIdentity) {
@@ -822,6 +891,7 @@ class VoiceEngineTest {
             assertEquals("completed", late.getJSONObject("payload").getString("event"))
             assertTrue(late.getLong("tsMs") > 0)
         } finally {
+            engineScope.cancel()
             telemetryScope.cancel()
             server.shutdown()
         }
@@ -1719,14 +1789,12 @@ class VoiceEngineTest {
             engine = pair.first
             vehicle = pair.second
             utter(engine)
+            withTimeout(2_000) {
+                engine.conversation.snapshot.first { it.state == DialogueState.LISTENING && it.turnId == null }
+            }
+            assertFalse(vehicle.isAcOn, "流式错误不得执行未收口的 intent")
+            engine.exitCurrentDialogue()
         }
-
-        assertFalse(vehicle.isAcOn, "流式错误不得执行未收口的 intent")
-        assertEquals(
-            DialogueState.LISTENING,
-            engine.conversation.snapshot.value.state,
-            "流式 completion 失败必须发出播放失败生命周期，不得卡在 RESPONDING",
-        )
     }
 
     /** 等语义结果被状态机采用；播放收口由独立的 TTS 生命周期事件驱动。 */
