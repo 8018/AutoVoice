@@ -73,20 +73,26 @@ class ConversationController(
         rejected
     }
 
-    fun reset(): DialogueSnapshot = mutate { queue ->
+    fun reset(): DialogueSnapshot = mutate(::resetLocked)
+
+    fun expireIfUnchanged(expected: DialogueSnapshot, onExpired: (captureId: String) -> Unit) = mutate { queue ->
+        if (expected.state == DialogueState.DORMANT || dialogue.snapshot.value != expected) return@mutate
+        val expiredCaptureId = captureId
+        queue.add { onExpired(expiredCaptureId) }
+        resetLocked(queue)
+    }
+
+    private fun resetLocked(queue: ArrayDeque<() -> Unit>): DialogueSnapshot {
         admission.reset()
         captureId = ""
         clearPending(queue)
-        dialogue.reset().also { next -> queue.add { onState(next) } }
+        return dialogue.reset().also { next -> queue.add { onState(next) } }
     }
 
     /** Interaction hard deadline is independent of the current dialogue phase. */
     fun onInteractionExpired(interactionId: String): DialogueSnapshot = mutate { queue ->
         if (dialogue.snapshot.value.interactionId != interactionId) return@mutate dialogue.snapshot.value
-        admission.reset()
-        captureId = ""
-        clearPending(queue)
-        dialogue.reset().also { next -> queue.add { onState(next) } }
+        resetLocked(queue)
     }
 
     fun onFollowUpExpired(interactionId: String, expected: DialogueSnapshot? = null): DialogueSnapshot = mutate { queue ->

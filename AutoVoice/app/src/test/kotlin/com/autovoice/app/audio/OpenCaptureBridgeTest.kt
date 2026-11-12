@@ -135,7 +135,6 @@ class OpenCaptureBridgeTest {
         override fun appendRealtimeChatAudio(block: ByteArray) { realtime.add(block) }
         override fun startRealtimeChat() { chatStarts++ }
         override fun finishRealtimeChat() { chatFinishes++ }
-        override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) = Unit
         override fun onInteractionExpired(interactionId: String) = Unit
         override fun resetDialogue() = Unit
     }
@@ -152,7 +151,7 @@ class OpenCaptureBridgeTest {
         val f = Front();val p = Pipeline()
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
             frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
-        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},{})
         c.startManualTurn()
         repeat(10) { sourceBlock(r,it) }
         c.stopTurn() // Collector has not been scheduled yet: stop must drain the owned FIFO.
@@ -167,7 +166,7 @@ class OpenCaptureBridgeTest {
         val f = Front();val p = Pipeline()
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
             frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
-        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},{})
         c.startManualTurn();repeat(10) { sourceBlock(r,it) };f.fail = true;sourceBlock(r,11)
         runCurrent()
         assertFalse(c.isRecording)
@@ -215,7 +214,7 @@ class OpenCaptureBridgeTest {
         val p = Pipeline();val states = mutableListOf<RecordingLifecycleSnapshot>()
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
             frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
-        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},states::add,elapsedRealtimeMs = { 0L })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{false},states::add)
         r.setFollowUpListening(true);sourceBlock(r,1);sourceBlock(r,2)
         val confirmation = r.drainFrontendBatches().first()
         assertTrue(r.detectAuxiliarySpeech(confirmation,VadPurpose.FOLLOW_UP))
@@ -331,7 +330,7 @@ class OpenCaptureBridgeTest {
                 return drained
             }
         }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{})
         c.startManualTurn();repeat(10) { sourceBlock(r,it) };inject = true
         c.stopTurn()
         val expected = (0..10).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
@@ -355,7 +354,7 @@ class OpenCaptureBridgeTest {
                 return r.finishProcessedAudio()
             }
         }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L })
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{})
         c.startManualTurn();val epoch = r.inputEpoch;repeat(10) { sourceBlock(r,it) }
         c.stopTurn()
         val expected = (0..9).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
@@ -374,7 +373,7 @@ class OpenCaptureBridgeTest {
             override fun startMonitoring() = true
             override fun drainFrontendBatches() = r.drainFrontendBatches()+late.toList().also { late.clear() }
         }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},ioDispatcher = Dispatchers.Unconfined)
         sourceBlock(r,1) // Idle queue before acceptance, start cutoff is 512 samples.
         c.onForeground();c.setChatMode(true)
         f.position = 256 // Simulates an idle partial DSP frame emitted after admission.
@@ -399,7 +398,7 @@ class OpenCaptureBridgeTest {
             val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = currentScope,
                 frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() },frontendQueueCapacity = 1)
             val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
-            val c = RecordingCoordinator(capture,wake(),p,currentScope,{false},states::add,elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+            val c = RecordingCoordinator(capture,wake(),p,currentScope,{false},states::add,ioDispatcher = Dispatchers.Unconfined)
             c.onForeground();c.setChatMode(true);sourceBlock(r,1);runCurrent()
             if (overflow) { sourceBlock(r,2);sourceBlock(r,3) } else { f.fail = true;sourceBlock(r,2) }
             val calls = f.calls;sourceBlock(r,4);runCurrent()
@@ -417,7 +416,7 @@ class OpenCaptureBridgeTest {
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = null,scope = backgroundScope,
             frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
         val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},ioDispatcher = Dispatchers.Unconfined)
         c.onForeground();c.setChatMode(true)
         repeat(2000) { sourceBlock(r,1);runCurrent() } // 64 seconds; controlled ordinary retention budget is only 2 blocks.
         assertEquals(2000,f.calls);assertEquals(2000,p.realtime.size);assertEquals(0,f.starts)
@@ -436,7 +435,7 @@ class OpenCaptureBridgeTest {
         val closed = requireNotNull(r.stopAndSnapshot())
         val expected = (0..9).flatMap { value -> List(1024) { (value+1).toByte() } }.toByteArray()
         val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},ioDispatcher = Dispatchers.Unconfined)
         c.onForeground();c.setChatMode(true);f.fail = true;sourceBlock(r,99);runCurrent()
         assertFalse(c.isRecording);assertEquals(1,p.chatFinishes)
         assertNotEquals(closed.inputEpoch,r.frontendFailure?.inputEpoch)
@@ -449,7 +448,7 @@ class OpenCaptureBridgeTest {
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
             frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
         val capture = object : RecordingCapture by r { override fun startMonitoring() = true }
-        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},elapsedRealtimeMs = { 0L },ioDispatcher = Dispatchers.Unconfined)
+        val c = RecordingCoordinator(capture,wake(),p,backgroundScope,{false},{},ioDispatcher = Dispatchers.Unconfined)
         c.onForeground();c.startManualTurn();val ordinary = r.inputEpoch;sourceBlock(r,1)
         c.setChatMode(true);sourceBlock(r,2);runCurrent()
         assertNotEquals(ordinary,r.inputEpoch);assertEquals(1,p.chatStarts)

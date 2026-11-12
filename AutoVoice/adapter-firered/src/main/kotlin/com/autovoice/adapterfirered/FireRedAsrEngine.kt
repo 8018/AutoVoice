@@ -151,9 +151,11 @@ class FireRedAsrEngine internal constructor(
             synchronized(lock) { if (state == State.READY) reporter.report(token,ComponentUpdate.health(Health.DEGRADED,initializationError(cause))) }
             throw cause
         } finally { synchronized(lock) { inFlight.remove(request) } }
+        // FireRed can expose its silence token in the decoded text, even on a quiet segment.
+        val transcript = text?.replace("<sil>", "")?.trim()
         return synchronized(lock) {
-            if (!valid(ticket) || text.isNullOrBlank()) return null
-            val result = AsrResult(text.trim(),isFinal = true)
+            if (!valid(ticket) || transcript.isNullOrBlank()) return null
+            val result = AsrResult(transcript,isFinal = true)
             reporter.report(token,ComponentUpdate.health(Health.HEALTHY))
             sink.onTranscript(result)
             if (!valid(ticket)) return null

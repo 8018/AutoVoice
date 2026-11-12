@@ -10,7 +10,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
@@ -79,11 +78,7 @@ internal interface RecordingPipeline {
     fun appendRealtimeChatAudio(block: ByteArray)
     fun startRealtimeChat()
     fun finishRealtimeChat()
-    fun onFollowUpExpired(interactionId: String, taskRevision: Long?)
     fun onInteractionExpired(interactionId: String)
-    fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
-        expected.interactionId?.let { onFollowUpExpired(it, taskRevision) }
-    }
     fun resetDialogue()
 }
 
@@ -96,15 +91,6 @@ internal data class RecordingLifecycleSnapshot(
     val wakeError: String? = null,
     val chatMode: Boolean = false,
 )
-
-internal data class RecordingTiming(
-    val wakeTurnTimeoutMs: Long = 10_000L,
-    val followUpListenMs: Long = 10_000L,
-    val maxInteractionMs: Long = 60_000L,
-)
-
-/** Opaque task listening policy. The recorder executes it without knowing the business domain. */
-internal typealias TaskListeningDirective = com.autovoice.voicebusiness.dialog.TaskListeningDirective
 
 /**
  * Owns the microphone-use lifecycle, not dialogue state, ASR/NLU, arbitration or playback.
@@ -120,8 +106,6 @@ internal class RecordingCoordinator(
     private val onLocalSegment: (ByteArray) -> Unit = {},
     private val onLog: (String) -> Unit = {},
     private val onWakeError: (Throwable) -> Unit = {},
-    private val elapsedRealtimeMs: () -> Long,
-    private val timing: RecordingTiming = RecordingTiming(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AutoCloseable {
     private val jobs = mutableListOf<Job>()
@@ -144,16 +128,6 @@ internal class RecordingCoordinator(
     @Volatile private var dialogueSnapshot = DialogueSnapshot()
     private var wakeInitialized = false
     private var wakeSetupJob: Job? = null
-    private var wakeTurnTimeoutJob: Job? = null
-    private var taskListeningDirective: TaskListeningDirective? = null
-    private val listening = com.autovoice.voicebusiness.dialog.DialogueListeningController(
-        scope, elapsedRealtimeMs, { pipeline.dialogueSnapshot },
-        { expected, revision ->
-            capture.setFollowUpListening(false)
-            pipeline.onListeningExpired(expected, revision)
-        }, timing.followUpListenMs, timing.maxInteractionMs,
-        onInteractionExpired = { interactionId -> pipeline.onInteractionExpired(interactionId) },
-    )
 
     val isRecording: Boolean get() = recording
     val isChatLocked: Boolean get() = chatLocked
@@ -219,16 +193,6 @@ internal class RecordingCoordinator(
                 recording = true,
                 wakeListening = false,
             )
-        }
-        wakeTurnTimeoutJob?.cancel()
-        if (fromWake) {
-            wakeTurnTimeoutJob = scope.launch {
-                delay(timing.wakeTurnTimeoutMs)
-                if (wakeTurn && recording && !chatLocked) {
-                    onLog("唤醒后等待命令超时，自动收口")
-                    stopTurn()
-                }
-            }
         }
         synchronized(captureBatchLock) { consumeOpenBatches() }
     }
@@ -302,8 +266,6 @@ internal class RecordingCoordinator(
         recording = false
         if (capture.frontendBatchSignal == null) resetCloudStreamGate()
         wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        wakeTurnTimeoutJob = null
         if (completion == null) capture.stop()
         updateState { it.copy(recording = false) }
         val tail = completion?.tail ?: capture.finishProcessedAudio()
@@ -332,7 +294,7 @@ internal class RecordingCoordinator(
         // The input capture has released the microphone. If it was only noise, the same
         // LISTENING snapshot can now start an actual follow-up window.
         if (dialogueSnapshot.state == DialogueState.LISTENING && dialogueSnapshot.turnId == null) {
-            onDialogueState(pipeline.dialogueSnapshot, taskListeningDirective)
+            onDialogueState(pipeline.dialogueSnapshot)
         }
         rearmWakeWhenIdle()
     }
@@ -342,8 +304,6 @@ internal class RecordingCoordinator(
         recording = false
         resetCloudStreamGate()
         wakeTurn = false
-        wakeTurnTimeoutJob?.cancel()
-        wakeTurnTimeoutJob = null
         capture.abortInput()
         synchronized(denoisedBlocks) { denoisedBlocks.clear() }
         pipeline.cancelStreamingCloudAudio()
@@ -356,21 +316,16 @@ internal class RecordingCoordinator(
         capture.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
     }
 
-    fun onDialogueState(snapshot: DialogueSnapshot, taskDirective: TaskListeningDirective?) {
+    fun onDialogueState(snapshot: DialogueSnapshot) {
         dialogueSnapshot = snapshot
-        taskListeningDirective = taskDirective
-        if (foreground && !chatLocked) listening.update(snapshot, taskDirective, listeningReady = false)
         val waiting = snapshot.state == DialogueState.LISTENING && snapshot.turnId == null
-        if (!waiting) {
+        if (waiting) {
+            armFollowUpListening(snapshot)
+        } else {
             capture.setFollowUpListening(false)
         }
-        if (waiting) {
-            if (armFollowUpListening(snapshot) && pipeline.dialogueSnapshot == snapshot &&
-                foreground && !chatLocked
-            ) listening.update(snapshot, taskDirective, listeningReady = true)
-        } else if (snapshot.state == DialogueState.DORMANT) {
+        if (snapshot.state == DialogueState.DORMANT) {
             if (recording && !chatLocked) cancelTurn(rearm = false)
-            stopFollowUpListening(resetDialogue = false)
             rearmWakeWhenIdle()
         }
     }
@@ -572,21 +527,19 @@ internal class RecordingCoordinator(
         startTurn(fromWake = true, includeBargeInPreRoll = true)
     }
 
-    private fun armFollowUpListening(snapshot: DialogueSnapshot): Boolean {
-        val interactionId = snapshot.interactionId ?: return false
-        if (startingTurn || chatLocked || !foreground || recording) return false
+    private fun armFollowUpListening(snapshot: DialogueSnapshot) {
+        val interactionId = snapshot.interactionId ?: return
+        if (startingTurn || chatLocked || !foreground || recording) return
         pauseWakeObservation()
         if (!capture.startMonitoring()) {
             updateState { it.copy(permissionRequired = true) }
             pipeline.onInteractionExpired(interactionId)
-            return false
+            return
         }
         capture.setFollowUpListening(true)
-        return true
     }
 
     private fun stopFollowUpListening(resetDialogue: Boolean) {
-        listening.close()
         capture.setFollowUpListening(false)
         if (resetDialogue) pipeline.resetDialogue()
     }
@@ -670,8 +623,6 @@ internal class RecordingCoordinator(
     override fun close() {
         foreground = false
         wakeSetupJob?.cancel()
-        wakeTurnTimeoutJob?.cancel()
-        listening.close()
         jobs.forEach(Job::cancel)
         synchronized(captureBatchLock) { if (realtimeSessionActive) endChatCapture() }
         runCatching { wakeWord.close() }

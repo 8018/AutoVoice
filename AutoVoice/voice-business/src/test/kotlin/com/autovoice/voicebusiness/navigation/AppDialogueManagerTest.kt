@@ -1,5 +1,6 @@
 package com.autovoice.voicebusiness.navigation
 
+import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -26,7 +27,7 @@ class AppDialogueManagerTest {
     }
 
     @Test
-    fun `publishes and revokes the exact navigation context on task close`() {
+    fun `publishes and revokes the exact navigation context when the dialogue ends`() {
         val contexts = mutableListOf<NavigationTaskContextRef>()
         val manager = AppDialogueManager({ "interaction" }, {}, { true })
         manager.bindNavigationContextSender(contexts::add)
@@ -35,12 +36,9 @@ class AppDialogueManagerTest {
             selectionId = "selection",
             originTurnId = "turn",
         )
-        val revision = manager.listeningDirective()!!.revision
-        assertTrue(manager.matchesTaskRevision(revision))
         assertEquals(1, contexts.size)
-        manager.dismissSelection()
+        manager.onDialogueState(DialogueSnapshot())
         assertEquals(2, contexts.size)
         assertEquals(contexts.first().copy(active = false), contexts.last())
-        assertFalse(manager.matchesTaskRevision(revision))
     }
 }

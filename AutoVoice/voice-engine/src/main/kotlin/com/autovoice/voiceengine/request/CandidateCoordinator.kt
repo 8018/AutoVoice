@@ -45,6 +45,7 @@ class CandidateCoordinator(
     private val localInferenceBudgetMs: Long = DEFAULT_LOCAL_INFERENCE_BUDGET_MS,
     private val localClockMs: () -> Long = { System.nanoTime()/1_000_000 },
     private val onLocalAdmissionPressure: (String) -> Unit = {},
+    private val onTurnUnrecognized: ((String) -> Unit)? = null,
 ) : TextInputPort {
     init { require(localInferenceBudgetMs in 1..300_000) }
     private val candidateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -200,30 +201,41 @@ class CandidateCoordinator(
         if (cloudAudio == null) {
             val reason = if (cloudRouteActive()) "no_cloud_segment" else "cloud_unreachable"
             candidateScope.launch {
+                val result = runLocal(segment, utteranceId)
                 arbiter.submitLocal(
                     utteranceId,
-                    runLocal(segment, utteranceId),
+                    result,
                     admission = LocalAdmission.IMMEDIATE,
                     immediateReason = reason,
                 )
+                if (result.intent.isUnknown()) onTurnUnrecognized?.invoke(utteranceId)
             }
             return
         }
 
         // Start the cloud producer first. FIFO order is determined by actual submitted messages;
         // a synchronous cloud failure must open the local gate before a fast local result is held.
+        val cloudSubmitted = onTurnUnrecognized?.let { CompletableDeferred<Boolean>() }
         candidateScope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
                 arbiter.submitCloud(utteranceId, cloud.run(cloudAudio, utteranceId))
+                cloudSubmitted?.complete(true)
             } catch (error: CloudUnavailableException) {
                 onCloudUnavailable()
                 arbiter.submitCloudUnavailable(utteranceId, "cloud_unreachable")
             } catch (error: CloudRequestFailedException) {
                 arbiter.submitCloudUnavailable(utteranceId, "cloud_request_failed")
+            } finally {
+                // Completion is ignored if a cloud result was already submitted.
+                cloudSubmitted?.complete(false)
             }
         }
         candidateScope.launch {
-            arbiter.submitLocal(utteranceId, runLocal(segment, utteranceId))
+            val result = runLocal(segment, utteranceId)
+            arbiter.submitLocal(utteranceId, result)
+            if (result.intent.isUnknown() && cloudSubmitted?.await() == false) {
+                onTurnUnrecognized?.invoke(utteranceId)
+            }
         }
     }
 

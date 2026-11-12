@@ -70,7 +70,7 @@ class VoiceEngine(
     private val onClose: () -> Unit = {},
     /** 应用回到前台时预热云端连接；真正发送前仍会再次 ensureReady。 */
     private val onForeground: () -> Unit = {},
-    thinkingTimeoutMs: Long = 60_000,
+    dialogueIdleTimeoutMs: Long = 10_000,
     /** 新轮一经开始录音就通知云端桥，便于拦截旧轮迟到字幕/流。 */
     private val onTurnStarted: (String) -> Unit = {},
     /**
@@ -131,7 +131,7 @@ class VoiceEngine(
         tts = tts,
         business = business,
         scope = scope,
-        thinkingTimeoutMs = thinkingTimeoutMs,
+        dialogueIdleTimeoutMs = dialogueIdleTimeoutMs,
         recognition = recognitionGate,
         onExecution = { turnId, intent, result ->
             telemetry.recordFor(
@@ -163,6 +163,9 @@ class VoiceEngine(
         onTurnAdmitted = { streamingCloud?.commitStreamingTurn(it) },
         finishOpenRounds = telemetry::finishOpenRounds,
         endRound = telemetry::end,
+        onDialogueIdleTimeout = { snapshot ->
+            Log.i(TAG, "对话状态停留 ${dialogueIdleTimeoutMs}ms，退出对话（state=${snapshot.state}）")
+        },
     )
     val conversation: ConversationController get() = voiceBusiness.conversation
 
@@ -185,6 +188,9 @@ class VoiceEngine(
             cloudText = cloud as? CloudTextNluEngine,
             onLocalAdmissionPressure = { id -> telemetry.recordFor(id,"local_admission_pressure","warn",
                 mapOf("reason" to "local_request_capacity")) },
+            onTurnUnrecognized = if (cfg.frontend == "webrtc.apm") { turnId ->
+                if (voiceBusiness.onTurnUnrecognized(turnId)) Log.i(TAG, "本轮未识别到可执行指令，结束处理")
+            } else null,
             onTextFailure = { requestId, error ->
                 Log.w(TAG, "text NLU request failed: $requestId", error)
                 if (voiceBusiness.onTextFailure(requestId)) onTextInputError("云端处理失败，请重试")

@@ -3,6 +3,7 @@ package com.autovoice.voicebusiness
 import com.autovoice.business.BusinessHandler
 import com.autovoice.business.BusinessResult
 import com.autovoice.tts.PlaybackInterruptionReason
+import com.autovoice.tts.PlaybackStage
 import com.autovoice.tts.RealtimePlaybackToken
 import com.autovoice.tts.TtsOutput
 import com.autovoice.voicebusiness.dialog.AdmissionEvidence
@@ -15,11 +16,16 @@ import com.autovoice.voicecore.TextReply
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voiceengine.api.TextInputPort
 import com.autovoice.voiceengine.api.TextSubmission
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class VoiceBusinessServiceTest {
     @Test
     fun `typed input uses engine port without ASR and adopts cloud result`() = runTest {
@@ -107,19 +113,78 @@ class VoiceBusinessServiceTest {
         assertTrue(PlaybackInterruptionReason.INTERACTION_CLOSED in output.stops)
     }
 
+    @Test
+    fun `each dialogue transition renews ten seconds and repeated playback state does not`() = runTest {
+        val output = RecordingOutput()
+        val service = service(output, scope = backgroundScope)
+        service.onWake()
+        val turn = service.conversation.beginCapture()
+        service.conversation.openCapture(turn)
+        service.onAsrTurnEstablished(turn, AdmissionEvidence.LOCAL_ASR)
+
+        advanceTimeBy(9_000)
+        service.conversation.onInputFinalized(turn)
+        advanceTimeBy(9_000)
+        assertEquals(DialogueState.PROCESSING, service.conversation.snapshot.value.state)
+        service.onTurnResult(turn, RaceWinner.Cloud(TextReply("好的")))
+        advanceTimeBy(9_000)
+        assertEquals(DialogueState.RESPONDING, service.conversation.snapshot.value.state)
+        service.onPlaybackLifecycle(turn, PlaybackStage.STARTED)
+        advanceTimeBy(9_999)
+        assertEquals(DialogueState.SPEAKING, service.conversation.snapshot.value.state)
+        service.onPlaybackLifecycle(turn, PlaybackStage.STARTED)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
+        assertEquals(PlaybackInterruptionReason.INTERACTION_CLOSED, output.stops.last())
+    }
+
+    @Test
+    fun `ten seconds of processing expires the turn and discards late semantic`() = runTest {
+        val output = RecordingOutput()
+        val service = service(output, scope = backgroundScope)
+        service.onWake()
+        val turn = service.conversation.beginCapture()
+        service.conversation.openCapture(turn)
+        service.onAsrTurnEstablished(turn, AdmissionEvidence.LOCAL_ASR)
+        service.conversation.onInputFinalized(turn)
+
+        advanceTimeBy(9_999)
+        assertEquals(DialogueState.PROCESSING, service.conversation.snapshot.value.state)
+        advanceTimeBy(1)
+        runCurrent()
+        service.onTurnResult(turn, RaceWinner.Cloud(TextReply("迟到的结果")))
+
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
+        assertTrue(output.spoken.isEmpty())
+    }
+
+    @Test
+    fun `ten seconds after wake exits an unanswered dialogue`() = runTest {
+        val service = service(RecordingOutput(), scope = backgroundScope)
+        service.onWake()
+
+        advanceTimeBy(9_999)
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
+    }
+
     private fun service(
         output: RecordingOutput,
         onRecognized: (String?) -> Unit = {},
         onReply: (String) -> Unit = {},
         onExecute: () -> Unit = {},
+        scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.test.StandardTestDispatcher()),
     ): VoiceBusinessService = VoiceBusinessService(
         tts = output,
         business = BusinessHandler {
             onExecute()
             BusinessResult.applied()
         },
-        scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.StandardTestDispatcher()),
-        thinkingTimeoutMs = 60_000,
+        scope = scope,
         onRecognizedText = onRecognized,
         onReplyText = onReply,
     )

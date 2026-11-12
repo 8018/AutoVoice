@@ -8,7 +8,6 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent as AndroidIntent
 import android.net.Uri
-import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -225,14 +224,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dialogueManager.selectCandidate(candidate, engine.conversation.snapshot.value.turnId ?: "ui-navigation")
     }
 
-    private fun onFollowUpExpired(interactionId: String, taskRevision: Long?) {
-        // RecordingCoordinator 的旧定时器可能在新一轮开始后才恢复执行；旧轮不能关闭
-        // 新一轮候选框。当前轮的延时聆听结束时，候选框与服务端选择态一起撤销。
-        if (engine.conversation.snapshot.value.interactionId != interactionId) return
-        if (!dialogueManager.onFollowUpExpired(taskRevision)) return
-        engine.onFollowUpExpired(interactionId)
-    }
-
     init {
         reporting.registerDefaults()
         viewModelScope.launch {
@@ -359,10 +350,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dialogueManager.onDialogueState(snapshot)
         val state = dialogueToUiPhase(snapshot.state)
         _uiState.update { it.copy(sessionState = state) }
-        recordingCoordinator.onDialogueState(
-            snapshot,
-            dialogueManager.listeningDirective(),
-        )
+        recordingCoordinator.onDialogueState(snapshot)
     }
 
     private fun dialogueToUiPhase(state: DialogueState): VoiceUiPhase = when (state) {
@@ -418,10 +406,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recorder.configureAudioProcessing(config.vad, config.ecnr, config.testAudio)
         }
         engine = buildEngine(config)
-        recordingCoordinator.onDialogueState(
-            engine.conversation.snapshot.value,
-            dialogueManager.listeningDirective(),
-        )
+        recordingCoordinator.onDialogueState(engine.conversation.snapshot.value)
         engine.weakNetwork = _uiState.value.weakNetwork // 弱网开关跨引擎保持（Task 20）
         persistMode(mode) // Task 58：模式持久化，重启后保持
         dialogueManager.dismissSelection()
@@ -504,16 +489,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun appendRealtimeChatAudio(block: ByteArray) = engine.appendRealtimeChatAudio(block)
             override fun startRealtimeChat() = engine.startRealtimeChat()
             override fun finishRealtimeChat() = engine.finishRealtimeChat()
-            override fun onFollowUpExpired(interactionId: String, taskRevision: Long?) =
-                this@MainViewModel.onFollowUpExpired(interactionId, taskRevision)
             override fun onInteractionExpired(interactionId: String) {
                 if (engine.conversation.snapshot.value.interactionId != interactionId) return
                 dialogueManager.abortPendingTask()
                 engine.onInteractionExpired(interactionId)
-            }
-            override fun onListeningExpired(expected: DialogueSnapshot, taskRevision: Long?) {
-                if (taskRevision != null && !dialogueManager.matchesTaskRevision(taskRevision)) return
-                expected.interactionId?.let { engine.onFollowUpExpired(it, expected) }
             }
             override fun resetDialogue() {
                 dialogueManager.abortPendingTask()
@@ -538,7 +517,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onLocalSegment = ::dumpLocalSegment,
         onLog = { Log.i(TAG, it) },
         onWakeError = { Log.w(TAG, "离线唤醒不可用", it) },
-        elapsedRealtimeMs = SystemClock::elapsedRealtime,
     )
 
     /**

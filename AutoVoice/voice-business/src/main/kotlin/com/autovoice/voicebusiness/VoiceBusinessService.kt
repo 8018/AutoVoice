@@ -31,7 +31,7 @@ class VoiceBusinessService(
     tts: TtsOutput,
     business: BusinessHandler,
     private val scope: CoroutineScope,
-    private val thinkingTimeoutMs: Long,
+    private val dialogueIdleTimeoutMs: Long = 10_000,
     /** During migration the App adapter provides the engine input gate; fake business tests omit it. */
     private val recognition: RecognitionControl? = null,
     private val onExecution: (String, Intent, BusinessResult) -> Unit = { _, _, _ -> },
@@ -44,10 +44,11 @@ class VoiceBusinessService(
     private val onTurnAdmitted: (String) -> Unit = {},
     private val finishOpenRounds: (String) -> Unit = {},
     private val endRound: (String, String?) -> Unit = { _, _ -> },
+    private val onDialogueIdleTimeout: (DialogueSnapshot) -> Unit = {},
 ) {
     private val output = tts
-    private var thinkingJob: Job? = null
-    private var thinkingTimerTurnId: String? = null
+    private var dialogueIdleJob: Job? = null
+    private var lastDialogueSnapshot = DialogueSnapshot()
     val conversation = ConversationController(
         onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
@@ -116,6 +117,13 @@ class VoiceBusinessService(
         if (turnId.isNotBlank()) conversation.confirmTurn(turnId, evidence)
     }
 
+    fun onTurnUnrecognized(turnId: String): Boolean {
+        if (!conversation.isCurrentTurn(turnId)) return false
+        conversation.onThinkingExpired(turnId)
+        endRound(turnId, "unrecognized_command")
+        return true
+    }
+
     fun onTurnResult(turnId: String, winner: RaceWinner) {
         when (winner) {
             is RaceWinner.Cloud -> conversation.confirmTurn(turnId, AdmissionEvidence.CLOUD_FINAL_SEMANTIC)
@@ -163,8 +171,6 @@ class VoiceBusinessService(
     fun exitCurrentDialogue() {
         finishOpenRounds("dialogue_exited")
         output.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
-        thinkingJob?.cancel()
-        thinkingJob = null
         conversation.reset()
     }
 
@@ -189,8 +195,6 @@ class VoiceBusinessService(
 
     fun close() {
         output.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
-        thinkingJob?.cancel()
-        thinkingJob = null
         conversation.reset()
     }
 
@@ -198,24 +202,24 @@ class VoiceBusinessService(
         turnId.isBlank() || conversation.isCurrentTurn(turnId)
 
     private fun onConversationState(snapshot: DialogueSnapshot) {
+        if (snapshot != lastDialogueSnapshot) {
+            lastDialogueSnapshot = snapshot
+            dialogueIdleJob?.cancel()
+            dialogueIdleJob = if (snapshot.state == DialogueState.DORMANT) null else scope.launch {
+                delay(dialogueIdleTimeoutMs)
+                conversation.expireIfUnchanged(snapshot) { expiredCaptureId ->
+                    snapshot.turnId?.let { endRound(it, "dialogue_idle_timeout") }
+                    if (expiredCaptureId.isNotBlank() && expiredCaptureId != snapshot.turnId) {
+                        endRound(expiredCaptureId, "dialogue_idle_timeout")
+                    }
+                    output.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
+                    onDialogueIdleTimeout(snapshot)
+                }
+            }
+        }
         onDialogueState(snapshot)
         if (snapshot.state == DialogueState.DORMANT) {
             recognition?.stopRecognition()
-        }
-        if (snapshot.state == DialogueState.PROCESSING) {
-            val turnId = snapshot.turnId ?: return
-            if (thinkingTimerTurnId == turnId) return
-            thinkingJob?.cancel()
-            thinkingTimerTurnId = turnId
-            thinkingJob = scope.launch {
-                delay(thinkingTimeoutMs)
-                conversation.onThinkingExpired(turnId)
-                if (!conversation.isCurrentTurn(turnId)) endRound(turnId, "thinking_expired")
-            }
-        } else {
-            thinkingJob?.cancel()
-            thinkingJob = null
-            thinkingTimerTurnId = null
         }
     }
 

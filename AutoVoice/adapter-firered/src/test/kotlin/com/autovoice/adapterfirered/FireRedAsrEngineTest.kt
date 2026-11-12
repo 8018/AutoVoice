@@ -61,6 +61,23 @@ class FireRedAsrEngineTest {
             assertEquals(2,d.calls.get());e.close()
         }
     }
+
+    @Test fun `silence tokens do not produce a transcript or establish a turn`() {
+        ModelFixture().use { fixture ->
+            val decoder = Decoder().apply { output = "<sil><sil>" }
+            engine(runtime(fixture, decoder)).use { engine ->
+                assertTrue(engine.awaitReady(2000))
+                val sink = Sink()
+                assertNull(engine.recognize("silence", byteArrayOf(0, 0), sink))
+                assertTrue(sink.transcripts.isEmpty())
+                assertEquals(0, sink.established)
+
+                decoder.output = "<sil>打开<sil>车窗<sil>"
+                assertEquals("打开车窗", engine.recognize("speech", byteArrayOf(0, 0), sink)?.text)
+                assertEquals(1, sink.established)
+            }
+        }
+    }
     @Test fun `queue bounded close drops queued work and successor reuses active model without freeing JNI`() {
         ModelFixture().use { f ->
             val d = Decoder().apply { entered = CountDownLatch(1);proceed = CountDownLatch(1) };val loads = AtomicInteger();val r = runtime(f,d,loads)
