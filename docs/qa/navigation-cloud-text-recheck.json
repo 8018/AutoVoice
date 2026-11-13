@@ -1,0 +1,62 @@
+{
+  "startedAt": "2026-11-13T02:57:06.604Z",
+  "environment": "dev",
+  "endpoint": "8.153.153.77:8090",
+  "protocol": "1.2",
+  "measurement": "Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.",
+  "results": [
+    {
+      "id": "entrance-1",
+      "scenario": "entrance",
+      "expected": "保留航站楼限定",
+      "input": "导航到上海虹桥机场T2航站楼",
+      "elapsedMs": 1199,
+      "firstResponseMs": 1199,
+      "type": "reply",
+      "text": "未找到指定入口，请说完整的入口名称。",
+      "intent": null,
+      "verdict": "goal_not_met",
+      "reviewNote": "明确的虹桥 T2 请求未获得候选；未伪报完成，但地点查找目标未达成。"
+    },
+    {
+      "id": "numeric_city-1",
+      "scenario": "numeric_city",
+      "expected": "三亚地名不能改成数字",
+      "input": "导航到三亚凤凰国际机场",
+      "elapsedMs": 959,
+      "firstResponseMs": 959,
+      "type": "reply",
+      "text": "请说要查找的城市。",
+      "intent": null,
+      "verdict": "goal_not_met",
+      "reviewNote": "输入已有三亚城市，仍要求提供城市；地名解析或上下文传递存在问题，根因尚未定位。"
+    },
+    {
+      "id": "brand-1",
+      "scenario": "brand",
+      "expected": "保留北京及星巴克品牌条件",
+      "input": "找北京的星巴克",
+      "elapsedMs": 1360,
+      "firstResponseMs": 1360,
+      "type": "reply",
+      "text": "地图未能核验全部地点条件。请补充地点名称，或说明可以放宽哪些条件。",
+      "intent": null,
+      "verdict": "goal_not_met",
+      "reviewNote": "星巴克品牌搜索未返回候选；约束核验失败，不能算找点成功。"
+    },
+    {
+      "id": "charging-1",
+      "scenario": "charging",
+      "expected": "返回真实充电站，不编造空闲桩",
+      "input": "找北京南站附近的充电站",
+      "elapsedMs": 1483,
+      "firstResponseMs": 1482,
+      "type": "reply",
+      "text": "请说更具体的参考地点名称或地址。",
+      "intent": null,
+      "verdict": "goal_not_met",
+      "reviewNote": "已指定北京南站仍要求更具体参考点，未进入充电站候选阶段。"
+    }
+  ],
+  "finishedAt": "2026-11-13T02:57:12.061Z"
+}
