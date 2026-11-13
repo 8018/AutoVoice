@@ -20,4 +20,11 @@ export const scenarios=[
  ['airport_city','带市后缀仍命中三亚凤凰机场',['导航到三亚市凤凰国际机场']],
  ['brand_named','品牌与咖啡店类别组合均保留',['找北京的星巴克咖啡店']],
  ['reference_named','完整市名和参考点仍能查周边充电站',['查找北京市北京南站周边的充电站']],
+ ['exact_station','指定车站不得混入公交站、地铁站或相似名字',['导航到北京南站']],
+ ['exact_museum','指定博物馆只返回其本馆或分馆',['带我去上海博物馆']],
+ ['generic_museum','城市加类别查询仍可返回不同博物馆',['找上海的博物馆']],
+ ['airport_short','机场简称通过真实身份匹配，不落到停车场或航站楼',['导航到上海虹桥机场']],
+ ['exact_next','精确目标换批不得拿无关地点凑数',['导航到北京南站','换一批']],
 ];
+
+export const introducedVersion = Object.fromEntries(scenarios.map(([id],i)=>[id,i<16?1:i<20?2:3]));

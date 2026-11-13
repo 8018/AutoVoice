@@ -1,12 +1,13 @@
 {
-  "version": 3,
+  "version": 4,
   "description": "业务基准按能力追加；云端文本、端侧行为和管理接口分层验证，不用文本回复冒充设备执行。",
   "cloudTextSuite": {
-    "version": 2,
+    "version": 3,
     "source": "tools/qa/navigation-scenarios.mjs",
-    "scenarios": 20,
-    "requests": 27,
-    "retainsOriginalRequests": 23
+    "scenarios": 25,
+    "requests": 33,
+    "retainsOriginalRequests": 23,
+    "retainsV2Requests": 27
   },
   "addedBusinessCases": [
     {

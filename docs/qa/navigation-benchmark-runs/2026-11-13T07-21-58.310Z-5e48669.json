@@ -1,0 +1,479 @@
+{
+  "suiteVersion": 3,
+  "suiteFingerprint": "a705ff555a3a0a3b9696bc3120397faef2fe59db54f62c973c3d2be30370fc5d",
+  "sourceDirty": true,
+  "revision": "5e48669e4634cd9e67b0c23fc8b5e19b84287e59",
+  "deployedRelease": "6834b590cb732e776bc85163f5751dfada11e539",
+  "repetitions": 1,
+  "focus": [
+    "exact_station",
+    "exact_museum",
+    "generic_museum",
+    "airport_short",
+    "exact_next"
+  ],
+  "startedAt": "2026-11-13T07:21:58.331Z",
+  "environment": "dev",
+  "endpoint": "ws://8.153.153.77:8090/ws",
+  "protocol": "1.2",
+  "measurement": "Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.",
+  "results": [
+    {
+      "id": "exact_station-1",
+      "scenario": "exact_station",
+      "productIds": [
+        "A01",
+        "B01"
+      ],
+      "expected": "指定车站不得混入公交站、地铁站或相似名字",
+      "input": "导航到北京南站",
+      "elapsedMs": 2410,
+      "firstResponseMs": 2409,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号；第2个，北京南站(地铁站)，14号线;4号线/大兴线；第3个，北海南站(公交站)，5路;5路加车德胜门区间。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"64bf12b1-695a-49e6-965c-f392fdc63744\"},{\"poiname\":\"北京南站(地铁站)\",\"lat\":39.865012,\"lon\":116.379008,\"address\":\"14号线;4号线/大兴线\",\"candidateId\":\"f6d1481f-af5a-410d-b7e4-c45463f18c9c\"},{\"poiname\":\"北海南站(公交站)\",\"lat\":39.920066,\"lon\":116.391111,\"address\":\"5路;5路加车德胜门区间\",\"candidateId\":\"1fd26f81-6261-4e79-bb2d-7855fcb57dfd\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "238deb69-7408-467a-babb-bdbe739ea303"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "精确车站混入无关地点或附属设施"
+      ]
+    },
+    {
+      "id": "exact_museum-1",
+      "scenario": "exact_museum",
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "expected": "指定博物馆只返回其本馆或分馆",
+      "input": "带我去上海博物馆",
+      "elapsedMs": 1573,
+      "firstResponseMs": 1573,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号；第2个，上海市历史博物馆，南京西路325号(人民广场地铁站11号口步行200米)；第3个，上海自然博物馆，北京西路510号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"candidateId\":\"4dfdeacc-7e3d-4ef9-9a32-65c7ad207b04\"},{\"poiname\":\"上海市历史博物馆\",\"lat\":31.230594,\"lon\":121.470891,\"address\":\"南京西路325号(人民广场地铁站11号口步行200米)\",\"candidateId\":\"93494dc2-641f-4f9d-b9b2-e95ebdbb3cff\"},{\"poiname\":\"上海自然博物馆\",\"lat\":31.235021,\"lon\":121.462672,\"address\":\"北京西路510号\",\"candidateId\":\"e1a8ff74-53bb-4fd3-bf30-52978beefe86\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "734a7932-e82b-42ca-92d3-9d78feb3f753"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "指定博物馆混入其他博物馆"
+      ]
+    },
+    {
+      "id": "generic_museum-1",
+      "scenario": "generic_museum",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "城市加类别查询仍可返回不同博物馆",
+      "input": "找上海的博物馆",
+      "elapsedMs": 1956,
+      "firstResponseMs": 1956,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号，高德地图分类为“博物馆”；第2个，上海市历史博物馆，南京西路325号(人民广场地铁站11号口步行200米)，高德地图分类为“博物馆”；第3个，上海自然博物馆，北京西路510号，高德地图分类为“博物馆”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T07:22:04.369563147Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"5625342b-8307-4168-9c96-8c048aa69a2f\"},{\"poiname\":\"上海市历史博物馆\",\"lat\":31.230594,\"lon\":121.470891,\"address\":\"南京西路325号(人民广场地铁站11号口步行200米)\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T07:22:04.763405585Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"32365a7a-3084-4722-8029-5fdfa59ca99a\"},{\"poiname\":\"上海自然博物馆\",\"lat\":31.235021,\"lon\":121.462672,\"address\":\"北京西路510号\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T07:22:05.157154875Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"ee511652-87f7-4f5e-876c-f6078b48a402\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "43bfbf43-1775-4c61-a293-45ebafe99a43"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"上海\",\"constraints\":[{\"category\":\"博物馆\"}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "airport_short-1",
+      "scenario": "airport_short",
+      "productIds": [
+        "A01",
+        "A04"
+      ],
+      "expected": "机场简称通过真实身份匹配，不落到停车场或航站楼",
+      "input": "导航到上海虹桥机场",
+      "elapsedMs": 1181,
+      "firstResponseMs": 1181,
+      "type": "reply",
+      "text": "第1个，上海虹桥国际机场，虹桥路2550号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "虹桥机场"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海虹桥国际机场\",\"lat\":31.196029,\"lon\":121.339775,\"address\":\"虹桥路2550号\",\"candidateId\":\"77c055bb-c8fb-4e18-a3ef-f4606aa51cb1\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "d3535ff3-535a-43a8-8c30-d3156c73a0cd"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"虹桥机场\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "exact_next-1",
+      "scenario": "exact_next",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "精确目标换批不得拿无关地点凑数",
+      "input": "导航到北京南站",
+      "elapsedMs": 2071,
+      "firstResponseMs": 2071,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号；第2个，北京南站(地铁站)，14号线;4号线/大兴线；第3个，北海南站(公交站)，5路;5路加车德胜门区间。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"16d699b7-d113-4a31-b333-2a27c6d598a1\"},{\"poiname\":\"北京南站(地铁站)\",\"lat\":39.865012,\"lon\":116.379008,\"address\":\"14号线;4号线/大兴线\",\"candidateId\":\"313d6402-586d-423f-be2c-7676b53640c9\"},{\"poiname\":\"北海南站(公交站)\",\"lat\":39.920066,\"lon\":116.391111,\"address\":\"5路;5路加车德胜门区间\",\"candidateId\":\"39d900c1-4640-41e3-a435-5a6499564bf5\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "92c7bf69-dabe-40c3-b92a-4d790ec59ba0"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "精确车站混入无关地点或附属设施"
+      ]
+    },
+    {
+      "id": "exact_next-2",
+      "scenario": "exact_next",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "精确目标换批不得拿无关地点凑数",
+      "input": "换一批",
+      "elapsedMs": 2389,
+      "firstResponseMs": 2389,
+      "type": "reply",
+      "text": "第1个，北京南站(西进站口)，永外大街车站路12号北京南站2F层；第2个，北京南站P1停车场，永外大街12号北京南站(北京南站地铁站D西南口步行400米)；第3个，北京南站(检票口A8-A9)，永外大街车站路12号北京南站2F层。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站(西进站口)\",\"lat\":39.864457,\"lon\":116.378524,\"address\":\"永外大街车站路12号北京南站2F层\",\"candidateId\":\"75ab3cd7-b83c-4fb4-8188-46fcacd3d290\"},{\"poiname\":\"北京南站P1停车场\",\"lat\":39.863596,\"lon\":116.377265,\"address\":\"永外大街12号北京南站(北京南站地铁站D西南口步行400米)\",\"candidateId\":\"f9355902-b600-47f1-b870-5576d445d47a\"},{\"poiname\":\"北京南站(检票口A8-A9)\",\"lat\":39.865214,\"lon\":116.378971,\"address\":\"永外大街车站路12号北京南站2F层\",\"candidateId\":\"a02106ca-f519-446d-b94d-1df757aa136e\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "d08d3aeb-9dbf-4a6f-86ba-1c5d77c051d6"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"南站\",\"city\":\"北京\",\"excluded\":[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517},{\"poiname\":\"北京南站(地铁站)\",\"lat\":39.865012,\"lon\":116.379008},{\"poiname\":\"北海南站(公交站)\",\"lat\":39.920066,\"lon\":116.391111}]}"
+      },
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "精确目标换批重复或混入其他地点"
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-13T07:22:10.490Z",
+  "summary": {
+    "requests": 6,
+    "expected": 6,
+    "pass": 2,
+    "boundary": 0,
+    "fail": 4,
+    "meanMs": 1930,
+    "p95Ms": 2410,
+    "maxMs": 2410,
+    "complete": true,
+    "performancePassed": true,
+    "passed": false
+  },
+  "fullSuite": false,
+  "coveredProductIds": [
+    "A01",
+    "A03",
+    "A04",
+    "B01",
+    "B05"
+  ],
+  "byScenario": {
+    "exact_station": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 1,
+      "meanMs": 2410,
+      "p95Ms": 2410,
+      "maxMs": 2410,
+      "complete": true,
+      "performancePassed": true,
+      "passed": false
+    },
+    "exact_museum": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 1,
+      "meanMs": 1573,
+      "p95Ms": 1573,
+      "maxMs": 1573,
+      "complete": true,
+      "performancePassed": true,
+      "passed": false
+    },
+    "generic_museum": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1956,
+      "p95Ms": 1956,
+      "maxMs": 1956,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "airport_short": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1181,
+      "p95Ms": 1181,
+      "maxMs": 1181,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "exact_next": {
+      "requests": 2,
+      "expected": 2,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 2,
+      "meanMs": 2230,
+      "p95Ms": 2389,
+      "maxMs": 2389,
+      "complete": true,
+      "performancePassed": true,
+      "passed": false
+    }
+  },
+  "groups": {
+    "baseline": {
+      "requests": 0,
+      "expected": 0,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": null,
+      "p95Ms": null,
+      "maxMs": null,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "added": {
+      "requests": 6,
+      "expected": 6,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 4,
+      "meanMs": 1930,
+      "p95Ms": 2410,
+      "maxMs": 2410,
+      "complete": true,
+      "performancePassed": true,
+      "passed": false
+    }
+  },
+  "byIntroductionVersion": {
+    "1": {
+      "requests": 0,
+      "expected": 0,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": null,
+      "p95Ms": null,
+      "maxMs": null,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "2": {
+      "requests": 0,
+      "expected": 0,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": null,
+      "p95Ms": null,
+      "maxMs": null,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "3": {
+      "requests": 6,
+      "expected": 6,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 4,
+      "meanMs": 1930,
+      "p95Ms": 2410,
+      "maxMs": 2410,
+      "complete": true,
+      "performancePassed": true,
+      "passed": false
+    }
+  },
+  "comparison": [
+    {
+      "id": "exact_station-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2410,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "fail"
+    },
+    {
+      "id": "exact_museum-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1573,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "fail"
+    },
+    {
+      "id": "generic_museum-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1956,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "airport_short-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1181,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "exact_next-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2071,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "fail"
+    },
+    {
+      "id": "exact_next-2",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2389,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "fail"
+    }
+  ]
+}

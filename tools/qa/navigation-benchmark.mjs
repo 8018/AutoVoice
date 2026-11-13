@@ -1,4 +1,5 @@
 export const productCoverage = {
+ exact_station:["A01","B01"],exact_museum:["A01","A03"],generic_museum:["A03"],airport_short:["A01","A04"],exact_next:["B05"],
  entrance_alias:['A04'], airport_city:['A03'], brand_named:['A08'], reference_named:['A06','H01'],
  name:['A01','B01'], city:['A03'], entrance:['A04'], numeric_city:['A03'], brand:['A08'],
  opening:['A08','I01'], charging:['A06','H01'], energy:['H03','I01'], trip:['D02','D03'],
@@ -20,8 +21,16 @@ export function evaluate(row,history=[]) {
  require(!row.error&&row.type==='reply','未取得正常最终回复');
  const previous=(id)=>history.findLast(r=>r.id===id);
  function choices(city,pattern){const a=candidates(row);require(action==='choose_destination','应返回候选而非拒绝或直接执行');require(a.length>0&&a.length<=3,'候选数量须为1–3');require(a.every(p=>inBox(p,boxes[city])),'候选坐标必须有效且符合城市范围');if(pattern)require(a.some(p=>pattern.test(p.poiname??'')),'候选未包含指定目标');require(Boolean(slot(row,'selectionId')),'缺少候选任务身份');return a;}
+ const station=p=>/^北京南站(?:[（(](?:火车站|铁路车站)[）)])?$/.test(p.poiname??'');
+ const museum=p=>/^上海博物馆(?:[（(][^）)]*(?:馆|分馆)[）)])?$/.test(p.poiname??'');
  let boundary=false;
  switch(id){
+ case 'exact_station-1':case 'exact_next-1':{const a=choices('beijing',/北京南站/);require(a.every(station),'精确车站混入无关地点或附属设施');break;}
+ case 'exact_museum-1':{const a=choices('shanghai',/上海博物馆/);require(a.every(museum),'指定博物馆混入其他博物馆');break;}
+ case 'generic_museum-1':{const a=choices('shanghai',/博物馆/);require(a.every(p=>/博物馆/.test(p.poiname??'')),'类别查询混入非博物馆');break;}
+ case 'airport_short-1':{const a=choices('shanghai',/虹桥.*机场/);require(a.every(p=>/^上海虹桥(?:国际)?机场$/.test(p.poiname??'')),'机场简称返回了附属设施或无关目标');break;}
+ case 'exact_next-2':{if(action){const a=choices('beijing',/北京南站/);const old=new Set(candidates(previous('exact_next-1')??{}).map(key));require(a.every(p=>station(p)&&!old.has(key(p))),'精确目标换批重复或混入其他地点');}else{require(/没有|暂无|未找到|找不到|没找到|无更多/.test(text)&&/更多|符合|候选|地点/.test(text)&&!/超时|不可用|网络/.test(text),'候选耗尽须明确说明，不能把服务失败当成功');}break;}
+
  case 'name-1':case 'negative-1':case 'cancel-1':choices('beijing',/北京南站/);break;
  case 'city-1':choices('shanghai',/上海博物馆/);break;
  case 'entrance-1':choices('shanghai',/虹桥.*(?:T\s*2|2号航站楼|二号航站楼)/i);break;

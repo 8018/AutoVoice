@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { evaluate, summarize, productCoverage } from './navigation-benchmark.mjs';
-import { scenarios } from './navigation-scenarios.mjs';
+import { scenarios, introducedVersion } from './navigation-scenarios.mjs';
 import { connect, readBenchmarkToken } from './navigation-cloud-client.mjs';
 const token=readBenchmarkToken();
 const focus=process.argv.find(x=>x.startsWith('--focus='))?.slice(8).split(',');
@@ -16,7 +16,7 @@ const output=new URL(`${new Date().toISOString().replaceAll(':','-')}-${revision
 const endpoint=process.env.NAVIGATION_BENCHMARK_ENDPOINT||'ws://8.153.153.77:8090/ws';
 const suiteFingerprint=createHash('sha256').update(fs.readFileSync(new URL('./navigation-cloud-text.mjs',import.meta.url))).update(fs.readFileSync(new URL('./navigation-benchmark.mjs',import.meta.url))).update(fs.readFileSync(new URL('./navigation-scenarios.mjs',import.meta.url))).update(fs.readFileSync(new URL('./navigation-cloud-client.mjs',import.meta.url))).digest('hex');
 const sourceDirty=execFileSync('git',['status','--porcelain','--untracked-files=no'],{cwd:new URL('../../',import.meta.url),encoding:'utf8'}).trim().length>0;
-const report={suiteVersion:2,suiteFingerprint,sourceDirty,revision,deployedRelease:release,repetitions,focus:focus??null,startedAt:new Date().toISOString(),environment:'dev',endpoint,protocol:'1.2',measurement:'Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.',results:[]};
+const report={suiteVersion:3,suiteFingerprint,sourceDirty,revision,deployedRelease:release,repetitions,focus:focus??null,startedAt:new Date().toISOString(),environment:'dev',endpoint,protocol:'1.2',measurement:'Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.',results:[]};
 
 
 const selected=scenarios.filter(s=>!focus||focus.includes(s[0]));
@@ -47,6 +47,8 @@ const baselineRows=report.results.filter(r=>baselineIds.has(r.id));
 const addedRows=report.results.filter(r=>!baselineIds.has(r.id));
 report.groups={baseline:summarize(baselineRows,selected.reduce((n,[id,,inputs])=>n+(baselineIds.has(`${id}-1`)?inputs.length:0),0)*repetitions),added:summarize(addedRows,selected.reduce((n,[id,,inputs])=>n+(!baselineIds.has(`${id}-1`)?inputs.length:0),0)*repetitions)};
 if(report.fullSuite && (!report.groups.baseline.passed || !report.groups.added.passed)) report.summary.passed=false;
+report.byIntroductionVersion=Object.fromEntries([1,2,3].map(version=>[version,summarize(report.results.filter(r=>introducedVersion[r.scenario]===version),selected.filter(([id])=>introducedVersion[id]===version).reduce((n,[,,inputs])=>n+inputs.length,0)*repetitions)]));
+if(report.fullSuite && Object.values(report.byIntroductionVersion).some(group=>!group.passed))report.summary.passed=false;
 report.comparison=report.results.map(r=>{const old=baseline.results.find(b=>b.id===r.id);return{id:r.id,repetition:r.repetition,baselineMs:old?.elapsedMs??null,elapsedMs:r.elapsedMs??null,deltaMs:old&&r.elapsedMs!=null?r.elapsedMs-old.elapsedMs:null,baselineVerdict:old?evaluate(old,baseline.results).verdict:null,verdict:r.verdict};});
 fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify({output:output.pathname,fullSuite:report.fullSuite,summary:report.summary}));
