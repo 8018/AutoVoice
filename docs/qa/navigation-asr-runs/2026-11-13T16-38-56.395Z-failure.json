@@ -1,0 +1,8 @@
+{
+  "status": "checkpoint-unavailable",
+  "passed": false,
+  "errorType": "CalledProcessError",
+  "pipeline": "silero",
+  "zipformerFlushMs": 500,
+  "note": "Wireless debugging disconnected while attempting the third gated run; instrumentation log retained but no raw result could be pulled. Excluded from successful run totals."
+}

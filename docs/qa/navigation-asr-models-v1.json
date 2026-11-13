@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "1",
+  "purpose": "Test-only open ASR comparison; no production acceptance",
+  "models": [
+    {
+      "id": "zipformer",
+      "modelType": "zipformer",
+      "source": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+      "sourceRevision": "98590b7ed6443e77b714204da2757d75e1a642f4",
+      "license": "Apache-2.0",
+      "files": {
+        "encoder": {
+          "path": "models/zipformer/encoder.int8.onnx",
+          "bytes": 181895032,
+          "sha256": "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/encoder-epoch-99-avg-1.int8.onnx"
+        },
+        "decoder": {
+          "path": "models/zipformer/decoder.onnx",
+          "bytes": 13876452,
+          "sha256": "2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/decoder-epoch-99-avg-1.onnx"
+        },
+        "joiner": {
+          "path": "models/zipformer/joiner.int8.onnx",
+          "bytes": 3228404,
+          "sha256": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/joiner-epoch-99-avg-1.int8.onnx"
+        },
+        "tokens": {
+          "path": "models/zipformer/tokens.txt",
+          "bytes": 56317,
+          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/resolve/98590b7ed6443e77b714204da2757d75e1a642f4/tokens.txt"
+        },
+        "license": {
+          "path": "models/zipformer/zipformer-model-card.md",
+          "bytes": 296,
+          "sha256": "b6f9458f4208ae821beaaf11dc983486916a4089a2f3677b40f9ff06ec4e6440",
+          "repositoryFile": "docs/qa/asr-model-licenses/zipformer-model-card.md"
+        }
+      }
+    },
+    {
+      "id": "sensevoice",
+      "modelType": "sensevoice",
+      "source": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "sourceRevision": "2365baeacb507f821a0c8120fcee3d484dba7a07",
+      "license": "FunASR Model Open Source License Agreement v1.1",
+      "files": {
+        "model": {
+          "path": "models/sensevoice/model.int8.onnx",
+          "bytes": 239233841,
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx"
+        },
+        "tokens": {
+          "path": "models/sensevoice/tokens.txt",
+          "bytes": 315894,
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+          "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt"
+        },
+        "license": {
+          "path": "models/sensevoice/sensevoice-model-license.txt",
+          "bytes": 5306,
+          "sha256": "7dba975a2069691db4992b0592d70828b330d2f8a30a71450f4e152a554e84f8",
+          "repositoryFile": "docs/qa/asr-model-licenses/sensevoice-model-license.txt"
+        }
+      }
+    }
+  ]
+}

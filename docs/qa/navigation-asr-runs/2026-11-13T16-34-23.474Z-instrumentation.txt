@@ -1,0 +1,6 @@
+
+com.autovoice.app.asr.OpenAsrComparisonTest:.
+
+Time: 6.65
+
+OK (1 test)

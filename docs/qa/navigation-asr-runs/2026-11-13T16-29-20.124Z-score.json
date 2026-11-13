@@ -1,0 +1,1663 @@
+{
+  "createdAt": "2026-11-13T16:29:28.549Z",
+  "scoringSourceRevision": "2dc82d8fb1c8f8636c345f0985b6043518b3c574",
+  "scoringSourceDirty": true,
+  "scoringSourceFingerprint": "104358d0d9ffcf018cfba7622aad1d0420a0d608b1efd66b1a85fe6859309117",
+  "suiteSha256": "b6f11ce13988b035c0b80d08dcf6628de8953e8919fff8f94ea1890b5b0a012c",
+  "modelsSha256": "5bf08d677579ad03373be088c53e9c0d0d7dcd624e3c06b386652c58a4770862",
+  "executedBuild": {
+    "engine": "sherpa-onnx Android JNI",
+    "targetApkSha256": "29f389383d5edb30a693d5675c8526fe9b3c792e67370ac15a35bdd61d9be6ad",
+    "instrumentationApkSha256": "e8bc41e38f1c09a89331acfe11bf0f6fc694a8847e4cc7912ff019cab2e24de6",
+    "librarySha256": {
+      "libsherpa-onnx-jni.so": "6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97",
+      "libonnxruntime.so": "7a2fb92eb67037837c3f0e428bd732fd0d05ced0546d9e740090c07573d8249a"
+    },
+    "provider": "cpu",
+    "threads": 2,
+    "decodingMethod": "greedy_search",
+    "sampleRate": 16000,
+    "zipformerEndpointEnabled": false,
+    "zipformerChunkMs": 100,
+    "zipformerFlushSilenceMs": 500,
+    "sensevoiceLanguage": "zh",
+    "sensevoiceInverseTextNormalization": true,
+    "decodeScope": "Stream creation through final result and stream release. Includes feed, decoder, and flush work. Excludes file reads and model load.",
+    "loadScope": "Native recognizer construction after JNI runtime identification.",
+    "streamingScope": "Unpaced simulation from file chunks. Audio timestamps count fixture audio supplied, and compute timestamps measure elapsed processing time. Both first nonempty fields are omitted when no nonblank partial is observed before flush, including when the first text appears during flush.",
+    "memoryScope": "Snapshots of the entire target process PSS, in KiB. Includes instrumentation and both shared and private allocations. These are not isolated model memory or peak measurements.",
+    "sherpaVersion": "2.0.1",
+    "onnxruntimeVersion": "1.28.2"
+  },
+  "rawResult": {
+    "schemaVersion": 1,
+    "status": "complete",
+    "startedAtEpochMs": 1794587361721,
+    "models": [
+      {
+        "id": "zipformer",
+        "modelType": "zipformer",
+        "modelBytes": 199056501,
+        "processPssBeforeLoadKiB": 91952,
+        "results": [
+          {
+            "firstNonEmptyComputeMs": 26.914217999999998,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "第一个",
+            "flushComputeMs": 15.163698,
+            "flushSilenceMs": 500,
+            "id": "first",
+            "audioSha256": "b2f01a8baba6d31ad30dc031552e139463182b268165f3150a28952d83b87f15",
+            "audioMs": 500,
+            "decodeMs": 42.158072,
+            "rtf": 0.084316144
+          },
+          {
+            "firstNonEmptyComputeMs": 15.486666999999999,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "第二个",
+            "flushComputeMs": 29.928645999999997,
+            "flushSilenceMs": 500,
+            "id": "second",
+            "audioSha256": "69e74d6e74becc0e47db90aef94564455b5568963791e2fa38b8e711397131fa",
+            "audioMs": 550,
+            "decodeMs": 45.513020999999995,
+            "rtf": 0.08275094727272726
+          },
+          {
+            "firstNonEmptyComputeMs": 16.519686999999998,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "第三个",
+            "flushComputeMs": 31.609011,
+            "flushSilenceMs": 500,
+            "id": "third",
+            "audioSha256": "9e75ab1f030506c7ffb57ba8c2a61290b50e677ddde61f74c28fee81df4c6497",
+            "audioMs": 612.5,
+            "decodeMs": 48.297239,
+            "rtf": 0.07885263510204081
+          },
+          {
+            "firstNonEmptyComputeMs": 17.924844,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "我要去第二个",
+            "flushComputeMs": 17.813125,
+            "flushSilenceMs": 500,
+            "id": "choose-second",
+            "audioSha256": "ae241ef857ddc39f3ac3d29a3c62e0c6da01856e0da8063cd24b9d6767543247",
+            "audioMs": 850,
+            "decodeMs": 58.322604,
+            "rtf": 0.06861482823529412
+          },
+          {
+            "firstNonEmptyComputeMs": 23.315417,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "最后一个",
+            "flushComputeMs": 18.914739,
+            "flushSilenceMs": 500,
+            "id": "last",
+            "audioSha256": "32327dbc05e4d5b4494ad03bbb86c2e0eeca807667febeb780268f4b6b0684b2",
+            "audioMs": 750,
+            "decodeMs": 61.048229,
+            "rtf": 0.08139763866666666
+          },
+          {
+            "transcript": "下一",
+            "flushComputeMs": 47.288177,
+            "flushSilenceMs": 500,
+            "id": "next-page",
+            "audioSha256": "ead38673abc78e179072b4f1cd98926f3de8ffa1ad56c47877f23b3d27d0c73d",
+            "audioMs": 550,
+            "decodeMs": 71.942135,
+            "rtf": 0.1308038818181818
+          },
+          {
+            "transcript": "上一夜",
+            "flushComputeMs": 46.977032,
+            "flushSilenceMs": 500,
+            "id": "previous-page",
+            "audioSha256": "00e317888219d59b04fa3cf77e018e31d32a9dfd2c44acbc2e4c68a0b34a341b",
+            "audioMs": 625,
+            "decodeMs": 71.804479,
+            "rtf": 0.1148871664
+          },
+          {
+            "firstNonEmptyComputeMs": 25.109271,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "取消选择",
+            "flushComputeMs": 51.800104,
+            "flushSilenceMs": 500,
+            "id": "cancel-choice",
+            "audioSha256": "a80381f4046abbcabc6e4434a1eb1cac3c633a41998d33998dc230c5a58f71fd",
+            "audioMs": 900,
+            "decodeMs": 100.898125,
+            "rtf": 0.11210902777777777
+          },
+          {
+            "firstNonEmptyComputeMs": 25.170364,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "都不",
+            "flushComputeMs": 23.862811999999998,
+            "flushSilenceMs": 500,
+            "id": "none",
+            "audioSha256": "399f74d075d02da13a97172a7e90fd60711c6602598dd381759b2bd34d1e124a",
+            "audioMs": 525,
+            "decodeMs": 49.167396,
+            "rtf": 0.09365218285714286
+          },
+          {
+            "firstNonEmptyComputeMs": 25.681614999999997,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "再说一遍",
+            "flushComputeMs": 23.320885,
+            "flushSilenceMs": 500,
+            "id": "repeat",
+            "audioSha256": "f1049c974c7866c51938889e1e29a128acb2a93c42acd00838b98f7bfbe97bd6",
+            "audioMs": 737.5,
+            "decodeMs": 72.871667,
+            "rtf": 0.09880904
+          },
+          {
+            "firstNonEmptyComputeMs": 25.170624999999998,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "取消导航",
+            "flushComputeMs": 48.596875,
+            "flushSilenceMs": 500,
+            "id": "cancel-nav",
+            "audioSha256": "57e21a57bd1b4ade99a928ab2a4ce16cbcddc727c9d0fc496e42b9a99f210597",
+            "audioMs": 900,
+            "decodeMs": 98.469219,
+            "rtf": 0.10941024333333332
+          },
+          {
+            "firstNonEmptyComputeMs": 54.478280999999996,
+            "firstNonEmptyAudioFedMs": 800,
+            "transcript": "接触导航",
+            "flushComputeMs": 29.070573,
+            "flushSilenceMs": 500,
+            "id": "stop-nav",
+            "audioSha256": "a2829af0760508a81ba90d791833b7ff21f393700e620e5b35bb93937664b4ab",
+            "audioMs": 825,
+            "decodeMs": 83.66354199999999,
+            "rtf": 0.10141035393939393
+          },
+          {
+            "firstNonEmptyComputeMs": 25.925365,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "导航回家",
+            "flushComputeMs": 23.616615,
+            "flushSilenceMs": 500,
+            "id": "home",
+            "audioSha256": "612ec97a539e8a21c9944a3b26ea31f03efd97580efc5e180349fd183f534871",
+            "audioMs": 775,
+            "decodeMs": 73.2975,
+            "rtf": 0.09457741935483871
+          },
+          {
+            "firstNonEmptyComputeMs": 24.339375,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "导航去公司",
+            "flushComputeMs": 46.328177,
+            "flushSilenceMs": 500,
+            "id": "company",
+            "audioSha256": "daeaf0d37a95d97306143b6a209b33450a75de22982dbc3ea86a2f90bca8ef06",
+            "audioMs": 912.5,
+            "decodeMs": 94.115417,
+            "rtf": 0.10314018301369862
+          },
+          {
+            "firstNonEmptyComputeMs": 19.775468999999998,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "北京南站",
+            "flushComputeMs": 18.842655999999998,
+            "flushSilenceMs": 500,
+            "id": "beijing-south",
+            "audioSha256": "643651b266bc2afa8ffa58c0348aa02a3717619e5a641114ad979c4603b0d6f7",
+            "audioMs": 775,
+            "decodeMs": 56.821093999999995,
+            "rtf": 0.07331754064516129
+          },
+          {
+            "firstNonEmptyComputeMs": 27.459792,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "北京首都国际机场",
+            "flushComputeMs": 46.257084,
+            "flushSilenceMs": 500,
+            "id": "capital-airport",
+            "audioSha256": "751a495197a1c689efe877dd2be96cb18fc132ac870ccb94c6bc53927b3ad1c7",
+            "audioMs": 1350,
+            "decodeMs": 127.45385399999999,
+            "rtf": 0.09441026222222222
+          },
+          {
+            "firstNonEmptyComputeMs": 25.122344,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "中国国家博物馆",
+            "flushComputeMs": 46.332083,
+            "flushSilenceMs": 500,
+            "id": "museum",
+            "audioSha256": "059c77edc467096570a1611b9cd6acc50fb99a7d8f6906b1cedcf5c51c671b28",
+            "audioMs": 1175,
+            "decodeMs": 118.980104,
+            "rtf": 0.10125966297872341
+          },
+          {
+            "firstNonEmptyComputeMs": 25.261094,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "杭州西湖",
+            "flushComputeMs": 51.503071999999996,
+            "flushSilenceMs": 500,
+            "id": "west-lake",
+            "audioSha256": "5a0fca5240cd548b25cbeed153b6e494164b7128453f11c45c89534be1b39e8c",
+            "audioMs": 900,
+            "decodeMs": 100.39958399999999,
+            "rtf": 0.11155509333333333
+          },
+          {
+            "firstNonEmptyComputeMs": 28.726979,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "北京协和医院",
+            "flushComputeMs": 23.426092999999998,
+            "flushSilenceMs": 500,
+            "id": "hospital",
+            "audioSha256": "5a47032441e5e81a75536db3ed426c1dc47a4cc19a7091a3b96e43a7647546e1",
+            "audioMs": 1050,
+            "decodeMs": 98.02224,
+            "rtf": 0.09335451428571429
+          },
+          {
+            "firstNonEmptyComputeMs": 47.432916,
+            "firstNonEmptyAudioFedMs": 800,
+            "transcript": "找附近的充电站",
+            "flushComputeMs": 46.74802,
+            "flushSilenceMs": 500,
+            "id": "charger",
+            "audioSha256": "4df26cf85c56cf9fd47ff625469983a7fc9ca99f5f9bb8e99552d67626b0828d",
+            "audioMs": 1225,
+            "decodeMs": 117.8325,
+            "rtf": 0.09618979591836735
+          },
+          {
+            "firstNonEmptyComputeMs": 41.061094,
+            "firstNonEmptyAudioFedMs": 800,
+            "transcript": "找附近的停车场",
+            "flushComputeMs": 44.002291,
+            "flushSilenceMs": 500,
+            "id": "parking",
+            "audioSha256": "b2efdc63f9a7c26d7152003c76cbe4ecc5772039a23adc50ccb49bbf1207b807",
+            "audioMs": 1262.5,
+            "decodeMs": 105.250886,
+            "rtf": 0.08336703841584157
+          },
+          {
+            "firstNonEmptyComputeMs": 29.397084,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "导航到上海虹桥火车站",
+            "flushComputeMs": 23.439218999999998,
+            "flushSilenceMs": 500,
+            "id": "full-nav",
+            "audioSha256": "e63adc589aec2915f78961496d75110409b2c2982f18b48a6f215b3fe04203d0",
+            "audioMs": 1725,
+            "decodeMs": 146.297083,
+            "rtf": 0.08480990318840578
+          },
+          {
+            "firstNonEmptyComputeMs": 48.481145999999995,
+            "firstNonEmptyAudioFedMs": 800,
+            "transcript": "找北京的博物馆",
+            "flushComputeMs": 23.615,
+            "flushSilenceMs": 500,
+            "id": "city-constraint",
+            "audioSha256": "66ba559c74a6df9bcef8a5e30197e61475ea056734d0f2bf6ee31003b7e27625",
+            "audioMs": 1100,
+            "decodeMs": 96.322656,
+            "rtf": 0.0875660509090909
+          },
+          {
+            "firstNonEmptyComputeMs": 24.440417,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "不要去第二个",
+            "flushComputeMs": 51.311459,
+            "flushSilenceMs": 500,
+            "id": "negative",
+            "audioSha256": "effed693298c1e07906b55b93359014c5cc45ae3b690170d151988c0ca8c3a85",
+            "audioMs": 912.5,
+            "decodeMs": 103.79927099999999,
+            "rtf": 0.11375262575342465
+          },
+          {
+            "transcript": "",
+            "flushComputeMs": 35.98948,
+            "flushSilenceMs": 500,
+            "id": "silence",
+            "audioSha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa",
+            "audioMs": 2000,
+            "decodeMs": 128.604427,
+            "rtf": 0.0643022135
+          },
+          {
+            "transcript": "",
+            "flushComputeMs": 50.105363999999994,
+            "flushSilenceMs": 500,
+            "id": "noise",
+            "audioSha256": "31e7093a8901737e80d5bea9b0eb1feb7cab8ecb0bd7fead6e97903eceed6170",
+            "audioMs": 2000,
+            "decodeMs": 170.22229199999998,
+            "rtf": 0.08511114599999998
+          },
+          {
+            "firstNonEmptyComputeMs": 20.980936999999997,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "第二个",
+            "flushComputeMs": 35.606718,
+            "flushSilenceMs": 500,
+            "id": "second-noisy",
+            "audioSha256": "49ac214b5a7e16086e688c6996c0e67859478260a3cf61d0c81490cb3357525c",
+            "audioMs": 550,
+            "decodeMs": 56.723177,
+            "rtf": 0.10313304909090909
+          },
+          {
+            "firstNonEmptyComputeMs": 24.590833999999997,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "第二个",
+            "flushComputeMs": 45.484479,
+            "flushSilenceMs": 500,
+            "id": "second-overlap",
+            "audioSha256": "da1b8a5ea5a885eb07aff99226321d01cbb3bf46cf751945d8b3d2dfade97480",
+            "audioMs": 550,
+            "decodeMs": 70.255208,
+            "rtf": 0.12773674181818181
+          },
+          {
+            "firstNonEmptyComputeMs": 24.177865,
+            "firstNonEmptyAudioFedMs": 500,
+            "transcript": "取消导航",
+            "flushComputeMs": 46.484896,
+            "flushSilenceMs": 500,
+            "id": "cancel-noisy",
+            "audioSha256": "308742be59004e9c3360334ea54132335e434c3685a6ad7a7cdfe12ec41e180a",
+            "audioMs": 900,
+            "decodeMs": 94.292187,
+            "rtf": 0.10476909666666666
+          }
+        ],
+        "loadMs": 612.6415099999999,
+        "processPssAfterLoadKiB": 363493,
+        "processPssAfterDecodeKiB": 355111
+      },
+      {
+        "id": "sensevoice",
+        "modelType": "sensevoice",
+        "modelBytes": 239555041,
+        "processPssBeforeLoadKiB": 354999,
+        "results": [
+          {
+            "transcript": "第一个。",
+            "id": "first",
+            "audioSha256": "b2f01a8baba6d31ad30dc031552e139463182b268165f3150a28952d83b87f15",
+            "audioMs": 500,
+            "decodeMs": 41.255052,
+            "rtf": 0.082510104
+          },
+          {
+            "transcript": "第二个。",
+            "id": "second",
+            "audioSha256": "69e74d6e74becc0e47db90aef94564455b5568963791e2fa38b8e711397131fa",
+            "audioMs": 550,
+            "decodeMs": 39.711406,
+            "rtf": 0.07220255636363636
+          },
+          {
+            "transcript": "第3个。",
+            "id": "third",
+            "audioSha256": "9e75ab1f030506c7ffb57ba8c2a61290b50e677ddde61f74c28fee81df4c6497",
+            "audioMs": 612.5,
+            "decodeMs": 35.113906,
+            "rtf": 0.05732882612244898
+          },
+          {
+            "transcript": "我要去第二个。",
+            "id": "choose-second",
+            "audioSha256": "ae241ef857ddc39f3ac3d29a3c62e0c6da01856e0da8063cd24b9d6767543247",
+            "audioMs": 850,
+            "decodeMs": 43.798905999999995,
+            "rtf": 0.05152812470588235
+          },
+          {
+            "transcript": "最后一个。",
+            "id": "last",
+            "audioSha256": "32327dbc05e4d5b4494ad03bbb86c2e0eeca807667febeb780268f4b6b0684b2",
+            "audioMs": 750,
+            "decodeMs": 46.008281,
+            "rtf": 0.06134437466666666
+          },
+          {
+            "transcript": "下一页。",
+            "id": "next-page",
+            "audioSha256": "ead38673abc78e179072b4f1cd98926f3de8ffa1ad56c47877f23b3d27d0c73d",
+            "audioMs": 550,
+            "decodeMs": 37.400625,
+            "rtf": 0.06800113636363636
+          },
+          {
+            "transcript": "上一页。",
+            "id": "previous-page",
+            "audioSha256": "00e317888219d59b04fa3cf77e018e31d32a9dfd2c44acbc2e4c68a0b34a341b",
+            "audioMs": 625,
+            "decodeMs": 42.972812999999995,
+            "rtf": 0.0687565008
+          },
+          {
+            "transcript": "取消选择。",
+            "id": "cancel-choice",
+            "audioSha256": "a80381f4046abbcabc6e4434a1eb1cac3c633a41998d33998dc230c5a58f71fd",
+            "audioMs": 900,
+            "decodeMs": 56.524426999999996,
+            "rtf": 0.06280491888888888
+          },
+          {
+            "transcript": "都不是。",
+            "id": "none",
+            "audioSha256": "399f74d075d02da13a97172a7e90fd60711c6602598dd381759b2bd34d1e124a",
+            "audioMs": 525,
+            "decodeMs": 43.842864999999996,
+            "rtf": 0.08351021904761904
+          },
+          {
+            "transcript": "再说一遍。",
+            "id": "repeat",
+            "audioSha256": "f1049c974c7866c51938889e1e29a128acb2a93c42acd00838b98f7bfbe97bd6",
+            "audioMs": 737.5,
+            "decodeMs": 41.557030999999995,
+            "rtf": 0.056348516610169486
+          },
+          {
+            "transcript": "取消导航。",
+            "id": "cancel-nav",
+            "audioSha256": "57e21a57bd1b4ade99a928ab2a4ce16cbcddc727c9d0fc496e42b9a99f210597",
+            "audioMs": 900,
+            "decodeMs": 48.708749999999995,
+            "rtf": 0.054120833333333326
+          },
+          {
+            "transcript": "结束导航。",
+            "id": "stop-nav",
+            "audioSha256": "a2829af0760508a81ba90d791833b7ff21f393700e620e5b35bb93937664b4ab",
+            "audioMs": 825,
+            "decodeMs": 45.674844,
+            "rtf": 0.055363447272727274
+          },
+          {
+            "transcript": "导航回家。",
+            "id": "home",
+            "audioSha256": "612ec97a539e8a21c9944a3b26ea31f03efd97580efc5e180349fd183f534871",
+            "audioMs": 775,
+            "decodeMs": 51.223073,
+            "rtf": 0.06609428774193549
+          },
+          {
+            "transcript": "导航去公司。",
+            "id": "company",
+            "audioSha256": "daeaf0d37a95d97306143b6a209b33450a75de22982dbc3ea86a2f90bca8ef06",
+            "audioMs": 912.5,
+            "decodeMs": 56.374686999999994,
+            "rtf": 0.061780478904109586
+          },
+          {
+            "transcript": "北京南站。",
+            "id": "beijing-south",
+            "audioSha256": "643651b266bc2afa8ffa58c0348aa02a3717619e5a641114ad979c4603b0d6f7",
+            "audioMs": 775,
+            "decodeMs": 58.799791,
+            "rtf": 0.07587069806451613
+          },
+          {
+            "transcript": "北京首都国际机场。",
+            "id": "capital-airport",
+            "audioSha256": "751a495197a1c689efe877dd2be96cb18fc132ac870ccb94c6bc53927b3ad1c7",
+            "audioMs": 1350,
+            "decodeMs": 76.874271,
+            "rtf": 0.056943904444444436
+          },
+          {
+            "transcript": "中国国家博物馆。",
+            "id": "museum",
+            "audioSha256": "059c77edc467096570a1611b9cd6acc50fb99a7d8f6906b1cedcf5c51c671b28",
+            "audioMs": 1175,
+            "decodeMs": 66.345677,
+            "rtf": 0.056464405957446805
+          },
+          {
+            "transcript": "杭州西湖。",
+            "id": "west-lake",
+            "audioSha256": "5a0fca5240cd548b25cbeed153b6e494164b7128453f11c45c89534be1b39e8c",
+            "audioMs": 900,
+            "decodeMs": 56.953801999999996,
+            "rtf": 0.06328200222222222
+          },
+          {
+            "transcript": "北京协和医院。",
+            "id": "hospital",
+            "audioSha256": "5a47032441e5e81a75536db3ed426c1dc47a4cc19a7091a3b96e43a7647546e1",
+            "audioMs": 1050,
+            "decodeMs": 68.721614,
+            "rtf": 0.0654491561904762
+          },
+          {
+            "transcript": "找附近的充电站。",
+            "id": "charger",
+            "audioSha256": "4df26cf85c56cf9fd47ff625469983a7fc9ca99f5f9bb8e99552d67626b0828d",
+            "audioMs": 1225,
+            "decodeMs": 74.965468,
+            "rtf": 0.06119630040816327
+          },
+          {
+            "transcript": "找附近的停车场。",
+            "id": "parking",
+            "audioSha256": "b2efdc63f9a7c26d7152003c76cbe4ecc5772039a23adc50ccb49bbf1207b807",
+            "audioMs": 1262.5,
+            "decodeMs": 68.132656,
+            "rtf": 0.0539664601980198
+          },
+          {
+            "transcript": "导航到上海虹桥火车站。",
+            "id": "full-nav",
+            "audioSha256": "e63adc589aec2915f78961496d75110409b2c2982f18b48a6f215b3fe04203d0",
+            "audioMs": 1725,
+            "decodeMs": 88.20307299999999,
+            "rtf": 0.051132216231884055
+          },
+          {
+            "transcript": "找北京的博物馆。",
+            "id": "city-constraint",
+            "audioSha256": "66ba559c74a6df9bcef8a5e30197e61475ea056734d0f2bf6ee31003b7e27625",
+            "audioMs": 1100,
+            "decodeMs": 66.662604,
+            "rtf": 0.060602367272727276
+          },
+          {
+            "transcript": "不要去第二个。",
+            "id": "negative",
+            "audioSha256": "effed693298c1e07906b55b93359014c5cc45ae3b690170d151988c0ca8c3a85",
+            "audioMs": 912.5,
+            "decodeMs": 61.944374999999994,
+            "rtf": 0.06788424657534246
+          },
+          {
+            "transcript": "我。",
+            "id": "silence",
+            "audioSha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa",
+            "audioMs": 2000,
+            "decodeMs": 83.150104,
+            "rtf": 0.041575052
+          },
+          {
+            "transcript": "我。",
+            "id": "noise",
+            "audioSha256": "31e7093a8901737e80d5bea9b0eb1feb7cab8ecb0bd7fead6e97903eceed6170",
+            "audioMs": 2000,
+            "decodeMs": 90.92948,
+            "rtf": 0.04546474
+          },
+          {
+            "transcript": "第二个。",
+            "id": "second-noisy",
+            "audioSha256": "49ac214b5a7e16086e688c6996c0e67859478260a3cf61d0c81490cb3357525c",
+            "audioMs": 550,
+            "decodeMs": 49.430364,
+            "rtf": 0.08987338909090908
+          },
+          {
+            "transcript": "第二个。",
+            "id": "second-overlap",
+            "audioSha256": "da1b8a5ea5a885eb07aff99226321d01cbb3bf46cf751945d8b3d2dfade97480",
+            "audioMs": 550,
+            "decodeMs": 50.506771,
+            "rtf": 0.09183049272727273
+          },
+          {
+            "transcript": "取消导航。",
+            "id": "cancel-noisy",
+            "audioSha256": "308742be59004e9c3360334ea54132335e434c3685a6ad7a7cdfe12ec41e180a",
+            "audioMs": 900,
+            "decodeMs": 57.718334,
+            "rtf": 0.06413148222222222
+          }
+        ],
+        "loadMs": 882.0723959999999,
+        "processPssAfterLoadKiB": 455548,
+        "processPssAfterDecodeKiB": 453628
+      }
+    ],
+    "device": {
+      "manufacturer": "OnePlus",
+      "model": "PHB110",
+      "sdk": 36,
+      "supportedAbis": [
+        "arm64-v8a",
+        "armeabi-v7a",
+        "armeabi"
+      ]
+    },
+    "stage": "complete",
+    "updatedAtEpochMs": 1794587368424,
+    "modelsSha256": "5bf08d677579ad03373be088c53e9c0d0d7dcd624e3c06b386652c58a4770862",
+    "suiteSha256": "b6f11ce13988b035c0b80d08dcf6628de8953e8919fff8f94ea1890b5b0a012c",
+    "suiteVersion": "1",
+    "runtime": {
+      "engine": "sherpa-onnx Android JNI",
+      "targetApkSha256": "29f389383d5edb30a693d5675c8526fe9b3c792e67370ac15a35bdd61d9be6ad",
+      "instrumentationApkSha256": "e8bc41e38f1c09a89331acfe11bf0f6fc694a8847e4cc7912ff019cab2e24de6",
+      "librarySha256": {
+        "libsherpa-onnx-jni.so": "6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97",
+        "libonnxruntime.so": "7a2fb92eb67037837c3f0e428bd732fd0d05ced0546d9e740090c07573d8249a"
+      },
+      "provider": "cpu",
+      "threads": 2,
+      "decodingMethod": "greedy_search",
+      "sampleRate": 16000,
+      "zipformerEndpointEnabled": false,
+      "zipformerChunkMs": 100,
+      "zipformerFlushSilenceMs": 500,
+      "sensevoiceLanguage": "zh",
+      "sensevoiceInverseTextNormalization": true,
+      "decodeScope": "Stream creation through final result and stream release. Includes feed, decoder, and flush work. Excludes file reads and model load.",
+      "loadScope": "Native recognizer construction after JNI runtime identification.",
+      "streamingScope": "Unpaced simulation from file chunks. Audio timestamps count fixture audio supplied, and compute timestamps measure elapsed processing time. Both first nonempty fields are omitted when no nonblank partial is observed before flush, including when the first text appears during flush.",
+      "memoryScope": "Snapshots of the entire target process PSS, in KiB. Includes instrumentation and both shared and private allocations. These are not isolated model memory or peak measurements.",
+      "sherpaVersion": "2.0.1",
+      "onnxruntimeVersion": "1.28.2"
+    }
+  },
+  "rawResultSha256": "1c9497327cfb6c98fece3970ab04ab64da8d60631e6cc84c503bb92c35cf2a23",
+  "device": {
+    "manufacturer": "OnePlus",
+    "model": "PHB110",
+    "sdk": 36,
+    "supportedAbis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "armeabi"
+    ]
+  },
+  "runtime": {
+    "engine": "sherpa-onnx Android JNI",
+    "targetApkSha256": "29f389383d5edb30a693d5675c8526fe9b3c792e67370ac15a35bdd61d9be6ad",
+    "instrumentationApkSha256": "e8bc41e38f1c09a89331acfe11bf0f6fc694a8847e4cc7912ff019cab2e24de6",
+    "librarySha256": {
+      "libsherpa-onnx-jni.so": "6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97",
+      "libonnxruntime.so": "7a2fb92eb67037837c3f0e428bd732fd0d05ced0546d9e740090c07573d8249a"
+    },
+    "provider": "cpu",
+    "threads": 2,
+    "decodingMethod": "greedy_search",
+    "sampleRate": 16000,
+    "zipformerEndpointEnabled": false,
+    "zipformerChunkMs": 100,
+    "zipformerFlushSilenceMs": 500,
+    "sensevoiceLanguage": "zh",
+    "sensevoiceInverseTextNormalization": true,
+    "decodeScope": "Stream creation through final result and stream release. Includes feed, decoder, and flush work. Excludes file reads and model load.",
+    "loadScope": "Native recognizer construction after JNI runtime identification.",
+    "streamingScope": "Unpaced simulation from file chunks. Audio timestamps count fixture audio supplied, and compute timestamps measure elapsed processing time. Both first nonempty fields are omitted when no nonblank partial is observed before flush, including when the first text appears during flush.",
+    "memoryScope": "Snapshots of the entire target process PSS, in KiB. Includes instrumentation and both shared and private allocations. These are not isolated model memory or peak measurements.",
+    "sherpaVersion": "2.0.1",
+    "onnxruntimeVersion": "1.28.2"
+  },
+  "suiteVersion": "1",
+  "passed": false,
+  "failures": [
+    "zipformer:next-page:transcript_mismatch",
+    "zipformer:previous-page:transcript_mismatch",
+    "zipformer:none:transcript_mismatch",
+    "zipformer:stop-nav:transcript_mismatch",
+    "sensevoice:silence:transcript_mismatch",
+    "sensevoice:noise:transcript_mismatch"
+  ],
+  "acousticAcceptance": "not-tested",
+  "measurement": "Unpaced synthetic file decode; excludes microphone, VAD endpoint, AEC, network and business execution.",
+  "byModel": {
+    "zipformer": {
+      "total": 29,
+      "passed": 25,
+      "exactRate": 0.8620689655172413,
+      "loadMs": 612.6415099999999,
+      "decodeP50Ms": 94.115417,
+      "decodeP95Ms": 146.297083,
+      "groups": {
+        "selection": {
+          "total": 10,
+          "passed": 7,
+          "exact": 7,
+          "exactRate": 0.7,
+          "decodeP50Ms": 58.322604,
+          "decodeP95Ms": 100.898125
+        },
+        "command": {
+          "total": 4,
+          "passed": 3,
+          "exact": 3,
+          "exactRate": 0.75,
+          "decodeP50Ms": 83.66354199999999,
+          "decodeP95Ms": 98.469219
+        },
+        "destination": {
+          "total": 9,
+          "passed": 9,
+          "exact": 9,
+          "exactRate": 1,
+          "decodeP50Ms": 105.250886,
+          "decodeP95Ms": 146.297083
+        },
+        "boundary": {
+          "total": 1,
+          "passed": 1,
+          "exact": 1,
+          "exactRate": 1,
+          "decodeP50Ms": 103.79927099999999,
+          "decodeP95Ms": 103.79927099999999
+        },
+        "non-speech": {
+          "total": 2,
+          "passed": 2,
+          "exact": 2,
+          "exactRate": 1,
+          "decodeP50Ms": 128.604427,
+          "decodeP95Ms": 170.22229199999998
+        },
+        "synthetic-noise": {
+          "total": 2,
+          "passed": 2,
+          "exact": 2,
+          "exactRate": 1,
+          "decodeP50Ms": 56.723177,
+          "decodeP95Ms": 94.292187
+        },
+        "synthetic-overlap": {
+          "total": 1,
+          "passed": 1,
+          "exact": 1,
+          "exactRate": 1,
+          "decodeP50Ms": 70.255208,
+          "decodeP95Ms": 70.255208
+        }
+      },
+      "results": [
+        {
+          "id": "first",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 42.158072,
+          "rtf": 0.084316144
+        },
+        {
+          "id": "second",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 45.513020999999995,
+          "rtf": 0.08275094727272726
+        },
+        {
+          "id": "third",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 48.297239,
+          "rtf": 0.07885263510204081
+        },
+        {
+          "id": "choose-second",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 58.322604,
+          "rtf": 0.06861482823529412
+        },
+        {
+          "id": "last",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 61.048229,
+          "rtf": 0.08139763866666666
+        },
+        {
+          "id": "next-page",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 0.3333333333333333,
+          "decodeMs": 71.942135,
+          "rtf": 0.1308038818181818
+        },
+        {
+          "id": "previous-page",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 0.3333333333333333,
+          "decodeMs": 71.804479,
+          "rtf": 0.1148871664
+        },
+        {
+          "id": "cancel-choice",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 100.898125,
+          "rtf": 0.11210902777777777
+        },
+        {
+          "id": "none",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 0.3333333333333333,
+          "decodeMs": 49.167396,
+          "rtf": 0.09365218285714286
+        },
+        {
+          "id": "repeat",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 72.871667,
+          "rtf": 0.09880904
+        },
+        {
+          "id": "cancel-nav",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 98.469219,
+          "rtf": 0.10941024333333332
+        },
+        {
+          "id": "stop-nav",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 0.5,
+          "decodeMs": 83.66354199999999,
+          "rtf": 0.10141035393939393
+        },
+        {
+          "id": "home",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 73.2975,
+          "rtf": 0.09457741935483871
+        },
+        {
+          "id": "company",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 94.115417,
+          "rtf": 0.10314018301369862
+        },
+        {
+          "id": "beijing-south",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 56.821093999999995,
+          "rtf": 0.07331754064516129
+        },
+        {
+          "id": "capital-airport",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 127.45385399999999,
+          "rtf": 0.09441026222222222
+        },
+        {
+          "id": "museum",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 118.980104,
+          "rtf": 0.10125966297872341
+        },
+        {
+          "id": "west-lake",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 100.39958399999999,
+          "rtf": 0.11155509333333333
+        },
+        {
+          "id": "hospital",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 98.02224,
+          "rtf": 0.09335451428571429
+        },
+        {
+          "id": "charger",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 117.8325,
+          "rtf": 0.09618979591836735
+        },
+        {
+          "id": "parking",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 105.250886,
+          "rtf": 0.08336703841584157
+        },
+        {
+          "id": "full-nav",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 146.297083,
+          "rtf": 0.08480990318840578
+        },
+        {
+          "id": "city-constraint",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 96.322656,
+          "rtf": 0.0875660509090909
+        },
+        {
+          "id": "negative",
+          "group": "boundary",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 103.79927099999999,
+          "rtf": 0.11375262575342465
+        },
+        {
+          "id": "silence",
+          "group": "non-speech",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 128.604427,
+          "rtf": 0.0643022135
+        },
+        {
+          "id": "noise",
+          "group": "non-speech",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 170.22229199999998,
+          "rtf": 0.08511114599999998
+        },
+        {
+          "id": "second-noisy",
+          "group": "synthetic-noise",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 56.723177,
+          "rtf": 0.10313304909090909
+        },
+        {
+          "id": "second-overlap",
+          "group": "synthetic-overlap",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 70.255208,
+          "rtf": 0.12773674181818181
+        },
+        {
+          "id": "cancel-noisy",
+          "group": "synthetic-noise",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 94.292187,
+          "rtf": 0.10476909666666666
+        }
+      ]
+    },
+    "sensevoice": {
+      "total": 29,
+      "passed": 27,
+      "exactRate": 0.9310344827586207,
+      "loadMs": 882.0723959999999,
+      "decodeP50Ms": 56.374686999999994,
+      "decodeP95Ms": 88.20307299999999,
+      "groups": {
+        "selection": {
+          "total": 10,
+          "passed": 10,
+          "exact": 10,
+          "exactRate": 1,
+          "decodeP50Ms": 41.557030999999995,
+          "decodeP95Ms": 56.524426999999996
+        },
+        "command": {
+          "total": 4,
+          "passed": 4,
+          "exact": 4,
+          "exactRate": 1,
+          "decodeP50Ms": 48.708749999999995,
+          "decodeP95Ms": 56.374686999999994
+        },
+        "destination": {
+          "total": 9,
+          "passed": 9,
+          "exact": 9,
+          "exactRate": 1,
+          "decodeP50Ms": 68.132656,
+          "decodeP95Ms": 88.20307299999999
+        },
+        "boundary": {
+          "total": 1,
+          "passed": 1,
+          "exact": 1,
+          "exactRate": 1,
+          "decodeP50Ms": 61.944374999999994,
+          "decodeP95Ms": 61.944374999999994
+        },
+        "non-speech": {
+          "total": 2,
+          "passed": 0,
+          "exact": 0,
+          "exactRate": 0,
+          "decodeP50Ms": 83.150104,
+          "decodeP95Ms": 90.92948
+        },
+        "synthetic-noise": {
+          "total": 2,
+          "passed": 2,
+          "exact": 2,
+          "exactRate": 1,
+          "decodeP50Ms": 49.430364,
+          "decodeP95Ms": 57.718334
+        },
+        "synthetic-overlap": {
+          "total": 1,
+          "passed": 1,
+          "exact": 1,
+          "exactRate": 1,
+          "decodeP50Ms": 50.506771,
+          "decodeP95Ms": 50.506771
+        }
+      },
+      "results": [
+        {
+          "id": "first",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 41.255052,
+          "rtf": 0.082510104
+        },
+        {
+          "id": "second",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 39.711406,
+          "rtf": 0.07220255636363636
+        },
+        {
+          "id": "third",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 35.113906,
+          "rtf": 0.05732882612244898
+        },
+        {
+          "id": "choose-second",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 43.798905999999995,
+          "rtf": 0.05152812470588235
+        },
+        {
+          "id": "last",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 46.008281,
+          "rtf": 0.06134437466666666
+        },
+        {
+          "id": "next-page",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 37.400625,
+          "rtf": 0.06800113636363636
+        },
+        {
+          "id": "previous-page",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 42.972812999999995,
+          "rtf": 0.0687565008
+        },
+        {
+          "id": "cancel-choice",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 56.524426999999996,
+          "rtf": 0.06280491888888888
+        },
+        {
+          "id": "none",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 43.842864999999996,
+          "rtf": 0.08351021904761904
+        },
+        {
+          "id": "repeat",
+          "group": "selection",
+          "productIds": [
+            "B01",
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 41.557030999999995,
+          "rtf": 0.056348516610169486
+        },
+        {
+          "id": "cancel-nav",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 48.708749999999995,
+          "rtf": 0.054120833333333326
+        },
+        {
+          "id": "stop-nav",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 45.674844,
+          "rtf": 0.055363447272727274
+        },
+        {
+          "id": "home",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 51.223073,
+          "rtf": 0.06609428774193549
+        },
+        {
+          "id": "company",
+          "group": "command",
+          "productIds": [
+            "A01"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 56.374686999999994,
+          "rtf": 0.061780478904109586
+        },
+        {
+          "id": "beijing-south",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 58.799791,
+          "rtf": 0.07587069806451613
+        },
+        {
+          "id": "capital-airport",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 76.874271,
+          "rtf": 0.056943904444444436
+        },
+        {
+          "id": "museum",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 66.345677,
+          "rtf": 0.056464405957446805
+        },
+        {
+          "id": "west-lake",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 56.953801999999996,
+          "rtf": 0.06328200222222222
+        },
+        {
+          "id": "hospital",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 68.721614,
+          "rtf": 0.0654491561904762
+        },
+        {
+          "id": "charger",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 74.965468,
+          "rtf": 0.06119630040816327
+        },
+        {
+          "id": "parking",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 68.132656,
+          "rtf": 0.0539664601980198
+        },
+        {
+          "id": "full-nav",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 88.20307299999999,
+          "rtf": 0.051132216231884055
+        },
+        {
+          "id": "city-constraint",
+          "group": "destination",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 66.662604,
+          "rtf": 0.060602367272727276
+        },
+        {
+          "id": "negative",
+          "group": "boundary",
+          "productIds": [
+            "A01",
+            "A03"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 61.944374999999994,
+          "rtf": 0.06788424657534246
+        },
+        {
+          "id": "silence",
+          "group": "non-speech",
+          "productIds": [
+            "B02"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 1,
+          "decodeMs": 83.150104,
+          "rtf": 0.041575052
+        },
+        {
+          "id": "noise",
+          "group": "non-speech",
+          "productIds": [
+            "B02"
+          ],
+          "passed": false,
+          "exact": false,
+          "failures": [
+            "transcript_mismatch"
+          ],
+          "cer": 1,
+          "decodeMs": 90.92948,
+          "rtf": 0.04546474
+        },
+        {
+          "id": "second-noisy",
+          "group": "synthetic-noise",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 49.430364,
+          "rtf": 0.08987338909090908
+        },
+        {
+          "id": "second-overlap",
+          "group": "synthetic-overlap",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 50.506771,
+          "rtf": 0.09183049272727273
+        },
+        {
+          "id": "cancel-noisy",
+          "group": "synthetic-noise",
+          "productIds": [
+            "B02"
+          ],
+          "passed": true,
+          "exact": true,
+          "failures": [],
+          "cer": 0,
+          "decodeMs": 57.718334,
+          "rtf": 0.06413148222222222
+        }
+      ]
+    }
+  }
+}

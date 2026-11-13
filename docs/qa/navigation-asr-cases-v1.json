@@ -1,0 +1,373 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "1",
+  "description": "Public synthetic comparison, not acoustic or driving acceptance",
+  "cases": [
+    {
+      "id": "first",
+      "group": "selection",
+      "text": "第一个",
+      "expected": [
+        "第一个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "second",
+      "group": "selection",
+      "text": "第二个",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "third",
+      "group": "selection",
+      "text": "第三个",
+      "expected": [
+        "第三个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "choose-second",
+      "group": "selection",
+      "text": "我要去第二个",
+      "expected": [
+        "我要去第二个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "last",
+      "group": "selection",
+      "text": "最后一个",
+      "expected": [
+        "最后一个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "next-page",
+      "group": "selection",
+      "text": "下一页",
+      "expected": [
+        "下一页"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "previous-page",
+      "group": "selection",
+      "text": "上一页",
+      "expected": [
+        "上一页"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "cancel-choice",
+      "group": "selection",
+      "text": "取消选择",
+      "expected": [
+        "取消选择"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "none",
+      "group": "selection",
+      "text": "都不是",
+      "expected": [
+        "都不是"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "repeat",
+      "group": "selection",
+      "text": "再说一遍",
+      "expected": [
+        "再说一遍"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "cancel-nav",
+      "group": "command",
+      "text": "取消导航",
+      "expected": [
+        "取消导航"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "stop-nav",
+      "group": "command",
+      "text": "结束导航",
+      "expected": [
+        "结束导航"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "home",
+      "group": "command",
+      "text": "导航回家",
+      "expected": [
+        "导航回家"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "company",
+      "group": "command",
+      "text": "导航去公司",
+      "expected": [
+        "导航去公司"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "beijing-south",
+      "group": "destination",
+      "text": "北京南站",
+      "expected": [
+        "北京南站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "capital-airport",
+      "group": "destination",
+      "text": "北京首都国际机场",
+      "expected": [
+        "北京首都国际机场"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "museum",
+      "group": "destination",
+      "text": "中国国家博物馆",
+      "expected": [
+        "中国国家博物馆"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "west-lake",
+      "group": "destination",
+      "text": "杭州西湖",
+      "expected": [
+        "杭州西湖"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "hospital",
+      "group": "destination",
+      "text": "北京协和医院",
+      "expected": [
+        "北京协和医院"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "charger",
+      "group": "destination",
+      "text": "找附近的充电站",
+      "expected": [
+        "找附近的充电站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "parking",
+      "group": "destination",
+      "text": "找附近的停车场",
+      "expected": [
+        "找附近的停车场"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "full-nav",
+      "group": "destination",
+      "text": "导航到上海虹桥火车站",
+      "expected": [
+        "导航到上海虹桥火车站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "city-constraint",
+      "group": "destination",
+      "text": "找北京的博物馆",
+      "expected": [
+        "找北京的博物馆"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "negative",
+      "group": "boundary",
+      "text": "不要去第二个",
+      "expected": [
+        "不要去第二个"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts"
+    },
+    {
+      "id": "silence",
+      "group": "non-speech",
+      "kind": "silence",
+      "expected": [
+        ""
+      ],
+      "productIds": [
+        "B02"
+      ]
+    },
+    {
+      "id": "noise",
+      "group": "non-speech",
+      "kind": "noise",
+      "expected": [
+        ""
+      ],
+      "productIds": [
+        "B02"
+      ]
+    },
+    {
+      "id": "second-noisy",
+      "group": "synthetic-noise",
+      "kind": "noise-mix",
+      "source": "second",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B02"
+      ]
+    },
+    {
+      "id": "second-overlap",
+      "group": "synthetic-overlap",
+      "kind": "overlap",
+      "source": "second",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B02"
+      ]
+    },
+    {
+      "id": "cancel-noisy",
+      "group": "synthetic-noise",
+      "kind": "noise-mix",
+      "source": "cancel-nav",
+      "expected": [
+        "取消导航"
+      ],
+      "productIds": [
+        "B02"
+      ]
+    }
+  ]
+}

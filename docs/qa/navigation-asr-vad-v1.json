@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "pipeline": "silero",
+  "source": "https://github.com/snakers4/silero-vad",
+  "sourceRevision": "066409f3d9db45a30d21dfcbf9147826ffdd7052",
+  "license": "MIT",
+  "asset": {
+    "path": "models/vad/silero_vad.onnx",
+    "bytes": 2327524,
+    "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+    "repositoryFile": "AutoVoice/audio-frontend-legacy/src/main/assets/silero_vad.onnx"
+  },
+  "licenseAsset": {
+    "path": "models/vad/LICENSE",
+    "bytes": 1075,
+    "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+    "repositoryFile": "docs/qa/asr-model-licenses/silero-MIT.txt"
+  },
+  "threshold": 0.5,
+  "minSpeechMs": 64,
+  "minSilenceMs": 960,
+  "frameSamples": 512,
+  "contextSamples": 64
+}

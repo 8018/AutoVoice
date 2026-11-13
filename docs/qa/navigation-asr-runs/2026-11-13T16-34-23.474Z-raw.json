@@ -1,0 +1,640 @@
+{
+  "schemaVersion": 1,
+  "status": "complete",
+  "startedAtEpochMs": 1794587664511,
+  "models": [
+    {
+      "id": "zipformer",
+      "modelType": "zipformer",
+      "modelBytes": 199056501,
+      "processPssBeforeLoadKiB": 92335,
+      "results": [
+        {
+          "firstNonEmptyComputeMs": 19.734688,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "第一个",
+          "flushComputeMs": 15.093437,
+          "flushSilenceMs": 500,
+          "id": "first",
+          "audioSha256": "b2f01a8baba6d31ad30dc031552e139463182b268165f3150a28952d83b87f15",
+          "audioMs": 500,
+          "decodeMs": 34.908854,
+          "rtf": 0.06981770799999999
+        },
+        {
+          "firstNonEmptyComputeMs": 19.342499999999998,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "第二个",
+          "flushComputeMs": 40.131355,
+          "flushSilenceMs": 500,
+          "id": "second",
+          "audioSha256": "69e74d6e74becc0e47db90aef94564455b5568963791e2fa38b8e711397131fa",
+          "audioMs": 550,
+          "decodeMs": 59.622448,
+          "rtf": 0.10840445090909091
+        },
+        {
+          "firstNonEmptyComputeMs": 22.132656,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "第三个",
+          "flushComputeMs": 44.775729,
+          "flushSilenceMs": 500,
+          "id": "third",
+          "audioSha256": "9e75ab1f030506c7ffb57ba8c2a61290b50e677ddde61f74c28fee81df4c6497",
+          "audioMs": 612.5,
+          "decodeMs": 67.170312,
+          "rtf": 0.10966581551020407
+        },
+        {
+          "firstNonEmptyComputeMs": 29.750259999999997,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "我要去第二个",
+          "flushComputeMs": 29.177448,
+          "flushSilenceMs": 500,
+          "id": "choose-second",
+          "audioSha256": "ae241ef857ddc39f3ac3d29a3c62e0c6da01856e0da8063cd24b9d6767543247",
+          "audioMs": 850,
+          "decodeMs": 82.33973999999999,
+          "rtf": 0.09687028235294116
+        },
+        {
+          "firstNonEmptyComputeMs": 24.093854,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "最后一个",
+          "flushComputeMs": 23.237864,
+          "flushSilenceMs": 500,
+          "id": "last",
+          "audioSha256": "32327dbc05e4d5b4494ad03bbb86c2e0eeca807667febeb780268f4b6b0684b2",
+          "audioMs": 750,
+          "decodeMs": 70.33645899999999,
+          "rtf": 0.09378194533333332
+        },
+        {
+          "transcript": "下一",
+          "flushComputeMs": 46.360155999999996,
+          "flushSilenceMs": 500,
+          "id": "next-page",
+          "audioSha256": "ead38673abc78e179072b4f1cd98926f3de8ffa1ad56c47877f23b3d27d0c73d",
+          "audioMs": 550,
+          "decodeMs": 70.428854,
+          "rtf": 0.12805246181818183
+        },
+        {
+          "transcript": "上一夜",
+          "flushComputeMs": 45.715624999999996,
+          "flushSilenceMs": 500,
+          "id": "previous-page",
+          "audioSha256": "00e317888219d59b04fa3cf77e018e31d32a9dfd2c44acbc2e4c68a0b34a341b",
+          "audioMs": 625,
+          "decodeMs": 70.31692699999999,
+          "rtf": 0.11250708319999998
+        },
+        {
+          "firstNonEmptyComputeMs": 24.356979,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "取消选择",
+          "flushComputeMs": 50.908333,
+          "flushSilenceMs": 500,
+          "id": "cancel-choice",
+          "audioSha256": "a80381f4046abbcabc6e4434a1eb1cac3c633a41998d33998dc230c5a58f71fd",
+          "audioMs": 900,
+          "decodeMs": 104.248802,
+          "rtf": 0.11583200222222222
+        },
+        {
+          "firstNonEmptyComputeMs": 24.411875,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "都不",
+          "flushComputeMs": 23.397603999999998,
+          "flushSilenceMs": 500,
+          "id": "none",
+          "audioSha256": "399f74d075d02da13a97172a7e90fd60711c6602598dd381759b2bd34d1e124a",
+          "audioMs": 525,
+          "decodeMs": 47.942657,
+          "rtf": 0.09131934666666666
+        },
+        {
+          "firstNonEmptyComputeMs": 23.713749999999997,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "再说一遍",
+          "flushComputeMs": 23.106094,
+          "flushSilenceMs": 500,
+          "id": "repeat",
+          "audioSha256": "f1049c974c7866c51938889e1e29a128acb2a93c42acd00838b98f7bfbe97bd6",
+          "audioMs": 737.5,
+          "decodeMs": 70.20614599999999,
+          "rtf": 0.09519477423728812
+        },
+        {
+          "firstNonEmptyComputeMs": 24.207917,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "取消导航",
+          "flushComputeMs": 46.124843,
+          "flushSilenceMs": 500,
+          "id": "cancel-nav",
+          "audioSha256": "57e21a57bd1b4ade99a928ab2a4ce16cbcddc727c9d0fc496e42b9a99f210597",
+          "audioMs": 900,
+          "decodeMs": 93.882136,
+          "rtf": 0.10431348444444445
+        },
+        {
+          "firstNonEmptyComputeMs": 52.804218,
+          "firstNonEmptyAudioFedMs": 800,
+          "transcript": "接触导航",
+          "flushComputeMs": 30.718854,
+          "flushSilenceMs": 500,
+          "id": "stop-nav",
+          "audioSha256": "a2829af0760508a81ba90d791833b7ff21f393700e620e5b35bb93937664b4ab",
+          "audioMs": 825,
+          "decodeMs": 83.63708299999999,
+          "rtf": 0.1013782824242424
+        },
+        {
+          "firstNonEmptyComputeMs": 24.566771,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "导航回家",
+          "flushComputeMs": 23.409323,
+          "flushSilenceMs": 500,
+          "id": "home",
+          "audioSha256": "612ec97a539e8a21c9944a3b26ea31f03efd97580efc5e180349fd183f534871",
+          "audioMs": 775,
+          "decodeMs": 71.510521,
+          "rtf": 0.09227164
+        },
+        {
+          "firstNonEmptyComputeMs": 24.168540999999998,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "导航去公司",
+          "flushComputeMs": 46.369530999999995,
+          "flushSilenceMs": 500,
+          "id": "company",
+          "audioSha256": "daeaf0d37a95d97306143b6a209b33450a75de22982dbc3ea86a2f90bca8ef06",
+          "audioMs": 912.5,
+          "decodeMs": 94.137344,
+          "rtf": 0.10316421260273972
+        },
+        {
+          "firstNonEmptyComputeMs": 25.372968999999998,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "北京南站",
+          "flushComputeMs": 23.233957999999998,
+          "flushSilenceMs": 500,
+          "id": "beijing-south",
+          "audioSha256": "643651b266bc2afa8ffa58c0348aa02a3717619e5a641114ad979c4603b0d6f7",
+          "audioMs": 775,
+          "decodeMs": 71.816823,
+          "rtf": 0.09266686838709677
+        },
+        {
+          "firstNonEmptyComputeMs": 25.1925,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "北京首都国际机场",
+          "flushComputeMs": 36.475469,
+          "flushSilenceMs": 500,
+          "id": "capital-airport",
+          "audioSha256": "751a495197a1c689efe877dd2be96cb18fc132ac870ccb94c6bc53927b3ad1c7",
+          "audioMs": 1350,
+          "decodeMs": 103.414948,
+          "rtf": 0.07660366518518519
+        },
+        {
+          "firstNonEmptyComputeMs": 23.9625,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "中国国家博物馆",
+          "flushComputeMs": 45.314011,
+          "flushSilenceMs": 500,
+          "id": "museum",
+          "audioSha256": "059c77edc467096570a1611b9cd6acc50fb99a7d8f6906b1cedcf5c51c671b28",
+          "audioMs": 1175,
+          "decodeMs": 115.565625,
+          "rtf": 0.09835372340425531
+        },
+        {
+          "firstNonEmptyComputeMs": 24.142604,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "杭州西湖",
+          "flushComputeMs": 48.34974,
+          "flushSilenceMs": 500,
+          "id": "west-lake",
+          "audioSha256": "5a0fca5240cd548b25cbeed153b6e494164b7128453f11c45c89534be1b39e8c",
+          "audioMs": 900,
+          "decodeMs": 95.907292,
+          "rtf": 0.10656365777777778
+        },
+        {
+          "firstNonEmptyComputeMs": 19.753073,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "北京协和医院",
+          "flushComputeMs": 17.886718,
+          "flushSilenceMs": 500,
+          "id": "hospital",
+          "audioSha256": "5a47032441e5e81a75536db3ed426c1dc47a4cc19a7091a3b96e43a7647546e1",
+          "audioMs": 1050,
+          "decodeMs": 78.582604,
+          "rtf": 0.07484057523809524
+        },
+        {
+          "firstNonEmptyComputeMs": 47.446614,
+          "firstNonEmptyAudioFedMs": 800,
+          "transcript": "找附近的充电站",
+          "flushComputeMs": 45.812343999999996,
+          "flushSilenceMs": 500,
+          "id": "charger",
+          "audioSha256": "4df26cf85c56cf9fd47ff625469983a7fc9ca99f5f9bb8e99552d67626b0828d",
+          "audioMs": 1225,
+          "decodeMs": 116.585573,
+          "rtf": 0.09517189632653061
+        },
+        {
+          "firstNonEmptyComputeMs": 47.361197999999995,
+          "firstNonEmptyAudioFedMs": 800,
+          "transcript": "找附近的停车场",
+          "flushComputeMs": 51.13901,
+          "flushSilenceMs": 500,
+          "id": "parking",
+          "audioSha256": "b2efdc63f9a7c26d7152003c76cbe4ecc5772039a23adc50ccb49bbf1207b807",
+          "audioMs": 1262.5,
+          "decodeMs": 121.657709,
+          "rtf": 0.09636254178217822
+        },
+        {
+          "firstNonEmptyComputeMs": 29.278073,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "导航到上海虹桥火车站",
+          "flushComputeMs": 23.274791999999998,
+          "flushSilenceMs": 500,
+          "id": "full-nav",
+          "audioSha256": "e63adc589aec2915f78961496d75110409b2c2982f18b48a6f215b3fe04203d0",
+          "audioMs": 1725,
+          "decodeMs": 144.915625,
+          "rtf": 0.08400905797101449
+        },
+        {
+          "firstNonEmptyComputeMs": 47.154635999999996,
+          "firstNonEmptyAudioFedMs": 800,
+          "transcript": "找北京的博物馆",
+          "flushComputeMs": 23.142656,
+          "flushSilenceMs": 500,
+          "id": "city-constraint",
+          "audioSha256": "66ba559c74a6df9bcef8a5e30197e61475ea056734d0f2bf6ee31003b7e27625",
+          "audioMs": 1100,
+          "decodeMs": 93.684219,
+          "rtf": 0.08516747181818182
+        },
+        {
+          "firstNonEmptyComputeMs": 24.447551999999998,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "不要去第二个",
+          "flushComputeMs": 55.232448,
+          "flushSilenceMs": 500,
+          "id": "negative",
+          "audioSha256": "effed693298c1e07906b55b93359014c5cc45ae3b690170d151988c0ca8c3a85",
+          "audioMs": 912.5,
+          "decodeMs": 103.02499999999999,
+          "rtf": 0.11290410958904108
+        },
+        {
+          "transcript": "",
+          "flushComputeMs": 35.163021,
+          "flushSilenceMs": 500,
+          "id": "silence",
+          "audioSha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa",
+          "audioMs": 2000,
+          "decodeMs": 127.70984399999999,
+          "rtf": 0.063854922
+        },
+        {
+          "transcript": "",
+          "flushComputeMs": 50.042448,
+          "flushSilenceMs": 500,
+          "id": "noise",
+          "audioSha256": "31e7093a8901737e80d5bea9b0eb1feb7cab8ecb0bd7fead6e97903eceed6170",
+          "audioMs": 2000,
+          "decodeMs": 162.595104,
+          "rtf": 0.081297552
+        },
+        {
+          "firstNonEmptyComputeMs": 28.806718,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "第二个",
+          "flushComputeMs": 45.407812,
+          "flushSilenceMs": 500,
+          "id": "second-noisy",
+          "audioSha256": "49ac214b5a7e16086e688c6996c0e67859478260a3cf61d0c81490cb3357525c",
+          "audioMs": 550,
+          "decodeMs": 74.39031299999999,
+          "rtf": 0.13525511454545452
+        },
+        {
+          "firstNonEmptyComputeMs": 24.174688,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "第二个",
+          "flushComputeMs": 45.640104,
+          "flushSilenceMs": 500,
+          "id": "second-overlap",
+          "audioSha256": "da1b8a5ea5a885eb07aff99226321d01cbb3bf46cf751945d8b3d2dfade97480",
+          "audioMs": 550,
+          "decodeMs": 69.990104,
+          "rtf": 0.12725473454545455
+        },
+        {
+          "firstNonEmptyComputeMs": 24.683384999999998,
+          "firstNonEmptyAudioFedMs": 500,
+          "transcript": "取消导航",
+          "flushComputeMs": 45.375468,
+          "flushSilenceMs": 500,
+          "id": "cancel-noisy",
+          "audioSha256": "308742be59004e9c3360334ea54132335e434c3685a6ad7a7cdfe12ec41e180a",
+          "audioMs": 900,
+          "decodeMs": 92.995989,
+          "rtf": 0.10332887666666667
+        }
+      ],
+      "loadMs": 535.736354,
+      "processPssAfterLoadKiB": 365698,
+      "processPssAfterDecodeKiB": 358827
+    },
+    {
+      "id": "sensevoice",
+      "modelType": "sensevoice",
+      "modelBytes": 239555041,
+      "processPssBeforeLoadKiB": 358663,
+      "results": [
+        {
+          "transcript": "第一个。",
+          "id": "first",
+          "audioSha256": "b2f01a8baba6d31ad30dc031552e139463182b268165f3150a28952d83b87f15",
+          "audioMs": 500,
+          "decodeMs": 33.547551999999996,
+          "rtf": 0.06709510399999999
+        },
+        {
+          "transcript": "第二个。",
+          "id": "second",
+          "audioSha256": "69e74d6e74becc0e47db90aef94564455b5568963791e2fa38b8e711397131fa",
+          "audioMs": 550,
+          "decodeMs": 38.736613999999996,
+          "rtf": 0.07043020727272727
+        },
+        {
+          "transcript": "第3个。",
+          "id": "third",
+          "audioSha256": "9e75ab1f030506c7ffb57ba8c2a61290b50e677ddde61f74c28fee81df4c6497",
+          "audioMs": 612.5,
+          "decodeMs": 49.042812,
+          "rtf": 0.08006989714285714
+        },
+        {
+          "transcript": "我要去第二个。",
+          "id": "choose-second",
+          "audioSha256": "ae241ef857ddc39f3ac3d29a3c62e0c6da01856e0da8063cd24b9d6767543247",
+          "audioMs": 850,
+          "decodeMs": 47.325832999999996,
+          "rtf": 0.05567745058823529
+        },
+        {
+          "transcript": "最后一个。",
+          "id": "last",
+          "audioSha256": "32327dbc05e4d5b4494ad03bbb86c2e0eeca807667febeb780268f4b6b0684b2",
+          "audioMs": 750,
+          "decodeMs": 54.365781999999996,
+          "rtf": 0.07248770933333333
+        },
+        {
+          "transcript": "下一页。",
+          "id": "next-page",
+          "audioSha256": "ead38673abc78e179072b4f1cd98926f3de8ffa1ad56c47877f23b3d27d0c73d",
+          "audioMs": 550,
+          "decodeMs": 43.693594,
+          "rtf": 0.07944289818181818
+        },
+        {
+          "transcript": "上一页。",
+          "id": "previous-page",
+          "audioSha256": "00e317888219d59b04fa3cf77e018e31d32a9dfd2c44acbc2e4c68a0b34a341b",
+          "audioMs": 625,
+          "decodeMs": 50.343385,
+          "rtf": 0.080549416
+        },
+        {
+          "transcript": "取消选择。",
+          "id": "cancel-choice",
+          "audioSha256": "a80381f4046abbcabc6e4434a1eb1cac3c633a41998d33998dc230c5a58f71fd",
+          "audioMs": 900,
+          "decodeMs": 59.256302,
+          "rtf": 0.06584033555555556
+        },
+        {
+          "transcript": "都不是。",
+          "id": "none",
+          "audioSha256": "399f74d075d02da13a97172a7e90fd60711c6602598dd381759b2bd34d1e124a",
+          "audioMs": 525,
+          "decodeMs": 52.16323,
+          "rtf": 0.09935853333333333
+        },
+        {
+          "transcript": "再说一遍。",
+          "id": "repeat",
+          "audioSha256": "f1049c974c7866c51938889e1e29a128acb2a93c42acd00838b98f7bfbe97bd6",
+          "audioMs": 737.5,
+          "decodeMs": 50.836875,
+          "rtf": 0.06893135593220338
+        },
+        {
+          "transcript": "取消导航。",
+          "id": "cancel-nav",
+          "audioSha256": "57e21a57bd1b4ade99a928ab2a4ce16cbcddc727c9d0fc496e42b9a99f210597",
+          "audioMs": 900,
+          "decodeMs": 57.183749999999996,
+          "rtf": 0.0635375
+        },
+        {
+          "transcript": "结束导航。",
+          "id": "stop-nav",
+          "audioSha256": "a2829af0760508a81ba90d791833b7ff21f393700e620e5b35bb93937664b4ab",
+          "audioMs": 825,
+          "decodeMs": 53.670938,
+          "rtf": 0.06505568242424242
+        },
+        {
+          "transcript": "导航回家。",
+          "id": "home",
+          "audioSha256": "612ec97a539e8a21c9944a3b26ea31f03efd97580efc5e180349fd183f534871",
+          "audioMs": 775,
+          "decodeMs": 52.571562,
+          "rtf": 0.0678342735483871
+        },
+        {
+          "transcript": "导航去公司。",
+          "id": "company",
+          "audioSha256": "daeaf0d37a95d97306143b6a209b33450a75de22982dbc3ea86a2f90bca8ef06",
+          "audioMs": 912.5,
+          "decodeMs": 61.263906,
+          "rtf": 0.06713852712328768
+        },
+        {
+          "transcript": "北京南站。",
+          "id": "beijing-south",
+          "audioSha256": "643651b266bc2afa8ffa58c0348aa02a3717619e5a641114ad979c4603b0d6f7",
+          "audioMs": 775,
+          "decodeMs": 52.439375,
+          "rtf": 0.06766370967741936
+        },
+        {
+          "transcript": "北京首都国际机场。",
+          "id": "capital-airport",
+          "audioSha256": "751a495197a1c689efe877dd2be96cb18fc132ac870ccb94c6bc53927b3ad1c7",
+          "audioMs": 1350,
+          "decodeMs": 66.27932299999999,
+          "rtf": 0.04909579481481481
+        },
+        {
+          "transcript": "中国国家博物馆。",
+          "id": "museum",
+          "audioSha256": "059c77edc467096570a1611b9cd6acc50fb99a7d8f6906b1cedcf5c51c671b28",
+          "audioMs": 1175,
+          "decodeMs": 66.841458,
+          "rtf": 0.05688634723404255
+        },
+        {
+          "transcript": "杭州西湖。",
+          "id": "west-lake",
+          "audioSha256": "5a0fca5240cd548b25cbeed153b6e494164b7128453f11c45c89534be1b39e8c",
+          "audioMs": 900,
+          "decodeMs": 57.740156,
+          "rtf": 0.06415572888888889
+        },
+        {
+          "transcript": "北京协和医院。",
+          "id": "hospital",
+          "audioSha256": "5a47032441e5e81a75536db3ed426c1dc47a4cc19a7091a3b96e43a7647546e1",
+          "audioMs": 1050,
+          "decodeMs": 63.717344,
+          "rtf": 0.060683184761904756
+        },
+        {
+          "transcript": "找附近的充电站。",
+          "id": "charger",
+          "audioSha256": "4df26cf85c56cf9fd47ff625469983a7fc9ca99f5f9bb8e99552d67626b0828d",
+          "audioMs": 1225,
+          "decodeMs": 60.804688,
+          "rtf": 0.04963648
+        },
+        {
+          "transcript": "找附近的停车场。",
+          "id": "parking",
+          "audioSha256": "b2efdc63f9a7c26d7152003c76cbe4ecc5772039a23adc50ccb49bbf1207b807",
+          "audioMs": 1262.5,
+          "decodeMs": 68.732292,
+          "rtf": 0.05444141940594059
+        },
+        {
+          "transcript": "导航到上海虹桥火车站。",
+          "id": "full-nav",
+          "audioSha256": "e63adc589aec2915f78961496d75110409b2c2982f18b48a6f215b3fe04203d0",
+          "audioMs": 1725,
+          "decodeMs": 89.106354,
+          "rtf": 0.05165585739130434
+        },
+        {
+          "transcript": "找北京的博物馆。",
+          "id": "city-constraint",
+          "audioSha256": "66ba559c74a6df9bcef8a5e30197e61475ea056734d0f2bf6ee31003b7e27625",
+          "audioMs": 1100,
+          "decodeMs": 58.693281,
+          "rtf": 0.05335752818181818
+        },
+        {
+          "transcript": "不要去第二个。",
+          "id": "negative",
+          "audioSha256": "effed693298c1e07906b55b93359014c5cc45ae3b690170d151988c0ca8c3a85",
+          "audioMs": 912.5,
+          "decodeMs": 57.723437,
+          "rtf": 0.06325856109589041
+        },
+        {
+          "transcript": "我。",
+          "id": "silence",
+          "audioSha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa",
+          "audioMs": 2000,
+          "decodeMs": 94.35807299999999,
+          "rtf": 0.04717903649999999
+        },
+        {
+          "transcript": "我。",
+          "id": "noise",
+          "audioSha256": "31e7093a8901737e80d5bea9b0eb1feb7cab8ecb0bd7fead6e97903eceed6170",
+          "audioMs": 2000,
+          "decodeMs": 80.49604099999999,
+          "rtf": 0.040248020499999995
+        },
+        {
+          "transcript": "第二个。",
+          "id": "second-noisy",
+          "audioSha256": "49ac214b5a7e16086e688c6996c0e67859478260a3cf61d0c81490cb3357525c",
+          "audioMs": 550,
+          "decodeMs": 49.330780999999995,
+          "rtf": 0.08969232909090909
+        },
+        {
+          "transcript": "第二个。",
+          "id": "second-overlap",
+          "audioSha256": "da1b8a5ea5a885eb07aff99226321d01cbb3bf46cf751945d8b3d2dfade97480",
+          "audioMs": 550,
+          "decodeMs": 49.045885999999996,
+          "rtf": 0.08917433818181818
+        },
+        {
+          "transcript": "取消导航。",
+          "id": "cancel-noisy",
+          "audioSha256": "308742be59004e9c3360334ea54132335e434c3685a6ad7a7cdfe12ec41e180a",
+          "audioMs": 900,
+          "decodeMs": 59.533646,
+          "rtf": 0.06614849555555555
+        }
+      ],
+      "loadMs": 855.3279679999999,
+      "processPssAfterLoadKiB": 459618,
+      "processPssAfterDecodeKiB": 457334
+    }
+  ],
+  "device": {
+    "manufacturer": "OnePlus",
+    "model": "PHB110",
+    "sdk": 36,
+    "supportedAbis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "armeabi"
+    ]
+  },
+  "stage": "complete",
+  "updatedAtEpochMs": 1794587671145,
+  "modelsSha256": "5bf08d677579ad03373be088c53e9c0d0d7dcd624e3c06b386652c58a4770862",
+  "suiteSha256": "b6f11ce13988b035c0b80d08dcf6628de8953e8919fff8f94ea1890b5b0a012c",
+  "suiteVersion": "1",
+  "runtime": {
+    "engine": "sherpa-onnx Android JNI",
+    "targetApkSha256": "29f389383d5edb30a693d5675c8526fe9b3c792e67370ac15a35bdd61d9be6ad",
+    "instrumentationApkSha256": "e8bc41e38f1c09a89331acfe11bf0f6fc694a8847e4cc7912ff019cab2e24de6",
+    "librarySha256": {
+      "libsherpa-onnx-jni.so": "6a8b993bbfd73a2d2ee67f5975b58996d3079b4bd7bac8c2e24530c7b2c0cd97",
+      "libonnxruntime.so": "7a2fb92eb67037837c3f0e428bd732fd0d05ced0546d9e740090c07573d8249a"
+    },
+    "provider": "cpu",
+    "threads": 2,
+    "decodingMethod": "greedy_search",
+    "sampleRate": 16000,
+    "zipformerEndpointEnabled": false,
+    "zipformerChunkMs": 100,
+    "zipformerFlushSilenceMs": 500,
+    "sensevoiceLanguage": "zh",
+    "sensevoiceInverseTextNormalization": true,
+    "decodeScope": "Stream creation through final result and stream release. Includes feed, decoder, and flush work. Excludes file reads and model load.",
+    "loadScope": "Native recognizer construction after JNI runtime identification.",
+    "streamingScope": "Unpaced simulation from file chunks. Audio timestamps count fixture audio supplied, and compute timestamps measure elapsed processing time. Both first nonempty fields are omitted when no nonblank partial is observed before flush, including when the first text appears during flush.",
+    "memoryScope": "Snapshots of the entire target process PSS, in KiB. Includes instrumentation and both shared and private allocations. These are not isolated model memory or peak measurements.",
+    "sherpaVersion": "2.0.1",
+    "onnxruntimeVersion": "1.28.2"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "status": "blocked-awaiting-device-connection",
+  "modelRecognitionRun": false,
+  "acousticAcceptance": "not-tested",
+  "note": "Input validation passed on phone; later model transfer disconnected. APK/source hashes below are host-observed build provenance, not an executed recognition result.",
+  "files": {
+    "AutoVoice/app/src/androidTestOpen/kotlin/com/autovoice/app/asr/OpenAsrComparisonInputsTest.kt": "65344bfa3d10d1a3ea35509199509ea9f8a320928de127136118e68ad69033d3",
+    "AutoVoice/app/src/androidTestOpen/kotlin/com/autovoice/app/asr/OpenAsrComparisonInputs.kt": "6c4fc0cf72562e8f44a2f94892f69b3e53a2a90698e841ecebefea4f02e11c36",
+    "AutoVoice/app/src/androidTestOpen/kotlin/com/autovoice/app/asr/OpenAsrComparisonTest.kt": "89d9235040ed24e97fbe191514a26d8313ec81aaf57e915959965806fe480c13",
+    "AutoVoice/app/build/outputs/apk/androidTest/open/debug/app-open-debug-androidTest.apk": "e8bc41e38f1c09a89331acfe11bf0f6fc694a8847e4cc7912ff019cab2e24de6"
+  }
+}

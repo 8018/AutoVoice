@@ -1,0 +1,697 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "1",
+  "description": "Public synthetic comparison, not acoustic or driving acceptance",
+  "cases": [
+    {
+      "id": "first",
+      "group": "selection",
+      "text": "第一个",
+      "expected": [
+        "第一个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/first.wav",
+        "bytes": 16044,
+        "sha256": "b2f01a8baba6d31ad30dc031552e139463182b268165f3150a28952d83b87f15"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "第一个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "second",
+      "group": "selection",
+      "text": "第二个",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/second.wav",
+        "bytes": 17644,
+        "sha256": "69e74d6e74becc0e47db90aef94564455b5568963791e2fa38b8e711397131fa"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "第二个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "third",
+      "group": "selection",
+      "text": "第三个",
+      "expected": [
+        "第三个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/third.wav",
+        "bytes": 19644,
+        "sha256": "9e75ab1f030506c7ffb57ba8c2a61290b50e677ddde61f74c28fee81df4c6497"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "第三个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "choose-second",
+      "group": "selection",
+      "text": "我要去第二个",
+      "expected": [
+        "我要去第二个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/choose-second.wav",
+        "bytes": 27244,
+        "sha256": "ae241ef857ddc39f3ac3d29a3c62e0c6da01856e0da8063cd24b9d6767543247"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "我要去第二个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "last",
+      "group": "selection",
+      "text": "最后一个",
+      "expected": [
+        "最后一个"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/last.wav",
+        "bytes": 24044,
+        "sha256": "32327dbc05e4d5b4494ad03bbb86c2e0eeca807667febeb780268f4b6b0684b2"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "最后一个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "next-page",
+      "group": "selection",
+      "text": "下一页",
+      "expected": [
+        "下一页"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/next-page.wav",
+        "bytes": 17644,
+        "sha256": "ead38673abc78e179072b4f1cd98926f3de8ffa1ad56c47877f23b3d27d0c73d"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "下一页",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "previous-page",
+      "group": "selection",
+      "text": "上一页",
+      "expected": [
+        "上一页"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/previous-page.wav",
+        "bytes": 20044,
+        "sha256": "00e317888219d59b04fa3cf77e018e31d32a9dfd2c44acbc2e4c68a0b34a341b"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "上一页",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "cancel-choice",
+      "group": "selection",
+      "text": "取消选择",
+      "expected": [
+        "取消选择"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/cancel-choice.wav",
+        "bytes": 28844,
+        "sha256": "a80381f4046abbcabc6e4434a1eb1cac3c633a41998d33998dc230c5a58f71fd"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "取消选择",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "none",
+      "group": "selection",
+      "text": "都不是",
+      "expected": [
+        "都不是"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/none.wav",
+        "bytes": 16844,
+        "sha256": "399f74d075d02da13a97172a7e90fd60711c6602598dd381759b2bd34d1e124a"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "都不是",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "repeat",
+      "group": "selection",
+      "text": "再说一遍",
+      "expected": [
+        "再说一遍"
+      ],
+      "productIds": [
+        "B01",
+        "B02"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/repeat.wav",
+        "bytes": 23644,
+        "sha256": "f1049c974c7866c51938889e1e29a128acb2a93c42acd00838b98f7bfbe97bd6"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "再说一遍",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "cancel-nav",
+      "group": "command",
+      "text": "取消导航",
+      "expected": [
+        "取消导航"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/cancel-nav.wav",
+        "bytes": 28844,
+        "sha256": "57e21a57bd1b4ade99a928ab2a4ce16cbcddc727c9d0fc496e42b9a99f210597"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "取消导航",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "stop-nav",
+      "group": "command",
+      "text": "结束导航",
+      "expected": [
+        "结束导航"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/stop-nav.wav",
+        "bytes": 26444,
+        "sha256": "a2829af0760508a81ba90d791833b7ff21f393700e620e5b35bb93937664b4ab"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "结束导航",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "home",
+      "group": "command",
+      "text": "导航回家",
+      "expected": [
+        "导航回家"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/home.wav",
+        "bytes": 24844,
+        "sha256": "612ec97a539e8a21c9944a3b26ea31f03efd97580efc5e180349fd183f534871"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "导航回家",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "company",
+      "group": "command",
+      "text": "导航去公司",
+      "expected": [
+        "导航去公司"
+      ],
+      "productIds": [
+        "A01"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/company.wav",
+        "bytes": 29244,
+        "sha256": "daeaf0d37a95d97306143b6a209b33450a75de22982dbc3ea86a2f90bca8ef06"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "导航去公司",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "beijing-south",
+      "group": "destination",
+      "text": "北京南站",
+      "expected": [
+        "北京南站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/beijing-south.wav",
+        "bytes": 24844,
+        "sha256": "643651b266bc2afa8ffa58c0348aa02a3717619e5a641114ad979c4603b0d6f7"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "北京南站",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "capital-airport",
+      "group": "destination",
+      "text": "北京首都国际机场",
+      "expected": [
+        "北京首都国际机场"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/capital-airport.wav",
+        "bytes": 43244,
+        "sha256": "751a495197a1c689efe877dd2be96cb18fc132ac870ccb94c6bc53927b3ad1c7"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "北京首都国际机场",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "museum",
+      "group": "destination",
+      "text": "中国国家博物馆",
+      "expected": [
+        "中国国家博物馆"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/museum.wav",
+        "bytes": 37644,
+        "sha256": "059c77edc467096570a1611b9cd6acc50fb99a7d8f6906b1cedcf5c51c671b28"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "中国国家博物馆",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "west-lake",
+      "group": "destination",
+      "text": "杭州西湖",
+      "expected": [
+        "杭州西湖"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/west-lake.wav",
+        "bytes": 28844,
+        "sha256": "5a0fca5240cd548b25cbeed153b6e494164b7128453f11c45c89534be1b39e8c"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "杭州西湖",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "hospital",
+      "group": "destination",
+      "text": "北京协和医院",
+      "expected": [
+        "北京协和医院"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/hospital.wav",
+        "bytes": 33644,
+        "sha256": "5a47032441e5e81a75536db3ed426c1dc47a4cc19a7091a3b96e43a7647546e1"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "北京协和医院",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "charger",
+      "group": "destination",
+      "text": "找附近的充电站",
+      "expected": [
+        "找附近的充电站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/charger.wav",
+        "bytes": 39244,
+        "sha256": "4df26cf85c56cf9fd47ff625469983a7fc9ca99f5f9bb8e99552d67626b0828d"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "找附近的充电站",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "parking",
+      "group": "destination",
+      "text": "找附近的停车场",
+      "expected": [
+        "找附近的停车场"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/parking.wav",
+        "bytes": 40444,
+        "sha256": "b2efdc63f9a7c26d7152003c76cbe4ecc5772039a23adc50ccb49bbf1207b807"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "找附近的停车场",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "full-nav",
+      "group": "destination",
+      "text": "导航到上海虹桥火车站",
+      "expected": [
+        "导航到上海虹桥火车站"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/full-nav.wav",
+        "bytes": 55244,
+        "sha256": "e63adc589aec2915f78961496d75110409b2c2982f18b48a6f215b3fe04203d0"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "导航到上海虹桥火车站",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "city-constraint",
+      "group": "destination",
+      "text": "找北京的博物馆",
+      "expected": [
+        "找北京的博物馆"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/city-constraint.wav",
+        "bytes": 35244,
+        "sha256": "66ba559c74a6df9bcef8a5e30197e61475ea056734d0f2bf6ee31003b7e27625"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "找北京的博物馆",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "negative",
+      "group": "boundary",
+      "text": "不要去第二个",
+      "expected": [
+        "不要去第二个"
+      ],
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "kind": "tts",
+      "audio": {
+        "path": "audio/negative.wav",
+        "bytes": 29244,
+        "sha256": "effed693298c1e07906b55b93359014c5cc45ae3b690170d151988c0ca8c3a85"
+      },
+      "provenance": {
+        "source": "dev-gateway-tts",
+        "text": "不要去第二个",
+        "sourceSampleRate": 16000,
+        "mime": "audio/wav"
+      }
+    },
+    {
+      "id": "silence",
+      "group": "non-speech",
+      "kind": "silence",
+      "expected": [
+        ""
+      ],
+      "productIds": [
+        "B02"
+      ],
+      "audio": {
+        "path": "audio/silence.wav",
+        "bytes": 64044,
+        "sha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa"
+      },
+      "provenance": {
+        "source": "generated-zero-pcm",
+        "durationMs": 2000
+      }
+    },
+    {
+      "id": "noise",
+      "group": "non-speech",
+      "kind": "noise",
+      "expected": [
+        ""
+      ],
+      "productIds": [
+        "B02"
+      ],
+      "audio": {
+        "path": "audio/noise.wav",
+        "bytes": 64044,
+        "sha256": "31e7093a8901737e80d5bea9b0eb1feb7cab8ecb0bd7fead6e97903eceed6170"
+      },
+      "provenance": {
+        "source": "deterministic-uniform-noise",
+        "seed": 20261114,
+        "amplitude": 1800
+      }
+    },
+    {
+      "id": "second-noisy",
+      "group": "synthetic-noise",
+      "kind": "noise-mix",
+      "source": "second",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B02"
+      ],
+      "audio": {
+        "path": "audio/second-noisy.wav",
+        "bytes": 17644,
+        "sha256": "49ac214b5a7e16086e688c6996c0e67859478260a3cf61d0c81490cb3357525c"
+      },
+      "provenance": {
+        "source": "second",
+        "derivative": "noise-mix",
+        "seed": 20261114,
+        "noiseAmplitude": 1800,
+        "playbackGain": null,
+        "playbackText": null
+      }
+    },
+    {
+      "id": "second-overlap",
+      "group": "synthetic-overlap",
+      "kind": "overlap",
+      "source": "second",
+      "expected": [
+        "第二个"
+      ],
+      "productIds": [
+        "B02"
+      ],
+      "audio": {
+        "path": "audio/second-overlap.wav",
+        "bytes": 17644,
+        "sha256": "da1b8a5ea5a885eb07aff99226321d01cbb3bf46cf751945d8b3d2dfade97480"
+      },
+      "provenance": {
+        "source": "second",
+        "derivative": "overlap",
+        "seed": 20261114,
+        "noiseAmplitude": null,
+        "playbackGain": 0.25,
+        "playbackText": "找到三个地点，第一个是北京南站，第二个是北京站，第三个是北京西站，您要去第几个？"
+      }
+    },
+    {
+      "id": "cancel-noisy",
+      "group": "synthetic-noise",
+      "kind": "noise-mix",
+      "source": "cancel-nav",
+      "expected": [
+        "取消导航"
+      ],
+      "productIds": [
+        "B02"
+      ],
+      "audio": {
+        "path": "audio/cancel-noisy.wav",
+        "bytes": 28844,
+        "sha256": "308742be59004e9c3360334ea54132335e434c3685a6ad7a7cdfe12ec41e180a"
+      },
+      "provenance": {
+        "source": "cancel-nav",
+        "derivative": "noise-mix",
+        "seed": 20261114,
+        "noiseAmplitude": 1800,
+        "playbackGain": null,
+        "playbackText": null
+      }
+    }
+  ],
+  "createdAt": "2026-11-13T16:16:10.999Z",
+  "measurement": "Public synthetic PCM16 mono 16k; no device microphone or acoustic AEC."
+}

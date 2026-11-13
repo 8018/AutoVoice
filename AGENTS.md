@@ -12,3 +12,7 @@ The user requires a repeated fix → benchmark → next feature cycle. For every
 - Credentials stay in ignored local config or private temporary files. Never commit or print tokens, credential-bearing URLs, raw private locations or user speech. Use public places for benchmarks.
 
 The dev deployment workflow runs the full benchmark through SSH and preserves results. CI also runs the offline judge tests without secrets. Production deployment is outside this task's authorization.
+
+# Offline ASR comparison requirement
+
+For changes to local recognition models, decoder integration, capture, endpointing or interruption, also run the versioned Android ASR comparison described in `docs/navigation-open-asr-comparison.md`. Its canonical v1 cases, fixture hashes and model catalog live in `docs/qa/navigation-asr-*-v1.json`; do not reduce the suite or overwrite baseline results. Save raw device output and strict scored output under `docs/qa/navigation-asr-runs/`. Record executed target/test APK identities. A disconnected phone, incomplete model transfer or native failure is blocked/failed, not passed. Public synthetic file decoding and simulated overlap never replace real speaker/microphone double-talk acceptance. Expand the versioned suite as business scope grows, retaining old cases and group-specific quality/latency. Keep cloud text/route/voice/statistics gates above unchanged.
