@@ -1,6 +1,8 @@
 package com.autovoice.app
 
 import android.util.Log
+import com.autovoice.app.navigation.NavigationOperationSample
+import com.autovoice.app.navigation.NavigationOutcome
 import com.autovoice.app.telemetry.TelemetryClient
 import com.autovoice.app.telemetry.TelemetryStages
 import com.autovoice.business.BusinessHandler
@@ -126,6 +128,19 @@ class VoiceEngine(
     /** Realtime feed has its own admission epoch; reopening recognition cannot revive an old chat. */
     private val realtimeInputLock = Any()
     private var realtimePermit: RecognitionGate.InputPermit? = null
+
+    internal fun recordNavigationOperation(sample: NavigationOperationSample) {
+        telemetry.recordFor(
+            sample.id,
+            TelemetryStages.NAVIGATION_OPERATION,
+            if (sample.outcome in setOf(NavigationOutcome.SUCCEEDED, NavigationOutcome.ACCEPTED)) "info" else "warn",
+            mapOf(
+                "operation" to sample.operation.name.lowercase(),
+                "result" to sample.outcome.name.lowercase(),
+                "durationMs" to sample.durationMs,
+            ),
+        )
+    }
 
     /** Transitional application facade: dialogue and response policy are owned by :voice-business. */
     private val voiceBusiness = VoiceBusinessService(

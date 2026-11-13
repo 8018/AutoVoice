@@ -43,6 +43,8 @@ data class NavigationRoutePreviewResult(
 
 private val routePreviewJson = Gson()
 
+class NavigationRoutePreviewTimeout : GatewayException("route preview timed out")
+
 /** A read-only request scoped to the connected session and the caller's operation identity. */
 suspend fun GatewayClient.previewNavigationRoutes(
     operationId: String,
@@ -77,7 +79,7 @@ suspend fun GatewayClient.previewNavigationRoutes(
             ),
         )
         val message = withTimeoutOrNull(8_000) { response.await() }
-            ?: throw GatewayException("route preview timed out")
+            ?: throw NavigationRoutePreviewTimeout()
         parseRoutePreview(message.payload, operationId)
     } finally {
         response.cancel()

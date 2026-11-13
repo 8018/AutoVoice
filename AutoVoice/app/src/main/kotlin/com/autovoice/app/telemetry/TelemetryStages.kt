@@ -34,6 +34,8 @@ object TelemetryStages {
     /** 意图执行（车控 apply：applied/skipped；全败兜底：failed）。 */
     const val EXECUTE = "execute"
 
+    const val NAVIGATION_OPERATION = "navigation_operation"
+
     /** TTS 播报请求（B4 需求 1：speakViaTts 发出播报请求，含文本）。 */
     const val TTS_PLAY_REQUEST = "tts_play_request"
 
