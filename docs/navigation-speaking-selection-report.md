@@ -27,7 +27,7 @@
 
 已通过无线调试保留数据更新手机上的 `com.autovoice.app.open`，安装返回 `Success`。应用名为 **AutoVoice Open**，包路径 `AutoVoice/app/build/outputs/navigation-review/AutoVoice-Open-navigation-dev.apk`，SHA-256 为 `344cdaf1ef45e9e29e3665a7bb6d5363c0d4377dd4f553413205fbfef113ab3e`。真实 Open APK 布局和签名检查通过；本次 Debug 使用从该设备原有 Open 安装包提取的同一组原生库，不是生产原生库重建验收。
 
-安装后调试连接曾离线，启动与真机语音验收尚未确认。讯飞独立应用没有在本次更新中替换；其离线命令词组合 SDK 阻塞仍然存在。
+安装后通过用户提供的新端口重连，已确认更新后的 Open 应用运行中：唤醒、FireRed 本地 ASR、云端、录音、播放及原生前端均 READY/HEALTHY。空闲时没有播放参考，不能以此宣称回声消除和真实打断已验收。真机语音选择仍待用户操作确认。讯飞独立应用没有在本次更新中替换；其离线命令词组合 SDK 阻塞仍然存在。
 
 ## 真机验收步骤（尚未运行）
 
