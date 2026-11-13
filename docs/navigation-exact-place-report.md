@@ -53,3 +53,5 @@
 完整结果：[文本](qa/navigation-benchmark-runs/2026-11-13T07-31-14.201Z-dbe2fea.json)、[路线](qa/navigation-route-runs/2026-11-13T07-32-05.552Z-dbe2fea.json)、[统计](qa/navigation-stats-runs/20261113T073206Z-dbe2fea538d33999ad1067f084e76ce7808f1036.json)。
 
 未进行实车、语音或驾驶验收。精确身份规则是保守解析，不宣称覆盖任意自然语言专名或任意 POI 别名。小样本文本耗时不代表完整语音或生产 SLO。
+
+后缀补丁 b8a9f27 已部署 dev，完整33条再次通过（29目标、4边界），平均1273ms、P95 2762ms；路线3条与统计3组也通过。结果文件 `qa/navigation-benchmark-runs/2026-11-13T12-45-46.441Z-b8a9f27.json`。

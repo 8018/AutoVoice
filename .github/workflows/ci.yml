@@ -141,6 +141,7 @@ jobs:
       - name: Verify native tooling and CI APK contents
         run: |
           python3 -m unittest discover -s tools/native/tests
+          python3 -m unittest discover -s tools/tests
           python3 tools/native/verify_apk.py iflytek-ci app/build/outputs/apk/iflytek/debug/app-iflytek-debug.apk
           python3 tools/native/verify_apk.py open-ci app/build/outputs/apk/open/debug/app-open-debug.apk
       - name: Verify release build disables cleartext traffic

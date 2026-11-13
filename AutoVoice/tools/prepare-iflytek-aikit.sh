@@ -23,10 +23,9 @@ done
 work_dir="$(mktemp -d)"
 trap 'rm -rf -- "$work_dir"' EXIT
 mkdir -p "$work_dir/merged" "$work_dir/check"
-# The vendor's two standalone AARs contain different libAIKIT.so cores. IVW
-# cannot be registered when the command-word core is used, even if the IVW
-# ability plugin is copied into the package. Use the IVW AAR as the base so
-# wake-up is guaranteed to work, then add the command-word ability plugin.
+# Combining plugins cannot combine the SDK identity or ability protocol embedded
+# in libAIKIT.so. Only accept deliveries with identical cores for every ABI.
+# Even matching cores require licensed device verification of both abilities.
 unzip -q "$wake_aar" -d "$work_dir/merged"
 unzip -p "$command_aar" classes.jar > "$work_dir/check/command-classes.jar"
 
@@ -35,21 +34,36 @@ if ! cmp -s "$work_dir/merged/classes.jar" "$work_dir/check/command-classes.jar"
   exit 1
 fi
 
+unzip -Z1 "$command_aar" | sed -n '/^jni\/.*\/libAIKIT\.so$/p' | sort > "$work_dir/check/command-cores.txt"
+unzip -Z1 "$wake_aar" | sed -n '/^jni\/.*\/libAIKIT\.so$/p' | sort > "$work_dir/check/wake-cores.txt"
+if [[ ! -s "$work_dir/check/command-cores.txt" ]] || ! cmp -s "$work_dir/check/command-cores.txt" "$work_dir/check/wake-cores.txt"; then
+  echo "Missing or mismatched libAIKIT.so ABI sets; use an official combined SDK." >&2
+  exit 1
+fi
+while IFS= read -r core_path; do
+  unzip -p "$command_aar" "$core_path" > "$work_dir/check/command-core.so"
+  if ! cmp -s "$work_dir/check/command-core.so" "$work_dir/merged/$core_path"; then
+    echo "Conflicting $core_path: plugin merging cannot combine SDK identities. Obtain an official combined SDK for both abilities." >&2
+    exit 1
+  fi
+done < "$work_dir/check/command-cores.txt"
+
 while IFS= read -r native_path; do
   mkdir -p "$work_dir/merged/$(dirname "$native_path")"
   unzip -p "$command_aar" "$native_path" > "$work_dir/merged/$native_path"
 done < <(unzip -Z1 "$command_aar" | sed -n '/^jni\/.*\/lib.*_aee\.so$/p')
 
-mkdir -p "$(dirname "$output_aar")"
 (
   cd "$work_dir/merged"
-  jar cf "$output_aar" .
+  jar cf "$work_dir/prepared.aar" .
 )
 
-ability_count="$(unzip -Z1 "$output_aar" | sed -n '/^jni\/arm64-v8a\/lib.*_aee\.so$/p' | wc -l | tr -d ' ')"
+ability_count="$(unzip -Z1 "$work_dir/prepared.aar" | sed -n '/^jni\/arm64-v8a\/lib.*_aee\.so$/p' | wc -l | tr -d ' ')"
 if [[ "$ability_count" -lt 2 ]]; then
   echo "Merged AAR does not contain both arm64 AIKit ability plugins." >&2
   exit 1
 fi
 
-echo "Prepared $output_aar with the wake-word core and both native ability plugins."
+mkdir -p "$(dirname "$output_aar")"
+cp "$work_dir/prepared.aar" "$output_aar"
+echo "Prepared $output_aar with matching SDK cores and both plugins; licensed device verification of both abilities is still required."

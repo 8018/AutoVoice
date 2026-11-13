@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "description": "业务基准按能力追加；云端文本、端侧行为和管理接口分层验证，不用文本回复冒充设备执行。",
   "cloudTextSuite": {
     "version": 3,
@@ -126,6 +126,24 @@
       "test": "AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/NavigationToolFacadeTest.java",
       "status": "offline_passed",
       "evidence": "docs/navigation-exact-place-report.md"
+    },
+    {
+      "id": "I01-SDK-B01",
+      "productId": "I01",
+      "category": "boundary",
+      "target": "不同讯飞SDK核心不得直接合并；失败保留已有产物",
+      "test": "AutoVoice/tools/tests/test_prepare_iflytek_aikit.py",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-local-asr-device-report.md"
+    },
+    {
+      "id": "I01-SDK-N01",
+      "productId": "I01",
+      "category": "normal",
+      "target": "授权真机上唤醒启用时固定录音仍被本地识别；不执行车控动作",
+      "test": "AutoVoice/app/src/androidTest/kotlin/com/autovoice/app/IflytekCombinedCapabilitiesDeviceTest.kt",
+      "status": "blocked_sdk_identity",
+      "evidence": "docs/navigation-local-asr-device-report.md"
     }
   ],
   "routeApiSuite": {

@@ -1,0 +1,1 @@
+{"suite": "navigation-statistics-v1", "readOnly": true, "passed": true, "httpRequests": 7, "results": [{"id": "I06-live-empty", "productId": "I06", "status": "pass", "elapsedMs": 83}, {"id": "I06-live-window", "productId": "I06", "status": "pass", "elapsedMs": 36}, {"id": "I06-live-assets", "productId": "I06", "status": "pass", "elapsedMs": 68}]}

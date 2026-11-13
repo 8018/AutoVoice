@@ -54,7 +54,10 @@ Headless 侧的自动化验证记录见仓库根 `ACCEPTANCE.md`。
 #### 1.2.1 离线唤醒（IVW）
 
 离线唤醒与离线命令词交付包包含不同的 native ability 插件，不能直接同时依赖两个
-带重复 `classes.jar` / `libAIKIT.so` 的 AAR。先在 `AutoVoice/` 下生成合并包：
+带重复 `classes.jar` / `libAIKIT.so` 的 AAR。**不能通过拼接两个单能力包获得组合能力授权。**
+需要讯飞交付同时支持 `e75f07b62`（命令词）和 `e867a88f2`（唤醒）的官方组合 SDK，
+并确认应用已获对应授权。直接使用官方组合 AAR；仅当两份交付具有完全相同的 Java API、
+ABI 集合及逐 ABI `libAIKIT.so` 字节时，才可用以下辅助脚本收集插件：
 
 ```bash
 tools/prepare-iflytek-aikit.sh \
@@ -64,8 +67,11 @@ adb push <离线唤醒SDK>/resource/ivw /sdcard/iflytek/
 adb shell appops set com.autovoice.app MANAGE_EXTERNAL_STORAGE allow
 ```
 
-合并脚本会校验两个交付包的 Java API 完全一致，并保留命令词、唤醒两个
-`lib*_aee.so`。App 前台取得 `RECORD_AUDIO` 后启动唯一麦克风流。录音源使用
+脚本在修改输出前拒绝不同 native core，保留已有输出。检查通过只说明打包兼容，
+不代表两种能力已授权或可运行；仍须在联网设备上验证两种能力初始化、真实唤醒和真实命令识别。
+当前本地旧合并 AAR 是诊断产物，不能作为组合能力验收依据。
+2026-11-13 设备诊断及剩余阻塞见 [本地 ASR 设备报告](navigation-local-asr-device-report.md)。
+App 前台取得 `RECORD_AUDIO` 后启动唯一麦克风流。录音源使用
 `VOICE_COMMUNICATION`，若设备可用则在该 AudioRecord session 启用系统 AEC/降噪；
 AEC 成功时界面显示“播报时可直接说话打断”，否则安全降级为按键/唤醒词打断。音频顺序为：
 
