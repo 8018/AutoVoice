@@ -4,7 +4,7 @@ import com.autovoice.voicecore.Intent
 
 enum class NavigationActionStatus { UNSUPPORTED, PENDING, ACCEPTED, SUCCEEDED, FAILED }
 
-enum class NavigationActionError { UNSUPPORTED, INVALID_REQUEST, STALE_TASK, MAP_OPEN_FAILED }
+enum class NavigationActionError { UNSUPPORTED, INVALID_REQUEST, STALE_TASK, MAP_OPEN_FAILED, COORDINATE_CONVERSION_FAILED }
 
 data class NavigationActionResult(
     val operationId: String,

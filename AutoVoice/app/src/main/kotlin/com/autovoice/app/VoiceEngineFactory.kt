@@ -84,6 +84,7 @@ internal object VoiceEngineFactory {
         onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
         renderSink: RenderReferenceSink? = null,
         onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
+        onAcceptedVoiceTranscript: (String, String) -> Unit = { _, _ -> },
     ): VoiceEngine {
         channel.validateConfig(cfg)
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -152,7 +153,7 @@ internal object VoiceEngineFactory {
         )
         cloudRunner.onAsrResult = { text, final, turnId ->
             if (text.isNotBlank()) {
-                engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                engineRef.get()?.onRecognized(turnId, text, final) ?: onLocalRecognized(text)
                 if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
                     cloudRunner.retireTravelIfDifferent(turnId)
                 }
@@ -254,7 +255,7 @@ internal object VoiceEngineFactory {
                     localEngines,
                     { turnId, text, final ->
                         if (!text.isNullOrBlank()) {
-                            engineRef.get()?.onRecognized(turnId, text) ?: onLocalRecognized(text)
+                            engineRef.get()?.onRecognized(turnId, text, final) ?: onLocalRecognized(text)
                             if (final && engineRef.get()?.conversation?.isVisible(turnId) == true) {
                                 cloudRunner.retireTravelIfDifferent(turnId)
                             }
@@ -287,6 +288,7 @@ internal object VoiceEngineFactory {
                 onTextInputError = onTextInputError,
                 streamingCloud = cloudRunner,
                 onSavedNavigationCommand = onSavedNavigationCommand,
+                onAcceptedVoiceTranscript = onAcceptedVoiceTranscript,
             )
             engineToClose = engine
             engineRef.set(engine)

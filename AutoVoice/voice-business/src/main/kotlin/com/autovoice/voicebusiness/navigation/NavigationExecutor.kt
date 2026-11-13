@@ -1,7 +1,26 @@
 package com.autovoice.voicebusiness.navigation
 
+import com.autovoice.voicebusiness.dialog.TaskStatus
+import com.autovoice.voicebusiness.navigation.NavigationCoordinateSystem.GCJ02
+import com.autovoice.voicebusiness.navigation.NavigationCoordinateSystem.WGS84
 import com.autovoice.voicecore.Intent
 import java.net.URLEncoder
+
+data class NavigationNormalizationRequest(
+    val revision: Long,
+    val trip: NavigationTrip,
+    val preference: RoutePreference,
+)
+
+sealed interface NavigationNormalizationResult {
+    data class Converted(val trip: NavigationTrip) : NavigationNormalizationResult
+    enum class Failure(val message: String) : NavigationNormalizationResult {
+        MISSING_LOCATION("获取近期精确定位后才能规划路线，请稍后重试"),
+        UNAVAILABLE("暂时无法准备多站路线，请检查网络后重试"),
+        TIMEOUT("准备多站路线超时，请稍后重试"),
+        NO_ROUTE("未能规划完整的多地点路线，请检查各站后重试"),
+    }
+}
 
 /**
  * 导航执行器（spec §4.2）：把 navigation/navigate 意图转成高德 URI，交给注入的 opener 拉起高德 App。
@@ -24,6 +43,7 @@ class NavigationExecutor(
     val session: NavigationSession = NavigationSession(),
     private val savedPlace: (SavedPlaceKind) -> SavedNavigationPlace? = { null },
     private val mapRequest: ((NavigationTrip, String, Boolean, RoutePreference?) -> NavigationActionResult?)? = null,
+    private val normalizeTrip: ((NavigationNormalizationRequest) -> Unit)? = null,
     private val opener: (String) -> Boolean,
 ) {
     val capabilities: NavigationCapabilities = NavigationCapabilities.forExecutor(mapRequest != null)
@@ -141,7 +161,7 @@ class NavigationExecutor(
             ) ?: return stale
             if (pending.routePreviewPreference != preference) return stale
             if (session.claimSelection(selectionId, candidateId, pending.identity()) != candidate) return stale
-        } else if (pending.taskStatus == com.autovoice.voicebusiness.dialog.TaskStatus.WAITING_INPUT) {
+        } else if (pending.taskStatus == TaskStatus.WAITING_INPUT || pending.normalizingDraft) {
             // A fully resolved navigation intent without candidate identity is a fresh request.
             session.abortSelection(com.autovoice.voicebusiness.dialog.TaskEndReason.REPLACED)
         }
@@ -155,20 +175,72 @@ class NavigationExecutor(
 
     @Synchronized
     fun confirmDraft(revision: Long): NavigationActionResult? {
-        val current = session.snapshot.draft?.takeIf { it.revision == revision } ?: return null
+        val snapshot = session.snapshot
+        val current = snapshot.draft?.takeIf { it.revision == revision && !snapshot.normalizingDraft } ?: return null
         val operationId = "draft:$revision"
         val trip = current.trip() ?: return draftPending(operationId, current)
-        for (stop in current.stops) {
+        val changed = changedSavedPlace(current)
+        if (changed != null) {
+            if (!session.dismissDraft(revision)) return null
+            return changedPlaceFailure(operationId, changed)
+        }
+        val needsConversion = (trip.waypoints + trip.destination).any { it.coordinateSystem == WGS84 }
+        if (session.claimDraft(revision, normalizing = needsConversion) == null) return null
+        if (!needsConversion) return executeTrip(trip, operationId, false, current.previewPreference)
+        val request = normalizeTrip
+        if (request == null) return completeDraftNormalization(revision, NavigationNormalizationResult.Failure.UNAVAILABLE)
+        return try {
+            request(NavigationNormalizationRequest(revision, trip, current.previewPreference ?: RoutePreference.DEFAULT))
+            session.snapshot.takeIf { it.normalizingDraft && it.draft?.revision == revision }?.let {
+                NavigationActionResult(operationId, NavigationActionStatus.PENDING, PREPARING_MULTISTOP)
+            }
+        } catch (_: Exception) {
+            completeDraftNormalization(revision, NavigationNormalizationResult.Failure.UNAVAILABLE)
+        }
+    }
+
+    @Synchronized
+    fun completeDraftNormalization(revision: Long, result: NavigationNormalizationResult): NavigationActionResult? =
+        session.completeNormalization(revision) { draft ->
+            val operationId = "draft:$revision"
+            val changed = changedSavedPlace(draft)
+            if (changed != null) return@completeNormalization changedPlaceFailure(operationId, changed)
+            if (result is NavigationNormalizationResult.Failure) {
+                return@completeNormalization normalizationFailure(operationId, result)
+            }
+            val trip = (result as NavigationNormalizationResult.Converted).trip
+            val original = checkNotNull(draft.trip())
+            if (trip.waypoints.size != original.waypoints.size ||
+                !validNormalizedStop(original.destination, trip.destination) ||
+                !original.waypoints.zip(trip.waypoints).all { (from, to) -> validNormalizedStop(from, to) }
+            ) {
+                return@completeNormalization normalizationFailure(
+                    operationId, NavigationNormalizationResult.Failure.UNAVAILABLE,
+                )
+            }
+            executeTrip(trip, operationId, false, draft.previewPreference)
+        }
+
+    private fun validNormalizedStop(original: NavigationTarget, converted: NavigationTarget): Boolean =
+        converted.coordinateSystem == GCJ02 && converted.name == original.name &&
+            (original.coordinateSystem == WGS84 || original == converted)
+
+    private fun changedSavedPlace(draft: NavigationTripDraft): SavedPlaceKind? {
+        for (stop in draft.stops) {
             val kind = stop.savedKind ?: continue
             val value = runCatching { savedPlace(kind) }.getOrNull()
-            if (value != stop.savedValue) {
-                if (!session.dismissDraft(revision)) return null
-                return draftFailure(operationId, "${kind.label}地址已更改或无法读取，请重新安排行程")
-            }
+            if (value != stop.savedValue) return kind
         }
-        if (session.claimDraft(revision) == null) return null
-        return executeTrip(trip, operationId, false, current.previewPreference)
+        return null
     }
+
+    private fun changedPlaceFailure(operationId: String, kind: SavedPlaceKind) =
+        NavigationActionResult(operationId, NavigationActionStatus.FAILED,
+            "${kind.label}已更改或无法读取，请重新安排行程", NavigationActionError.INVALID_REQUEST)
+
+    private fun normalizationFailure(operationId: String, failure: NavigationNormalizationResult.Failure) =
+        NavigationActionResult(operationId, NavigationActionStatus.FAILED, failure.message,
+            NavigationActionError.COORDINATE_CONVERSION_FAILED)
 
     private fun executeTrip(
         trip: NavigationTrip, operationId: String, gps: Boolean, preference: RoutePreference?,
@@ -214,10 +286,11 @@ class NavigationExecutor(
                 } catch (_: SavedNavigationPlaceStore.StorageUnavailable) {
                     return draftFailure(operationId, "暂时无法读取${kind.label}，请稍后重试")
                 } ?: return draftFailure(operationId, "还没有设置${kind.label}，请先在常用地址中设置")
-                if (place.isGpsCoordinate) {
-                    return draftFailure(operationId, "当前无法将${kind.label}的定位坐标加入多地点路线，请在常用地址中选择地图地点")
-                }
-                stops += NavigationDraftStop(query, place.target.copy(name = kind.label), savedKind = kind, savedValue = place)
+                val target = place.target.copy(
+                    name = kind.label,
+                    coordinateSystem = if (place.isGpsCoordinate) WGS84 else GCJ02,
+                )
+                stops += NavigationDraftStop(query, target, savedKind = kind, savedValue = place)
             } else {
                 val choices = item.get("candidates")?.takeIf { it.isJsonArray && it.asJsonArray.size() <= 3 }
                     ?.let { parseCandidates(it.toString()) }
@@ -351,5 +424,6 @@ class NavigationExecutor(
         const val SLOT_WAYPOINTS = "waypoints"
         const val SLOT_CANDIDATES = "candidates"
         const val SOURCE_APPLICATION = "autovoice"
+        const val PREPARING_MULTISTOP = "正在准备多站路线"
     }
 }

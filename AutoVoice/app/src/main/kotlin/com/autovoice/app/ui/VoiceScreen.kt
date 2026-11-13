@@ -44,6 +44,7 @@ import com.autovoice.app.VoiceUiPhase
 import com.autovoice.app.health.ComponentHealthPanel
 import com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate
 import com.autovoice.voicebusiness.navigation.NavigationSnapshot
+import com.autovoice.voicebusiness.navigation.NavigationExecutor.Companion.PREPARING_MULTISTOP
 import com.autovoice.voicebusiness.navigation.NavigationTripDraft
 import com.autovoice.voicebusiness.navigation.SavedPlaceCommand
 import com.autovoice.voicebusiness.navigation.SavedPlaceEdit
@@ -155,6 +156,7 @@ internal fun VoiceScreen(
     if (draft != null && state.savedPlaces.edit == null) {
         NavigationDraftDialog(
             draft = draft,
+            normalizing = state.navigation.normalizingDraft,
             embeddedEnabled = state.navigationRuntime.embeddedEnabled,
             candidates = state.navigationCandidates,
             onSelect = { onSelectDraftStop(draft.revision, it.candidateId) },
@@ -316,6 +318,7 @@ private fun WakeGuidance(state: UiState) {
 @Composable
 private fun NavigationDraftDialog(
     draft: NavigationTripDraft,
+    normalizing: Boolean,
     embeddedEnabled: Boolean,
     candidates: List<NavigationCandidate>,
     onSelect: (NavigationCandidate) -> Unit,
@@ -335,6 +338,7 @@ private fun NavigationDraftDialog(
                     val place = stop.target?.name ?: "${stop.query}（待确认）"
                     Text("$role · $place")
                 }
+                if (normalizing) Text(PREPARING_MULTISTOP)
                 draft.nextStopIndex?.let { index ->
                     Text("请选择第${index + 1}站", fontWeight = FontWeight.SemiBold)
                     candidates.forEachIndexed { i, candidate ->
@@ -348,7 +352,7 @@ private fun NavigationDraftDialog(
             }
         },
         confirmButton = {
-            if (draft.isReady) Button(onClick = onConfirm) {
+            if (draft.isReady && !normalizing) Button(onClick = onConfirm) {
                 Text(if (draft.previewPreference != null || embeddedEnabled) "确认并查询路线" else "确认并打开高德")
             }
         },

@@ -13,6 +13,12 @@ import com.autovoice.voicecore.AudioStreamEnd
 import com.autovoice.voicecore.Intent
 import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.TextReply
+import com.autovoice.voicecore.SlotValue
+import com.autovoice.voicebusiness.navigation.AppDialogueManager
+import com.autovoice.voicebusiness.navigation.NavigationTarget
+import com.autovoice.voicebusiness.navigation.NavigationTrip
+import com.autovoice.voicebusiness.navigation.NavigationNormalizationResult
+import com.autovoice.voicebusiness.navigation.SavedNavigationPlace
 import com.autovoice.voicecore.arbiter.RaceWinner
 import com.autovoice.voiceengine.api.TextInputPort
 import com.autovoice.voiceengine.api.TextSubmission
@@ -170,6 +176,60 @@ class VoiceBusinessServiceTest {
         advanceTimeBy(1)
         runCurrent()
         assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
+    }
+
+    @Test
+    fun `accepted voice destination change retires the pending trip before cloud semantics`() = runTest {
+        lateinit var service: VoiceBusinessService
+        val opened = mutableListOf<String>()
+        val navigation = AppDialogueManager(
+            interactionIdProvider = { service.conversation.snapshot.value.interactionId!! },
+            onNavigation = {},
+            launchNavigation = { opened += it; true },
+            savedPlace = { SavedNavigationPlace(NavigationTarget("地址", 30.31, 104.4), true) },
+            normalizeTrip = {},
+        )
+        service = VoiceBusinessService(
+            tts = RecordingOutput(),
+            business = BusinessHandler { error("No semantic reply has arrived") },
+            scope = backgroundScope,
+            onDialogueState = navigation::onDialogueState,
+            onAcceptedVoiceTranscript = { _, text -> navigation.replaceNormalizingDraftUnless { navigation.draftCommand(text) != null } },
+        )
+        service.onWake()
+        val intent = Intent("1.0", "navigation", "draft_trip", mapOf("stops" to SlotValue.StringValue(
+            """[{"query":"学校","candidates":[{"poiname":"学校","lat":30.6,"lon":104.0}]},{"query":"家","savedPlace":"home"}]""",
+        )), 1.0, "test")
+        assertTrue(navigation.navigationExecutor.execute(intent, "draft"))
+        val revision = navigation.navigationSession.snapshot.draft!!.revision
+        navigation.confirmDraft(revision)
+        service.conversation.openCapture("new-voice")
+        service.onAsrTurnEstablished("new-voice", AdmissionEvidence.CLOUD_ASR)
+        service.onRecognized("new-voice", "改去机场", final = false)
+        service.onRecognized("stale-voice", "改去机场", final = true)
+        service.onRecognized("new-voice", "确认行程", final = true)
+        assertTrue(navigation.navigationSession.snapshot.normalizingDraft)
+
+        service.conversation.openCapture("destination-change")
+        service.onRecognized("destination-change", "改去机场", final = true)
+        assertTrue(navigation.navigationSession.snapshot.normalizingDraft)
+        service.onAsrTurnEstablished("destination-change", AdmissionEvidence.LOCAL_ASR)
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
+
+        val converted = NavigationTrip(NavigationTarget("家庭地址", 30.32, 104.41), listOf(
+            NavigationTarget("学校", 30.6, 104.0),
+        ))
+        assertEquals(null, navigation.navigationExecutor.completeDraftNormalization(
+            revision, NavigationNormalizationResult.Converted(converted),
+        ))
+        assertTrue(opened.isEmpty())
+
+        assertTrue(navigation.navigationExecutor.execute(intent, "replacement-draft"))
+        val replacement = navigation.navigationSession.snapshot.draft!!.revision
+        navigation.confirmDraft(replacement)
+        service.onRecognized("destination-change", "改去机场", final = true)
+
+        assertEquals(replacement, navigation.normalizingDraftRevision())
     }
 
     private fun service(

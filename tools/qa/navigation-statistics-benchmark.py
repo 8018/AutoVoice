@@ -20,7 +20,11 @@ else:
 if token:
     headers['X-Telemetry-Token'] = token
 
+requests_executed = 0
+
 def get(path):
+    global requests_executed
+    requests_executed += 1
     url = urllib.parse.urljoin(base + '/', path)
     if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(base).netloc:
         raise ValueError('unexpected asset origin')
@@ -68,5 +72,5 @@ check('I06-live-empty', empty)
 check('I06-live-window', window)
 check('I06-live-assets', page)
 passed = all(r['status']=='pass' for r in results)
-print(json.dumps({'suite':'navigation-statistics-v1','readOnly':True,'passed':passed,'results':results},ensure_ascii=False))
+print(json.dumps({'suite':'navigation-statistics-v1','readOnly':True,'passed':passed,'httpRequests':requests_executed,'results':results},ensure_ascii=False))
 sys.exit(0 if passed else 1)

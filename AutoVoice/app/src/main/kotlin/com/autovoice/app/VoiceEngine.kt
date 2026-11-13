@@ -85,6 +85,7 @@ class VoiceEngine(
     private val onTextInputError: (String) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
     onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
+    onAcceptedVoiceTranscript: (String, String) -> Unit = { _, _ -> },
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
 
@@ -159,6 +160,7 @@ class VoiceEngine(
         onRecognizedText = onLocalRecognized,
         onReplyText = onReplyText,
         onSavedNavigationCommand = onSavedNavigationCommand,
+        onAcceptedVoiceTranscript = onAcceptedVoiceTranscript,
         onCloudPending = onCloudPending,
         onCloudWon = onCloudWon,
         onDialogueState = { snapshot ->
@@ -449,7 +451,8 @@ class VoiceEngine(
     }
 
     /** ASR recognition updates are independent of semantic arbitration. */
-    internal fun onRecognized(turnId: String, text: String) = voiceBusiness.onRecognized(turnId, text)
+    internal fun onRecognized(turnId: String, text: String, final: Boolean = false) =
+        voiceBusiness.onRecognized(turnId, text, final)
 
     /** ASR evidence is sent to business-owned dialogue admission. */
     internal fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) =

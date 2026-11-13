@@ -1,6 +1,7 @@
 package com.autovoice.voicebusiness.navigation
 
 import com.autovoice.voicecore.Intent
+import com.autovoice.voicebusiness.navigation.NavigationExecutor.Companion.PREPARING_MULTISTOP
 import com.autovoice.voicecore.SlotValue
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.TaskEndReason
@@ -12,6 +13,7 @@ class AppDialogueManager(
     launchNavigation: (String) -> Boolean,
     savedPlace: (SavedPlaceKind) -> SavedNavigationPlace? = { null },
     mapRequest: ((NavigationTrip, String, Boolean, RoutePreference?) -> NavigationActionResult?)? = null,
+    normalizeTrip: ((NavigationNormalizationRequest) -> Unit)? = null,
     private val applyChatMode: (Boolean) -> Boolean = { true },
 ) {
     private var sendContext: (NavigationTaskContextRef) -> Unit = {}
@@ -47,7 +49,8 @@ class AppDialogueManager(
         }
     }
     val navigationExecutor = NavigationExecutor(
-        session = navigationSession, savedPlace = savedPlace, mapRequest = mapRequest, opener = launchNavigation,
+        session = navigationSession, savedPlace = savedPlace, mapRequest = mapRequest,
+        normalizeTrip = normalizeTrip, opener = launchNavigation,
     )
 
     fun bindNavigationContextSender(sender: (NavigationTaskContextRef) -> Unit) {
@@ -60,6 +63,14 @@ class AppDialogueManager(
     fun dismissSelection() = navigationSession.cancelSelection()
 
     fun abortPendingTask() = navigationExecutor.abortPendingTask()
+
+    fun normalizingDraftRevision(): Long? = navigationSession.snapshot
+        .takeIf { it.normalizingDraft }?.draft?.revision
+
+    fun replaceNormalizingDraftUnless(isLocalCommand: () -> Boolean) {
+        val revision = normalizingDraftRevision() ?: return
+        if (!isLocalCommand()) navigationSession.dismissDraft(revision)
+    }
 
     fun close() {
         setChatMode(false)
@@ -104,10 +115,21 @@ class AppDialogueManager(
         if (normalized.isBlank()) return null
         val revision = draft.revision
         return when (normalized) {
-            "确认", "确认行程", "确认路线", "就走这条路线" -> { { confirmDraft(revision) } }
+            "确认", "确认行程", "确认路线", "就走这条路线" -> {
+                {
+                    val current = navigationSession.snapshot
+                    if (current.draft?.revision == revision && current.normalizingDraft) PREPARING_MULTISTOP
+                    else confirmDraft(revision)
+                }
+            }
             "取消", "取消行程", "放弃行程", "放弃草稿" -> { { dismissDraft(revision) } }
             "查看行程", "查看草稿", "准备去哪几个地方", "看看准备去哪几个地方" -> {
-                { navigationSession.snapshot.draft?.takeIf { it.revision == revision }?.prompt() }
+                {
+                    val current = navigationSession.snapshot
+                    current.draft?.takeIf { it.revision == revision }?.let {
+                        if (current.normalizingDraft) PREPARING_MULTISTOP else it.prompt()
+                    }
+                }
             }
             else -> {
                 val ordinal = when (normalized.removePrefix("选").removePrefix("第").removeSuffix("个")) {

@@ -46,13 +46,22 @@ class VoiceBusinessService(
     private val endRound: (String, String?) -> Unit = { _, _ -> },
     private val onDialogueIdleTimeout: (DialogueSnapshot) -> Unit = {},
     onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
+    private val onAcceptedVoiceTranscript: (String, String) -> Unit = { _, _ -> },
 ) {
     private val output = tts
     private var dialogueIdleJob: Job? = null
     private var lastDialogueSnapshot = DialogueSnapshot()
+    private val transcriptLock = Any()
+    private var lastDeliveredVoiceTurnId: String? = null
+    private var finalTranscriptBeforeAdmission: Pair<String, String>? = null
     val conversation = ConversationController(
         onState = ::onConversationState,
         onTurnAdmitted = { admitted ->
+            val transcript = synchronized(transcriptLock) {
+                finalTranscriptBeforeAdmission?.takeIf { it.first == admitted.turnId }
+                    ?.also { finalTranscriptBeforeAdmission = null }
+            }
+            transcript?.let { (turnId, text) -> deliverAcceptedVoiceTranscript(turnId, text) }
             output.stop(PlaybackInterruptionReason.NEW_TURN)
             onTurnAdmitted(admitted.turnId)
         },
@@ -110,9 +119,30 @@ class VoiceBusinessService(
         conversation.setPending(turnId, pending)
     }
 
-    fun onRecognized(turnId: String, text: String) {
+    fun onRecognized(turnId: String, text: String, final: Boolean = false) {
         if (text.isBlank()) return
         if (turnId.isBlank() || conversation.isVisible(turnId)) onRecognizedText(text)
+        if (!final || turnId.isBlank()) return
+        // Some ASR providers deliver the final transcript before the turn-admission signal.
+        val accepted = synchronized(transcriptLock) {
+            if (conversation.isCurrentTurn(turnId)) true
+            else {
+                if (conversation.isVisible(turnId)) finalTranscriptBeforeAdmission = turnId to text
+                false
+            }
+        }
+        if (accepted) deliverAcceptedVoiceTranscript(turnId, text)
+    }
+
+    private fun deliverAcceptedVoiceTranscript(turnId: String, text: String) {
+        synchronized(transcriptLock) {
+            val snapshot = conversation.snapshot.value
+            if (snapshot.turnId != turnId || lastDeliveredVoiceTurnId == turnId ||
+                (snapshot.state != DialogueState.LISTENING && snapshot.state != DialogueState.PROCESSING)
+            ) return
+            lastDeliveredVoiceTurnId = turnId
+        }
+        onAcceptedVoiceTranscript(turnId, text)
     }
 
     fun onAsrTurnEstablished(turnId: String, evidence: AdmissionEvidence) {
@@ -221,6 +251,10 @@ class VoiceBusinessService(
         }
         onDialogueState(snapshot)
         if (snapshot.state == DialogueState.DORMANT) {
+            synchronized(transcriptLock) {
+                finalTranscriptBeforeAdmission = null
+                lastDeliveredVoiceTurnId = null
+            }
             recognition?.stopRecognition()
         }
     }

@@ -59,28 +59,36 @@
       "productId": "D02",
       "category": "normal",
       "target": "GPS常用地址和GCJ地点混合成草稿，经官方转换后按顺序交接",
-      "status": "pending_validation"
+      "status": "offline_passed",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/navigation/NavigationBusinessBoundaryTest.kt",
+      "evidence": "docs/navigation-mixed-trip-report.md"
     },
     {
       "id": "D02-F01",
       "productId": "D02",
       "category": "failure",
       "target": "转换失败、缺定位、断网或超时不得打开原混合坐标路线",
-      "status": "pending_validation"
+      "status": "offline_passed",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/navigation/NavigationBusinessBoundaryTest.kt",
+      "evidence": "docs/navigation-mixed-trip-report.md"
     },
     {
       "id": "D02-B01",
       "productId": "D02",
       "category": "boundary",
       "target": "数量、顺序、已有GCJ坐标与保存地址版本必须核对",
-      "status": "pending_validation"
+      "status": "offline_passed",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/navigation/NavigationBusinessBoundaryTest.kt",
+      "evidence": "docs/navigation-mixed-trip-report.md"
     },
     {
       "id": "D02-M01",
       "productId": "D02",
       "category": "multi_turn",
       "target": "取消、替换、保存地址变化及晚到或重复回调不得打开旧路线",
-      "status": "pending_validation"
+      "status": "offline_passed",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/navigation/NavigationBusinessBoundaryTest.kt",
+      "evidence": "docs/navigation-mixed-trip-report.md"
     }
   ],
   "routeApiSuite": {
@@ -92,7 +100,7 @@
   "statisticsApiSuite": {
     "version": 1,
     "source": "tools/qa/navigation-statistics-benchmark.py",
-    "requests": 3,
-    "scope": "read-only admin empty/bounds/assets; no synthetic live uploads"
+    "scope": "read-only admin empty/bounds/assets; no synthetic live uploads",
+    "checks": 3
   }
 }

@@ -5,6 +5,9 @@ import com.autovoice.voicebusiness.navigation.NavigationExecutor
 import com.autovoice.voicebusiness.navigation.NavigationSession
 import com.autovoice.voicebusiness.navigation.NavigationSnapshot
 import com.autovoice.voicebusiness.navigation.NavigationTarget
+import com.autovoice.voicebusiness.navigation.NavigationCoordinateSystem
+import com.autovoice.voicebusiness.navigation.NavigationNormalizationRequest
+import com.autovoice.voicebusiness.navigation.NavigationNormalizationResult
 import com.autovoice.voicebusiness.navigation.SavedNavigationPlace
 import com.autovoice.voicebusiness.navigation.SavedNavigationPlaceStore
 import com.autovoice.voicebusiness.navigation.SavedNavigationPlaces
@@ -27,6 +30,8 @@ import com.autovoice.app.navigation.CurrentNavigationAddress
 import com.autovoice.app.navigation.NavigationRuntime
 import com.autovoice.app.navigation.NavigationRuntimeUi
 import com.autovoice.gatewayclient.NavigationRouteCoordinate
+import com.autovoice.gatewayclient.NavigationRoutePreviewTimeout
+import com.autovoice.app.navigation.normalizedTrip
 import com.autovoice.voicebusiness.navigation.MapRoute
 import com.autovoice.app.navigation.LocalSavedNavigationPlaceStorage
 import com.autovoice.app.navigation.SavedNavigationCommandRouter
@@ -51,6 +56,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +67,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** 功能模式。在线环境由构建类型固定：debug → dev，release → production。 */
 enum class DemoMode(val label: String) {
@@ -241,6 +248,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         captureOperationRecorder = { if (::engine.isInitialized) engine.navigationOperationRecorder() else null },
     )
     private val navigationControlTurnGate = ActionExecutionGateway()
+    @Volatile private var normalizeDraftRoute:
+        (suspend (NavigationNormalizationRequest, NavigationRouteCoordinate) -> NavigationNormalizationResult)? = null
 
     private val dialogueManager = AppDialogueManager(
         interactionIdProvider = { turnId ->
@@ -260,6 +269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         applyChatMode = { enabled -> recordingCoordinator.setChatMode(enabled) },
         savedPlace = savedPlaces::read,
         mapRequest = navigationRuntime::handleTrip,
+        normalizeTrip = ::normalizeNavigationDraft,
     )
 
     /**
@@ -290,6 +300,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissNavigationDraft(revision: Long) {
         showDraftFeedback(dialogueManager.dismissDraft(revision))
+    }
+
+    private fun normalizeNavigationDraft(request: NavigationNormalizationRequest) {
+        // Always post so synchronous confirmation can finish publishing its pending feedback first.
+        viewModelScope.launch(Dispatchers.Main) {
+            val snapshot = dialogueManager.navigationSession.snapshot
+            if (!snapshot.normalizingDraft || snapshot.draft?.revision != request.revision) return@launch
+
+            val origin = vehicleContext.routeOriginPosition()?.let {
+                NavigationRouteCoordinate(it.latitude, it.longitude, "WGS84")
+            }
+            val normalize = normalizeDraftRoute
+            val result = when {
+                origin == null -> {
+                    vehicleContext.refresh(forSavedAddress = true)
+                    NavigationNormalizationResult.Failure.MISSING_LOCATION
+                }
+                normalize == null -> NavigationNormalizationResult.Failure.UNAVAILABLE
+                else -> try {
+                    withTimeoutOrNull(12_000L) { normalize(request, origin) }
+                        ?: NavigationNormalizationResult.Failure.TIMEOUT
+                } catch (_: NavigationRoutePreviewTimeout) {
+                    NavigationNormalizationResult.Failure.TIMEOUT
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    NavigationNormalizationResult.Failure.UNAVAILABLE
+                }
+            }
+            showDraftFeedback(dialogueManager.navigationExecutor.completeDraftNormalization(request.revision, result)?.userFeedback)
+        }
     }
 
     private fun showDraftFeedback(message: String?) {
@@ -515,7 +556,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(lastRecognizedText = text, lastReplyText = reply, textInputError = null) }
             return true
         }
+        val previousNormalization = dialogueManager.normalizingDraftRevision()
         val outcome = engine.submitText(text)
+        if (outcome == TextSubmission.ACCEPTED && previousNormalization != null) {
+            dialogueManager.dismissDraft(previousNormalization)
+        }
         _uiState.update {
             it.copy(textInputError = when (outcome) {
                 TextSubmission.ACCEPTED -> null
@@ -597,6 +642,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setMode(mode: DemoMode) {
         if (_uiState.value.mode == mode || !::recordingCoordinator.isInitialized) return
+        dialogueManager.abortPendingTask()
+        normalizeDraftRoute = null
         val nextGeneration = healthRegistry.beginGeneration(speechChannel.id)
         reporting = ChannelComponentReporting(healthRegistry, speechChannel.id, nextGeneration)
         reporting.registerDefaults();speechChannel.attachReporting(reporting)
@@ -803,11 +850,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
             renderSink = recorder,
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
-            onNavigationTransportReset = dialogueManager::abortPendingTask,
+            onNavigationTransportReset = {
+                val snapshot = dialogueManager.navigationSession.snapshot
+                val draft = snapshot.draft?.takeIf { snapshot.normalizingDraft }
+                if (draft == null) dialogueManager.abortPendingTask()
+                else showDraftFeedback(dialogueManager.navigationExecutor.completeDraftNormalization(
+                    draft.revision, NavigationNormalizationResult.Failure.UNAVAILABLE,
+                )?.userFeedback)
+            },
             bindNavigationRoutePreview = { request ->
+                normalizeDraftRoute = { draft, origin ->
+                    val operationId = UUID.randomUUID().toString()
+                    val response = request(operationId, origin, draft.trip.destination.coordinate(),
+                        draft.trip.waypoints.map { it.coordinate() }, draft.preference.name)
+                    response.normalizedTrip(operationId, draft.trip)
+                }
                 navigationRuntime.previewRoutes = { plan ->
-                    fun NavigationTarget.coordinate(gps: Boolean = false) =
-                        NavigationRouteCoordinate(latitude, longitude, if (gps) "WGS84" else "GCJ02")
                     val response = request(plan.id, plan.origin?.coordinate(gps = true),
                         plan.trip.destination.coordinate(plan.destinationIsGps),
                         plan.trip.waypoints.map { it.coordinate() }, plan.preference.name)
@@ -815,6 +873,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     require(response.status in setOf("OK", "NO_ROUTE"))
                     fun Long?.boundedInt() = this?.takeIf { it in 0L..Int.MAX_VALUE.toLong() }?.toInt()
                     response.routes.map { MapRoute(it.id, it.distanceMeters.boundedInt(), it.durationSeconds.boundedInt(), it.tollYuan) }
+                }
+            },
+            onAcceptedVoiceTranscript = { _, text ->
+                dialogueManager.replaceNormalizingDraftUnless {
+                    dialogueManager.draftCommand(text) != null ||
+                        navigationRuntime.resolveVoiceCommand(text) != null ||
+                        SavedPlaceCommand.parse(text) != null
                 }
             },
             onSavedNavigationCommand = { turnId, text ->
@@ -905,3 +970,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     }
 }
+
+private fun NavigationTarget.coordinate(gps: Boolean = false) = NavigationRouteCoordinate(
+    latitude, longitude, if (gps) NavigationCoordinateSystem.WGS84.name else coordinateSystem.name,
+)

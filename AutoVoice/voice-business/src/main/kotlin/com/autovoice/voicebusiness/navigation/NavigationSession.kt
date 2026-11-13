@@ -8,8 +8,14 @@ import com.autovoice.voicebusiness.dialog.TaskEndReason
 import com.autovoice.voicebusiness.dialog.TaskIdentity
 import com.autovoice.voicebusiness.dialog.TaskStatus
 
-/** A handoff records an accepted launch, not active guidance in the other application. */
-data class NavigationTarget(val name: String, val latitude: Double, val longitude: Double) {
+enum class NavigationCoordinateSystem { GCJ02, WGS84 }
+
+data class NavigationTarget(
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+    val coordinateSystem: NavigationCoordinateSystem = NavigationCoordinateSystem.GCJ02,
+) {
     init {
         require(name.isNotBlank())
         require(latitude.isFinite() && latitude in -90.0..90.0)
@@ -47,6 +53,7 @@ data class NavigationSnapshot(
     val lastTaskEnd: TaskEnd? = null,
     val requiresTaskIdentity: Boolean = false,
     val draft: NavigationTripDraft? = null,
+    val normalizingDraft: Boolean = false,
     val routePreviewPreference: RoutePreference? = null,
 )
 
@@ -104,19 +111,41 @@ class NavigationSession(
     }
 
     @Synchronized
-    internal fun claimDraft(revision: Long): NavigationTripDraft? {
+    internal fun claimDraft(revision: Long, normalizing: Boolean = false): NavigationTripDraft? {
         val task = tasks.waiting(DOMAIN) ?: return null
         val draft = task.context.draft?.takeIf { it.isReady } ?: return null
-        if (task.identity.revision != revision || tasks.claim(task.identity) == null) return null
+        if (task.identity.revision != revision || tasks.claim(
+                task.identity,
+                update = { if (normalizing) it else it.copy(draft = null) },
+            ) == null) return null
         return draft.copy(revision = revision)
     }
 
     @Synchronized
     internal fun dismissDraft(revision: Long): Boolean {
-        val task = tasks.waiting(DOMAIN) ?: return false
+        val task = tasks.active ?: return false
         if (task.identity.revision != revision || task.context.draft == null) return false
-        return tasks.finishWaiting(task.identity, TaskEndReason.CANCELLED)
+        return tasks.finish(task.identity, TaskEndReason.CANCELLED)
     }
+
+    /** Validate the claimed draft and serialize the handoff with cancellation and replacement. */
+    @Synchronized
+    internal fun completeNormalization(
+        revision: Long,
+        complete: (NavigationTripDraft) -> NavigationActionResult,
+    ): NavigationActionResult? {
+        val task = tasks.active?.takeIf {
+            it.status == TaskStatus.EXECUTING && it.identity.revision == revision
+        } ?: return null
+        val draft = task.context.draft ?: return null
+        return complete(draft).also {
+            // URI handoff finishes the claimed task itself. A failed conversion has no handoff.
+            if (tasks.active?.identity == task.identity) finishClaimed(false)
+        }
+    }
+
+    private fun cancellableTask(): DialogueTask<NavigationSelectionContext>? =
+        tasks.active?.takeIf { it.status == TaskStatus.WAITING_INPUT || it.context.draft != null }
 
     private fun offerDraft(draft: NavigationTripDraft, interactionId: String, turnId: String) {
         handoffGeneration++
@@ -138,10 +167,10 @@ class NavigationSession(
     }
 
     @Synchronized fun cancelSelection(selectionId: String? = null, expected: TaskIdentity? = null): Boolean {
-        val task = tasks.waiting(DOMAIN) ?: return false
+        val task = cancellableTask() ?: return false
         if (expected != null && expected != task.identity) return false
         if (selectionId != null && selectionId != task.context.selectionId) return false
-        return tasks.finishWaiting(task.identity, TaskEndReason.CANCELLED)
+        return tasks.finish(task.identity, TaskEndReason.CANCELLED)
     }
 
     /** Atomically reserves a displayed candidate for either a voice or UI selection. */
@@ -167,8 +196,8 @@ class NavigationSession(
 
     @Synchronized fun abortSelection(
         reason: TaskEndReason = TaskEndReason.REPLACED, expected: TaskIdentity? = null,
-    ): Boolean = tasks.waiting(DOMAIN)?.takeIf { expected == null || expected == it.identity }
-        ?.let { tasks.finishWaiting(it.identity, reason) } ?: false
+    ): Boolean = cancellableTask()?.takeIf { expected == null || expected == it.identity }
+        ?.let { tasks.finish(it.identity, reason) } ?: false
 
     /** Only the exact failed context is closed; late protocol errors cannot close a new list. */
     @Synchronized fun contextMissing(ref: NavigationTaskContextRef): Boolean {
@@ -180,10 +209,10 @@ class NavigationSession(
 
     /** Interaction validity belongs to DM, never to arbitration or navigation execution. */
     @Synchronized fun onDialogueState(state: com.autovoice.voicebusiness.dialog.DialogueSnapshot) {
-        val task = tasks.waiting(DOMAIN) ?: return
+        val task = cancellableTask() ?: return
         if (state.state == com.autovoice.voicebusiness.dialog.DialogueState.DORMANT ||
             task.identity.interactionId != state.interactionId) {
-            tasks.finishWaiting(task.identity, TaskEndReason.ABORTED)
+            tasks.finish(task.identity, TaskEndReason.ABORTED)
         }
     }
 
@@ -241,7 +270,8 @@ class NavigationSession(
             handoff = handoff,
             lastTaskEnd = lastTaskEnd,
             requiresTaskIdentity = task?.context?.requiresTaskIdentity ?: false,
-            draft = waiting?.context?.draft?.copy(revision = waiting.identity.revision),
+            draft = task?.context?.draft?.copy(revision = task.identity.revision),
+            normalizingDraft = task?.status == TaskStatus.EXECUTING && task.context.draft != null,
             routePreviewPreference = waiting?.context?.routePreviewPreference,
         )
         publish(snapshot)

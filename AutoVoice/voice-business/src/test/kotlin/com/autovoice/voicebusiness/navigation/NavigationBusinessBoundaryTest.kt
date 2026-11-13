@@ -154,6 +154,206 @@ class NavigationBusinessBoundaryTest {
     }
 
     @Test
+    fun `gps home and work are staged with a map point in spoken order`() {
+        val executor = NavigationExecutor(savedPlace = { kind ->
+            SavedNavigationPlace(NavigationTarget(kind.label, 30.3, 104.4), isGpsCoordinate = true)
+        }) { error("Unconfirmed trip opened") }
+
+        val result = executor.executeWithResult(mixedDraft(), "mixed-turn")
+
+        assertEquals(NavigationActionStatus.PENDING, result.status)
+        assertEquals(listOf("家庭地址", "学校", "公司地址"), executor.session.snapshot.draft!!.stops.map { it.target?.name })
+        assertEquals(NavigationHandoff.NONE, executor.session.snapshot.handoff)
+    }
+
+    @Test
+    fun `confirmed mixed trip hands off converted stops exactly once`() {
+        val fixture = MixedDraftFixture()
+        val revision = fixture.stageAndConfirm()
+        val original = fixture.requests.single().trip
+        assertEquals(NavigationCoordinateSystem.WGS84, original.destination.coordinateSystem)
+        assertEquals(listOf(NavigationCoordinateSystem.WGS84, NavigationCoordinateSystem.GCJ02),
+            original.waypoints.map { it.coordinateSystem })
+        assertEquals(null, fixture.executor.confirmDraft(revision))
+        assertTrue(fixture.opened.isEmpty())
+
+        val result = fixture.complete(revision)
+
+        assertEquals(NavigationActionStatus.ACCEPTED, result?.status)
+        assertEquals(NavigationHandoff.ACCEPTED, fixture.executor.session.snapshot.handoff)
+        val uri = fixture.opened.single()
+        assertTrue(uri.startsWith("amapuri://route/plan?"))
+        assertTrue(uri.contains("&vian=2&vialons=104.405|104.0&vialats=30.302|30.6&"))
+        assertTrue(uri.contains("&dlat=30.312&dlon=104.415&"))
+        assertTrue(uri.endsWith("&dev=0"))
+        assertEquals(null, fixture.complete(revision))
+        assertEquals(1, fixture.opened.size)
+    }
+
+    @Test
+    fun `normalization failures never open a partial route`() {
+        for (failure in NavigationNormalizationResult.Failure.entries) {
+            val fixture = MixedDraftFixture()
+            val revision = fixture.stageAndConfirm()
+            val result = fixture.executor.completeDraftNormalization(revision, failure)
+            assertEquals(NavigationActionError.COORDINATE_CONVERSION_FAILED, result?.error)
+            assertEquals(failure.message, result?.userFeedback)
+            assertEquals(null, fixture.executor.session.snapshot.draft)
+            assertEquals(null, fixture.complete(revision))
+            assertTrue(fixture.opened.isEmpty())
+        }
+    }
+
+    @Test
+    fun `changed map point or wrong stop order is rejected`() {
+        val fixture = MixedDraftFixture()
+        val revision = fixture.stageAndConfirm()
+        val changed = fixture.converted.copy(waypoints = fixture.converted.waypoints.reversed())
+        val result = fixture.executor.completeDraftNormalization(revision, NavigationNormalizationResult.Converted(changed))
+
+        assertEquals(NavigationActionError.COORDINATE_CONVERSION_FAILED, result?.error)
+        assertTrue(fixture.opened.isEmpty())
+    }
+
+    @Test
+    fun `cancelled normalization cannot open a map`() {
+        val fixture = MixedDraftFixture()
+        val revision = fixture.stageAndConfirm()
+        assertTrue(fixture.executor.session.dismissDraft(revision))
+
+        assertEquals(null, fixture.complete(revision))
+        assertTrue(fixture.opened.isEmpty())
+    }
+
+    @Test
+    fun `late normalization cannot launch or close a replacement draft`() {
+        val fixture = MixedDraftFixture()
+        val first = fixture.stageAndConfirm()
+        val second = fixture.stageAndConfirm()
+
+        assertEquals(null, fixture.complete(first))
+        assertEquals(second, fixture.executor.session.snapshot.draft?.revision)
+        assertTrue(fixture.opened.isEmpty())
+        assertEquals(NavigationActionStatus.ACCEPTED, fixture.complete(second)?.status)
+    }
+
+    @Test
+    fun `a saved address changed during normalization prevents handoff`() {
+        val fixture = MixedDraftFixture()
+        val revision = fixture.stageAndConfirm()
+        fixture.places[SavedPlaceKind.HOME] = SavedNavigationPlace(NavigationTarget("更新地址", 30.51, 104.10), true)
+
+        val result = fixture.complete(revision)
+
+        assertEquals(NavigationActionStatus.FAILED, result?.status)
+        assertTrue(result?.message.orEmpty().contains("家庭地址已更改"))
+        assertTrue(fixture.opened.isEmpty())
+    }
+
+    @Test
+    fun `embedded planning receives the converted trip without opening the external URI`() {
+        val planned = mutableListOf<NavigationTrip>()
+        val fixture = MixedDraftFixture { trip, id, gps, preference ->
+            assertFalse(gps)
+            assertEquals(null, preference)
+            planned += trip
+            NavigationActionResult(id, NavigationActionStatus.PENDING, "正在查询路线")
+        }
+        val revision = fixture.stageAndConfirm()
+
+        assertTrue(planned.isEmpty())
+        assertEquals(NavigationActionStatus.PENDING, fixture.complete(revision)?.status)
+        assertEquals(listOf(fixture.converted), planned)
+        assertTrue(fixture.opened.isEmpty())
+        assertEquals(NavigationHandoff.NONE, fixture.executor.session.snapshot.handoff)
+    }
+
+    @Test
+    fun `mode or transport reset aborts a confirmed mixed trip`() {
+        val fixture = MixedDraftFixture()
+        val revision = fixture.stageAndConfirm()
+        assertTrue(fixture.executor.abortPendingTask())
+
+        assertEquals(null, fixture.complete(revision))
+        assertTrue(fixture.opened.isEmpty())
+    }
+
+    @Test
+    fun `mixed preview sends the original preference to the map path without opening the URI`() {
+        val requested = mutableListOf<Pair<NavigationTrip, RoutePreference?>>()
+        val fixture = MixedDraftFixture { trip, id, gps, preference ->
+            assertFalse(gps)
+            requested += trip to preference
+            NavigationActionResult(id, NavigationActionStatus.PENDING, "正在查询路线")
+        }
+        val revision = fixture.stageAndConfirm(RoutePreference.LESS_TOLLS)
+
+        assertEquals(RoutePreference.LESS_TOLLS, fixture.requests.single().preference)
+        assertEquals(NavigationActionStatus.PENDING, fixture.complete(revision)?.status)
+        assertEquals(listOf(fixture.converted to RoutePreference.LESS_TOLLS), requested)
+        assertTrue(fixture.opened.isEmpty())
+    }
+
+    @Test
+    fun `synchronous callback cannot return a pending reply after final failure`() {
+        lateinit var executor: NavigationExecutor
+        var terminal: NavigationActionResult? = null
+        executor = NavigationExecutor(
+            savedPlace = { SavedNavigationPlace(NavigationTarget("地址", 30.3, 104.4), true) },
+            normalizeTrip = { request ->
+                terminal = executor.completeDraftNormalization(request.revision, NavigationNormalizationResult.Failure.MISSING_LOCATION)
+            },
+        ) { error("Failed draft opened") }
+        assertTrue(executor.execute(mixedDraft(), "mixed-turn"))
+
+        val confirmation = executor.confirmDraft(executor.session.snapshot.draft!!.revision)
+
+        assertEquals(NavigationActionStatus.FAILED, terminal?.status)
+        assertEquals(null, confirmation)
+    }
+
+    private inner class MixedDraftFixture(
+        mapRequest: ((NavigationTrip, String, Boolean, RoutePreference?) -> NavigationActionResult?)? = null,
+    ) {
+        val opened = mutableListOf<String>()
+        val requests = mutableListOf<NavigationNormalizationRequest>()
+        val places = mutableMapOf(
+            SavedPlaceKind.HOME to SavedNavigationPlace(NavigationTarget("地址", 30.30, 104.4), true),
+            SavedPlaceKind.WORK to SavedNavigationPlace(NavigationTarget("地址", 30.31, 104.41), true),
+        )
+        val executor = NavigationExecutor(savedPlace = places::get, mapRequest = mapRequest, normalizeTrip = { requests += it }) {
+            opened += it
+            true
+        }
+        val converted = NavigationTrip(
+            NavigationTarget("公司地址", 30.312, 104.415),
+            listOf(NavigationTarget("家庭地址", 30.302, 104.405), NavigationTarget("学校", 30.6, 104.0)),
+        )
+
+        fun stageAndConfirm(preference: RoutePreference? = null): Long {
+            val draft = mixedDraft().let { intent ->
+                if (preference == null) intent
+                else intent.copy(slots = intent.slots + ("routePreviewPreference" to SlotValue.StringValue(preference.name)))
+            }
+            assertTrue(executor.execute(draft, "mixed-${requests.size}"))
+            val revision = executor.session.snapshot.draft!!.revision
+            assertEquals(NavigationActionStatus.PENDING, executor.confirmDraft(revision)?.status)
+            assertTrue(executor.session.snapshot.normalizingDraft)
+            return revision
+        }
+
+        fun complete(revision: Long) = executor.completeDraftNormalization(
+            revision, NavigationNormalizationResult.Converted(converted),
+        )
+    }
+
+    private fun mixedDraft() = draft("""
+        [{"query":"家","savedPlace":"home"},
+         {"query":"学校","candidates":[{"poiname":"学校","lat":30.6,"lon":104.0}]},
+         {"query":"公司","savedPlace":"work"}]
+    """.trimIndent())
+
+    @Test
     fun `dismissed route cannot be opened by an old confirmation`() {
         var opens = 0
         val executor = NavigationExecutor { opens++; true }
