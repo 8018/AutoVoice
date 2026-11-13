@@ -19,6 +19,117 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NavigationToolFacadeTest {
     @Test
+    void resolvesCoordinateLessTerminalByItsProviderId() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"id":"root","name":"上海虹桥国际机场","address":"虹桥路2550号"},
+                             {"id":"terminal","name":"上海虹桥国际机场2号航站楼","address":"申达一路1号"},
+                             {"id":"departure","name":"上海虹桥国际机场2号航站楼(南出发)"}]}
+                    """;
+            case "maps_search_detail" -> {
+                assertTrue(args.contains("terminal"));
+                yield """
+                        {"id":"terminal","name":"上海虹桥国际机场2号航站楼",
+                         "city":"上海市","location":"121.328711,31.194180"}
+                        """;
+            }
+            case "maps_geo" -> "{}";
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["上海虹桥机场T2航站楼"],"city":"上海","entrance":"T2航站楼"}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("上海虹桥国际机场2号航站楼", candidates.get(0).path("poiname").asText());
+        assertEquals(121.328711, candidates.get(0).path("lon").asDouble());
+    }
+
+    @Test
+    void namedAirportWithoutCityUsesExactIdentityWithoutChoosingUnrelatedResults() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"id":"airport","name":"三亚凤凰国际机场","address":"机场路"},
+                             {"id":"terminal","name":"三亚凤凰国际机场T1航站楼"},
+                             {"id":"different","name":"其他机场","location":"109.51,18.25"}]}
+                    """;
+            case "maps_search_detail" -> {
+                assertTrue(args.contains("airport"));
+                yield """
+                        {"id":"airport","name":"三亚凤凰国际机场","city":"三亚市",
+                         "location":"109.414038,18.303410"}
+                        """;
+            }
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["三亚凤凰国际机场"]}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("三亚凤凰国际机场", candidates.get(0).path("poiname").asText());
+    }
+
+    @Test
+    void brandUsesDetailEvidenceWhenTextSearchHasNoCoordinates() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"id":"cafe","name":"星巴克(北京太古里臻选旗舰店)","address":"三里屯路19号"}]}
+                    """;
+            case "maps_search_detail" -> """
+                    {"id":"cafe","name":"星巴克(北京太古里臻选旗舰店)","city":"北京市",
+                     "location":"116.454755,39.934478","type":"餐饮服务;咖啡厅;星巴克咖啡"}
+                    """;
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["星巴克"],"city":"北京","constraints":[{"brand":"星巴克"}]}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("name", candidates.get(0).path("conditionEvidence").get(0).path("field").asText());
+    }
+
+    @Test
+    void qualifiedReferenceUsesStationDetailAndChecksChargingPoiRadius() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"id":"station","name":"北京南站","address":"永外大街车站路12号"},
+                             {"id":"metro","name":"北京南站(地铁站)"},
+                             {"id":"bus","name":"北海南站(公交站)"}]}
+                    """;
+            case "maps_around_search" -> {
+                assertTrue(args.contains("116.378517,39.865246"));
+                assertTrue(args.contains("\"keywords\":\"充电站\""));
+                yield """
+                        {"pois":[{"id":"near","name":"北京静交超级充电站"},
+                                 {"id":"far","name":"异地充电站"}]}
+                        """;
+            }
+            case "maps_search_detail" -> {
+                if (args.contains("station")) yield """
+                        {"id":"station","name":"北京南站","city":"北京市","location":"116.378517,39.865246"}
+                        """;
+                if (args.contains("near")) yield """
+                        {"id":"near","name":"北京静交超级充电站","city":"北京市","location":"116.378,39.866"}
+                        """;
+                if (args.contains("far")) yield """
+                        {"id":"far","name":"异地充电站","city":"北京市","location":"116.478,39.866"}
+                        """;
+                throw new AssertionError(args);
+            }
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["北京南站附近的充电站"],"city":"北京","reference":"南站"}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("北京静交超级充电站", candidates.get(0).path("poiname").asText());
+        assertEquals("充电桩空闲状态未知。", result.path("availabilityNotice").asText());
+    }
+
+    @Test
     void terminalSearchAcceptsEquivalentTerminalNameAndRejectsAirportShops() throws Exception {
         var facade = new NavigationToolFacade(tools(), (name, args) -> """
                 {"pois":[{"name":"虹桥国际机场T2便利店","location":"121.32,31.20"},
@@ -838,6 +949,12 @@ class NavigationToolFacadeTest {
                 """)).path("destinations").get(0).path("candidates");
         assertEquals(1, result.size());
         assertEquals(List.of("maps_regeocode", "maps_around_search", "maps_text_search"), calls);
+    }
+
+    private static Map<String, FunctionTool> toolsWithDetail() {
+        var advertised = tools();
+        advertised.put("maps_search_detail", new FunctionTool("maps_search_detail", "", schema("id")));
+        return advertised;
     }
 
     private static Map<String, FunctionTool> tools() {

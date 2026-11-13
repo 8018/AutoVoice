@@ -33,6 +33,7 @@ final class NavigationToolFacade {
             "maps_text_search", "maps_around_search", "maps_regeocode", "maps_geo", "maps_search_detail");
     private static final Pattern BROAD_AIRPORT_QUERY = Pattern.compile(
             "^(?:附近的?|周边的?|最近的?)?(?:国际)?(?:机场|飞机场)$");
+    private static final Pattern NAMED_AIRPORT_QUERY = Pattern.compile("^[\\p{IsHan}]{2,}机场$");
     private static final Pattern NEARBY_QUERY = Pattern.compile(
             ".*(?:附近|周边|最近|就近|旁边|离我近|离当前位置近).*", Pattern.CASE_INSENSITIVE);
     private static final Pattern GENERIC_NEARBY_CATEGORY = Pattern.compile(
@@ -73,7 +74,7 @@ final class NavigationToolFacade {
             {"type":"object","properties":{
              "destinations":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":5},
              "location":{"type":"string","description":"车辆坐标 lon,lat；有定位时必填"},
-             "city":{"type":"string","description":"只填用户明确指定的城市；不要填车辆定位城市"},
+             "city":{"type":"string","description":"填写用户说出的城市，包括连在机场等地点名称前的城市；不要填车辆定位城市"},
              "district":{"type":"string","description":"用户明确指定的区县"},
              "reference":{"type":"string","description":"用户要求在其周边检索的参考地点，destinations 只放要找的类别"},
              "entrance":{"type":"string","description":"用户明确要求的入口或航站楼，例如 T2 或东门"},
@@ -201,7 +202,8 @@ final class NavigationToolFacade {
                 Search search = Search.parse(destination.asText(), args);
                 ObjectNode item = resolved.addObject().put("query", search.query());
                 ArrayNode matches;
-                if (location.isBlank() && search.city().isBlank() && search.reference().isBlank()) {
+                if (location.isBlank() && search.city().isBlank() && search.reference().isBlank()
+                        && !search.isNamedAirport()) {
                     matches = JSON.createArrayNode();
                     out.put("message", "请说要查找的城市。");
                 } else if (!search.reference().isBlank()) {
@@ -361,14 +363,6 @@ final class NavigationToolFacade {
                 }
             }
         }
-        if (constraints.active() && tools.containsKey("maps_search_detail")) {
-            List<Candidate> enriched = constrainedDetails(places, constraints, criteria, center, radius, limit,
-                    excluded);
-            if (!enriched.isEmpty()) {
-                direct = new ArrayList<>(direct);
-                direct.addAll(enriched);
-            }
-        }
         direct = direct.stream().filter(NavigationToolFacade::validCoordinates)
                 .filter(candidate -> constraints.matches(candidate.name(), candidate.category(), candidate.alias()))
                 .filter(candidate -> !candidate.name().isBlank())
@@ -376,6 +370,20 @@ final class NavigationToolFacade {
                         candidate.city(), candidate.district()))
                 .filter(candidate -> broadAirportQuery && !referenced || withinRadius(center, candidate, radius))
                 .toList();
+        if (tools.containsKey("maps_search_detail") && (constraints.active() || !criteria.entrance().isBlank()
+                || criteria.isNamedAirport() || criteria.isChargingStation())) {
+            long resolvedCount = direct.stream().map(CandidateKey::from)
+                    .filter(key -> !excluded.contains(key)).distinct().limit(limit).count();
+            int remaining = limit - (int) resolvedCount;
+            if (remaining > 0) {
+                List<Candidate> enriched = verifiedDetails(places, constraints, criteria, center, radius, remaining,
+                        excluded, direct);
+                if (!enriched.isEmpty()) {
+                    direct = new ArrayList<>(direct);
+                    direct.addAll(enriched);
+                }
+            }
+        }
         if (constraints.active()) {
             return toJson(broadAirportQuery ? rankAirports(direct, location) : direct, limit, excluded, constraints);
         }
@@ -400,7 +408,7 @@ final class NavigationToolFacade {
 
         if (places.isEmpty()) {
             if (!criteria.entrance().isBlank() || nearby || !criteria.district().isBlank()
-                    || criteria.isStreetAddress() || criteria.isChargingStation()) {
+                    || criteria.isStreetAddress() || criteria.isChargingStation() || criteria.isNamedAirport()) {
                 return JSON.createArrayNode();
             }
             places = List.of(new Place(query, query));
@@ -445,10 +453,11 @@ final class NavigationToolFacade {
                 : result, limit, excluded, constraints);
     }
 
-    private List<Candidate> constrainedDetails(List<Place> places, Constraints constraints,
-                                              Search search, double[] center, int radius, int limit,
-                                              Set<CandidateKey> excluded) {
-        FunctionTool detail = tools.get("maps_search_detail");
+    private List<Candidate> verifiedDetails(List<Place> places, Constraints constraints,
+                                            Search search, double[] center, int radius, int limit,
+                                            Set<CandidateKey> excluded, List<Candidate> direct) {
+        Set<CandidateKey> seen = new LinkedHashSet<>(excluded);
+        for (Candidate candidate : direct) seen.add(CandidateKey.from(candidate));
         List<Candidate> matches = new ArrayList<>();
         Set<String> queriedIds = new LinkedHashSet<>();
         for (Place place : places) {
@@ -457,34 +466,38 @@ final class NavigationToolFacade {
                     || !search.matches(place.name(), place.address(), place.city(), place.district())
                     || !queriedIds.add(place.id())) continue;
             try {
-                JsonNode raw = parseEmbeddedJson(callRateLimitedPoiTool(detail, arguments(detail, Map.of("id", place.id()))));
-                JsonNode poi = findPoiById(raw, place.id());
-                if (poi == null) continue;
-                String category = firstText(poi, "type");
-                String alias = firstText(poi, "alias");
-                String detailName = firstText(poi, "name");
-                String name = detailName.isBlank() ? place.name() : detailName;
-                double[] coordinates = point(poi);
-                if (coordinates == null || !constraints.matches(name, category, alias)) continue;
-                String address = firstText(poi, "address");
-                String city = firstText(poi, "city", "cityname");
-                String district = firstText(poi, "adname", "district");
-                Candidate candidate = new Candidate(name, coordinates[1], coordinates[0],
-                        address.isBlank() ? place.address() : address,
-                        city.isBlank() ? place.city() : city,
-                        district.isBlank() ? place.district() : district,
-                        category, alias, Instant.now());
-                if (validCoordinates(candidate) && withinRadius(center, candidate, radius)
+                Candidate candidate = poiDetail(place);
+                if (candidate != null && withinRadius(center, candidate, radius)
+                        && constraints.matches(candidate.name(), candidate.category(), candidate.alias())
                         && search.matches(candidate.name(), candidate.address(), candidate.city(), candidate.district())
-                        && !excluded.contains(CandidateKey.from(candidate))) {
+                        && seen.add(CandidateKey.from(candidate))) {
                     matches.add(candidate);
                 }
             } catch (McpToolException error) {
                 if (Thread.currentThread().isInterrupted()) throw error;
-                LOG.warn("AMap place detail could not be verified: {}", error.getMessage());
+                LOG.warn("AMap place detail could not be verified: {}", error.getClass().getSimpleName());
             }
         }
         return matches;
+    }
+
+    private Candidate poiDetail(Place place) {
+        FunctionTool detail = tools.get("maps_search_detail");
+        JsonNode raw = parseEmbeddedJson(callRateLimitedPoiTool(detail, arguments(detail, Map.of("id", place.id()))));
+        JsonNode poi = findPoiById(raw, place.id());
+        if (poi == null) return null;
+        double[] coordinates = point(poi);
+        if (coordinates == null) return null;
+        String name = firstText(poi, "name");
+        String address = firstText(poi, "address");
+        String city = firstText(poi, "city", "cityname");
+        String district = firstText(poi, "adname", "district");
+        Candidate candidate = new Candidate(name.isBlank() ? place.name() : name, coordinates[1], coordinates[0],
+                address.isBlank() ? place.address() : address,
+                city.isBlank() ? place.city() : city,
+                district.isBlank() ? place.district() : district,
+                firstText(poi, "type"), firstText(poi, "alias"), Instant.now());
+        return validCoordinates(candidate) ? candidate : null;
     }
 
     private static JsonNode findPoiById(JsonNode node, String id) {
@@ -901,9 +914,22 @@ final class NavigationToolFacade {
                 .toList();
         if (exact.size() > 1 || landmarks.size() > 1) return "";
         if (exact.size() == 1) return exact.getFirst();
-        if (landmarks.size() != 1 || !tools.containsKey("maps_geo")) return "";
+        if (landmarks.size() != 1) return "";
 
         Place place = landmarks.getFirst();
+        if (!place.id().isBlank() && tools.containsKey("maps_search_detail")) {
+            try {
+                Candidate detail = poiDetail(place);
+                if (detail != null && criteria.matchesReference(detail.name(), detail.address())
+                        && criteria.matchesArea(detail.name(), detail.address(), detail.city(), detail.district())) {
+                    return detail.lon() + "," + detail.lat();
+                }
+            } catch (McpToolException error) {
+                if (Thread.currentThread().isInterrupted()) throw error;
+                LOG.warn("AMap reference detail could not be verified: {}", error.getClass().getSimpleName());
+            }
+        }
+        if (!tools.containsKey("maps_geo")) return "";
         String placeCity = city.isBlank() ? place.city() : city;
         if (placeCity.isBlank() && place.address().isBlank()) return "";
         FunctionTool geo = tools.get("maps_geo");
@@ -985,10 +1011,11 @@ final class NavigationToolFacade {
                 }
             }
             Matcher relative = REFERENCE_QUERY.matcher(query);
-            if (reference.isBlank() && relative.matches()
+            if (relative.matches()
                     && !Set.of("我", "当前位置", "这里", "这儿", "车辆").contains(relative.group(1))) {
-                reference = relative.group(1);
-                query = relative.group(2);
+                String spokenReference = relative.group(1);
+                if (reference.isBlank()) reference = spokenReference;
+                if (matchesReferenceName(reference, spokenReference, city)) query = relative.group(2);
             }
             if (entrance.isBlank()) {
                 Matcher component = ENTRANCE.matcher(compact(query));
@@ -1013,13 +1040,35 @@ final class NavigationToolFacade {
 
         boolean matchesReference(String name, String address) {
             String anchor = compact(reference);
-            return compact(name).equals(anchor) || compact(address).equals(anchor)
+            return matchesReferenceName(reference, name, city) || compact(address).equals(anchor)
                     || !name.isBlank() && (compact(name + address).equals(anchor)
                         || compact(address + name).equals(anchor));
         }
 
+        private static boolean matchesReferenceName(String reference, String name, String city) {
+            String anchor = compact(reference);
+            String candidate = compact(name);
+            String cityName = compact(city).replaceFirst("市$", "");
+            return candidate.equals(anchor)
+                    || !cityName.isBlank() && (candidate.equals(cityName + anchor)
+                        || (cityName + candidate).equals(anchor));
+        }
+
         boolean isStreetAddress() {
             return STREET_ADDRESS.matcher(query).matches();
+        }
+
+        boolean isNamedAirport() {
+            return entrance.isBlank() && NAMED_AIRPORT_QUERY.matcher(compact(query)).matches()
+                    && !shouldSearchAround(query);
+        }
+
+        boolean matchesNamedAirport(String name) {
+            String requested = compact(query).replace("国际", "");
+            String actual = compact(name).replace("国际", "");
+            String cityName = compact(city).replaceFirst("市$", "");
+            return actual.equals(requested)
+                    || !cityName.isBlank() && actual.equals(cityName + requested);
         }
 
         boolean isChargingStation() {
@@ -1029,6 +1078,9 @@ final class NavigationToolFacade {
         boolean acceptsGeocode(Candidate point) {
             if (!city.isBlank() && !point.city().isBlank()
                     && !city.replaceFirst("市$", "").equals(point.city().replaceFirst("市$", ""))) return false;
+            if (isNamedAirport() && city.isBlank()) {
+                return compact(point.address()).replace("国际", "").contains(compact(query).replace("国际", ""));
+            }
             return entrance.isBlank() && !isStreetAddress()
                     || matches(point.name().isBlank() ? point.address() : point.name(),
                         point.address(), point.city(), point.district());
@@ -1036,6 +1088,7 @@ final class NavigationToolFacade {
 
         boolean matches(String name, String address, String resultCity, String resultDistrict) {
             if (!matchesArea(name, address, resultCity, resultDistrict)) return false;
+            if (isNamedAirport() && !matchesNamedAirport(name)) return false;
             if (isChargingStation() && !name.matches(".*(?:充电站|充电桩|充电中心|超充|充电场).*")) return false;
             String normalizedName = compact(name);
             String normalizedAddress = compact(address);
@@ -1070,7 +1123,7 @@ final class NavigationToolFacade {
         }
 
         private static String entranceKey(String value) {
-            Matcher terminal = TERMINAL_NUMBER.matcher(value);
+            Matcher terminal = TERMINAL_NUMBER.matcher(value.replaceFirst("^(t[1-9][0-9]*)航站楼$", "$1"));
             if (!terminal.matches()) return value;
             String number = terminal.group(1) == null ? terminal.group(2) : terminal.group(1);
             if (number.length() == 1) {
