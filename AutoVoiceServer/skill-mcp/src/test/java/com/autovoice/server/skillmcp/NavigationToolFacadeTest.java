@@ -19,6 +19,133 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NavigationToolFacadeTest {
     @Test
+    void cityQualifiedBrandKeepsBranchesAndBrandEvidence() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"星巴克(北京三里屯店)","city":"北京市","location":"116.45,39.93"},
+                         {"name":"其他咖啡店","city":"北京市","location":"116.4,39.9"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["北京星巴克"],"constraints":[{"brand":"星巴克"}]}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("星巴克(北京三里屯店)", candidates.get(0).path("poiname").asText());
+        assertEquals("brand", candidates.get(0).path("conditionEvidence").get(0).path("condition").asText());
+    }
+
+    @Test
+    void municipalityCategoryWithoutSeparatorRemainsCategorySearch() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"星巴克咖啡","city":"北京市","location":"116.4,39.9"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("{\"destinations\":[\"北京咖啡店\"]}"));
+        assertEquals("咖啡店", result.path("search").path("query").asText());
+        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
+    }
+
+    @Test
+    void registeredAirportAliasMustBeReverifiedInSameIdDetail() throws Exception {
+        for (String verifiedAlias : List.of("虹桥机场", "其他别名")) {
+            var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+                case "maps_text_search" -> "{\"pois\":[{\"id\":\"root\",\"name\":\"上海国际机场\",\"alias\":\"虹桥机场\"}]}";
+                case "maps_search_detail" -> "{\"id\":\"root\",\"name\":\"上海国际机场\",\"alias\":\"" + verifiedAlias
+                        + "\",\"city\":\"上海市\",\"location\":\"121.33,31.20\"}";
+                default -> "{}";
+            });
+            var result = JSON.readTree(facade.resolve("{\"destinations\":[\"虹桥机场\"],\"location\":\"121.4,31.2\"}"));
+            assertEquals(verifiedAlias.equals("虹桥机场") ? 1 : 0,
+                    result.path("destinations").get(0).path("candidates").size());
+        }
+    }
+
+    @Test
+    void exactStationKeepsFullIdentityAndExhaustedReplayDoesNotFuzzyFill() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> name.equals("maps_text_search") ? """
+                {"pois":[{"name":"北京南站地铁站","location":"116.38,39.86"},
+                         {"name":"北海南站公交站","location":"116.39,39.86"},
+                         {"name":"北京南站东门","location":"116.37,39.86"},
+                         {"name":"北京南站","city":"北京市","location":"116.378517,39.865246"}]}
+                """ : "{}");
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["导航到北京南站"],"location":"116.4,39.9"}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("北京南站", candidates.get(0).path("poiname").asText());
+        assertEquals("北京南站", result.path("search").path("query").asText());
+        var replay = (com.fasterxml.jackson.databind.node.ObjectNode) result.path("search").deepCopy();
+        replay.putArray("destinations").add(replay.remove("query").asText());
+        replay.set("excluded", candidates);
+        var exhausted = JSON.readTree(facade.resolve(replay.toString()));
+        assertTrue(exhausted.path("destinations").get(0).path("candidates").isEmpty());
+        replay.remove("excluded");
+        replay.put("city", "天津");
+        var corrected = JSON.readTree(facade.resolve(replay.toString()));
+        assertEquals("天津", corrected.path("search").path("city").asText());
+        assertTrue(corrected.path("destinations").get(0).path("candidates").isEmpty());
+    }
+
+    @Test
+    void museumProperNameAllowsBranchesButNotOtherMuseumsOrAccessories() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"上海历史博物馆","location":"121.47,31.23"},
+                         {"name":"上海自然博物馆","location":"121.47,31.23"},
+                         {"name":"上海博物馆停车场","location":"121.47,31.23"},
+                         {"name":"上海博物馆(人民广场馆)","location":"121.47,31.23"},
+                         {"name":"上海博物馆(东馆)","location":"121.54,31.22"}]}
+                """);
+        var exact = JSON.readTree(facade.resolve("""
+                {"destinations":["带我去上海博物馆"],"city":"上海"}
+                """));
+        var candidates = exact.path("destinations").get(0).path("candidates");
+        assertEquals(2, candidates.size());
+        assertEquals("上海博物馆(人民广场馆)", candidates.get(0).path("poiname").asText());
+        var branch = JSON.readTree(facade.resolve("""
+                {"destinations":["上海博物馆(东馆)"],"city":"上海"}
+                """));
+        assertEquals(1, branch.path("destinations").get(0).path("candidates").size());
+        assertEquals("上海博物馆(东馆)", branch.path("destinations").get(0).path("candidates").get(0).path("poiname").asText());
+        var generic = JSON.readTree(facade.resolve("""
+                {"destinations":["上海的博物馆"]}
+                """));
+        assertEquals("博物馆", generic.path("search").path("query").asText());
+        assertEquals("上海历史博物馆", generic.path("destinations").get(0).path("candidates").get(0).path("poiname").asText());
+    }
+
+    @Test
+    void airportShortNameUsesSameIdCityEvidenceBeforeRejectingIdentity() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"id":"root","name":"上海虹桥国际机场"},
+                             {"id":"terminal","name":"上海虹桥国际机场T2航站楼"},
+                             {"id":"parking","name":"上海虹桥国际机场停车场"}]}
+                    """;
+            case "maps_search_detail" -> args.contains("root") ? """
+                    {"id":"root","name":"上海虹桥国际机场","city":"上海市","location":"121.33,31.20"}
+                    """ : "{}";
+            default -> "{}";
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["虹桥机场"],"location":"121.4,31.2"}
+                """));
+        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
+        assertEquals("上海虹桥国际机场", result.path("destinations").get(0).path("candidates").get(0).path("poiname").asText());
+    }
+
+    @Test
+    void airportShortNameRejectsUnverifiedPrefixAndMismatchedDetailId() throws Exception {
+        for (String detail : List.of(
+                "{\"id\":\"root\",\"name\":\"其他虹桥国际机场\",\"city\":\"上海市\",\"location\":\"121.33,31.20\"}",
+                "{\"id\":\"wrong\",\"name\":\"上海虹桥国际机场\",\"city\":\"上海市\",\"location\":\"121.33,31.20\"}")) {
+            var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) ->
+                    name.equals("maps_text_search") ? "{\"pois\":[{\"id\":\"root\",\"name\":\"其他虹桥国际机场\"}]}"
+                    : name.equals("maps_search_detail") ? detail : "{}");
+            var result = JSON.readTree(facade.resolve("{\"destinations\":[\"虹桥机场\"],\"location\":\"121.4,31.2\"}"));
+            assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+        }
+    }
+
+    @Test
     void resolvesCoordinateLessTerminalByItsProviderId() throws Exception {
         var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
             case "maps_text_search" -> """

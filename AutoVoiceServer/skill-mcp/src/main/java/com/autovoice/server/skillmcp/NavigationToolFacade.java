@@ -38,7 +38,7 @@ final class NavigationToolFacade {
             ".*(?:附近|周边|最近|就近|旁边|离我近|离当前位置近).*", Pattern.CASE_INSENSITIVE);
     private static final Pattern GENERIC_NEARBY_CATEGORY = Pattern.compile(
             "^(?:找|去|导航去|我要去)?(?:一家|一个|附近的?|周边的?|最近的?)?"
-                    + "(?:咖啡(?:店|馆)?|加油站|充电站|停车场|洗车店|维修店|医院|药店|银行|"
+                    + "(?:咖啡(?:店|馆|厅)?|博物馆|科技馆|门店|加油站|充电站|停车场|洗车店|维修店|医院|药店|银行|"
                     + "厕所|卫生间|餐厅|饭店|酒店|宾馆|商场|超市|便利店|景区|公园|机场|飞机场)$");
     private static final Pattern GENERIC_RAIL_STATION = Pattern.compile(
             "^(?:请|帮我|带我|我要)?(?:导航到|导航去|导航|去|找)?(?:离我最近的?|附近的?|周边的?|最近的?|就近的?)?(?:火车站|高铁站|动车站|铁路站)$");
@@ -72,7 +72,7 @@ final class NavigationToolFacade {
             "解析地点和明确的搜索范围；每站展示最多三个候选。多地点必须按原顺序完整传入，家和公司分别使用“家”和“公司”。保留所有明确条件。不要把未知营业或空闲状态说成已验证。",
             """
             {"type":"object","properties":{
-             "destinations":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":5},
+             "destinations":{"type":"array","description":"保留完整地点专名和分馆，如北京南站、上海博物馆(东馆)、上海虹桥机场；不能因 city 已填写而删去名称内的城市。上海的博物馆才是类别检索。","items":{"type":"string"},"minItems":1,"maxItems":5},
              "location":{"type":"string","description":"车辆坐标 lon,lat；有定位时必填"},
              "city":{"type":"string","description":"填写用户说出的城市，包括连在机场等地点名称前的城市；不要填车辆定位城市"},
              "district":{"type":"string","description":"用户明确指定的区县"},
@@ -199,7 +199,7 @@ final class NavigationToolFacade {
                     resolved.addObject().put("query", destination.asText().strip()).put("savedPlace", savedPlace);
                     continue;
                 }
-                Search search = Search.parse(destination.asText(), args);
+                Search search = Search.parse(destination.asText(), args, conditions);
                 ObjectNode item = resolved.addObject().put("query", search.query());
                 ArrayNode matches;
                 if (location.isBlank() && search.city().isBlank() && search.reference().isBlank()
@@ -367,11 +367,11 @@ final class NavigationToolFacade {
                 .filter(candidate -> constraints.matches(candidate.name(), candidate.category(), candidate.alias()))
                 .filter(candidate -> !candidate.name().isBlank())
                 .filter(candidate -> criteria.matches(candidate.name(), candidate.address(),
-                        candidate.city(), candidate.district()))
+                        candidate.city(), candidate.district(), candidate.alias()))
                 .filter(candidate -> broadAirportQuery && !referenced || withinRadius(center, candidate, radius))
                 .toList();
         if (tools.containsKey("maps_search_detail") && (constraints.active() || !criteria.entrance().isBlank()
-                || criteria.isNamedAirport() || criteria.isChargingStation())) {
+                || criteria.isNamedAirport() || criteria.isExactPlace() || criteria.isChargingStation())) {
             long resolvedCount = direct.stream().map(CandidateKey::from)
                     .filter(key -> !excluded.contains(key)).distinct().limit(limit).count();
             int remaining = limit - (int) resolvedCount;
@@ -408,7 +408,7 @@ final class NavigationToolFacade {
 
         if (places.isEmpty()) {
             if (!criteria.entrance().isBlank() || nearby || !criteria.district().isBlank()
-                    || criteria.isStreetAddress() || criteria.isChargingStation() || criteria.isNamedAirport()) {
+                    || criteria.isStreetAddress() || criteria.isChargingStation() || criteria.isNamedAirport() || criteria.isExactPlace()) {
                 return JSON.createArrayNode();
             }
             places = List.of(new Place(query, query));
@@ -463,13 +463,13 @@ final class NavigationToolFacade {
         for (Place place : places) {
             if (queriedIds.size() == DETAIL_RECALL_LIMIT || matches.size() == limit) break;
             if (place.id().isBlank() || !constraints.matchesBrand(place.name())
-                    || !search.matches(place.name(), place.address(), place.city(), place.district())
+                    || !search.canEnrich(place)
                     || !queriedIds.add(place.id())) continue;
             try {
                 Candidate candidate = poiDetail(place);
                 if (candidate != null && withinRadius(center, candidate, radius)
                         && constraints.matches(candidate.name(), candidate.category(), candidate.alias())
-                        && search.matches(candidate.name(), candidate.address(), candidate.city(), candidate.district())
+                        && search.matches(candidate.name(), candidate.address(), candidate.city(), candidate.district(), candidate.alias())
                         && seen.add(CandidateKey.from(candidate))) {
                     matches.add(candidate);
                 }
@@ -838,7 +838,7 @@ final class NavigationToolFacade {
             String address = firstText(node, "address", "formatted_address");
             if (!name.isBlank()) {
                 out.add(new Place(name, address, firstText(node, "cityname", "city"),
-                        firstText(node, "adname", "district"), firstText(node, "id")));
+                        firstText(node, "adname", "district"), firstText(node, "id"), firstText(node, "alias")));
             }
             node.elements().forEachRemaining(child -> collectPlaces(child, out, limit));
         } else if (node.isArray()) {
@@ -995,7 +995,7 @@ final class NavigationToolFacade {
     }
 
     private record Search(String query, String city, String district, String reference, String entrance) {
-        static Search parse(String destination, JsonNode args) {
+        static Search parse(String destination, JsonNode args, Constraints conditions) {
             String query = DESTINATION_PREFIX.matcher(destination.strip()).replaceFirst("");
             String city = args.path("city").asText("").strip();
             String district = args.path("district").asText("").strip();
@@ -1005,8 +1005,13 @@ final class NavigationToolFacade {
             if (cityPrefix.matches()) {
                 for (int group = 1; group <= cityPrefix.groupCount(); group += 2) {
                     if (cityPrefix.group(group) == null) continue;
-                    city = cityPrefix.group(group);
-                    query = cityPrefix.group(group + 1);
+                    if (city.isBlank()) city = cityPrefix.group(group);
+                    String remainder = cityPrefix.group(group + 1);
+                    String prefix = query.substring(0, query.length() - remainder.length());
+                    // 博物馆的城市前缀可属于专名；其他明确类别保留原有城市类别检索。
+                    if (prefix.endsWith("的") || compact(remainder).equals(compact(conditions.brand()))
+                            || shouldSearchAround(remainder)
+                            && !Set.of("博物馆", "科技馆").contains(compact(remainder))) query = remainder;
                     break;
                 }
             }
@@ -1063,12 +1068,18 @@ final class NavigationToolFacade {
                     && !shouldSearchAround(query);
         }
 
-        boolean matchesNamedAirport(String name) {
+        boolean matchesNamedAirport(String name, String resultCity, String alias) {
             String requested = compact(query).replace("国际", "");
             String actual = compact(name).replace("国际", "");
-            String cityName = compact(city).replaceFirst("市$", "");
-            return actual.equals(requested)
-                    || !cityName.isBlank() && actual.equals(cityName + requested);
+            String cityName = compact(resultCity.isBlank() ? city : resultCity).replaceFirst("市$", "");
+            return isRootAirport(name) && (actual.equals(requested)
+                    || !cityName.isBlank() && actual.equals(cityName + requested)
+                    || hasAirportAlias(alias));
+        }
+
+        boolean hasAirportAlias(String alias) {
+            return java.util.Arrays.stream(alias.split("[;；,，|]"))
+                    .map(NavigationToolFacade::compact).anyMatch(compact(query)::equals);
         }
 
         boolean isChargingStation() {
@@ -1086,9 +1097,42 @@ final class NavigationToolFacade {
                         point.address(), point.city(), point.district());
         }
 
+        boolean canEnrich(Place place) {
+            if (isNamedAirport()) {
+                // 身份仍须在同一 ID 详情内核验；搜索摘要可能缺少城市/登记别名。
+                return isRootAirport(place.name())
+                        && (compact(place.name()).replace("国际", "").endsWith(compact(query).replace("国际", ""))
+                            || hasAirportAlias(place.alias()))
+                        && matchesArea(place.name(), place.address(), place.city(), place.district());
+            }
+            return matches(place.name(), place.address(), place.city(), place.district());
+        }
+
+        boolean isExactPlace() {
+            if (!entrance.isBlank() || isStreetAddress() || isNamedAirport() || shouldSearchAround(query)) return false;
+            return CITY_PREFIX.matcher(query).matches()
+                    || compact(query).matches(".+(?:站|博物馆)(?:[^馆]*馆)?$");
+        }
+
+        boolean matchesExactPlace(String name) {
+            String requested = compact(query);
+            String actual = compact(name);
+            if (actual.equals(requested)) return true;
+            // 指定博物馆可列出其馆区，明确馆区则必须完全一致；附属停车/商店不是馆区。
+            if (!requested.endsWith("博物馆") || !actual.startsWith(requested)) return false;
+            String branch = actual.substring(requested.length());
+            return branch.matches("[\\p{IsHan}]{1,16}馆")
+                    && !branch.matches(".*(?:停车|商店|餐|咖啡|酒店|地铁|公交|售票|纪念品|文创).*");
+        }
+
         boolean matches(String name, String address, String resultCity, String resultDistrict) {
+            return matches(name, address, resultCity, resultDistrict, "");
+        }
+
+        boolean matches(String name, String address, String resultCity, String resultDistrict, String alias) {
             if (!matchesArea(name, address, resultCity, resultDistrict)) return false;
-            if (isNamedAirport() && !matchesNamedAirport(name)) return false;
+            if (isNamedAirport() && !matchesNamedAirport(name, resultCity, alias)) return false;
+            if (isExactPlace() && !matchesExactPlace(name)) return false;
             if (isChargingStation() && !name.matches(".*(?:充电站|充电桩|充电中心|超充|充电场).*")) return false;
             String normalizedName = compact(name);
             String normalizedAddress = compact(address);
@@ -1139,8 +1183,8 @@ final class NavigationToolFacade {
         }
     }
 
-    private record Place(String name, String address, String city, String district, String id) {
-        Place(String name, String address) { this(name, address, "", "", ""); }
+    private record Place(String name, String address, String city, String district, String id, String alias) {
+        Place(String name, String address) { this(name, address, "", "", "", ""); }
         String key() { return id.isBlank() ? compact(name) : id; }
     }
 

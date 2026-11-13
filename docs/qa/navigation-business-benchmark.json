@@ -90,6 +90,42 @@
       "status": "offline_passed",
       "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/navigation/NavigationBusinessBoundaryTest.kt",
       "evidence": "docs/navigation-mixed-trip-report.md"
+    },
+    {
+      "id": "A01-N01",
+      "productId": "A01",
+      "category": "normal",
+      "target": "保留完整车站和博物馆专名；机场简称由同一地点详情核验",
+      "test": "AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/NavigationToolFacadeTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-exact-place-report.md"
+    },
+    {
+      "id": "A01-F01",
+      "productId": "A01",
+      "category": "failure",
+      "target": "机场详情身份不一致或前缀无证据时拒绝错误候选",
+      "test": "AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/NavigationToolFacadeTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-exact-place-report.md"
+    },
+    {
+      "id": "A01-B01",
+      "productId": "A01",
+      "category": "boundary",
+      "target": "指定地点只返回本体或明确分馆，城市类别与品牌查询仍可返回不同门店",
+      "test": "AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/NavigationToolFacadeTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-exact-place-report.md"
+    },
+    {
+      "id": "B05-M01",
+      "productId": "B05",
+      "category": "multi_turn",
+      "target": "精确目标换批耗尽不拿无关地点凑数；城市纠正保留明确新范围",
+      "test": "AutoVoiceServer/skill-mcp/src/test/java/com/autovoice/server/skillmcp/NavigationToolFacadeTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-exact-place-report.md"
     }
   ],
   "routeApiSuite": {
