@@ -16,6 +16,7 @@ public final class RegistrySnapshot {
     private final Map<String, McpToolSession> sessions;
     private final Map<String, McpToolSession> toolOwners;
     private final NavigationToolFacade navigationFacade;
+    private final AmapRoutePreview routePreview;
     private final String systemPrompt;
     private final String chatSystemPrompt;
     private final long createdAtMs;
@@ -25,6 +26,13 @@ public final class RegistrySnapshot {
                             Map<String, McpToolSession> toolOwners,
                             NavigationToolFacade navigationFacade,
                             String systemPrompt, String chatSystemPrompt, long createdAtMs) {
+        this(version, sessions, toolOwners, navigationFacade, null, systemPrompt, chatSystemPrompt, createdAtMs);
+    }
+
+    RegistrySnapshot(long version, Map<String, McpToolSession> sessions,
+                     Map<String, McpToolSession> toolOwners, NavigationToolFacade navigationFacade,
+                     AmapRoutePreview routePreview, String systemPrompt, String chatSystemPrompt, long createdAtMs) {
+        this.routePreview = routePreview;
         this.version = version;
         this.sessions = sessions == null ? Map.of() : Map.copyOf(sessions);
         this.toolOwners = toolOwners == null ? Map.of() : Map.copyOf(toolOwners);
@@ -53,6 +61,10 @@ public final class RegistrySnapshot {
 
     public NavigationToolFacade navigationFacade() {
         return navigationFacade;
+    }
+
+    AmapRoutePreview routePreview() {
+        return routePreview;
     }
 
     public String systemPrompt() {

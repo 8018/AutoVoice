@@ -112,6 +112,32 @@ class NavigationDialogServiceTest {
     }
 
     @Test
+    void retainedPlaceConditionsSurviveBatchAndCityCorrection() throws Exception {
+        var json = new ObjectMapper();
+        var calls = new java.util.ArrayList<String>();
+        var dialog = new NavigationDialogService(arguments -> {
+            calls.add(arguments);
+            return java.util.concurrent.CompletableFuture.completedFuture(Reply.ofText("没有更多地点"));
+        });
+        var offer = chooseReply("咖啡厅", CANDIDATES);
+        var intent = offer.intent();
+        var initial = dialog.remember(CTX, Reply.ofAction(Intent.of("1.0", intent.domain(), intent.intent(),
+                intent.slots(), 1.0, "navigation.resolve", """
+                {"search":{"query":"咖啡厅","city":"杭州","constraints":[{"brand":"目标品牌","category":"咖啡厅"}]}}
+                """), offer.speakText()));
+        var context = modern((String) initial.intent().slots().get("selectionId").value());
+        dialog.complete(context, "换一批", () -> fail("unexpected model call")).join();
+        dialog.complete(context, "不是杭州，是上海", () -> fail("unexpected model call")).join();
+        assertEquals(2, calls.size());
+        for (String arguments : calls) {
+            var constraints = json.readTree(arguments).path("constraints").path(0);
+            assertEquals("目标品牌", constraints.path("brand").asText());
+            assertEquals("咖啡厅", constraints.path("category").asText());
+        }
+        assertEquals("上海", json.readTree(calls.get(1)).path("city").asText());
+    }
+
+    @Test
     void lateBatchAfterCloseCannotProduceReplacementAction() {
         var search = new java.util.concurrent.CompletableFuture<Reply>();
         var dialog = new NavigationDialogService(arguments -> search);
@@ -130,6 +156,64 @@ class NavigationDialogServiceTest {
         var intent = offer.intent();
         return Reply.ofAction(Intent.of("1.0", intent.domain(), intent.intent(), intent.slots(), 1.0,
                 "navigation.resolve", "{\"search\":{\"query\":\"万达广场\",\"city\":\"" + city + "\"}}"), offer.speakText());
+    }
+
+    @Test
+    void routeQuestionMarksCandidatesEvenWhenModelOmitsPreviewPreference() {
+        var service = dialog();
+        var offer = service.complete(CTX, "去机场要多久？", () ->
+                java.util.concurrent.CompletableFuture.completedFuture(chooseReply())).join();
+        assertEquals("DEFAULT", offer.intent().slots().get("routePreviewPreference").value());
+    }
+
+    @Test
+    void routeQuestionRejectsDirectNavigationAndCurrentTripQuestionNeedsLiveEvidence() {
+        var service = dialog();
+        var navigate = Intent.of("1.0", "navigation", "navigate", Map.of(), 1, "model", null);
+        var query = service.complete(CTX, "只算一下去机场的路线，不用导航", () ->
+                java.util.concurrent.CompletableFuture.completedFuture(Reply.ofAction(navigate, "开始导航"))).join();
+        assertNull(query.intent());
+        assertFalse(query.text().contains("开始导航"));
+
+        var current = service.complete(CTX, "还有多久到机场？", () ->
+                fail("remaining trip questions cannot use departure planning")).join();
+        assertNull(current.intent());
+        assertTrue(current.text().contains("实时"));
+    }
+
+    @Test
+    void routePreferenceSurvivesCityCorrectionEvenWhenSecondSearchOmitsIt() throws Exception {
+        var requests = new java.util.ArrayList<String>();
+        var service = new NavigationDialogService(args -> {
+            requests.add(args);
+            return java.util.concurrent.CompletableFuture.completedFuture(searchReply("上海", CANDIDATES));
+        });
+        var offer = service.complete(CTX, "预览去万达广场的路线，不走高速", () ->
+                java.util.concurrent.CompletableFuture.completedFuture(searchReply("北京", CANDIDATES))).join();
+        service.commit(CTX, offer);
+        String selection = (String) offer.intent().slots().get("selectionId").value();
+        service.adoptExact(CTX, selection);
+        var replacement = service.complete(modern(selection), "不是北京，是上海", () ->
+                fail("city correction must use the original lookup")).join();
+        assertEquals("AVOID_HIGHWAYS", new ObjectMapper().readTree(requests.getFirst())
+                .path("routePreviewPreference").asText());
+        assertEquals("AVOID_HIGHWAYS", replacement.intent().slots().get("routePreviewPreference").value());
+    }
+
+    @Test
+    void selectingDestinationForRouteEstimateDoesNotStartNavigation() {
+        var service = dialog();
+        var base = chooseReply("机场", CANDIDATES).intent();
+        var slots = new java.util.LinkedHashMap<>(base.slots());
+        slots.put("routePreviewPreference", SlotValue.stringValue("AVOID_HIGHWAYS"));
+        var intent = Intent.of("1.0", base.domain(), base.intent(), slots, 1.0,
+                "navigation.resolve", "{\"search\":{\"query\":\"机场\"}}");
+        var offer = service.remember(CTX, Reply.ofAction(intent, "选目的地"));
+        var context = modern((String) offer.intent().slots().get("selectionId").value());
+        var reply = service.resolve(context, "第二个").orElseThrow();
+        assertEquals("preview_routes", reply.intent().intent());
+        assertEquals("AVOID_HIGHWAYS", reply.intent().slots().get("routePreviewPreference").value());
+        assertFalse(reply.speakText().contains("开始导航"));
     }
 
     @Test

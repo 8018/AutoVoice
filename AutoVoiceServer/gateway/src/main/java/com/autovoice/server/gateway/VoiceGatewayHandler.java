@@ -2,6 +2,7 @@ package com.autovoice.server.gateway;
 
 import com.autovoice.server.arbitration.DecisionSink;
 import com.autovoice.server.arbitration.RaceArbiter;
+import com.autovoice.server.contracts.NavigationRoutePreview;
 import com.autovoice.server.contracts.CloudArbiterEvent;
 import com.autovoice.server.contracts.DecisionEntry;
 import com.autovoice.server.contracts.Intent;
@@ -34,6 +35,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.Objects;
@@ -110,6 +112,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     private final long asrFailWaitMs;
     private final long offlineGraceMs;
     private final GatewayDownlink downlink;
+    private final GatewayRoutePreviewEndpoint routePreviewEndpoint;
 
     /** 接入网关（M1）：authEnabled=false → 裸连兼容（本地）；否则 hello 须携带合法 deviceId+authToken。 */
     private final boolean authEnabled;
@@ -234,6 +237,36 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                                com.autovoice.server.contracts.ConnectionQuota connectionQuota,
                                long helloDeadlineMs, long drainTimeoutMs,
                                long downlinkBudgetBytes) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                navigationDialog, connectionQuota, helloDeadlineMs, drainTimeoutMs,
+                downlinkBudgetBytes, NavigationRoutePreview.NONE);
+    }
+
+    public VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
+                               com.autovoice.server.contracts.ConnectionQuota connectionQuota,
+                               long helloDeadlineMs, long drainTimeoutMs,
+                               NavigationRoutePreview routePreview) {
+        this(online, tts, offline, registry, safetyTimeoutMs, asrFailWaitMs, offlineGraceMs,
+                authEnabled, authDevices, maxConnections, maxAudioBytes, recorder,
+                navigationDialog, connectionQuota, helloDeadlineMs, drainTimeoutMs,
+                DEFAULT_DOWNLINK_BUDGET_BYTES, routePreview);
+    }
+
+    private VoiceGatewayHandler(OnlineSpeechProvider online, TtsProvider tts,
+                               OfflineCommandService offline, SessionRegistry registry,
+                               long safetyTimeoutMs, long asrFailWaitMs, long offlineGraceMs,
+                               boolean authEnabled, Map<String, String> authDevices, int maxConnections,
+                               int maxAudioBytes, TelemetryRecorder recorder,
+                               com.autovoice.server.contracts.NavigationDialog navigationDialog,
+                               com.autovoice.server.contracts.ConnectionQuota connectionQuota,
+                               long helloDeadlineMs, long drainTimeoutMs,
+                               long downlinkBudgetBytes, NavigationRoutePreview routePreview) {
         this.downlinkBudgetBytes = downlinkBudgetBytes < 1
                 ? DEFAULT_DOWNLINK_BUDGET_BYTES : downlinkBudgetBytes;
         this.downlink = new GatewayDownlink((int) Math.min(Integer.MAX_VALUE,
@@ -246,6 +279,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         this.online = online;
         this.textEndpoint = new GatewayTextEndpoint(online instanceof OnlineTextProvider provider ? provider : null);
         this.ttsEndpoint = new GatewayTtsEndpoint(tts, downlink);
+        this.routePreviewEndpoint = new GatewayRoutePreviewEndpoint(routePreview, downlink);
         this.offline = offline;
         this.registry = registry;
         this.safetyTimeoutMs = safetyTimeoutMs;
@@ -267,6 +301,17 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         var waypoints = intent.slots().get("waypoints");
         return "navigate".equals(intent.intent()) && waypoints != null
                 && waypoints.value() instanceof String value && !value.isBlank();
+    }
+
+    private static boolean requiresRoutePreview(Intent intent) {
+        return intent != null && "navigation".equals(intent.domain())
+                && ("preview_routes".equals(intent.intent())
+                    || (intent.slots() != null && intent.slots().containsKey("routePreviewPreference")));
+    }
+
+    private static boolean supportsRoutePreview(SessionContext context) {
+        return context != null && Boolean.TRUE.equals(
+                context.attrs().get(GatewayRoutePreviewEndpoint.CAPABILITY));
     }
 
     private void commitNavigationOnAdmit(SessionContext ctx, SegmentPipeline.SegmentResult result) {
@@ -392,6 +437,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             case "turn_commit" -> onTurnCommit(st, castPayload(msg));
             case "travel_start" -> onTravelStart(st, castPayload(msg));
             case "tts_request" -> ttsEndpoint.request(session, st.ctx, st.downlinkBudget, castPayload(msg));
+            case "navigation_route_preview" -> routePreviewEndpoint.request(
+                    session, st.ctx, st.routePreviewPending, castPayload(msg));
             case "navigation_selection_start" -> onNavigationSelectionStart(st, castPayload(msg));
             case "cancel_turn" -> onCancelTurn(st, castPayload(msg));
             case "chat_start" -> st.realtimeChat.start(stringValue(castPayload(msg).get("chatId")));
@@ -540,7 +587,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             }
         }
         boolean tripDraftSupported = TRIP_DRAFT_PROTOCOL_VERSION.equals(payload.get("protocolVersion"));
-        st.ctx = st.ctx.withAttr(TRIP_DRAFT_CAPABILITY, tripDraftSupported);
+        boolean routePreviewSupported = payload.get("capabilities") instanceof List<?> requested
+                && requested.contains(GatewayRoutePreviewEndpoint.CAPABILITY);
+        st.ctx = st.ctx.withAttr(TRIP_DRAFT_CAPABILITY, tripDraftSupported)
+                .withAttr(GatewayRoutePreviewEndpoint.CAPABILITY, routePreviewSupported);
         Map<String, Object> ready = new LinkedHashMap<>();
         ready.put("sessionId", st.ctx.sessionId());
         ready.put("language", st.ctx.language());
@@ -550,7 +600,12 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         ready.put("sessionState", sessionState);
         ready.put("navigationCandidatesValid", navigationDialog.hasPending(st.ctx));
         ready.put("protocolVersion", tripDraftSupported ? TRIP_DRAFT_PROTOCOL_VERSION : PROTOCOL_VERSION);
-        if (textEndpoint.supported()) ready.put("capabilities", java.util.List.of(GatewayTextEndpoint.CAPABILITY));
+        var capabilities = new java.util.ArrayList<String>();
+        if (textEndpoint.supported()) capabilities.add(GatewayTextEndpoint.CAPABILITY);
+        if (routePreviewSupported && routePreviewEndpoint.supported()) {
+            capabilities.add(GatewayRoutePreviewEndpoint.CAPABILITY);
+        }
+        if (!capabilities.isEmpty()) ready.put("capabilities", capabilities);
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());
         downlink.send(session, "ready", ready);
@@ -950,6 +1005,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 drainDecisions(session, st, utteranceId, false);
                 return;
             }
+            if (!supportsRoutePreview(ctx) && requiresRoutePreview(result.intent())) {
+                String message = "请更新应用后查看路线预览。";
+                result = new SegmentPipeline.SegmentResult(message, message, null, result.asrText());
+            }
             if (!Boolean.TRUE.equals(ctx.attrs().get(TRIP_DRAFT_CAPABILITY)) && requiresTripDraft(result.intent())) {
                 String message = "请更新应用后再确认多地点行程。";
                 result = new SegmentPipeline.SegmentResult(message, message, null, result.asrText());
@@ -1078,7 +1137,9 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("segmentId", segmentId);
                 if (speakText != null && !speakText.isBlank()) payload.put("speakText", speakText);
-                if (intent != null) payload.put("intent", intent);
+                if (intent != null && (!requiresRoutePreview(intent) || supportsRoutePreview(st.ctx))) {
+                    payload.put("intent", intent);
+                }
                 if (asrText != null && !asrText.isBlank()) payload.put("asrText", asrText);
                 downlink.send(session, "audio_reply_end", payload);
             }
@@ -1204,6 +1265,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
             t.setDaemon(true);
             return t;
         });
+        final java.util.concurrent.atomic.AtomicReference<String> routePreviewPending = new java.util.concurrent.atomic.AtomicReference<>();
         final Queue<DecisionEntry> pendingDecisions = new ConcurrentLinkedQueue<>();
         final ConcurrentMap<String, TurnOutputPermit> outputPermits = new ConcurrentHashMap<>();
         final java.util.concurrent.atomic.AtomicLong nextTurnOrder = new java.util.concurrent.atomic.AtomicLong();

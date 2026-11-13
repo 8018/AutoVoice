@@ -33,14 +33,15 @@ public final class GatewayCodec {
             "hello", "audio_start", "audio_end", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "travel_start", "pending", "reply", "error", "bye",
             "tts_request", "tts_response", "cancel_turn", "turn_commit", "audio_reply_start", "audio_reply_end",
             "chat_start", "chat_ready", "chat_finish", "chat_speech_started",
-            "navigation_selection_start", "navigation_context_result", "text_request");
+            "navigation_selection_start", "navigation_context_result", "text_request",
+            "navigation_route_preview", "navigation_route_preview_result");
 
     /** reply 消息的合法 kind。 */
     private static final Set<String> REPLY_KINDS = Set.of("text", "audio", "action");
 
     /** 每类消息 payload 允许输出的字段白名单（encode 只输出白名单字段）。 */
     private static final Map<String, Set<String>> FIELD_WHITELIST = Map.ofEntries(
-            Map.entry("hello", Set.of("client", "protocolVersion", "sessionId", "deviceId", "authToken")),
+            Map.entry("hello", Set.of("client", "protocolVersion", "sessionId", "deviceId", "authToken", "capabilities")),
             Map.entry("audio_start", Set.of("sessionId", "sampleRate", "channels", "encoding", "segmentId", "utteranceId",
                     "latitude", "longitude", "attempt", "navigationSelectionId", "navigationTaskId",
                     "navigationTaskRevision", "navigationInteractionId", "taskDialogVersion")),
@@ -49,6 +50,9 @@ public final class GatewayCodec {
                     "text", "language", "inputSource", "contextVersion", "context")),
             Map.entry("navigation_selection_start", Set.of("sessionId", "selectionId", "taskId", "taskRevision",
                     "interactionId", "active")),
+            Map.entry("navigation_route_preview", Set.of("sessionId", "operationId", "origin", "destination", "waypoints", "preference")),
+            Map.entry("navigation_route_preview_result", Set.of("operationId", "status", "routeSetId", "plannedAtMs",
+                    "source", "origin", "destination", "waypoints", "preference", "routes")),
             Map.entry("navigation_context_result", Set.of("taskId", "taskRevision", "interactionId", "selectionId", "status")),
             Map.entry("ready", Set.of("sessionId", "language", "resumeToken", "protocolVersion", "serverTime", "sessionState", "navigationCandidatesValid", "capabilities")),
             Map.entry("decision", Set.of("arbiter", "route", "reason", "utteranceId", "timestampMs")),
@@ -80,6 +84,8 @@ public final class GatewayCodec {
             Map.entry("audio_end", List.of("sessionId", "durationMs")),
             Map.entry("text_request", List.of("sessionId", "requestId", "utteranceId", "segmentId",
                     "text", "language", "inputSource", "contextVersion", "context")),
+            Map.entry("navigation_route_preview", List.of("sessionId", "operationId", "destination", "preference")),
+            Map.entry("navigation_route_preview_result", List.of("operationId", "status", "routes", "waypoints")),
             Map.entry("chat_start", List.of("sessionId")),
             Map.entry("chat_finish", List.of("sessionId")),
             Map.entry("cancel_turn", List.of("segmentId")),

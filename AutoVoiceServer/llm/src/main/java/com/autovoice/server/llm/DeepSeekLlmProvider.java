@@ -603,7 +603,13 @@ public final class DeepSeekLlmProvider implements LlmProvider, AutoCloseable {
             prompt += "\n单目的地导航必须先调用 resolve_navigation 展示候选；本轮不要自行选择候选，"
                     + "也不要直接调用 navigate。用户下一轮明确说序号或名称后才开始导航。"
                     + "多地点导航把所有地点按口述顺序放进一次 resolve_navigation；系统会为每站"
-                    + "选最优结果并直接打开路线预览，不询问候选、不自动开始导航。";
+                    + "保留候选并创建草稿，等待用户确认。"
+                    + "多条件找地点时，把明确的品牌、类别、具体别名、描述性特征和当前营业要求写进逐站 constraints。"
+                    + "沿途兼容快充、到达保留电量、充电并休息用 chargingPlan。单纯找附近充电站用普通地点查询。"
+                    + "工具提示条件未知或缺少规划数据时，按工具结果说明。"
+                    + "用户要求预览路线、比较路线、问去某地要多久或多远、或给出路线偏好时，"
+                    + "调用 resolve_navigation 并填写 routePreviewPreference，无明确偏好填 DEFAULT，等待用户选择目的地。"
+                    + "这些请求禁止调用 navigate。";
         }
         Object lat = ctx == null ? null : ctx.attrs().get("latitude");
         Object lon = ctx == null ? null : ctx.attrs().get("longitude");

@@ -405,6 +405,12 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
                     + "For multiple destinations, send every stop in spoken order in one resolve_navigation call. "
                     + "Use 家 or 公司 for the user's saved home or workplace. Never omit a stop or choose "
                     + "one of several matches. The device shows a draft and waits for confirmation before opening the map."
+                    + "Put explicit brand, category, feature or alias, and open-now requirements in per-stop constraints. "
+                    + "Use chargingPlan for compatible charging along a route, minimum arrival battery, or charging with a rest stop. "
+                    + "Report unknown conditions and missing planning inputs as returned by the tool."
+                    + "For route preview, route comparison, travel time, distance, or a stated routing preference, "
+                    + "call resolve_navigation with routePreviewPreference, using DEFAULT for an unspecified preference. "
+                    + "Wait for the user to choose the destination and never call navigate for these requests."
                 : "";
     }
 

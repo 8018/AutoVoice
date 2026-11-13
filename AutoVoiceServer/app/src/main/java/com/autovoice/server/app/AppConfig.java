@@ -349,7 +349,8 @@ public class AppConfig {
                                                    SessionRegistry registry,
                                                    AutovoiceProperties props,
                                                    TelemetryRecorder recorder,
-                                                   NavigationDialog navigationDialog) {
+                                                   NavigationDialog navigationDialog,
+                                                   com.autovoice.server.contracts.NavigationRoutePreview routePreview) {
         AutovoiceProperties.Gateway g = props.gateway();
         long safetyTimeoutMs = Math.max(
                 props.arbitration().safetyTimeoutMs(), online.minimumTurnTimeoutMs());
@@ -358,7 +359,7 @@ public class AppConfig {
                 props.arbitration().offlineGraceMs(), g.authEnabled(), g.authDevicesMap(), g.maxConnections(),
                 g.maxAudioBytes(), recorder, navigationDialog,
                 new com.autovoice.server.contracts.ConnectionQuota(g.maxConnectionsPerDevice()),
-                g.helloDeadlineMs(), g.drainTimeoutMs());
+                g.helloDeadlineMs(), g.drainTimeoutMs(), routePreview);
     }
 
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppConfig.class);

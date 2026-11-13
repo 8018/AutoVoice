@@ -1,6 +1,7 @@
 package com.autovoice.server.agentloop;
 
 import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.NavigationRoutePreview;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SlotValue;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -18,6 +19,7 @@ public final class NavigationCandidateReplies {
     public static final String DOMAIN = "navigation";
     public static final String CHOOSE_INTENT = "choose_destination";
     public static final String SLOT_QUERY = "query";
+    public static final String SLOT_PREVIEW_PREFERENCE = "routePreviewPreference";
     public static final String SLOT_CANDIDATES = "candidates";
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -41,12 +43,27 @@ public final class NavigationCandidateReplies {
     public static Optional<Reply> fromResolution(String content) {
         try {
             JsonNode resolution = JSON.readTree(content);
+            if (resolution.path("blocked").asBoolean(false)) {
+                String message = resolution.path("message").asText("");
+                return Optional.of(Reply.ofText(message.isBlank()
+                        ? "暂时无法核实你要求的地点条件，请补充信息后再试。" : message));
+            }
             JsonNode destinations = resolution.path("destinations");
             if (!destinations.isArray() || destinations.isEmpty()) {
                 String message = resolution.path("message").asText("");
                 return message.isBlank() ? Optional.empty() : Optional.of(Reply.ofText(message));
             }
-            if (destinations.size() > 1) return multiStopReply(destinations);
+            NavigationRoutePreview.Preference previewPreference = null;
+            if (resolution.has(SLOT_PREVIEW_PREFERENCE)) {
+                try {
+                    previewPreference = NavigationRoutePreview.Preference.valueOf(
+                            resolution.path(SLOT_PREVIEW_PREFERENCE).asText(""));
+                } catch (IllegalArgumentException invalidPreference) {
+                    return Optional.of(Reply.ofText("暂不支持这个路线偏好，请重新指定。"));
+                }
+            }
+            if (destinations.size() > 1) return multiStopReply(destinations, previewPreference,
+                    resolution.path("availabilityNotice").asText(""));
             for (JsonNode destination : destinations) {
                 if (destination.path("candidates").isArray() && destination.path("candidates").isEmpty()) {
                     String message = resolution.path("message").asText("");
@@ -68,10 +85,15 @@ public final class NavigationCandidateReplies {
                 displayed.add(candidate);
                 String name = candidate.path("poiname").asText();
                 String address = candidate.path("address").asText();
+                String match = candidate.path("matchSummary").asText("");
                 descriptions.add("第" + displayed.size() + "个，" + name
-                        + (address.isBlank() ? "" : "，" + address));
+                        + (address.isBlank() ? "" : "，" + address)
+                        + (match.isBlank() ? "" : "，" + match));
             }
             Map<String, SlotValue> slots = new LinkedHashMap<>();
+            if (previewPreference != null) {
+                slots.put(SLOT_PREVIEW_PREFERENCE, SlotValue.stringValue(previewPreference.name()));
+            }
             slots.put(SLOT_QUERY, SlotValue.stringValue(query));
             slots.put(SLOT_CANDIDATES, SlotValue.stringValue(displayed.toString()));
             Intent intent = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0,
@@ -86,7 +108,9 @@ public final class NavigationCandidateReplies {
         }
     }
 
-    private static Optional<Reply> multiStopReply(JsonNode destinations) {
+    private static Optional<Reply> multiStopReply(JsonNode destinations,
+                                                  NavigationRoutePreview.Preference previewPreference,
+                                                  String notice) {
         if (destinations.size() > 5) {
             return Optional.of(Reply.ofText("一次最多安排5个地点，请减少地点后重试。"));
         }
@@ -116,12 +140,17 @@ public final class NavigationCandidateReplies {
                         .put("lat", lat.asDouble()).put("lon", lon.asDouble());
                 String address = candidate.path("address").asText("");
                 if (!address.isBlank()) copy.put("address", address);
+                String match = candidate.path("matchSummary").asText("");
+                if (!match.isBlank() && match.length() <= 256) copy.put("matchSummary", match);
             }
         }
         Map<String, SlotValue> slots = new LinkedHashMap<>();
         slots.put("stops", SlotValue.stringValue(stops.toString()));
+        if (previewPreference != null) {
+            slots.put(SLOT_PREVIEW_PREFERENCE, SlotValue.stringValue(previewPreference.name()));
+        }
         Intent intent = Intent.of("1.0", DOMAIN, "draft_trip", slots, 1.0,
                 "navigation.resolve.multi_stop", null);
-        return Optional.of(Reply.ofAction(intent, "请查看行程草稿"));
+        return Optional.of(Reply.ofAction(intent, notice + "请查看行程草稿"));
     }
 }

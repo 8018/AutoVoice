@@ -1,0 +1,18 @@
+{
+  "type": "navigation_route_preview_result",
+  "payload": {
+    "operationId": "route-op-1",
+    "status": "OK",
+    "routeSetId": "demo-preview",
+    "plannedAtMs": 1794538200000,
+    "source": "AMAP_WEB",
+    "origin": { "latitude": 39.908722, "longitude": 116.397499, "coordinateSystem": "GCJ02" },
+    "destination": { "latitude": 39.902753, "longitude": 116.410886, "coordinateSystem": "GCJ02" },
+    "waypoints": [],
+    "preference": "DEFAULT",
+    "routes": [
+      { "id": "demo-preview:1", "distanceMeters": 3215, "durationSeconds": 1099, "tollYuan": 0 },
+      { "id": "demo-preview:2", "distanceMeters": 3413, "durationSeconds": 999, "tollYuan": null }
+    ]
+  }
+}

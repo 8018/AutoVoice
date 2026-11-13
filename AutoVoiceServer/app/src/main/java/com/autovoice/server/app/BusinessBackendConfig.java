@@ -9,6 +9,7 @@ import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.FunctionTool;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.NavigationDialog;
+import com.autovoice.server.contracts.NavigationRoutePreview;
 import com.autovoice.server.contracts.ToolProvider;
 import com.autovoice.server.contracts.TravelGuideProvider;
 import com.autovoice.server.contracts.telemetry.TelemetryRecorder;
@@ -88,6 +89,19 @@ public class BusinessBackendConfig {
         return new NavigationDialogService(arguments -> agentRuntime.submitToolRead(() ->
                 NavigationCandidateReplies.fromResolution(registry.callTool(
                         NavigationCandidateReplies.RESOLVE_TOOL, arguments)).orElseThrow()));
+    }
+
+    @Bean
+    public NavigationRoutePreview navigationRoutePreview(McpSkillRegistry registry, AgentExecutionRuntime runtime) {
+        return new NavigationRoutePreview() {
+            @Override public boolean available() {
+                return registry.routePreviewAvailable();
+            }
+
+            @Override public java.util.concurrent.CompletableFuture<Result> plan(Request request) {
+                return runtime.submitToolRead(() -> registry.previewRoutes(request));
+            }
+        };
     }
 
     @Bean(destroyMethod = "close")

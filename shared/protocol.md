@@ -821,3 +821,11 @@ do not provide cross-device identity protection. A modern list cannot accept an 
 The protocol does not restore pending selections after reconnect or a new server session; users
 are asked to search again. A late close is scoped to its exact task revision and cannot invalidate
 a replacement list.
+
+### 出发前驾车路线预览
+
+客户端在 `hello.capabilities` 声明 `navigation_route_preview`。网关在 `ready.capabilities` 回应这项能力后，客户端可向当前会话发送同名消息。请求包含 `sessionId`、`operationId`、`destination`、`preference`，以及来自本轮有效定位的 `origin` 和按顺序排列的最多 4 个 `waypoints`。各坐标明确包含 `latitude`、`longitude`、`coordinateSystem`，其中手机 GPS 使用 `WGS84`，高德地点使用 `GCJ02`。缺起点时提示开启定位。客户端每次新预览生成唯一操作 ID，结果只交给仍在等待该操作的页面。
+
+`navigation_route_preview_result` 回显 `operationId`，成功时包含 `routeSetId`、`plannedAtMs`、`source: AMAP_WEB`、实际算路使用的高德坐标、偏好和 `routes`。每个方案的 `id` 只在本次预览中有效。预计米数、预计秒数和过路费（元）可能为空。外部地图打开后会重新算路。
+
+`preference` 支持 `DEFAULT`、`AVOID_CONGESTION`、`PREFER_HIGHWAYS`、`AVOID_HIGHWAYS`、`LESS_TOLLS` 和 `FASTEST`，由高德作为规划策略应用。可返回 `ORIGIN_REQUIRED`、`INVALID_REQUEST`、`UNAVAILABLE`、`NO_ROUTE` 或 `BUSY`，这些结果的 `routes` 为空。预览数据只用于出发前估算。

@@ -3,6 +3,7 @@ package com.autovoice.server.gateway;
 import com.autovoice.server.contracts.AsrException;
 import com.autovoice.server.contracts.AsrProvider;
 import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.NavigationRoutePreview;
 import com.autovoice.server.contracts.LlmProvider;
 import com.autovoice.server.contracts.OnlineSpeechProvider;
 import com.autovoice.server.contracts.OnlineSpeechResult;
@@ -1113,6 +1114,87 @@ class VoiceGatewayHandlerTest {
         JsonNode reply = awaitType(s, "reply");
         assertEquals("choose_destination", reply.path("payload").path("intent").path("intent").asText());
         assertTrue(dialog.hasPending(registry.get(sid)), "获准输出的导航候选应已提交");
+    }
+
+    @Test
+    void olderClientNeverReceivesRoutePreviewAsOrdinaryDestinationSelection() throws Exception {
+        var dialog = new NavigationDialogService();
+        Reply base = chooseCandidatesReply();
+        Intent intent = base.intent();
+        var slots = new java.util.LinkedHashMap<>(intent.slots());
+        slots.put("routePreviewPreference", com.autovoice.server.contracts.SlotValue.stringValue("DEFAULT"));
+        Reply preview = Reply.ofAction(Intent.of("1.0", "navigation", "choose_destination",
+                slots, 1, "navigation.resolve", intent.rawSemantic()), base.speakText());
+        var handler = new VoiceGatewayHandler(new ClassicOnlineSpeechProvider(
+                asr("去机场需要多久"), (text, context) -> CompletableFuture.completedFuture(preview), dialog),
+                ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500, false, Map.of(), 32,
+                1_920_000, NoopTelemetryRecorder.INSTANCE, dialog);
+        try {
+            var socket = open(handler);
+            String sid = handshake(handler, socket);
+            handler.handleMessage(socket, new TextMessage(audioStart(sid, "legacy-route")));
+            handler.handleMessage(socket, new BinaryMessage(new byte[]{1}));
+            handler.handleMessage(socket, new TextMessage(audioEnd(sid)));
+            var reply = awaitType(socket, "reply").path("payload");
+            assertEquals("text", reply.path("kind").asText());
+            assertEquals("请更新应用后查看路线预览。", reply.path("text").asText());
+            assertTrue(reply.path("intent").isMissingNode());
+            assertFalse(dialog.hasPending(registry.get(sid)));
+        } finally {
+            handler.close();
+        }
+    }
+
+    @Test
+    void routePreviewIsSessionScopedAndRepliesOnlyWithTheMatchingPlan() throws Exception {
+        var pending = new CompletableFuture<NavigationRoutePreview.Result>();
+        var request = new AtomicReference<NavigationRoutePreview.Request>();
+        var firstAttempt = new AtomicBoolean(true);
+        var service = new NavigationRoutePreview() {
+            @Override public boolean available() { return true; }
+
+            @Override public CompletableFuture<Result> plan(Request value) {
+                request.set(value);
+                if (firstAttempt.getAndSet(false)) throw new IllegalStateException("temporary failure");
+                return pending;
+            }
+        };
+        var handler = new VoiceGatewayHandler(
+                new ClassicOnlineSpeechProvider(asr(""), (text, context) ->
+                        CompletableFuture.completedFuture(Reply.ofText(""))),
+                ttsOk(), noopOffline(), registry, SAFETY, ASR_FAIL_WAIT, 1500,
+                false, Map.of(), 32, 1_920_000, NoopTelemetryRecorder.INSTANCE,
+                com.autovoice.server.contracts.NavigationDialog.NONE,
+                new com.autovoice.server.contracts.ConnectionQuota(2), 5000, 5000, service);
+        try {
+            var socket = open(handler);
+            JsonNode hello = parse(new TextMessage(hello()));
+            ((com.fasterxml.jackson.databind.node.ObjectNode) hello.path("payload"))
+                    .putArray("capabilities").add("navigation_route_preview");
+            handler.handleMessage(socket, new TextMessage(hello.toString()));
+            var ready = parse(socket.sent.getFirst()).path("payload");
+            String sid = ready.path("sessionId").asText();
+            assertTrue(ready.path("capabilities").toString().contains("navigation_route_preview"));
+            String fixture = TestFixtures.read("gateway-navigation-route-preview.json");
+            handler.handleMessage(socket, new TextMessage(fixture));
+            assertNull(request.get());
+            handler.handleMessage(socket, new TextMessage(fixture.replace("demo-1", sid)));
+            assertEquals(NavigationRoutePreview.CoordinateSystem.WGS84, request.get().origin().coordinateSystem());
+            assertEquals(NavigationRoutePreview.CoordinateSystem.GCJ02, request.get().destination().coordinateSystem());
+            assertEquals("UNAVAILABLE", awaitType(socket, "navigation_route_preview_result")
+                    .at("/payload/status").asText());
+            synchronized (socket.sent) { socket.sent.clear(); }
+            handler.handleMessage(socket, new TextMessage(fixture.replace("demo-1", sid)));
+            assertNull(findTextFrame(socket, "navigation_route_preview_result"));
+            pending.complete(NavigationRoutePreview.Result.failure(
+                    request.get().operationId(), NavigationRoutePreview.Status.NO_ROUTE));
+            var result = awaitType(socket, "navigation_route_preview_result").path("payload");
+            assertEquals("route-op-1", result.path("operationId").asText());
+            assertEquals("NO_ROUTE", result.path("status").asText());
+            assertTrue(result.path("routes").isEmpty());
+        } finally {
+            handler.close();
+        }
     }
 
     @Test

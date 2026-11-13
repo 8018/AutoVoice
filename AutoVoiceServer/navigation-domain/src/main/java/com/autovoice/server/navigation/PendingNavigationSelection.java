@@ -1,6 +1,7 @@
 package com.autovoice.server.navigation;
 
 import java.util.List;
+import com.autovoice.server.contracts.NavigationRoutePreview.Preference;
 
 record PendingNavigationSelection(
         String selectionId,
@@ -8,7 +9,8 @@ record PendingNavigationSelection(
         long createdAtMs,
         long expiresAtMs,
         boolean adopted,
-        String searchState) {
+        String searchState,
+        Preference previewPreference) {
 
     PendingNavigationSelection {
         candidates = List.copyOf(candidates);
@@ -16,7 +18,7 @@ record PendingNavigationSelection(
 
     PendingNavigationSelection(String selectionId, List<NavigationCandidate> candidates,
                                long createdAtMs, long expiresAtMs, boolean adopted) {
-        this(selectionId, candidates, createdAtMs, expiresAtMs, adopted, null);
+        this(selectionId, candidates, createdAtMs, expiresAtMs, adopted, null, null);
     }
 
     PendingNavigationSelection(String selectionId, List<NavigationCandidate> candidates,
@@ -25,6 +27,6 @@ record PendingNavigationSelection(
     }
 
     PendingNavigationSelection withAdopted(boolean adopted) {
-        return new PendingNavigationSelection(selectionId, candidates, createdAtMs, expiresAtMs, adopted, searchState);
+        return new PendingNavigationSelection(selectionId, candidates, createdAtMs, expiresAtMs, adopted, searchState, previewPreference);
     }
 }

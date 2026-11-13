@@ -1,0 +1,26 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "segmentId": "segment-trip-draft-constraints",
+    "asrText": "先去东门超市，再回家，看看路线",
+    "speakText": "请查看行程草稿",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "navigation",
+      "intent": "draft_trip",
+      "confidence": 1,
+      "source": "navigation.resolve.multi_stop",
+      "slots": {
+        "stops": {
+          "type": "string",
+          "value": "[{\"query\":\"超市\",\"candidates\":[{\"poiname\":\"东门超市\",\"lat\":30.62,\"lon\":104.1,\"address\":\"东门路1号\",\"matchSummary\":\"类别匹配超市\"}]},{\"query\":\"家\",\"savedPlace\":\"home\"}]"
+        },
+        "routePreviewPreference": {
+          "type": "string",
+          "value": "DEFAULT"
+        }
+      }
+    }
+  }
+}

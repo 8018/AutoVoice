@@ -35,8 +35,18 @@ function reject(schemaFile, dataFile) {
   }
 }
 
+const checkDraftStops = ajv.compile({ $ref: "https://autovoice/shared/intent.schema.json#/$defs/draftStops" });
 for (const name of fs.readdirSync(path.join(root, "fixtures")).filter((n) => n.startsWith("gateway-") && n.endsWith(".json"))) {
-  validate("contracts/gateway-messages.schema.json", `fixtures/${name}`);
+  const filename = `fixtures/${name}`;
+  const message = readJson(filename);
+  validate("contracts/gateway-messages.schema.json", filename, message);
+  const intent = message.payload.intent;
+  if (intent?.domain === "navigation" && intent.intent === "draft_trip") {
+    const stops = JSON.parse(intent.slots.stops.value);
+    if (!checkDraftStops(stops)) {
+      throw new Error(`${filename} draft stops do not match schema:\n${ajv.errorsText(checkDraftStops.errors)}`);
+    }
+  }
 }
 
 for (const name of fs.readdirSync(path.join(root, "fixtures/invalid")).filter((n) => n.endsWith(".json"))) {

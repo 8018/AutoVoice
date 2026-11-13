@@ -1,6 +1,7 @@
 package com.autovoice.server.navigation;
 
 import com.autovoice.server.contracts.Intent;
+import com.autovoice.server.contracts.NavigationRoutePreview.Preference;
 import com.autovoice.server.contracts.NavigationDialog;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SessionContext;
@@ -32,10 +33,21 @@ public final class NavigationDialogService implements NavigationDialog {
     public static final String CHOOSE_INTENT = "choose_destination";
     public static final String CANCEL_INTENT = "cancel_navigation";
     public static final String NAVIGATE_INTENT = "navigate";
+    private static final String PREVIEW_PREFERENCE = "routePreviewPreference";
     public static final String SLOT_CANDIDATES = "candidates";
     public static final long DEFAULT_TTL_MS = 120_000;
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Pattern LIVE_ROUTE_QUERY = Pattern.compile(
+            "^(?:请问)?(?:还有|还要|还需|剩下|剩余).{0,8}(?:多久|多远|多少(?:时间|分钟|公里|米))"
+            + "(?:(?:能|才)?到.{0,36})?[？?。！!]*$"
+            + "|(?:几点|什么时候|何时)(?:到达|能到|到目的地|到终点)");
+    private static final Pattern PREVIEW_QUERY = Pattern.compile(
+            "(?:去|前往|开到|到).{1,48}(?:多久|多远|多少(?:时间|分钟|公里|米))"
+            + "|(?:预览|比较|对比|看看|看下|算一下|算下|查一下|查下|规划).{0,40}(?:路线|路程|耗时)"
+            + "|(?:路线|路程).{0,8}(?:预览|比较|对比|怎么走)"
+            + "|(?:只|先)(?:算|查|看).{0,45}(?:不|别|不用|先别|不要)(?:开始)?导航");
+
     // Keep in step with the client's exact SavedPlaceCommand.parse expressions.
     private static final Pattern SAVED_PLACE_COMMAND = Pattern.compile(
             "(?:带我|送我)?回家|(?:导航|开车)(?:回家|到家|去我家)|去我家"
@@ -161,8 +173,10 @@ public final class NavigationDialogService implements NavigationDialog {
             List<NavigationCandidate> parsed = parseCandidates(json, false);
             if (parsed.isEmpty()) return;
             long now = clock.millis();
+            SlotValue mode = intent.slots().get(PREVIEW_PREFERENCE);
+            Preference previewPreference = mode == null ? null : Preference.valueOf(String.valueOf(mode.value()));
             pendingStore.put(sessionId, new PendingNavigationSelection(
-                    selectionId, parsed, now, now + ttlMs, false, intent.rawSemantic()));
+                    selectionId, parsed, now, now + ttlMs, false, intent.rawSemantic(), previewPreference));
         } catch (Exception ignored) {
             // 提交失败不影响已下发的回复;列表缺席表现为"选择已失效"
         }
@@ -259,6 +273,15 @@ public final class NavigationDialogService implements NavigationDialog {
         if (isSavedPlaceCommand(transcript)) {
             return CompletableFuture.completedFuture(Reply.ofText("请在支持常用地址的设备上设置和使用家或公司地址。"));
         }
+        String normalized = transcript == null ? "" : transcript.replaceAll("(?U)\\s", "");
+        if (LIVE_ROUTE_QUERY.matcher(normalized).find()) {
+            return CompletableFuture.completedFuture(Reply.ofText("当前行程的实时剩余时间和距离请在地图导航中查看。"));
+        }
+        Preference requestedPreference = routeQueryPreference(normalized);
+        if (requestedPreference != null) {
+            return preservePreview(NavigationDialog.super.complete(context, transcript, modelCall),
+                    requestedPreference);
+        }
         String sessionId = logicalSessionId(context);
         var current = activeSelection(context, sessionId);
         if (search != null && current.isPresent() && transcript != null && !transcript.isBlank()) {
@@ -270,6 +293,45 @@ public final class NavigationDialogService implements NavigationDialog {
             }
         }
         return NavigationDialog.super.complete(context, transcript, modelCall);
+    }
+
+    private static Preference routeQueryPreference(String text) {
+        if (text.contains("不走高速") || text.contains("避开高速")) return Preference.AVOID_HIGHWAYS;
+        if (text.contains("高速优先") || text.contains("优先走高速")) return Preference.PREFER_HIGHWAYS;
+        if (text.contains("少收费") || text.contains("避免收费")) return Preference.LESS_TOLLS;
+        if (text.contains("避开拥堵") || text.contains("躲避拥堵")) return Preference.AVOID_CONGESTION;
+        if (text.contains("最快路线") || text.contains("路线最快")) return Preference.FASTEST;
+        return PREVIEW_QUERY.matcher(text).find() ? Preference.DEFAULT : null;
+    }
+
+    private static CompletableFuture<Reply> preservePreview(
+            CompletableFuture<Reply> source, Preference preference) {
+        CompletableFuture<Reply> result = new CompletableFuture<>() {
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                boolean cancelled = super.cancel(mayInterruptIfRunning);
+                if (cancelled) source.cancel(mayInterruptIfRunning);
+                return cancelled;
+            }
+        };
+        source.whenComplete((reply, error) -> {
+            if (error != null) result.completeExceptionally(error);
+            else result.complete(previewReply(reply, preference, false));
+        });
+        return result;
+    }
+
+    private static Reply previewReply(Reply reply, Preference preference, boolean trustedSearch) {
+        Intent intent = reply == null ? null : reply.intent();
+        if (intent == null || !DOMAIN.equals(intent.domain())
+                || intent.slots() == null
+                || !List.of(CHOOSE_INTENT, "draft_trip", "preview_routes").contains(intent.intent())) {
+            if (trustedSearch && reply != null && intent == null) return reply;
+            return Reply.ofText("请说要查询的具体地点，我可以帮你预览路线。");
+        }
+        Map<String, SlotValue> slots = new LinkedHashMap<>(intent.slots());
+        slots.put(PREVIEW_PREFERENCE, SlotValue.stringValue(preference.name()));
+        return Reply.ofAction(Intent.of(intent.schemaVersion(), intent.domain(), intent.intent(),
+                slots, intent.confidence(), intent.source(), intent.rawSemantic()), reply.speakText());
     }
 
     private static boolean isSavedPlaceCommand(String transcript) {
@@ -291,6 +353,9 @@ public final class NavigationDialogService implements NavigationDialog {
             request = stored;
             String query = request.remove("query").asText();
             request.putArray("destinations").add(query);
+            if (selection.previewPreference() != null) {
+                request.put(PREVIEW_PREFERENCE, selection.previewPreference().name());
+            }
             if (decision.type() == NavigationSelectionPolicy.Type.NEXT_BATCH) {
                 var excluded = request.withArray("excluded");
                 for (NavigationCandidate candidate : selection.candidates()) {
@@ -335,7 +400,11 @@ public final class NavigationDialogService implements NavigationDialog {
             } else if (error != null || reply == null) {
                 result.complete(Reply.ofText("地点搜索暂时失败，请稍后重试"));
             } else {
-                result.complete(prepare(context, withExclusions(reply, request)));
+                Reply replacement = withExclusions(reply, request);
+                if (selection.previewPreference() != null) {
+                    replacement = previewReply(replacement, selection.previewPreference(), true);
+                }
+                result.complete(prepare(context, replacement));
             }
         });
         return result;
@@ -363,11 +432,15 @@ public final class NavigationDialogService implements NavigationDialog {
             JsonNode raw = JSON.readTree(intent.rawSemantic());
             if (!(raw.path("search") instanceof ObjectNode fields)) return null;
             ObjectNode state = JSON.createObjectNode();
-            for (String key : List.of("query", "city", "district", "reference", "entrance")) {
+            for (String key : List.of("query", "city", "district", "reference", "entrance", "routePreviewPreference")) {
                 String value = fields.path(key).asText("");
                 if (!value.isBlank() && value.length() <= 256) state.put(key, value);
             }
             if (!state.has("query")) return null;
+            JsonNode conditions = fields.path("constraints");
+            if (conditions.isArray() && conditions.size() == 1 && conditions.get(0).isObject()) {
+                state.set("constraints", conditions);
+            }
             if (raw.path("excluded").isArray()) state.set("excluded", raw.path("excluded"));
             return state.toString();
         } catch (Exception ignored) {
@@ -416,6 +489,12 @@ public final class NavigationDialogService implements NavigationDialog {
         slots.put("lat", SlotValue.number(candidate.lat()));
         slots.put("lon", SlotValue.number(candidate.lon()));
         if (isTaskDialog(context)) bindTask(context, slots, "select");
+        if (selection.previewPreference() != null) {
+            slots.put(PREVIEW_PREFERENCE, SlotValue.stringValue(selection.previewPreference().name()));
+            Intent intent = Intent.of("1.0", DOMAIN, "preview_routes", slots, 1.0,
+                    "navigation.dialog", null);
+            return Reply.ofAction(intent, "正在查询去" + candidate.poiname() + "的路线。");
+        }
         Intent intent = Intent.of("1.0", DOMAIN, NAVIGATE_INTENT, slots, 1.0,
                 "navigation.dialog", candidate.rawJson());
         return Reply.ofAction(intent, "好的，开始导航去" + candidate.poiname());

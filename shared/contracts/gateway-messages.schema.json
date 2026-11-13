@@ -7,10 +7,98 @@
   "required": ["type", "payload"],
   "properties": {
     "type": {
-      "enum": ["hello", "audio_start", "audio_end", "text_request", "cancel_turn", "turn_commit", "travel_start", "navigation_selection_start", "navigation_context_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+      "enum": ["hello", "audio_start", "audio_end", "text_request", "cancel_turn", "turn_commit", "travel_start", "navigation_selection_start", "navigation_context_result", "navigation_route_preview", "navigation_route_preview_result", "chat_start", "chat_ready", "chat_finish", "chat_speech_started", "ready", "decision", "asr_turn_started", "asr_partial", "reply_partial", "document_stream", "pending", "reply", "audio_reply_start", "audio_reply_end", "tts_request", "tts_response", "error", "bye"]
+    }
+  },
+  "$defs": {
+    "navigationCoordinate": {
+      "type": "object",
+      "required": ["latitude", "longitude", "coordinateSystem"],
+      "properties": {
+        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+        "coordinateSystem": { "enum": ["WGS84", "GCJ02"] }
+      }
+    },
+    "navigationRoutePreference": {
+      "enum": ["DEFAULT", "AVOID_CONGESTION", "PREFER_HIGHWAYS", "AVOID_HIGHWAYS", "LESS_TOLLS", "FASTEST"]
     }
   },
   "oneOf": [
+    {
+      "title": "navigation_route_preview (client -> server, read-only)",
+      "properties": {
+        "type": { "const": "navigation_route_preview" },
+        "payload": {
+          "type": "object",
+          "required": ["sessionId", "operationId", "destination", "preference"],
+          "properties": {
+            "sessionId": { "type": "string", "minLength": 1 },
+            "operationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "origin": { "$ref": "#/$defs/navigationCoordinate" },
+            "destination": { "$ref": "#/$defs/navigationCoordinate" },
+            "waypoints": {
+              "type": "array", "maxItems": 4,
+              "items": { "$ref": "#/$defs/navigationCoordinate" }
+            },
+            "preference": { "$ref": "#/$defs/navigationRoutePreference" }
+          }
+        }
+      }
+    },
+    {
+      "title": "navigation_route_preview_result (server -> client)",
+      "properties": {
+        "type": { "const": "navigation_route_preview_result" },
+        "payload": {
+          "type": "object",
+          "required": ["operationId", "status", "routes", "waypoints"],
+          "properties": {
+            "operationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "status": { "enum": ["OK", "ORIGIN_REQUIRED", "INVALID_REQUEST", "UNAVAILABLE", "NO_ROUTE", "BUSY"] },
+            "routeSetId": { "type": "string", "minLength": 1 },
+            "plannedAtMs": { "type": "integer", "minimum": 1 },
+            "source": { "const": "AMAP_WEB" },
+            "origin": { "$ref": "#/$defs/navigationCoordinate" },
+            "destination": { "$ref": "#/$defs/navigationCoordinate" },
+            "waypoints": {
+              "type": "array", "maxItems": 4,
+              "items": { "$ref": "#/$defs/navigationCoordinate" }
+            },
+            "preference": { "$ref": "#/$defs/navigationRoutePreference" },
+            "routes": {
+              "type": "array", "maxItems": 5,
+              "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "distanceMeters": { "type": ["integer", "null"], "minimum": 0 },
+                  "durationSeconds": { "type": ["integer", "null"], "minimum": 0 },
+                  "tollYuan": { "type": ["number", "null"], "minimum": 0 }
+                },
+                "anyOf": [
+                  { "required": ["distanceMeters"], "properties": { "distanceMeters": { "type": "integer" } } },
+                  { "required": ["durationSeconds"], "properties": { "durationSeconds": { "type": "integer" } } },
+                  { "required": ["tollYuan"], "properties": { "tollYuan": { "type": "number" } } }
+                ]
+              }
+            }
+          },
+          "if": { "properties": { "status": { "const": "OK" } } },
+          "then": {
+            "required": ["routeSetId", "plannedAtMs", "source", "origin", "destination", "preference"],
+            "properties": {
+              "routes": { "minItems": 1 },
+              "origin": { "properties": { "coordinateSystem": { "const": "GCJ02" } } },
+              "destination": { "properties": { "coordinateSystem": { "const": "GCJ02" } } },
+              "waypoints": { "items": { "properties": { "coordinateSystem": { "const": "GCJ02" } } } }
+            }
+          },
+          "else": { "properties": { "routes": { "maxItems": 0 }, "waypoints": { "maxItems": 0 } } }
+        }
+      }
+    },
     {
       "title": "travel_start (client -> server, accepted travel business marker)",
       "properties": {

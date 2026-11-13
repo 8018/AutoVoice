@@ -206,6 +206,124 @@ class NavigationToolFacadeTest {
     }
 
     @Test
+    void constrainedSearchMatchesNamesAndProviderCategoriesBeforeApplyingDisplayLimit() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"其他品牌","type":"餐饮服务;咖啡厅","location":"120.1,30.1"},
+                         {"name":"目标品牌","type":"餐饮服务;咖啡厅","location":"120.2,30.2"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["咖啡厅"],"city":"杭州","limit":1,
+                 "constraints":[{"brand":"目标品牌","category":"咖啡厅"}]}
+                """));
+        var candidate = result.path("destinations").get(0).path("candidates").get(0);
+        assertEquals("目标品牌", candidate.path("poiname").asText());
+        assertEquals("amap_poi", candidate.path("conditionEvidence").get(0).path("source").asText());
+        assertTrue(candidate.path("matchSummary").asText().contains("高德"));
+        assertFalse(result.path("blocked").asBoolean());
+        assertTrue(result.path("search").path("constraints").isArray());
+    }
+
+    @Test
+    void constrainedSearchVerifiesCategoryAndCoordinatesFromMatchingPoiDetail() throws Exception {
+        var advertised = new LinkedHashMap<>(tools());
+        advertised.put("maps_search_detail", new FunctionTool("maps_search_detail", "",
+                """
+                {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+                """));
+        var facade = new NavigationToolFacade(advertised, (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"name":"目标品牌咖啡","id":"coffee-id","typecode":"050500"},
+                             {"name":"另一目标品牌","id":"other-id","typecode":"050500"}]}
+                    """;
+            case "maps_search_detail" -> args.contains("coffee-id") ? """
+                    {"id":"coffee-id","type":"餐饮服务;咖啡厅","location":"120.1,30.1"}
+                    """ : """
+                    {"id":"wrong-id","type":"餐饮服务;咖啡厅","location":"120.2,30.2"}
+                    """;
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["咖啡厅"],"city":"杭州",
+                 "constraints":[{"brand":"目标品牌","category":"咖啡厅"}]}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, candidates.size());
+        assertEquals("目标品牌咖啡", candidates.get(0).path("poiname").asText());
+        assertEquals("type", candidates.get(0).path("conditionEvidence").get(1).path("field").asText());
+    }
+
+    @Test
+    void searchesProviderAliasWithoutInferringUnregisteredFeatures() throws Exception {
+        var advertised = new LinkedHashMap<>(tools());
+        advertised.put("maps_search_detail", new FunctionTool("maps_search_detail", "",
+                """
+                {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+                """));
+        var facade = new NavigationToolFacade(advertised, (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"name":"正式名称","id":"poi-id"}]}
+                    """;
+            case "maps_search_detail" -> """
+                    {"id":"poi-id","alias":"附近人常用名","location":"120.1,30.1"}
+                    """;
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["附近人常用名"],"city":"杭州",
+                 "constraints":[{"alias":"附近人常用名"}]}
+                """));
+        assertFalse(result.path("blocked").asBoolean());
+        var candidate = result.path("destinations").get(0).path("candidates").get(0);
+        assertEquals("正式名称", candidate.path("poiname").asText());
+        assertEquals("alias", candidate.path("conditionEvidence").get(0).path("field").asText());
+    }
+
+    @Test
+    void featureAndOpeningWithoutTrustedEvidenceBlockSelection() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"亲子餐厅","location":"120.1,30.1",
+                          "openNow":true,"features":["适合带孩子"]}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["餐厅"],"city":"杭州",
+                 "constraints":[{"openNow":true,"feature":"适合带孩子"}]}
+                """));
+        assertTrue(result.path("blocked").asBoolean());
+        assertTrue(result.path("message").asText().contains("当前营业"));
+        assertTrue(result.path("message").asText().contains("适合带孩子"));
+    }
+
+    @Test
+    void chargingPlanUsesMissingTrustedInputsInsteadOfModelSuppliedTelemetry() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            throw new AssertionError("charging request must not fall through to location search");
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["充电站","休息区"],"city":"杭州",
+                 "chargingPlan":{"mode":"charge_and_rest","minimumArrivalSoc":20,
+                 "soc":85,"socSampledAt":"2026-11-13T12:00:00Z","energyPerKm":0.15}}
+                """));
+        assertTrue(result.path("blocked").asBoolean());
+        assertTrue(result.path("message").asText().contains("路线"));
+        assertTrue(result.path("message").asText().contains("荷电状态"));
+        assertTrue(result.path("message").asText().contains("兼容"));
+        assertTrue(result.path("message").asText().contains("能耗"));
+        assertTrue(result.path("destinations").isMissingNode());
+    }
+
+    @Test
+    void readOnlyRoutePreferenceSurvivesDestinationResolution() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"科技馆","location":"120.1,30.1"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["科技馆"],"city":"杭州","routePreviewPreference":"LESS_TOLLS"}
+                """));
+        assertEquals("LESS_TOLLS", result.path("routePreviewPreference").asText());
+        assertEquals("LESS_TOLLS", result.path("search").path("routePreviewPreference").asText());
+    }
+
+    @Test
     void chargingSearchReturnsStationWithoutClaimingAvailability() throws Exception {
         var facade = new NavigationToolFacade(tools(), (name, args) -> """
                 {"pois":[{"name":"新能源充电站","location":"120.1,30.1"}]}

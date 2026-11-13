@@ -1,0 +1,11 @@
+{
+  "type": "navigation_route_preview",
+  "payload": {
+    "sessionId": "demo-1",
+    "operationId": "route-op-1",
+    "origin": { "latitude": 39.907291, "longitude": 116.391317, "coordinateSystem": "WGS84" },
+    "destination": { "latitude": 39.902753, "longitude": 116.410886, "coordinateSystem": "GCJ02" },
+    "waypoints": [],
+    "preference": "DEFAULT"
+  }
+}

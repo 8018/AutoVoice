@@ -3,6 +3,7 @@ package com.autovoice.server.skillmcp;
 import com.autovoice.server.agentloop.ToolSchemaCompactor;
 import com.autovoice.server.contracts.FunctionTool;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.autovoice.server.contracts.NavigationRoutePreview;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +65,17 @@ public final class McpSkillRegistry implements AutoCloseable {
     /** 当前快照(请求可持有该版本作为租约;版本单调递增)。 */
     public RegistrySnapshot currentSnapshot() {
         return snapshot;
+    }
+
+    public boolean routePreviewAvailable() {
+        return snapshot.routePreview() != null;
+    }
+
+    public NavigationRoutePreview.Result previewRoutes(NavigationRoutePreview.Request request) {
+        AmapRoutePreview planner = snapshot.routePreview();
+        return planner == null
+                ? NavigationRoutePreview.Result.failure(request.operationId(), NavigationRoutePreview.Status.UNAVAILABLE)
+                : planner.preview(request);
     }
 
     public McpSkillRegistry(SkillPlatformClient client, ToolInjector injector,
@@ -157,6 +169,8 @@ public final class McpSkillRegistry implements AutoCloseable {
                         .filter(s -> "amap-maps".equals(s.skillId()))
                         .filter(NavigationToolFacade::supports)
                         .findFirst().map(NavigationToolFacade::new).orElse(null),
+                configs.stream().map(AmapRoutePreview::from).filter(java.util.Objects::nonNull)
+                        .findFirst().orElse(null),
                 prompt != null ? prompt : previous.systemPrompt(),
                 chatPrompt != null ? chatPrompt : previous.chatSystemPrompt(),
                 System.currentTimeMillis());
