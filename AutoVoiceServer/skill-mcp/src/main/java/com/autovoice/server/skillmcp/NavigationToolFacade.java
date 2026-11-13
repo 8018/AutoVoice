@@ -1051,8 +1051,8 @@ final class NavigationToolFacade {
         }
 
         private static boolean matchesReferenceName(String reference, String name, String city) {
-            String anchor = compact(reference);
-            String candidate = compact(name);
+            String anchor = normalizeCityPrefix(reference, city);
+            String candidate = normalizeCityPrefix(name, city);
             String cityName = compact(city).replaceFirst("市$", "");
             return candidate.equals(anchor)
                     || !cityName.isBlank() && (candidate.equals(cityName + anchor)
@@ -1069,12 +1069,26 @@ final class NavigationToolFacade {
         }
 
         boolean matchesNamedAirport(String name, String resultCity, String alias) {
-            String requested = compact(query).replace("国际", "");
-            String actual = compact(name).replace("国际", "");
             String cityName = compact(resultCity.isBlank() ? city : resultCity).replaceFirst("市$", "");
+            String requested = airportIdentity(query, cityName);
+            String actual = airportIdentity(name, cityName);
             return isRootAirport(name) && (actual.equals(requested)
                     || !cityName.isBlank() && actual.equals(cityName + requested)
                     || hasAirportAlias(alias));
+        }
+
+        private static String airportIdentity(String name, String verifiedCity) {
+            return normalizeCityPrefix(name, verifiedCity).replace("国际", "");
+        }
+
+        private static String normalizeCityPrefix(String name, String verifiedCity) {
+            String value = compact(name);
+            String cityName = compact(verifiedCity).replaceFirst("市$", "");
+            // 仅归一已知城市前缀的行政后缀，不删除机场专名内部的“市”。
+            if (!cityName.isBlank() && value.startsWith(cityName + "市")) {
+                return cityName + value.substring(cityName.length() + 1);
+            }
+            return value;
         }
 
         boolean hasAirportAlias(String alias) {
@@ -1099,9 +1113,10 @@ final class NavigationToolFacade {
 
         boolean canEnrich(Place place) {
             if (isNamedAirport()) {
+                String placeCity = place.city().isBlank() ? city : place.city();
                 // 身份仍须在同一 ID 详情内核验；搜索摘要可能缺少城市/登记别名。
                 return isRootAirport(place.name())
-                        && (compact(place.name()).replace("国际", "").endsWith(compact(query).replace("国际", ""))
+                        && (airportIdentity(place.name(), placeCity).endsWith(airportIdentity(query, placeCity))
                             || hasAirportAlias(place.alias()))
                         && matchesArea(place.name(), place.address(), place.city(), place.district());
             }

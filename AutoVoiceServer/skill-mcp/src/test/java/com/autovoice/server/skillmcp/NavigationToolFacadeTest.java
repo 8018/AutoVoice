@@ -19,6 +19,71 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NavigationToolFacadeTest {
     @Test
+    void referenceCityAdministrativeSuffixKeepsSameStationAnchor() throws Exception {
+        for (String reference : List.of("北京南站", "北京市北京南站")) {
+            var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+                case "maps_text_search" -> "{\"pois\":[{\"id\":\"station\",\"name\":\"北京南站\",\"city\":\"北京市\"}]}";
+                case "maps_search_detail" -> "{\"id\":\"station\",\"name\":\"北京南站\",\"city\":\"北京市\",\"location\":\"116.378,39.865\"}";
+                case "maps_around_search" -> "{\"pois\":[{\"name\":\"附近充电站\",\"city\":\"北京市\",\"location\":\"116.379,39.866\"}]}";
+                default -> "{}";
+            });
+            var request = JSON.createObjectNode().put("city", "北京市").put("reference", reference);
+            request.putArray("destinations").add("北京市北京南站周边的充电站");
+            var result = JSON.readTree(facade.resolve(request.toString()));
+            var candidates = result.path("destinations").get(0).path("candidates");
+            assertEquals(1, candidates.size());
+            assertEquals("附近充电站", candidates.get(0).path("poiname").asText());
+            assertEquals("充电站", result.path("search").path("query").asText());
+        }
+    }
+
+    @Test
+    void namedAirportAcceptsAdministrativeCitySuffixInFullDestination() throws Exception {
+        for (String city : List.of("三亚", "三亚市")) {
+            var facade = new NavigationToolFacade(tools(), (name, args) -> name.equals("maps_text_search") ? """
+                    {"pois":[{"name":"三亚凤凰国际机场","city":"三亚市","location":"109.414,18.303"},
+                             {"name":"三亚凤凰国际机场T1航站楼","city":"三亚市","location":"109.415,18.303"},
+                             {"name":"三亚凤凰国际机场停车场","city":"三亚市","location":"109.416,18.303"}]}
+                    """ : "{}");
+            var request = JSON.createObjectNode().put("city", city);
+            request.putArray("destinations").add("三亚市凤凰国际机场");
+            var result = JSON.readTree(facade.resolve(request.toString()));
+            var candidates = result.path("destinations").get(0).path("candidates");
+            assertEquals(1, candidates.size());
+            assertEquals("三亚凤凰国际机场", candidates.get(0).path("poiname").asText());
+            assertEquals("三亚市凤凰国际机场", result.path("search").path("query").asText());
+        }
+    }
+
+    @Test
+    void airportCitySuffixNormalizationAlsoAllowsSameIdDetailEnrichment() throws Exception {
+        var facade = new NavigationToolFacade(toolsWithDetail(), (name, args) -> switch (name) {
+            case "maps_text_search" -> "{\"pois\":[{\"id\":\"airport\",\"name\":\"三亚凤凰国际机场\"}]}";
+            case "maps_search_detail" -> """
+                    {"id":"airport","name":"三亚凤凰国际机场","city":"三亚市","location":"109.414,18.303"}
+                    """;
+            default -> "{}";
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["三亚市凤凰国际机场"],"city":"三亚市"}
+                """));
+        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
+    }
+
+    @Test
+    void airportCitySuffixNormalizationDoesNotRemoveInteriorCharactersOrWrongCity() throws Exception {
+        for (String destination : List.of("三亚凤凰机场", "海口市凤凰机场")) {
+            var facade = new NavigationToolFacade(tools(), (name, args) -> name.equals("maps_text_search") ? """
+                    {"pois":[{"name":"三亚凤凰市机场","city":"三亚市","location":"109.414,18.303"}]}
+                    """ : "{}");
+            var request = JSON.createObjectNode().put("city", "三亚市");
+            request.putArray("destinations").add(destination);
+            var result = JSON.readTree(facade.resolve(request.toString()));
+            assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+        }
+    }
+
+    @Test
     void cityQualifiedBrandKeepsBranchesAndBrandEvidence() throws Exception {
         var facade = new NavigationToolFacade(tools(), (name, args) -> """
                 {"pois":[{"name":"星巴克(北京三里屯店)","city":"北京市","location":"116.45,39.93"},

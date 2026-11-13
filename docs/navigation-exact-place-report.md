@@ -1,5 +1,15 @@
 # 第 4 批：精确地点身份修复（dev 全量验证通过）
 
+## 2026-11-13 城市行政后缀补修（待 dev 重新验证）
+
+后续 dev 基准 `2026-11-13T12-37-59.050Z-71fd05a.json` 暴露两项参数表达变化：`三亚市凤凰国际机场` 与地图的 `三亚凤凰国际机场` 不一致；`北京市北京南站` 参考点未匹配 `北京南站`。新增四项离线测试，覆盖机场直接候选、同 ID 详情、内部字符/异城拒绝，以及两种参考点参数表达。原测试全部保留。
+
+`/tmp/airport-city-suffix-red.log` 记录 55 项 facade 测试中机场直接候选和详情两项失败；内部字符/异城拒绝通过。`/tmp/reference-city-suffix-red.log` 记录参考点回归测试失败。随后增加仅作用于已知城市前缀的行政后缀归一：只有紧接该城市名称的“市”可被归一；保留完整搜索状态、专名内部字符、城市范围过滤及同 ID 详情核验。
+
+最终验证：`JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./AutoVoiceServer/gradlew -p AutoVoiceServer --offline test :app:bootJar`；日志 `/tmp/city-suffix-final-green.log` 为 BUILD SUCCESSFUL。全部 XML 汇总 **653 tests，0 failures，0 errors，0 skipped**；`git diff --check` 通过。
+
+新 `AutoVoiceServer/app/build/libs/app.jar` SHA-256：`a7a8b39b32bb448800ace094fc9bc7c84ba6a890ffa05d1fb8ebaa0c79e5eeda`。本次补修未提交、未部署，完整 dev 文本/路线/统计门禁由根任务继续执行，未运行的门禁不计通过。
+
 ## 实现范围
 
 - `NavigationToolFacade` 保留连写城市的完整专名，明确“的”及原有普通类别仍按城市类别检索；博物馆/科技馆保留专名歧义。明确品牌条件与城市连写时仍查品牌门店，继续核验品牌证据。
