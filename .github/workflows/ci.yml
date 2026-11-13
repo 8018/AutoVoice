@@ -14,6 +14,17 @@ permissions:
   contents: read
 
 jobs:
+  navigation-benchmark-contract:
+    name: Navigation benchmark contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tools/qa/tests/navigation-benchmark.test.mjs
+      - run: node --check tools/qa/navigation-cloud-text.mjs
+
   schema-fixtures:
     name: Schema fixtures
     runs-on: ubuntu-latest

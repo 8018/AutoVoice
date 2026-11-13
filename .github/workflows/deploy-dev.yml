@@ -167,6 +167,18 @@ jobs:
             ssh "${SSH_ARGS[@]}" "$TARGET" \
               "VOICE_BACKEND='$VOICE_BACKEND' bash '$STAGING_DIR/deploy-release.sh' 'dev' '$DEPLOY_SHA' '$STAGING_DIR'"
 
+      - name: Navigation text quality and latency gate
+        timeout-minutes: 15
+        run: bash AutoVoiceServer/deploy/run-navigation-benchmark.sh
+
+      - name: Preserve navigation benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigation-benchmark-${{ env.DEPLOY_SHA }}
+          path: docs/qa/navigation-benchmark-runs/*.json
+          if-no-files-found: warn
+
       - name: Deployment summary
         if: success()
         run: |

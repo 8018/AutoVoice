@@ -1,0 +1,166 @@
+{
+  "suiteVersion": 1,
+  "revision": "9a316f61627fc6f26badf420a33bc610eb52148c",
+  "deployedRelease": "5097c65-plus-map-detail",
+  "repetitions": 1,
+  "focus": [
+    "entrance",
+    "numeric_city",
+    "brand",
+    "charging"
+  ],
+  "startedAt": "2026-11-13T06:32:00.890Z",
+  "environment": "dev",
+  "endpoint": "ws://8.153.153.77:8090/ws",
+  "protocol": "1.2",
+  "measurement": "Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.",
+  "results": [
+    {
+      "id": "entrance-1",
+      "scenario": "entrance",
+      "expected": "保留航站楼限定",
+      "input": "导航到上海虹桥机场T2航站楼",
+      "elapsedMs": 1184,
+      "firstResponseMs": 1184,
+      "type": "reply",
+      "text": "未找到指定入口，请说完整的入口名称。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "应返回候选而非拒绝或直接执行",
+        "候选数量须为1–3",
+        "候选未包含指定目标",
+        "缺少候选任务身份"
+      ]
+    },
+    {
+      "id": "numeric_city-1",
+      "scenario": "numeric_city",
+      "expected": "三亚地名不能改成数字",
+      "input": "导航到三亚凤凰国际机场",
+      "elapsedMs": 626,
+      "firstResponseMs": 626,
+      "type": "reply",
+      "text": "请说要查找的城市。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "应返回候选而非拒绝或直接执行",
+        "候选数量须为1–3",
+        "候选未包含指定目标",
+        "缺少候选任务身份"
+      ]
+    },
+    {
+      "id": "brand-1",
+      "scenario": "brand",
+      "expected": "保留北京及星巴克品牌条件",
+      "input": "找北京的星巴克",
+      "elapsedMs": 2272,
+      "firstResponseMs": 2272,
+      "type": "reply",
+      "text": "第1个，星巴克(北京太古里臻选旗舰店)，北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013，高德名称含“星巴克”；第2个，星巴克(新闻大厦店)，建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)，高德名称含“星巴克”；第3个，星巴克(北京凯恒店)，北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)，高德名称含“星巴克”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "星巴克"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"星巴克(北京太古里臻选旗舰店)\",\"lat\":39.934478,\"lon\":116.454755,\"address\":\"北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京太古里臻选旗舰店)\",\"retrievedAt\":\"2026-11-13T06:32:05.605155454Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"4fc4326a-11ad-4e0b-bfbd-d388cc055265\"},{\"poiname\":\"星巴克(新闻大厦店)\",\"lat\":39.907462,\"lon\":116.421919,\"address\":\"建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(新闻大厦店)\",\"retrievedAt\":\"2026-11-13T06:32:05.982588915Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"2fa50757-d9e5-4d3e-b533-ed69f968ad65\"},{\"poiname\":\"星巴克(北京凯恒店)\",\"lat\":39.92389,\"lon\":116.43271,\"address\":\"北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京凯恒店)\",\"retrievedAt\":\"2026-11-13T06:32:06.375894127Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"9f6398ea-7f0c-4542-b0bb-792b722b5153\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "a15b1887-f2c6-4c52-83b2-a45205b6c2dc"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"星巴克\",\"city\":\"北京\",\"constraints\":[{\"brand\":\"星巴克\"}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "charging-1",
+      "scenario": "charging",
+      "expected": "返回真实充电站，不编造空闲桩",
+      "input": "找北京南站附近的充电站",
+      "elapsedMs": 1273,
+      "firstResponseMs": 1273,
+      "type": "reply",
+      "text": "请说更具体的参考地点名称或地址。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "fail",
+      "checks": [
+        "应返回候选而非拒绝或直接执行",
+        "候选数量须为1–3",
+        "候选未包含指定目标",
+        "缺少候选任务身份"
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-13T06:32:06.726Z",
+  "summary": {
+    "requests": 4,
+    "expected": 4,
+    "pass": 1,
+    "boundary": 0,
+    "fail": 3,
+    "meanMs": 1339,
+    "p95Ms": 2272,
+    "maxMs": 2272,
+    "complete": true,
+    "performancePassed": true,
+    "passed": false
+  },
+  "fullSuite": false,
+  "comparison": [
+    {
+      "id": "entrance-1",
+      "repetition": 1,
+      "baselineMs": 1114,
+      "elapsedMs": 1184,
+      "deltaMs": 70,
+      "baselineVerdict": "fail",
+      "verdict": "fail"
+    },
+    {
+      "id": "numeric_city-1",
+      "repetition": 1,
+      "baselineMs": 765,
+      "elapsedMs": 626,
+      "deltaMs": -139,
+      "baselineVerdict": "fail",
+      "verdict": "fail"
+    },
+    {
+      "id": "brand-1",
+      "repetition": 1,
+      "baselineMs": 1654,
+      "elapsedMs": 2272,
+      "deltaMs": 618,
+      "baselineVerdict": "fail",
+      "verdict": "pass"
+    },
+    {
+      "id": "charging-1",
+      "repetition": 1,
+      "baselineMs": 1631,
+      "elapsedMs": 1273,
+      "deltaMs": -358,
+      "baselineVerdict": "fail",
+      "verdict": "fail"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# 导航量化回归基准
+
+每批导航改动必须按“修复/实现 → 离线测试 → 部署 dev → 完整文本基准 → 修复失败项 → 再跑完整基准”执行，完整通过后才能开始下一批。自动检查不能替代人工确认新功能语义，也不能替代真机语音与导航验收。
+
+## 固定套件 v1
+
+16 个场景、23 次文本请求：找点、城市、航站楼、带中文数字地名、品牌、营业限制、周边充电站、补能数据缺失、有序多站、常用地址能力、实时耗时边界、只读路线、否定选择、城市纠正、换批和取消。旧版原始结果保存在 `docs/qa/navigation-cloud-text-results.json`，不得覆盖。新场景追加并升级套件版本，不通过删除失败项、放宽规则或改变原句使其变绿。
+
+判定同时检查回复类型、结构化动作、候选坐标和名称、城市范围、任务/候选身份、草稿顺序和重复地点。四个无法在纯云端完成的项目（营业核验、真实补能、端侧常用地址、活动导航状态）单独标记能力边界反馈，不能计作这些产品功能完成。
+
+完整门槛：全部 23 次有结果，语义失败/缺测/超时为零，平均完整回复 <= 2500ms，P95 <= 5000ms。性能阈值是本轮采用的工程默认值，不是用户指定的生产 SLO。耗时从客户端发送到最终回复，包含网络、模型及搜索，不含握手、语音与设备执行。P95 用 nearest-rank。新功能变慢时必须解释和改善，不能静默调整阈值。
+
+## 运行
+
+```sh
+node --test tools/qa/tests/navigation-benchmark.test.mjs
+node tools/qa/navigation-cloud-text.mjs --release=实际部署版本
+# 在门槛之外增加稳定性样本：
+node tools/qa/navigation-cloud-text.mjs --release=实际部署版本 --repetitions=3
+# 仅用于诊断，不能替代完整套件：
+node tools/qa/navigation-cloud-text.mjs --release=实际部署版本 --focus=entrance,numeric_city,brand,charging
+```
+
+本机读取忽略入库的 `AutoVoice/local.properties` 中 `gateway.authToken`；也可通过 `NAVIGATION_BENCHMARK_TOKEN_FILE` 指向权限受限的文件，或使用环境变量 `NAVIGATION_BENCHMARK_TOKEN`。默认 dev；CI 通过 SSH 隧道使用 `NAVIGATION_BENCHMARK_ENDPOINT` 指向 dev。不会将令牌写入结果。
+
+每次生成独立的 `docs/qa/navigation-benchmark-runs/<UTC时间>-<代码版本>.json`，包含套件版本、源码版本、声明的部署版本、每条输入/回复/动作、断言失败原因、完整耗时及与原始基线的逐条变化。退出码非零表示未过门槛。非完整套件始终有 `fullSuite:false`。
+
+CI 每次改动跑判定器契约测试；dev 部署流程在激活后通过 SSH 读取私有设备令牌并连接本机网关，执行完整套件，保存结果为构建附件。失败使部署检查失败，不能声称新版本验收通过；它不会自动恢复旧版服务。手动部署同样执行完整命令。GitHub 工作流要在本分支合入后才会在远端生效。
+
+## 供应方配置
+
+地图候选须用真实坐标。dev 高德 MCP 启用 `maps_text_search`、`maps_around_search`、`maps_geo` 和 `maps_search_detail`；详情按相同 POI ID 补充位置和分类，不能把地理编码中心当作指定航站楼。配置修改也视为导航变更，必须跑基准。原来的品牌搜索缺详情能力是本次已验证的部署配置问题。

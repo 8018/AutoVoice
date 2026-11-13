@@ -219,7 +219,7 @@
 
 只读场景验证到 `preview_routes` 指令，未在本次测试继续调用路线预览接口，因此 0.033 秒是选点解析耗时，不是高德路线规划耗时。常用地址和活动导航状态需要真实设备上下文，本轮只验证缺能力时的反馈。原来的 208 条真机语料仍为未运行，没有用这些文本结果覆盖它们。
 
-运行 `node tools/qa/navigation-cloud-text.mjs` 可重跑；`--focus=entrance,numeric_city,brand,charging` 单独复测四项。脚本读取本机忽略入库的认证配置，不输出令牌。每次运行会覆盖对应结果 JSON，并将评审置为待审核。
+运行 `node tools/qa/navigation-cloud-text.mjs` 可重跑；`--focus=entrance,numeric_city,brand,charging` 单独复测四项。脚本读取本机忽略入库的认证配置，不输出令牌。后续已升级为固定自动基准，新的运行另存时间戳结果，不再覆盖本报告对应的原始结果；见 [量化回归基准](navigation-benchmark.md)。
 
 - [首轮完整结果及结构化动作](qa/navigation-cloud-text-results.json)
 - [四项异常复测](qa/navigation-cloud-text-recheck.json)
