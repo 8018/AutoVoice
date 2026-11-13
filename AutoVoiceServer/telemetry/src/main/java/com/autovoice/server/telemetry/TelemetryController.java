@@ -146,6 +146,12 @@ public class TelemetryController implements AutoCloseable {
                 to == null ? Long.MAX_VALUE : to);
     }
 
+    @GetMapping("/navigation/stats")
+    public NavigationStatistics navigationStatistics(@RequestParam(required = false) String device,
+                                                     @RequestParam long from, @RequestParam long to) {
+        return service.queryNavigationStatistics(device, from, to);
+    }
+
     @GetMapping("/rounds/{utteranceId}")
     public RoundDetail round(@PathVariable String utteranceId) {
         RoundDetail detail = service.queryRound(utteranceId);

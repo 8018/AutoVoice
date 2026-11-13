@@ -5,6 +5,7 @@ import type { RoundSummary } from "./types";
 import RoundList from "./components/RoundList";
 import RoundDetail from "./components/RoundDetail";
 import Stats from "./components/Stats";
+import NavigationStats from "./components/NavigationStats";
 
 export default function App() {
   const [device, setDevice] = useState("");
@@ -66,7 +67,8 @@ export default function App() {
 
       {loadError && <div className="banner warn">{loadError}</div>}
 
-      <Stats rounds={visible} />
+      <Stats rounds={visible.filter((round) => round.source !== "navigation")} />
+      <NavigationStats key={device} device={device} />
 
       <main className="layout">
         <section className="pane list-pane">

@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test
 class NavigationOperationTrackerTest {
     private var now = 100L
     private val samples = mutableListOf<NavigationOperationSample>()
-    private val tracker = NavigationOperationTracker({ now }, { samples.add(it) })
+    private val tracker = NavigationOperationTracker({ now }) { { sample -> samples.add(sample) } }
 
     @Test fun `plan stays pending until its real failure arrives`() {
         val id = tracker.begin(PLAN)

@@ -1,5 +1,8 @@
 package com.autovoice.app.telemetry
 
+import com.autovoice.app.navigation.NavigationOperation
+import com.autovoice.app.navigation.NavigationOperationTracker
+import com.autovoice.app.navigation.NavigationOutcome
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +58,51 @@ class TelemetryClientTest {
         clients.clear()
         server.shutdown()
         okHttp.dispatcher.executorService.shutdown()
+    }
+
+    @Test
+    fun `late navigation terminal keeps its original session outside the current speech round`() {
+        repeat(2) { server.enqueue(MockResponse().setResponseCode(200)) }
+        var now = 1_000L
+        var elapsed = 10L
+        val client = client(clock = { now })
+        val tracker = NavigationOperationTracker(
+            elapsedMs = { elapsed },
+            captureRecorder = client::navigationOperationRecorder,
+        )
+
+        client.onSessionId("old-session")
+        val id = tracker.begin(NavigationOperation.PLAN)
+        client.onSessionId("new-session")
+        client.begin("new-speech-round")
+        now += 50
+        elapsed += 42
+        tracker.finish(id, NavigationOutcome.SUCCEEDED)
+        tracker.finish(id, NavigationOutcome.FAILED)
+        client.end("new-speech-round")
+
+        val navigation = server.takeRequest(5, TimeUnit.SECONDS)!!
+        assertEquals("/api/telemetry/round", navigation.path)
+        val body = JSONObject(navigation.body.readUtf8())
+        assertEquals(id, body.getString("utteranceId"))
+        assertEquals("old-session", body.getString("sessionId"))
+        assertEquals("demo-1", body.getString("deviceId"))
+        assertEquals("navigation", body.getString("source"))
+        assertEquals(1_000L, body.getLong("startMs"))
+        val events = body.getJSONArray("events")
+        assertEquals(1, events.length())
+        val event = events.getJSONObject(0)
+        assertEquals("navigation_operation", event.getString("stage"))
+        val payload = event.getJSONObject("payload")
+        assertEquals(setOf("operation", "result", "durationMs"), payload.keySet())
+        assertEquals("plan", payload.getString("operation"))
+        assertEquals("succeeded", payload.getString("result"))
+        assertEquals(42L, payload.getLong("durationMs"))
+
+        val speech = JSONObject(server.takeRequest(5, TimeUnit.SECONDS)!!.body.readUtf8())
+        assertEquals("new-session", speech.getString("sessionId"))
+        assertEquals("new-speech-round", speech.getString("utteranceId"))
+        assertEquals(0, speech.getJSONArray("events").length())
     }
 
     @Test

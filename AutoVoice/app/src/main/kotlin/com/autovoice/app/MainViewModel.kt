@@ -238,7 +238,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         position = { vehicleContext.routeOriginPosition()?.let { NavigationTarget("当前位置", it.latitude, it.longitude) } },
         refreshPosition = { vehicleContext.refresh(forSavedAddress = true) },
         publish = { runtime -> _uiState.update { it.copy(navigationRuntime = runtime) } },
-        recordOperation = { sample -> if (::engine.isInitialized) engine.recordNavigationOperation(sample) },
+        captureOperationRecorder = { if (::engine.isInitialized) engine.navigationOperationRecorder() else null },
     )
     private val navigationControlTurnGate = ActionExecutionGateway()
 

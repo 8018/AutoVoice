@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -59,6 +59,71 @@ describe("telemetry dashboard", () => {
     expect(await screen.findByText("音频回放")).toBeInTheDocument();
     expect(screen.getByText("话语开始")).toBeInTheDocument();
     expect(fetchRound).toHaveBeenCalledWith("turn-ok");
+  });
+
+  it("shows the device's terminal counts and discards an older window response", async () => {
+    let completeOldRequest: (response: Response) => void = () => {};
+    const oldRequest = new Promise<Response>((resolve) => {
+      completeOldRequest = resolve;
+    });
+    const fetchStats = vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const params = new URL(String(url), "http://localhost").searchParams;
+      if (params.get("device") !== "car-b") return oldRequest;
+      if (Number(params.get("to")) - Number(params.get("from")) === 60 * 60 * 1000) {
+        return Promise.resolve(Response.json({ operations: [] }));
+      }
+      return Promise.resolve(Response.json({
+        operations: [{
+          operation: "start",
+          total: 2,
+          successRate: 0.5,
+          outcomes: { succeeded: 1, accepted: 1, unknown: 0, unsupported: 0, missing_location: 0,
+            failed: 0, timeout: 0, cancelled: 0, no_results: 0, rejected: 0 },
+          p50Ms: 0,
+          p95Ms: 200,
+        }],
+      }));
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+      await screen.findByText("turn-failed");
+      await user.selectOptions(screen.getByRole("combobox", { name: /设备/ }), "car-b");
+
+      const panel = screen.getByRole("region", { name: "导航质量" });
+      const row = (await within(panel).findByText("开始导航")).closest("tr")!;
+      expect(within(row).getByText("50.0%")).toBeInTheDocument();
+      expect(within(row).getByText("0 ms")).toBeInTheDocument();
+      expect(within(row).getByText("200 ms")).toBeInTheDocument();
+
+      await user.selectOptions(within(panel).getByRole("combobox", { name: "时间范围" }), "1");
+      expect(await within(panel).findByText("所选范围内暂无导航操作数据")).toBeInTheDocument();
+      await act(async () => completeOldRequest(Response.json({
+        operations: [{ operation: "plan", total: 1, successRate: 1,
+          outcomes: {}, p50Ms: 50, p95Ms: 50 }],
+      })));
+      expect(within(panel).queryByText("路线规划")).not.toBeInTheDocument();
+      expect(within(panel).getByText("所选范围内暂无导航操作数据")).toBeInTheDocument();
+    } finally {
+      fetchStats.mockRestore();
+    }
+  });
+
+  it("shows an access error and can retry navigation statistics", async () => {
+    const fetchStats = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ operations: [] }));
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+      const panel = screen.getByRole("region", { name: "导航质量" });
+      expect(await within(panel).findByRole("alert")).toHaveTextContent("查询导航统计需要遥测管理权限");
+      await user.click(within(panel).getByRole("button", { name: "刷新" }));
+      expect(await within(panel).findByText("所选范围内暂无导航操作数据")).toBeInTheDocument();
+    } finally {
+      fetchStats.mockRestore();
+    }
   });
 
   it("keeps the dashboard usable when history loading fails", async () => {

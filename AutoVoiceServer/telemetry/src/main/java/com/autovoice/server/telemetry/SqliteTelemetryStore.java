@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -72,6 +73,10 @@ public class SqliteTelemetryStore {
                     """);
             st.execute("CREATE INDEX IF NOT EXISTS idx_events_utt ON events(utterance_id)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_rounds_created ON rounds(created_ms)");
+            st.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_navigation_terminal_time ON events(ts_ms)
+                    WHERE stage = 'navigation_operation'
+                    """);
         } catch (SQLException e) {
             throw new IllegalStateException("telemetry schema init failed: " + dbPath, e);
         }
@@ -88,7 +93,7 @@ public class SqliteTelemetryStore {
     /**
      * 合并写入聚合行：提供的字段集合插入（首见）或更新（已存在），未提供的列保持不动
      * （对应 brief 的 INSERT ... ON CONFLICT(utterance_id) DO UPDATE）。fields 为空时仅
-     * 保证行存在（INSERT OR IGNORE）。
+     * 保证行存在（INSERT OR IGNORE）。导航操作终态的轮次归属在首次写入后固定。
      */
     public void upsertRound(String utteranceId, Map<String, Object> fields) {
         if (fields == null || fields.isEmpty()) {
@@ -105,7 +110,8 @@ public class SqliteTelemetryStore {
         List<String> cols = new ArrayList<>(fields.keySet());
         String sql = "INSERT INTO rounds (utterance_id, " + String.join(", ", cols) + ") VALUES (?"
                 + ", ?".repeat(cols.size()) + ") ON CONFLICT(utterance_id) DO UPDATE SET "
-                + cols.stream().map(k -> k + "=excluded." + k).collect(Collectors.joining(", "));
+                + cols.stream().map(k -> k + "=excluded." + k).collect(Collectors.joining(", "))
+                + " WHERE rounds.source IS NOT 'navigation'";
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
             int i = 1;
             ps.setString(i++, utteranceId);
@@ -205,6 +211,74 @@ public class SqliteTelemetryStore {
         } catch (SQLException e) {
             throw new IllegalStateException("queryRounds failed", e);
         }
+    }
+
+    /**
+     * The first valid event per operation ID wins, including when a later replay crosses a
+     * window boundary. Compute nearest-rank percentiles in SQLite and return only aggregates.
+     */
+    NavigationStatistics queryNavigationStatistics(String device, long fromMs, long toMs) {
+        String deviceFilter = device == null || device.isBlank() ? "" : "AND r.device_id = ?";
+        String sql = """
+                WITH terminal AS (
+                    SELECT json_extract(e.payload_json, '$.operation') AS operation,
+                           json_extract(e.payload_json, '$.result') AS outcome,
+                           json_extract(e.payload_json, '$.durationMs') AS duration
+                    FROM events e JOIN rounds r USING (utterance_id)
+                    WHERE e.stage = 'navigation_operation' AND e.ts_ms BETWEEN ? AND ?
+                        AND r.source = 'navigation' AND trim(r.device_id) <> ''
+                        %s
+                        AND %s
+                        AND NOT EXISTS (
+                            SELECT 1 FROM events prior
+                            WHERE prior.utterance_id = e.utterance_id AND prior.id < e.id
+                                AND prior.stage = 'navigation_operation' AND %s
+                        )
+                ),
+                ranked AS (
+                    SELECT *, row_number() OVER (PARTITION BY operation ORDER BY duration) AS rank,
+                              count(*) OVER (PARTITION BY operation) AS total
+                    FROM terminal
+                )
+                SELECT operation, outcome, count(*) AS outcome_count,
+                       max(CASE WHEN rank = (total + 1) / 2 THEN duration END) AS p50,
+                       max(CASE WHEN rank = (total * 95 + 99) / 100 THEN duration END) AS p95
+                FROM ranked GROUP BY operation, outcome ORDER BY operation
+                """.formatted(deviceFilter, validNavigationTerminal("e"), validNavigationTerminal("prior"));
+        Map<String, NavigationStatistics.Counts> operations = new LinkedHashMap<>();
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, fromMs);
+            ps.setLong(2, toMs);
+            if (!deviceFilter.isEmpty()) ps.setString(3, device);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    operations.computeIfAbsent(rs.getString("operation"), NavigationStatistics.Counts::new)
+                            .add(rs.getString("outcome"), rs.getLong("outcome_count"),
+                                    rs.getLong("p50"), rs.getLong("p95"));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("queryNavigationStatistics failed", e);
+        }
+        return new NavigationStatistics(fromMs, toMs, operations.values().stream()
+                .map(NavigationStatistics.Counts::summarize).toList());
+    }
+
+    private static String validNavigationTerminal(String alias) {
+        // CASE guards the JSON functions even if a legacy row has an invalid JSON payload.
+        return """
+                CASE WHEN json_valid(%1$s.payload_json) AND %1$s.ts_ms >= 0 THEN
+                    json_extract(%1$s.payload_json, '$.operation') IN (%2$s)
+                    AND json_extract(%1$s.payload_json, '$.result') IN (%3$s)
+                    AND json_type(%1$s.payload_json, '$.durationMs') = 'integer'
+                    AND json_extract(%1$s.payload_json, '$.durationMs') BETWEEN 0 AND %4$d
+                ELSE 0 END
+                """.formatted(alias, sqlEnum(NavigationStatistics.OPERATIONS),
+                sqlEnum(NavigationStatistics.OUTCOMES), NavigationStatistics.MAX_DURATION_MS);
+    }
+
+    private static String sqlEnum(List<String> values) {
+        return values.stream().map(value -> "'" + value + "'").collect(Collectors.joining(", "));
     }
 
     /** 删 created_ms < cutoff 的 rounds+events 行，返回被删 utterance_id 供音频文件联动清理。 */

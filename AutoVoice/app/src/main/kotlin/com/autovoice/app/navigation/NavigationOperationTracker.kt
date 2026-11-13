@@ -20,15 +20,19 @@ internal data class NavigationOperationSample(
 /** Pending IDs are local. Removing an ID before emitting makes late and duplicate callbacks harmless. */
 internal class NavigationOperationTracker(
     private val elapsedMs: () -> Long,
-    private val emit: (NavigationOperationSample) -> Unit,
+    private val captureRecorder: () -> ((NavigationOperationSample) -> Unit)?,
 ) {
-    private data class Pending(val operation: NavigationOperation, val startMs: Long)
+    private data class Pending(
+        val operation: NavigationOperation,
+        val startMs: Long,
+        val recorder: ((NavigationOperationSample) -> Unit)?,
+    )
     private val pending = mutableMapOf<String, Pending>()
 
     @Synchronized
     fun begin(operation: NavigationOperation): String {
         val id = "navigation-${UUID.randomUUID()}"
-        pending[id] = Pending(operation, elapsedMs())
+        pending[id] = Pending(operation, elapsedMs(), captureRecorder())
         return id
     }
 
@@ -36,7 +40,7 @@ internal class NavigationOperationTracker(
     fun finish(id: String?, outcome: NavigationOutcome) {
         val attempt = pending.remove(id) ?: return
         val durationMs = (elapsedMs() - attempt.startMs).coerceAtLeast(0)
-        emit(NavigationOperationSample(requireNotNull(id), attempt.operation, outcome, durationMs))
+        attempt.recorder?.invoke(NavigationOperationSample(requireNotNull(id), attempt.operation, outcome, durationMs))
     }
 
     @Synchronized

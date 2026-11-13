@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "description": "业务基准按能力追加；云端文本、端侧行为和管理接口分层验证，不用文本回复冒充设备执行。",
+  "cloudTextSuite": {
+    "version": 2,
+    "source": "tools/qa/navigation-scenarios.mjs",
+    "scenarios": 20,
+    "requests": 27,
+    "retainsOriginalRequests": 23
+  },
+  "addedBusinessCases": [
+    {
+      "id": "I06-N01",
+      "productId": "I06",
+      "category": "normal",
+      "target": "成功、受理、失败和未知分列；成功率只用成功数除以有效唯一终态总数，P50/P95使用真实耗时",
+      "test": "AutoVoiceServer/telemetry/src/test/java/com/autovoice/server/telemetry/NavigationStatisticsTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-metrics-dashboard-report.md"
+    },
+    {
+      "id": "I06-F01",
+      "productId": "I06",
+      "category": "failure",
+      "target": "上传令牌不能读管理统计；时间范围非法、超范围或缺失被拒绝；页面失败可重试",
+      "test": "AutoVoiceServer/telemetry/src/test/java/com/autovoice/server/telemetry/NavigationStatisticsTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-metrics-dashboard-report.md"
+    },
+    {
+      "id": "I06-B01",
+      "productId": "I06",
+      "category": "boundary",
+      "target": "重复操作只计一次；过滤错误枚举、非法耗时和匿名记录；空数据不伪造为零延迟成功",
+      "test": "AutoVoiceServer/telemetry/src/test/java/com/autovoice/server/telemetry/NavigationStatisticsTest.java",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-metrics-dashboard-report.md"
+    },
+    {
+      "id": "I06-M01",
+      "productId": "I06",
+      "category": "multi_turn",
+      "target": "操作期间会话改变后，终态仍属于开始时的设备和会话；不混入语音轮次",
+      "test": "AutoVoice/app/src/test/kotlin/com/autovoice/app/telemetry/TelemetryClientTest.kt",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-metrics-dashboard-report.md"
+    },
+    {
+      "id": "I06-M02",
+      "productId": "I06",
+      "category": "multi_turn",
+      "target": "切换设备/时间窗时，旧请求晚到不能覆盖新筛选结果",
+      "test": "AutoVoiceServer/telemetry-web/src/App.test.tsx",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-metrics-dashboard-report.md"
+    }
+  ]
+}

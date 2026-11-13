@@ -1,5 +1,7 @@
 package com.autovoice.app.telemetry
 
+import com.autovoice.app.navigation.NavigationOperationSample
+import com.autovoice.app.navigation.NavigationOutcome
 import kotlinx.coroutines.CoroutineScope
 import okhttp3.OkHttpClient
 
@@ -84,6 +86,38 @@ class TelemetryClient(
         }
         // 轮已关闭/跨轮：单事件直传（events 数组与 round 事件同构 {stage,tsMs,level,payload}）
         uploader?.postEvents(TelemetryEventBatch(utteranceId, listOf(event(stage, level, payload))))
+    }
+
+    /** Bind the operation to this client and its session when the operation begins. */
+    @Synchronized
+    internal fun navigationOperationRecorder(): ((NavigationOperationSample) -> Unit)? {
+        if (!enabled || closed) return null
+        val operationSessionId = sessionId
+        val startedAt = clock()
+        return { sample -> postNavigationOperation(sample, operationSessionId, startedAt) }
+    }
+
+    @Synchronized
+    private fun postNavigationOperation(sample: NavigationOperationSample, operationSessionId: String, startedAt: Long) {
+        if (closed) return
+        val level = when (sample.outcome) {
+            NavigationOutcome.SUCCEEDED, NavigationOutcome.ACCEPTED -> "info"
+            else -> "warn"
+        }
+        val terminal = event(TelemetryStages.NAVIGATION_OPERATION, level, mapOf(
+            "operation" to sample.operation.name.lowercase(),
+            "result" to sample.outcome.name.lowercase(),
+            "durationMs" to sample.durationMs,
+        ))
+        uploader?.postRound(TelemetryRoundPayload(
+            utteranceId = sample.id,
+            sessionId = operationSessionId,
+            deviceId = deviceId.orEmpty(),
+            source = "navigation",
+            startMs = startedAt,
+            endMs = terminal.tsMs,
+            events = listOf(terminal),
+        ))
     }
 
     /** 收包并 POST /api/telemetry/round（异步；utteranceId 与 begin 不一致时不收）。 */

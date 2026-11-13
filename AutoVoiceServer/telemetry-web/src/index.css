@@ -309,3 +309,59 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+.navigation-stats {
+  margin-bottom: 12px;
+}
+
+.navigation-stats-toolbar,
+.navigation-stats-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.navigation-stats-toolbar {
+  justify-content: space-between;
+}
+
+.navigation-stats-toolbar h2 {
+  margin: 0;
+}
+
+.navigation-stats-filters select,
+.navigation-stats-filters button {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+}
+
+.navigation-stats-filters select {
+  margin-left: 6px;
+}
+
+.navigation-stats-scroll {
+  overflow-x: auto;
+}
+
+.navigation-stats table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.navigation-stats th,
+.navigation-stats td {
+  border-bottom: 1px solid var(--line);
+  padding: 7px 8px;
+  text-align: right;
+}
+
+.navigation-stats th:first-child {
+  text-align: left;
+}

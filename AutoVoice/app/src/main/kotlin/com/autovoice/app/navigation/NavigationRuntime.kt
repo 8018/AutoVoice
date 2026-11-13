@@ -33,11 +33,11 @@ internal class NavigationRuntime(
     private val position: () -> NavigationTarget?,
     private val refreshPosition: () -> Unit,
     private val publish: (NavigationRuntimeUi) -> Unit,
-    recordOperation: (NavigationOperationSample) -> Unit,
+    captureOperationRecorder: () -> ((NavigationOperationSample) -> Unit)?,
 ) : AutoCloseable {
     private val main = Handler(Looper.getMainLooper())
     private val session = NavigationRouteSession(SystemClock::elapsedRealtime)
-    private val operations = NavigationOperationTracker(SystemClock::elapsedRealtime, recordOperation)
+    private val operations = NavigationOperationTracker(SystemClock::elapsedRealtime, captureOperationRecorder)
     private var sdk: AndroidNavigationMap? = null
     @Volatile private var sdkEnabled = false
     @Volatile private var closed = false

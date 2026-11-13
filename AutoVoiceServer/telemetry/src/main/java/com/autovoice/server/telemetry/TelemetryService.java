@@ -291,6 +291,13 @@ public class TelemetryService implements TelemetryRecorder, AutoCloseable {
         return syncQuery(() -> store.queryRounds(device, fromMs, toMs));
     }
 
+    public NavigationStatistics queryNavigationStatistics(String device, long fromMs, long toMs) {
+        if (fromMs < 0 || toMs < fromMs || toMs - fromMs > NavigationStatistics.MAX_WINDOW_MS) {
+            throw new IllegalArgumentException("navigation statistics require a window of at most 7 days");
+        }
+        return syncQuery(() -> store.queryNavigationStatistics(device, fromMs, toMs));
+    }
+
     public RoundDetail queryRound(String utteranceId) {
         return syncQuery(() -> store.queryRound(utteranceId));
     }
