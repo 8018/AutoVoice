@@ -15,7 +15,7 @@ v2 追加航站楼别称、城市市后缀、品牌加类别、完整参考点�
 ## 运行
 
 ```sh
-node --test tools/qa/tests/navigation-benchmark.test.mjs
+node --test tools/qa/tests/*.test.mjs
 node tools/qa/navigation-cloud-text.mjs --release=实际部署版本
 # 在门槛之外增加稳定性样本：
 node tools/qa/navigation-cloud-text.mjs --release=实际部署版本 --repetitions=3
@@ -38,3 +38,9 @@ CI 每次改动跑判定器契约测试；dev 部署流程在激活后通过 SSH
 每批新功能必须同步增加可重复用例，并关联 58 项清单中的产品 ID。优先覆盖正常成功、缺参数/能力、供应方失败/超时、否定/取消、状态过期和多轮纠正；不适用的维度说明理由。旧用例永久保留，套件版本递增。
 
 报告分别呈现旧版固定集合、新增集合及各产品项的目标达成率、边界反馈、失败原因和延迟，避免扩充分母后掩盖旧功能回归。端侧或管理统计功能增加对应离线/接口契约用例，不把无法通过云端文本触发的业务伪装成文本验收；仍需跑全部既有文本基准。
+
+## 业务接口补充套件
+
+文本套件保持 27 条。I06 新增 3 项只读实测：无样本为空、非法或缺失时间窗拒绝、管理页面和实际资源可用；以及 5 组设备归属、去重、统计和界面离线契约测试。D02 新增 3 项路线接口实测：混合 WGS84/GCJ02、途经顺序和缺起点拒绝。路线单次门槛 10 秒，单独统计，不混入文本平均值。
+
+运行 `node tools/qa/navigation-route-benchmark.mjs --release=实际版本` 验证官方路线转换。通过 SSH 在 dev 运行 `python3 - --dev-env < tools/qa/navigation-statistics-benchmark.py`（脚本从标准输入送入远端）验证统计接口；只读，不上传假样本。发布脚本已包含这两组，并保存对应结果。业务覆盖总表见 [分层业务基准](qa/navigation-business-benchmark.json)。

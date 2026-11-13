@@ -176,7 +176,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: navigation-benchmark-${{ env.DEPLOY_SHA }}
-          path: docs/qa/navigation-benchmark-runs/*.json
+          path: |
+            docs/qa/navigation-benchmark-runs/*.json
+            docs/qa/navigation-stats-runs/*.json
+            docs/qa/navigation-route-runs/*.json
           if-no-files-found: warn
 
       - name: Deployment summary

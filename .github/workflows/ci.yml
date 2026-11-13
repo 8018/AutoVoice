@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test tools/qa/tests/navigation-benchmark.test.mjs
+      - run: node --test tools/qa/tests/*.test.mjs
       - run: node --check tools/qa/navigation-cloud-text.mjs
 
   schema-fixtures:

@@ -33,3 +33,13 @@ curl -fsS --max-time 3 http://127.0.0.1:18090/health/ready >/dev/null
 NAVIGATION_BENCHMARK_TOKEN_FILE="$token_file" \
 NAVIGATION_BENCHMARK_ENDPOINT=ws://127.0.0.1:18090/ws \
 node tools/qa/navigation-cloud-text.mjs --release="$DEPLOY_SHA"
+
+NAVIGATION_BENCHMARK_TOKEN_FILE="$token_file" \
+NAVIGATION_BENCHMARK_ENDPOINT=ws://127.0.0.1:18090/ws \
+node tools/qa/navigation-route-benchmark.mjs --release="$DEPLOY_SHA"
+
+# Additional business coverage: real admin endpoint/empty state/assets, without fake uploads.
+mkdir -p docs/qa/navigation-stats-runs
+stats_result="docs/qa/navigation-stats-runs/$(date -u +%Y%m%dT%H%M%SZ)-$DEPLOY_SHA.json"
+ssh "${SSH_ARGS[@]}" "$target" 'python3 - --dev-env' < tools/qa/navigation-statistics-benchmark.py > "$stats_result"
+cat "$stats_result"
