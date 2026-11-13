@@ -32,6 +32,10 @@ class VoiceBusinessService(
     business: BusinessHandler,
     private val scope: CoroutineScope,
     private val dialogueIdleTimeoutMs: Long = 10_000,
+    private val inputTimeoutMs: Long = 30_000,
+    private val processingTimeoutMs: Long = 10_000,
+    private val responseTimeoutMs: Long = 30_000,
+    private val playbackTimeoutMs: Long = 120_000,
     /** During migration the App adapter provides the engine input gate; fake business tests omit it. */
     private val recognition: RecognitionControl? = null,
     private val onExecution: (String, Intent, BusinessResult) -> Unit = { _, _, _ -> },
@@ -112,7 +116,15 @@ class VoiceBusinessService(
     fun onCaptureStarted(interruptPlayback: Boolean) {
         // Capturing audio is not an interaction entry point. Manual input explicitly calls onWake
         // first; a queued capture/VAD callback must never open recognition on its own.
-        if (interruptPlayback) output.stop(PlaybackInterruptionReason.NEW_TURN)
+        if (interruptPlayback) {
+            val preparingTurn = conversation.snapshot.value
+                .takeIf { it.state == DialogueState.RESPONDING }?.turnId
+            output.stop(PlaybackInterruptionReason.NEW_TURN)
+            // Silent preparation has no audible reply to preserve. Retire its output before
+            // capture so a late synthesis/start cannot speak into this unprotected microphone.
+            // This opens a listening window but does not admit VAD/noise as a new turn.
+            if (preparingTurn != null) conversation.onPlaybackEnded(preparingTurn)
+        }
     }
 
     fun setCloudPending(turnId: String, pending: Boolean) {
@@ -237,15 +249,27 @@ class VoiceBusinessService(
         if (snapshot != lastDialogueSnapshot) {
             lastDialogueSnapshot = snapshot
             dialogueIdleJob?.cancel()
-            dialogueIdleJob = if (snapshot.state == DialogueState.DORMANT) null else scope.launch {
-                delay(dialogueIdleTimeoutMs)
-                conversation.expireIfUnchanged(snapshot) { expiredCaptureId ->
-                    snapshot.turnId?.let { endRound(it, "dialogue_idle_timeout") }
-                    if (expiredCaptureId.isNotBlank() && expiredCaptureId != snapshot.turnId) {
-                        endRound(expiredCaptureId, "dialogue_idle_timeout")
+            // Waiting for the user and producing a reply have different budgets. In particular,
+            // a candidate list can legitimately take longer than the entire follow-up window.
+            val timeoutMs = when (snapshot.state) {
+                DialogueState.DORMANT -> null
+                // Capture/VAD alone leaves turnId null; only admitted speech earns input time.
+                DialogueState.LISTENING -> if (snapshot.turnId == null) dialogueIdleTimeoutMs else inputTimeoutMs
+                DialogueState.PROCESSING -> processingTimeoutMs
+                DialogueState.RESPONDING -> responseTimeoutMs
+                DialogueState.SPEAKING -> playbackTimeoutMs
+            }
+            dialogueIdleJob = timeoutMs?.let { timeout ->
+                scope.launch {
+                    delay(timeout)
+                    conversation.expireIfUnchanged(snapshot) { expiredCaptureId ->
+                        snapshot.turnId?.let { endRound(it, "dialogue_idle_timeout") }
+                        if (expiredCaptureId.isNotBlank() && expiredCaptureId != snapshot.turnId) {
+                            endRound(expiredCaptureId, "dialogue_idle_timeout")
+                        }
+                        output.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
+                        onDialogueIdleTimeout(snapshot)
                     }
-                    output.stop(PlaybackInterruptionReason.INTERACTION_CLOSED)
-                    onDialogueIdleTimeout(snapshot)
                 }
             }
         }

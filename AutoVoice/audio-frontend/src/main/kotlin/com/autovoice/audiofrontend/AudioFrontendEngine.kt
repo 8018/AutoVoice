@@ -35,6 +35,8 @@ interface AudioFrontendEngine : AutoCloseable {
     /** Rebind diagnostics for native-owned auxiliary VAD and AEC without altering either engine. */
     fun attachAuxiliaryReporting(auxVadReporter: ComponentReporter, aecReporter: ComponentReporter) = Unit
     val ownsAuxiliaryVad: Boolean get() = false
+    /** True only while processed capture has a usable, current echo cancellation reference. */
+    val echoCancellationActive: Boolean get() = false
     /** Persistent signal processing continues outside business inputs. Legacy remains turn-only. */
     val continuousProcessing: Boolean get() = false
     val vadAvailable: Boolean

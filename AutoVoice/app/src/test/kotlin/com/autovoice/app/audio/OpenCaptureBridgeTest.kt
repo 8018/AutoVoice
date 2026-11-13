@@ -21,6 +21,7 @@ class OpenCaptureBridgeTest {
         override val continuousProcessing = true
         override val ownsAuxiliaryVad = true
         override val vadAvailable = true
+        override var echoCancellationActive = false
         private var observedEnd: Long? = null
         override val diagnostics get() = AudioFrontendDiagnostics(observedInputEndSample = observedEnd)
         var closes = 0
@@ -195,6 +196,21 @@ class OpenCaptureBridgeTest {
         assertEquals(6,f.calls);assertEquals(listOf(VadPurpose.FOLLOW_UP),f.resets)
         r.close()
     }
+    @Test fun `native echo protection permits barge in and revoked protection rejects queued speech`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);echoCancellationActive = true }
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        r.setOpenMicBargeInListening(true);sourceBlock(r,1)
+        assertTrue(r.openMicBargeInAvailable)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN))
+        r.setOpenMicBargeInListening(true);sourceBlock(r,2)
+        val queued = r.drainFrontendBatches().single()
+        f.echoCancellationActive = false
+        assertFalse(r.openMicBargeInAvailable)
+        assertFalse(r.detectAuxiliarySpeech(queued,VadPurpose.BARGE_IN))
+        r.close()
+    }
+
     @Test fun `stale auxiliary observation cannot reopen a new listening epoch or bypass unverified open mic policy`() = runTest {
         val f = Front().apply { auxiliary = setOf(VadPurpose.FOLLOW_UP,VadPurpose.BARGE_IN) }
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,

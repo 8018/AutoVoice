@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-13",
+  "environment": "dev:8090",
+  "reportedDevRevision": "b8a9f27",
+  "scope": "公共样本 TTS→ASR 回读诊断。未执行导航，未核验手机实际播放、听感或用户原始轮次。",
+  "wavValidation": "两条返回音频均通过 RIFF/WAVE 容器长度、分块边界和 16 位单声道 PCM 格式校验。",
+  "samples": [
+    {
+      "id": "candidate-list",
+      "input": "第1个，中国国家博物馆；第2个，首都博物馆；第3个，北京自然博物馆。请说第几个或具体地址名称。",
+      "asrText": "第1个中国国家博物馆，第2个首都博物馆，第3个北京自然博物馆。请说第几个或具体地址名称？",
+      "mime": "audio/wav",
+      "bytes": 277242,
+      "durationMs": 8662,
+      "sampleRate": 16000,
+      "ttsRequestMs": 928
+    },
+    {
+      "id": "generic-control",
+      "input": "已为您找到多个候选地点，请选择。",
+      "asrText": "已为您找到多个候选地点，请选择。",
+      "mime": "audio/wav",
+      "bytes": 83244,
+      "durationMs": 2600,
+      "sampleRate": 16000,
+      "ttsRequestMs": 516
+    }
+  ]
+}

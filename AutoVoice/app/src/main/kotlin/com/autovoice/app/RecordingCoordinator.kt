@@ -296,7 +296,14 @@ internal class RecordingCoordinator(
         if (dialogueSnapshot.state == DialogueState.LISTENING && dialogueSnapshot.turnId == null) {
             onDialogueState(pipeline.dialogueSnapshot)
         }
+        rearmBargeInAfterCapture()
         rearmWakeWhenIdle()
+    }
+
+    private fun rearmBargeInAfterCapture() {
+        if (foreground && !recording && !chatLocked &&
+            dialogueSnapshot.state == DialogueState.SPEAKING && isPlaybackSpeaking()
+        ) capture.setOpenMicBargeInListening(true)
     }
 
     fun cancelTurn(rearm: Boolean = true) {
@@ -309,17 +316,27 @@ internal class RecordingCoordinator(
         pipeline.cancelStreamingCloudAudio()
         pipeline.onListeningStop()
         updateState { it.copy(recording = false) }
-        if (rearm) rearmWakeWhenIdle()
+        if (rearm) {
+            rearmBargeInAfterCapture()
+            rearmWakeWhenIdle()
+        }
     }
 
     fun onPlaybackStage(stage: PlaybackStage) {
+        // Once sound starts, only echo-protected detection may establish a candidate capture.
+        // Invalidate queued silent-preparation observations before arming the playback gate.
+        if (stage == PlaybackStage.STARTED) capture.setFollowUpListening(false)
         capture.setOpenMicBargeInListening(stage == PlaybackStage.STARTED && !chatLocked)
+        // Business receives the terminal event before the physical playback flag is cleared.
+        // Recheck here so its earlier LISTENING projection cannot leave the microphone unarmed.
+        if (stage != PlaybackStage.STARTED && canCaptureWithoutPlayback(dialogueSnapshot)) {
+            armFollowUpListening(dialogueSnapshot)
+        }
     }
 
     fun onDialogueState(snapshot: DialogueSnapshot) {
         dialogueSnapshot = snapshot
-        val waiting = snapshot.state == DialogueState.LISTENING && snapshot.turnId == null
-        if (waiting) {
+        if (canCaptureWithoutPlayback(snapshot)) {
             armFollowUpListening(snapshot)
         } else {
             capture.setFollowUpListening(false)
@@ -522,10 +539,16 @@ internal class RecordingCoordinator(
         if (!foreground || recording || chatLocked) return
         // Audio callbacks are queued onto the coordinator scope. The dialogue may have
         // exited before this callback runs; a stale VAD signal must not reopen capture.
-        if (dialogueSnapshot.state != DialogueState.LISTENING || dialogueSnapshot.turnId != null) return
-        onLog("延时聆听检测到人声，建立临时 capture")
+        if (!canCaptureWithoutPlayback(dialogueSnapshot)) return
+        onLog("静默聆听检测到人声，建立临时 capture")
         startTurn(fromWake = true, includeBargeInPreRoll = true)
     }
+
+    private fun canCaptureWithoutPlayback(snapshot: DialogueSnapshot): Boolean =
+        !isPlaybackSpeaking() && (
+            (snapshot.state == DialogueState.LISTENING && snapshot.turnId == null) ||
+                snapshot.state == DialogueState.RESPONDING
+            )
 
     private fun armFollowUpListening(snapshot: DialogueSnapshot) {
         val interactionId = snapshot.interactionId ?: return

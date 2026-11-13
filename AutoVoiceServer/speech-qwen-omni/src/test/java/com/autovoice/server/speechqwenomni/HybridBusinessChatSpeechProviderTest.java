@@ -33,6 +33,60 @@ class HybridBusinessChatSpeechProviderTest {
     private static final SessionContext CTX = new SessionContext("s1", "zh-CN", Map.of());
 
     @Test
+    void voiceAndTextPreserveNumberedCandidateSpeechAndSelectionIdentity() throws Exception {
+        Reply candidates = com.autovoice.server.agentloop.NavigationCandidateReplies.fromResolution("""
+                {"destinations":[{"query":"万达广场","candidates":[
+                  {"poiname":"万达广场东店","lat":30.1,"lon":120.1,"address":"中山路1号"},
+                  {"poiname":"万达广场西店","lat":30.2,"lon":120.2,"address":"人民路8号"}]}]}
+                """).orElseThrow();
+        NavigationDialogService dialog = new NavigationDialogService();
+        HybridBusinessChatSpeechProvider provider = new HybridBusinessChatSpeechProvider(
+                (pcm, ctx) -> "导航去万达广场",
+                (text, ctx) -> CompletableFuture.completedFuture(candidates),
+                unusedChat(), dialog);
+        AtomicInteger audioEvents = new AtomicInteger();
+        OnlineAudioSink sink = new OnlineAudioSink() {
+            @Override public void onStart(int rate, int channels, String encoding) { audioEvents.incrementAndGet(); }
+            @Override public void onChunk(byte[] pcm) { audioEvents.incrementAndGet(); }
+            @Override public void onComplete(String text, com.autovoice.server.contracts.Intent intent) {
+                audioEvents.incrementAndGet();
+            }
+            @Override public void onError(Throwable error) { throw new AssertionError(error); }
+        };
+        try {
+            OnlineSpeechResult voice = provider.process(new byte[]{1}, CTX, "candidate-voice", sink,
+                    OnlineAsrSink.NOOP).get(2, TimeUnit.SECONDS);
+            OnlineSpeechResult text = provider.processText("导航去万达广场", CTX, "candidate-text", sink)
+                    .get(2, TimeUnit.SECONDS);
+            assertEquals("导航去万达广场", voice.asrText());
+            assertEquals("", text.asrText());
+            for (OnlineSpeechResult result : List.of(voice, text)) {
+                Reply reply = result.reply();
+                assertEquals("action", reply.kind());
+                assertEquals("第1个，万达广场东店，中山路1号；第2个，万达广场西店，人民路8号。请说第几个或具体地址名称。",
+                        reply.speakText());
+                assertEquals("choose_destination", reply.intent().intent());
+                assertFalse(((String) reply.intent().slots().get("selectionId").value()).isBlank());
+                var offered = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                        (String) reply.intent().slots().get("candidates").value());
+                assertEquals(2, offered.size());
+                assertEquals("万达广场东店", offered.get(0).path("poiname").asText());
+                assertEquals("万达广场西店", offered.get(1).path("poiname").asText());
+                assertEquals(30.1, offered.get(0).path("lat").asDouble());
+                assertEquals(120.2, offered.get(1).path("lon").asDouble());
+                assertFalse(offered.get(0).path("candidateId").asText().isBlank());
+                assertFalse(offered.get(1).path("candidateId").asText().isBlank());
+            }
+            // Business speech is synthesized by the client TTS request from speakText;
+            // this route must not stream a separate generic/model audio response.
+            assertEquals(0, audioEvents.get());
+            assertFalse(dialog.hasPending(CTX), "preparing a choice must not execute or adopt it");
+        } finally {
+            provider.close();
+        }
+    }
+
+    @Test
     void explicitTextUsesBusinessModelWithoutAsrOrS2s() throws Exception {
         AtomicInteger asrCalls = new AtomicInteger();
         AtomicInteger llmCalls = new AtomicInteger();

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "description": "业务基准按能力追加；云端文本、端侧行为和管理接口分层验证，不用文本回复冒充设备执行。",
   "cloudTextSuite": {
     "version": 3,
@@ -144,6 +144,105 @@
       "test": "AutoVoice/app/src/androidTest/kotlin/com/autovoice/app/IflytekCombinedCapabilitiesDeviceTest.kt",
       "status": "blocked_sdk_identity",
       "evidence": "docs/navigation-local-asr-device-report.md"
+    },
+    {
+      "id": "A03-VOICE-N01",
+      "productId": "A03",
+      "category": "normal",
+      "target": "公共合成语音“找北京的博物馆”经过实际云端ASR，返回北京范围内的有效候选",
+      "test": "tools/qa/navigation-voice-benchmark.mjs",
+      "status": "synthetic_cloud_voice_passed",
+      "evidence": "docs/qa/navigation-voice-runs/2026-11-13T14-23-22.614Z-926a679.json"
+    },
+    {
+      "id": "B01-VOICE-N01",
+      "productId": "B01",
+      "category": "normal",
+      "target": "候选编号、名称与最多3项结构化列表一致；完整候选文本可返回有效TTS音频，但不证明每个名称实际可听清",
+      "test": "tools/qa/navigation-voice-benchmark.mjs",
+      "status": "synthetic_cloud_voice_passed",
+      "evidence": "docs/qa/navigation-voice-runs/2026-11-13T14-23-22.614Z-926a679.json"
+    },
+    {
+      "id": "B02-VOICE-M01",
+      "productId": "B02",
+      "category": "multi_turn",
+      "target": "同一连接采用列表后说“第二个”，名称、坐标、候选ID和选择ID全部匹配；只检查动作不启动地图",
+      "test": "tools/qa/navigation-voice-benchmark.mjs",
+      "status": "synthetic_cloud_voice_passed",
+      "evidence": "docs/qa/navigation-voice-runs/2026-11-13T14-23-22.614Z-926a679.json"
+    },
+    {
+      "id": "B01-VOICE-F01",
+      "productId": "B01",
+      "category": "failure",
+      "target": "通用提示漏报候选名、缺失回复或ASR、畸形/截断WAV及不明PCM格式均判失败",
+      "test": "tools/qa/tests/navigation-voice.test.mjs",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-benchmark.md"
+    },
+    {
+      "id": "B01-VOICE-B01",
+      "productId": "B01",
+      "category": "boundary",
+      "target": "缺第二候选、重复候选身份、非法北京坐标或超过独立15秒语音门槛不得通过",
+      "test": "tools/qa/tests/navigation-voice.test.mjs",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-benchmark.md"
+    },
+    {
+      "id": "B02-VOICE-F01",
+      "productId": "B02",
+      "category": "failure",
+      "target": "选择其他列表、其他候选或坐标不符，以及识别成第一项必须失败",
+      "test": "tools/qa/tests/navigation-voice.test.mjs",
+      "status": "offline_passed",
+      "evidence": "docs/navigation-benchmark.md"
+    },
+    {
+      "id": "B02-INTERRUPT-N01",
+      "productId": "B02",
+      "category": "normal",
+      "target": "候选出现但尚未播报即可直接说序号，取消待播报并保留候选身份",
+      "test": "AutoVoice/app/src/test/kotlin/com/autovoice/app/RecordingCoordinatorTest.kt",
+      "status": "offline_passed_device_pending",
+      "evidence": "docs/navigation-speaking-selection-report.md"
+    },
+    {
+      "id": "B02-INTERRUPT-M01",
+      "productId": "B02",
+      "category": "multi_turn",
+      "target": "长播报中接受新选择后停止旧输出，旧播放回调不能关闭新轮",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/VoiceBusinessServiceTest.kt",
+      "status": "offline_passed_device_pending",
+      "evidence": "docs/navigation-speaking-selection-report.md"
+    },
+    {
+      "id": "B02-INTERRUPT-F01",
+      "productId": "B02",
+      "category": "failure",
+      "target": "未被接受的噪音不执行导航，随后仍可再次打断选择",
+      "test": "AutoVoice/app/src/test/kotlin/com/autovoice/app/RecordingCoordinatorTest.kt",
+      "status": "offline_passed_device_pending",
+      "evidence": "docs/navigation-speaking-selection-report.md"
+    },
+    {
+      "id": "B02-INTERRUPT-B01",
+      "productId": "B02",
+      "category": "boundary",
+      "target": "排队的准备阶段VAD在播报开始后不能绕过回声保护",
+      "test": "AutoVoice/app/src/test/kotlin/com/autovoice/app/RecordingCoordinatorTest.kt",
+      "status": "offline_passed_device_pending",
+      "evidence": "docs/navigation-speaking-selection-report.md"
+    },
+    {
+      "id": "B01-PLAYBACK-B01",
+      "productId": "B01",
+      "category": "boundary",
+      "target": "候选播放超过10秒仍保留会话；重复STARTED不能无限延长播放看门狗",
+      "test": "AutoVoice/voice-business/src/test/kotlin/com/autovoice/voicebusiness/VoiceBusinessServiceTest.kt",
+      "status": "offline_passed_device_pending",
+      "evidence": "docs/navigation-speaking-selection-report.md"
     }
   ],
   "routeApiSuite": {
@@ -157,5 +256,17 @@
     "source": "tools/qa/navigation-statistics-benchmark.py",
     "scope": "read-only admin empty/bounds/assets; no synthetic live uploads",
     "checks": 3
+  },
+  "cloudVoiceSuite": {
+    "version": 1,
+    "source": "tools/qa/navigation-voice-benchmark.mjs",
+    "voiceRequests": 2,
+    "candidateReplyTtsChecks": 1,
+    "voiceLatencyBudgetMs": 15000,
+    "ttsLatencyBudgetMs": 15000,
+    "measurement": "audio_start to final reply includes paced upload and cloud ASR; fixture TTS and reply TTS reported separately; unchanged text v3 retains all 33 requests",
+    "scope": "public synthetic speech and exact candidate identity only; no device microphone, playback audibility, map execution or driving acceptance",
+    "evidence": "docs/qa/navigation-voice-runs/2026-11-13T14-23-22.614Z-926a679.json",
+    "evidenceNote": "Initial recorded second-turn product ID B01 is a metadata error; correct product ID is B02. Original evidence is preserved unchanged."
   }
 }

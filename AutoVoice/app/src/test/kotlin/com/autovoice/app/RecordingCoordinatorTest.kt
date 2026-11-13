@@ -13,6 +13,91 @@ import org.junit.jupiter.api.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecordingCoordinatorTest {
+    @Test fun `preparing response accepts ordinary speech without another wake and cancels pending playback`() = runTest {
+        val capture = FakeCapture().apply { detectFollowUp = { followUpEnabled } }
+        val pipeline = FakePipeline()
+        val coordinator = coordinator(capture, FakeWakeWord(), pipeline) {}
+        runCurrent();coordinator.onForeground();runCurrent()
+        val preparing = DialogueSnapshot(DialogueState.RESPONDING, "interaction", "choices")
+        pipeline.dialogueSnapshot = preparing
+        coordinator.onDialogueState(preparing)
+        assertTrue(capture.followUpEnabled)
+        capture.raw.emit(ByteArray(960));runCurrent()
+        assertTrue(coordinator.isRecording)
+        assertEquals(listOf(true), capture.startPreRoll)
+        assertEquals(listOf("listening:true"), pipeline.events)
+        // Business cancellation of the pending reply opens a user window; noise is not admission.
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting)
+        coordinator.stopTurn()
+        assertTrue(capture.followUpEnabled)
+        assertFalse(coordinator.isRecording)
+    }
+
+    @Test fun `queued silent preparation VAD cannot bypass echo protection after playback starts`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        var speaking = false
+        val coordinator = RecordingCoordinator(capture, FakeWakeWord(), pipeline, backgroundScope,
+            isPlaybackSpeaking = { speaking }, onState = {}, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent();coordinator.onForeground();runCurrent()
+        val preparing = DialogueSnapshot(DialogueState.RESPONDING, "interaction", "choices")
+        pipeline.dialogueSnapshot = preparing
+        coordinator.onDialogueState(preparing)
+        capture.detectFollowUp = {
+            speaking = true
+            coordinator.onPlaybackStage(com.autovoice.tts.PlaybackStage.STARTED)
+            true
+        }
+        capture.raw.emit(ByteArray(960));runCurrent()
+        assertFalse(coordinator.isRecording)
+        assertFalse(capture.followUpEnabled)
+        assertTrue(capture.bargeInListening)
+        assertTrue(capture.startPreRoll.isEmpty())
+    }
+
+    @Test fun `terminal playback callback rearms follow up after dialogue callback precedes playback flag`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        var speaking = true
+        val coordinator = RecordingCoordinator(capture, FakeWakeWord(), pipeline, backgroundScope,
+            isPlaybackSpeaking = { speaking }, onState = {}, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent();coordinator.onForeground();runCurrent()
+        val waiting = DialogueSnapshot(DialogueState.LISTENING, "interaction")
+        pipeline.dialogueSnapshot = waiting
+        coordinator.onDialogueState(waiting)
+        assertFalse(capture.followUpEnabled)
+        speaking = false
+        coordinator.onPlaybackStage(com.autovoice.tts.PlaybackStage.COMPLETED)
+        assertTrue(capture.followUpEnabled)
+    }
+
+    @Test fun `unadmitted barge in keeps playback running and rearms after noise capture`() = runTest {
+        val capture = FakeCapture()
+        val pipeline = FakePipeline()
+        val coordinator = RecordingCoordinator(capture, FakeWakeWord(), pipeline, backgroundScope,
+            isPlaybackSpeaking = { true }, onState = {}, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        coordinator.onForeground()
+        runCurrent()
+        val speaking = DialogueSnapshot(DialogueState.SPEAKING, "interaction", "reply")
+        pipeline.dialogueSnapshot = speaking
+        coordinator.onDialogueState(speaking)
+        coordinator.onPlaybackStage(com.autovoice.tts.PlaybackStage.STARTED)
+        capture.raw.emit(ByteArray(960))
+        runCurrent()
+        assertTrue(coordinator.isRecording)
+        assertEquals(listOf(true), capture.startPreRoll)
+        assertEquals(listOf("listening:false"), pipeline.events)
+        coordinator.stopTurn()
+        assertFalse(coordinator.isRecording)
+        assertTrue(capture.bargeInListening, "a false VAD candidate must not consume the only interruption chance")
+        capture.raw.emit(ByteArray(960))
+        runCurrent()
+        assertEquals(listOf(true, true), capture.startPreRoll)
+    }
+
     @Test fun `wake turn owns capture then routes vad and completed audio in order`() = runTest {
         val capture = FakeCapture().apply {
             segments = listOf(byteArrayOf(7, 8))
@@ -250,7 +335,11 @@ class RecordingCoordinatorTest {
         override fun stopMonitoring() { monitoring = false }
         override fun setOpenMicBargeInListening(enabled: Boolean) { bargeInListening = enabled }
         override fun setFollowUpListening(enabled: Boolean) { followUpEnabled = enabled }
-        override fun detectOpenMicBargeIn(block: ByteArray) = false
+        override fun detectOpenMicBargeIn(block: ByteArray): Boolean {
+            if (!bargeInListening) return false
+            bargeInListening = false
+            return true
+        }
         override fun detectFollowUpSpeech(block: ByteArray) = detectFollowUp()
         override fun start(includeBargeInPreRoll: Boolean): Boolean {
             startPreRoll += includeBargeInPreRoll

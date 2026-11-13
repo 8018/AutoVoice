@@ -24,6 +24,10 @@ jobs:
           node-version: 22
       - run: node --test tools/qa/tests/*.test.mjs
       - run: node --check tools/qa/navigation-cloud-text.mjs
+      - run: node --check tools/qa/navigation-cloud-client.mjs
+      - run: node --check tools/qa/navigation-voice-benchmark.mjs
+      - run: node --check tools/qa/navigation-voice-judge.mjs
+      - run: bash -n AutoVoiceServer/deploy/run-navigation-benchmark.sh
 
   schema-fixtures:
     name: Schema fixtures

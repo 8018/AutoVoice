@@ -38,6 +38,12 @@ NAVIGATION_BENCHMARK_TOKEN_FILE="$token_file" \
 NAVIGATION_BENCHMARK_ENDPOINT=ws://127.0.0.1:18090/ws \
 node tools/qa/navigation-route-benchmark.mjs --release="$DEPLOY_SHA"
 
+# Synthetic public speech exercises cloud ASR and exact second-candidate selection.
+# Voice latency includes paced upload and stays separate from the unchanged text gate.
+NAVIGATION_BENCHMARK_TOKEN_FILE="$token_file" \
+NAVIGATION_BENCHMARK_ENDPOINT=ws://127.0.0.1:18090/ws \
+node tools/qa/navigation-voice-benchmark.mjs --release="$DEPLOY_SHA"
+
 # Additional business coverage: real admin endpoint/empty state/assets, without fake uploads.
 mkdir -p docs/qa/navigation-stats-runs
 stats_result="docs/qa/navigation-stats-runs/$(date -u +%Y%m%dT%H%M%SZ)-$DEPLOY_SHA.json"

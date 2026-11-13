@@ -31,6 +31,28 @@ class WebRtcAudioFrontendTest {
         val confirmed = observations.first { it.purpose == VadPurpose.FOLLOW_UP && VadEvent.SpeechStart in it.events }
         return AudioInputHistory(FrontendBatch(batches.flatMap { it.processedBlocks },observations.filter { it.purpose == VadPurpose.SEGMENTATION }),confirmed.startSample+confirmed.validSamples)
     }
+    @Test fun `barge in requires consumed fresh echo reference and revokes on stale or replaced playback`() {
+        var now = 1_000_000_000L
+        val f = WebRtcAudioFrontend(FakeBackend(), config(), clockNanos = { now })
+        assertFalse(f.echoCancellationActive)
+        val unprotected = f.process(ByteArray(1024))
+        assertTrue(unprotected.vadObservations.filter { it.purpose == VadPurpose.BARGE_IN }.all { it.events.isEmpty() })
+        f.acceptRender(RenderReferenceFrame(1,0,now,ByteArray(320)))
+        assertFalse(f.echoCancellationActive)
+        val protected = f.process(ByteArray(1024))
+        assertTrue(protected.vadObservations.any { it.purpose == VadPurpose.BARGE_IN && VadEvent.SpeechStart in it.events })
+        assertTrue(f.echoCancellationActive)
+        now += 210_000_001L
+        assertFalse(f.echoCancellationActive)
+        f.acceptRender(RenderReferenceFrame(2,0,now,ByteArray(320)))
+        assertFalse(f.echoCancellationActive)
+        f.process(ByteArray(1024))
+        assertTrue(f.echoCancellationActive)
+        f.invalidateRender(2)
+        assertFalse(f.echoCancellationActive)
+        f.close()
+    }
+
     @Test fun `cross 32ms blocks conserve samples and monotonic 10ms coordinates`() {
         val backend = FakeBackend()
         val f = WebRtcAudioFrontend(backend, config())

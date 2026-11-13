@@ -378,10 +378,14 @@ class AudioRecorder(
     @Volatile
     private var record: AudioRecord? = null
 
-    /** 只有系统 AEC 真正启用时才允许普通话术打断，避免扬声器回声自激。 */
-    @Volatile
-    override var openMicBargeInAvailable: Boolean = false
-        private set
+    /** Require the actual channel's echo protection, including a fresh software render reference. */
+    override val openMicBargeInAvailable: Boolean
+        get() = synchronized(turnProcessingLock) {
+            !closed && frontendFailure == null && frontend.unavailabilityReason == null &&
+                if (frontend.ownsAuxiliaryVad) frontend.vadAvailable && frontend.echoCancellationActive
+                else platformBargeInAvailable
+        }
+    @Volatile private var platformBargeInAvailable = false
 
     private var readJob: Job? = null
 
@@ -440,7 +444,7 @@ class AudioRecorder(
         }
     }
 
-    /** 播报真正结束后的免唤醒窗口；复用同一 VAD/预卷缓冲，但不要求 AEC。 */
+    /** 无播放时的免唤醒窗口（包括待播报准备阶段）；复用 VAD/预卷缓冲，不要求 AEC。 */
     override fun setFollowUpListening(enabled: Boolean) {
         if (frontend.continuousProcessing) {
             synchronized(turnProcessingLock) {
@@ -717,7 +721,7 @@ class AudioRecorder(
                         val event = CaptureFrontendBatch(streaming?.inputEpoch ?: if (turnActive) inputEpoch else null,
                             if (streaming != null) result.inSampleRange(streaming.startSample,Long.MAX_VALUE)
                             else if (turnActive) activePcm(result) else result,
-                            if (followUpListening) followUpEpoch else null,if (bargeInListening) bargeInEpoch else null)
+                            if (followUpListening) followUpEpoch else null,if (bargeInListening && openMicBargeInAvailable) bargeInEpoch else null)
                         check(orderedBatches.size < frontendQueueCapacity) { "capture queue overflow" }
                         orderedBatches.addLast(event)
                     } catch (error: Throwable) {
@@ -809,7 +813,7 @@ class AudioRecorder(
         if (!frontend.ownsAuxiliaryVad) aecToken = aecReporter.start("effects")
         captureEffects.attach(audioSessionId)
         aecToken?.let { aecReporter.report(it, if (captureEffects.echoCancellationActive) ComponentUpdate.ready() else ComponentUpdate.disabled()) }
-        openMicBargeInAvailable = captureEffects.echoCancellationActive && bargeInVad != null
+        platformBargeInAvailable = captureEffects.echoCancellationActive && bargeInVad != null
         Log.i(
             TAG,
             "capture effects: aec=${captureEffects.echoCancellationActive} " +
@@ -821,7 +825,7 @@ class AudioRecorder(
         followUpListening = false
         bargeInListening = false
         bargeInGate.stop()
-        openMicBargeInAvailable = false
+        platformBargeInAvailable = false
         captureEffects.release()
         aecToken?.let { aecReporter.report(it, ComponentUpdate.health(Health.UNKNOWN)) }
     }

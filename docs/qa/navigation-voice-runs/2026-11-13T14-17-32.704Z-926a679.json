@@ -1,0 +1,145 @@
+{
+  "suite": "navigation-cloud-voice-v1",
+  "suiteVersion": 1,
+  "suiteFingerprint": "d20838659e5c52f54439826d09679aa6eaaae38d2a47b09f6f8e667120810184",
+  "revision": "926a67946c60263f180d16827ecf156e17ba320a",
+  "deployedRelease": "b8a9f275b7792a4e0ff68b20741ea313654e7c47",
+  "sourceDirty": true,
+  "startedAt": "2026-11-13T14:17:32.704Z",
+  "environment": "dev",
+  "channel": "synthetic-cloud-voice",
+  "protocol": "1.2",
+  "readOnly": true,
+  "measurement": "Voice audio_start to final reply, including paced 16 kHz upload, cloud ASR, model/search and network. Fixture TTS and candidate-reply TTS measured separately.",
+  "limitations": [
+    "Synthetic speech only; not microphone, device playback or driving acceptance.",
+    "TTS response text is an echo; audio duration does not prove all candidate names are audible.",
+    "Navigation selection is inspected only; no action is executed."
+  ],
+  "results": [
+    {
+      "id": "voice-candidates",
+      "productIds": [
+        "A03",
+        "B01"
+      ],
+      "input": "找北京的博物馆",
+      "fixtureTtsMs": 415,
+      "fixtureDurationMs": 1100,
+      "elapsedMs": 3101,
+      "firstResponseMs": 1142,
+      "audioDurationMs": 1100,
+      "type": "reply",
+      "asrText": "找北京的博物馆。",
+      "text": "第1个，中国国家博物馆，东长安街16号天安门广场东侧；第2个，故宫博物院，景山前街4号；第3个，中央礼品文物管理中心，西兴隆街1号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"中国国家博物馆\",\"lat\":39.905374,\"lon\":116.401304,\"address\":\"东长安街16号天安门广场东侧\",\"candidateId\":\"e8eeb504-6a94-4b99-9f07-fbe5d6827efe\"},{\"poiname\":\"故宫博物院\",\"lat\":39.917839,\"lon\":116.397029,\"address\":\"景山前街4号\",\"candidateId\":\"fbbf11a0-2465-4411-9b6e-acac43a5a0b1\"},{\"poiname\":\"中央礼品文物管理中心\",\"lat\":39.897847,\"lon\":116.410901,\"address\":\"西兴隆街1号\",\"candidateId\":\"66bbe37d-358b-4560-bdb0-aa66d994923c\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "e0cd4af3-5bb8-4873-9fdb-4c2dc26b9cb9"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"北京\"}"
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "voice-select-second",
+      "productIds": [
+        "B01"
+      ],
+      "input": "第二个",
+      "fixtureTtsMs": 377,
+      "fixtureDurationMs": 550,
+      "elapsedMs": 682,
+      "firstResponseMs": 586,
+      "audioDurationMs": 550,
+      "type": "reply",
+      "asrText": "第2个。",
+      "text": "好的，开始导航去故宫博物院",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "navigate",
+        "slots": {
+          "selectionId": {
+            "type": "string",
+            "value": "e0cd4af3-5bb8-4873-9fdb-4c2dc26b9cb9"
+          },
+          "candidateId": {
+            "type": "string",
+            "value": "fbbf11a0-2465-4411-9b6e-acac43a5a0b1"
+          },
+          "poiname": {
+            "type": "string",
+            "value": "故宫博物院"
+          },
+          "lat": {
+            "type": "number",
+            "value": 39.917839
+          },
+          "lon": {
+            "type": "number",
+            "value": 116.397029
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"poiname\":\"故宫博物院\",\"lat\":39.917839,\"lon\":116.397029,\"address\":\"景山前街4号\",\"candidateId\":\"fbbf11a0-2465-4411-9b6e-acac43a5a0b1\"}"
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "candidate-reply-tts",
+      "productIds": [
+        "B01"
+      ],
+      "channel": "tts",
+      "requestedText": "第1个，中国国家博物馆，东长安街16号天安门广场东侧；第2个，故宫博物院，景山前街4号；第3个，中央礼品文物管理中心，西兴隆街1号。请说第几个或具体地址名称。",
+      "elapsedMs": 1201,
+      "audioDurationMs": 14442,
+      "audioBytes": 462200,
+      "mime": "audio/wav",
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "finishedAt": "2026-11-13T14:17:38.671Z",
+  "passed": true,
+  "coveredProductIds": [
+    "A03",
+    "B01"
+  ],
+  "byChannel": {
+    "synthetic-cloud-voice": {
+      "total": 2,
+      "passed": 2,
+      "elapsedMs": [
+        3101,
+        682
+      ]
+    },
+    "tts": {
+      "total": 1,
+      "passed": 1,
+      "elapsedMs": [
+        1201
+      ]
+    }
+  }
+}

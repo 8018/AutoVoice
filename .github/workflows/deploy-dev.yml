@@ -167,7 +167,7 @@ jobs:
             ssh "${SSH_ARGS[@]}" "$TARGET" \
               "VOICE_BACKEND='$VOICE_BACKEND' bash '$STAGING_DIR/deploy-release.sh' 'dev' '$DEPLOY_SHA' '$STAGING_DIR'"
 
-      - name: Navigation text quality and latency gate
+      - name: Navigation text, voice and API quality gates
         timeout-minutes: 15
         run: bash AutoVoiceServer/deploy/run-navigation-benchmark.sh
 
@@ -180,6 +180,7 @@ jobs:
             docs/qa/navigation-benchmark-runs/*.json
             docs/qa/navigation-stats-runs/*.json
             docs/qa/navigation-route-runs/*.json
+            docs/qa/navigation-voice-runs/*.json
           if-no-files-found: warn
 
       - name: Deployment summary

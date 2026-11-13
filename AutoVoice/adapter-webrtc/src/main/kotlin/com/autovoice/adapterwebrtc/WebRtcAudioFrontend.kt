@@ -25,6 +25,10 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     private var referenceBroken = false
     var aecHealth = Health.UNKNOWN
         private set
+    override val echoCancellationActive: Boolean
+        @Synchronized get() = !closed && processingFailure == null && !referenceBroken &&
+            aecHealth == Health.HEALTHY && playbackId != null &&
+            lastReferenceNanos?.let { clockNanos() - it <= 200_000_000L } == true
     var renderFailure: ErrorCode? = null
         private set
     private var frontendToken: ComponentToken? = null
@@ -158,7 +162,13 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
         if (tracking) retained.write(block.pcm,inputOffset*2,(valid-inputOffset)*2)
         val observations = if (valid < 160) emptyList() else VadPurpose.entries.map { purpose ->
             val speech = requireNotNull(result.speech[purpose]) { "missing native VAD result" }
-            val events = gates.getValue(purpose).feed(speech,position,valid)
+            // A speech edge observed before render protection is available may be speaker echo.
+            // Do not retain that edge or its accumulated speech toward a later protected trigger.
+            val gate = gates.getValue(purpose)
+            val events = if (purpose == VadPurpose.BARGE_IN && !echoCancellationActive) {
+                gate.reset()
+                emptyList()
+            } else gate.feed(speech,position,valid)
             if (tracking && purpose == VadPurpose.SEGMENTATION) {
                 for (event in events) when (event) {
                     VadEvent.SpeechStart -> { startEvents++;if (segmentStart == null) segmentStart = maxOf(retainedStart,gates.getValue(purpose).onsetSample - preRollSamples) }

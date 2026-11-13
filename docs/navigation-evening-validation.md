@@ -1,4 +1,6 @@
-> 2026-11-13 真机发现：当前讯飞单能力 SDK 拼接导致本地命令词识别不可用，尚未修复；唤醒和云端可用。必须取得匹配的官方组合 SDK 后再验收，详见[设备诊断](navigation-local-asr-device-report.md)。
+> 2026-11-13 候选打断更新：手机当前使用的是 `com.autovoice.app.open`。本轮对应安装包为 `AutoVoice/app/build/outputs/navigation-review/AutoVoice-Open-navigation-dev.apk`（应用名 AutoVoice Open），包含准备播报及播放中的免唤醒选择修复。请按[本轮验证说明](navigation-speaking-selection-report.md)测试；下文讯飞包是另一个独立应用。
+>
+> 讯飞通道仍有单能力 SDK 拼接导致的本地命令词识别不可用问题，尚未修复；该通道唤醒和云端可用。必须取得匹配的官方组合 SDK 后再验收，详见[设备诊断](navigation-local-asr-device-report.md)。
 
 # 导航开发版晚间验证
 

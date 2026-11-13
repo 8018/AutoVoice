@@ -175,7 +175,7 @@ class VoiceEngine(
         finishOpenRounds = telemetry::finishOpenRounds,
         endRound = telemetry::end,
         onDialogueIdleTimeout = { snapshot ->
-            Log.i(TAG, "对话状态停留 ${dialogueIdleTimeoutMs}ms，退出对话（state=${snapshot.state}）")
+            Log.i(TAG, "对话阶段达到等待上限，退出对话（state=${snapshot.state}）")
         },
     )
     val conversation: ConversationController get() = voiceBusiness.conversation

@@ -120,7 +120,7 @@ class VoiceBusinessServiceTest {
     }
 
     @Test
-    fun `each dialogue transition renews ten seconds and repeated playback state does not`() = runTest {
+    fun `long playback keeps interaction alive and idle deadline starts after completion`() = runTest {
         val output = RecordingOutput()
         val service = service(output, scope = backgroundScope)
         service.onWake()
@@ -140,10 +140,104 @@ class VoiceBusinessServiceTest {
         assertEquals(DialogueState.SPEAKING, service.conversation.snapshot.value.state)
         service.onPlaybackLifecycle(turn, PlaybackStage.STARTED)
 
+        advanceTimeBy(20_001)
+        runCurrent()
+        assertEquals(DialogueState.SPEAKING, service.conversation.snapshot.value.state)
+        service.onPlaybackLifecycle(turn, PlaybackStage.COMPLETED)
+        advanceTimeBy(9_999)
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
         advanceTimeBy(1)
         runCurrent()
         assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
         assertEquals(PlaybackInterruptionReason.INTERACTION_CLOSED, output.stops.last())
+    }
+
+    @Test
+    fun `preparing response interruption retires pending output without admitting noise and permits immediate choice`() = runTest {
+        val output = RecordingOutput()
+        lateinit var service: VoiceBusinessService
+        val opened = mutableListOf<String>()
+        val navigation = AppDialogueManager(
+            interactionIdProvider = { service.conversation.snapshot.value.interactionId!! },
+            onNavigation = {}, launchNavigation = { opened += it; true },
+        )
+        service = VoiceBusinessService(output, BusinessHandler { BusinessResult.applied() }, backgroundScope,
+            onDialogueState = navigation::onDialogueState)
+        service.onWake()
+        service.conversation.openCapture("choices")
+        service.onTurnResult("choices", RaceWinner.Cloud(TextReply("请选择目的地")))
+        assertEquals(DialogueState.RESPONDING, service.conversation.snapshot.value.state)
+        val candidate = com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate(
+            "天府广场", 30.657, 104.066, candidateId = "public-square")
+        navigation.navigationSession.offer(listOf(candidate), selectionId = "selection", originTurnId = "choices")
+        val offered = navigation.navigationSession.snapshot
+        service.onCaptureStarted(interruptPlayback = true)
+        assertEquals(PlaybackInterruptionReason.NEW_TURN, output.stops.last())
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
+        assertEquals(null, service.conversation.snapshot.value.turnId)
+        // A rejected/noise candidate leaves a real listening window, not a stranded RESPONDING.
+        service.conversation.openCapture("noise")
+        service.conversation.rejectCapture("noise")
+        service.onPlaybackLifecycle("choices", PlaybackStage.STARTED)
+        service.onPlaybackLifecycle("choices", PlaybackStage.COMPLETED)
+        service.onTurnResult("choices", RaceWinner.Cloud(TextReply("迟到播报")))
+        assertEquals(null, service.conversation.snapshot.value.turnId)
+        val preserved = navigation.navigationSession.snapshot
+        assertEquals(offered.selectionId, preserved.selectionId)
+        assertEquals(offered.taskId, preserved.taskId)
+        assertEquals(offered.candidateVersion, preserved.candidateVersion)
+        assertEquals(offered.candidates, preserved.candidates)
+        service.conversation.openCapture("choice")
+        service.onAsrTurnEstablished("choice", AdmissionEvidence.CLOUD_ASR)
+        assertEquals("choice", service.conversation.snapshot.value.turnId)
+        service.onPlaybackLifecycle("choices", PlaybackStage.FAILED)
+        assertEquals("choice", service.conversation.snapshot.value.turnId)
+        assertEquals(listOf("choices" to "请选择目的地"), output.spoken)
+        assertTrue(navigation.selectCandidate(candidate, "choice") != null)
+        assertEquals(1, opened.size)
+    }
+
+    @Test
+    fun `cloud ASR admits barge in after long playback and late old playback cannot close it`() = runTest {
+        val output = RecordingOutput()
+        val accepted = mutableListOf<Pair<String, String>>()
+        val service = VoiceBusinessService(output, BusinessHandler { BusinessResult.applied() }, backgroundScope,
+            onAcceptedVoiceTranscript = { id, text -> accepted += id to text })
+        service.onWake()
+        service.conversation.openCapture("choices")
+        service.onTurnResult("choices", RaceWinner.Cloud(TextReply("请选择目的地")))
+        service.onPlaybackLifecycle("choices", PlaybackStage.STARTED)
+        advanceTimeBy(15_000)
+        service.conversation.openCapture("choice")
+        val stopsBeforeVad = output.stops.size
+        service.onCaptureStarted(interruptPlayback = false)
+        assertEquals(stopsBeforeVad, output.stops.size)
+        service.onRecognized("choice", "第一个", final = true)
+        service.onAsrTurnEstablished("choice", AdmissionEvidence.CLOUD_ASR)
+        assertEquals(listOf("choice" to "第一个"), accepted)
+        assertEquals(PlaybackInterruptionReason.NEW_TURN, output.stops.last())
+        service.conversation.onInputFinalized("choice")
+        service.onPlaybackLifecycle("choices", PlaybackStage.COMPLETED)
+        service.onPlaybackLifecycle("choices", PlaybackStage.FAILED)
+        service.onPlaybackLifecycle("choices", PlaybackStage.STARTED)
+        assertEquals(DialogueState.PROCESSING, service.conversation.snapshot.value.state)
+        assertEquals("choice", service.conversation.snapshot.value.turnId)
+    }
+
+    @Test
+    fun `hung playback remains bounded and duplicate start does not renew deadline`() = runTest {
+        val output = RecordingOutput()
+        val service = service(output, scope = backgroundScope)
+        service.onWake()
+        service.conversation.openCapture("reply")
+        service.onTurnResult("reply", RaceWinner.Cloud(TextReply("回复")))
+        service.onPlaybackLifecycle("reply", PlaybackStage.STARTED)
+        advanceTimeBy(119_999)
+        assertEquals(DialogueState.SPEAKING, service.conversation.snapshot.value.state)
+        service.onPlaybackLifecycle("reply", PlaybackStage.STARTED)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
     }
 
     @Test
@@ -164,6 +258,39 @@ class VoiceBusinessServiceTest {
 
         assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
         assertTrue(output.spoken.isEmpty())
+    }
+
+    @Test
+    fun `admitted speech survives idle budget but unfinished input has a thirty second bound`() = runTest {
+        val output = RecordingOutput()
+        val service = service(output, scope = backgroundScope)
+        service.onWake()
+        service.conversation.openCapture("speech")
+        service.onAsrTurnEstablished("speech", AdmissionEvidence.CLOUD_ASR)
+        advanceTimeBy(10_001)
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
+        assertEquals("speech", service.conversation.snapshot.value.turnId)
+        advanceTimeBy(19_998)
+        assertEquals(DialogueState.LISTENING, service.conversation.snapshot.value.state)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
+        service.conversation.onInputFinalized("speech")
+        service.onTurnResult("speech", RaceWinner.Cloud(TextReply("迟到结果")))
+        assertTrue(output.spoken.isEmpty())
+    }
+
+    @Test
+    fun `unadmitted VAD capture retains ten second user waiting deadline`() = runTest {
+        val service = service(RecordingOutput(), scope = backgroundScope)
+        service.onWake()
+        advanceTimeBy(9_000)
+        service.conversation.openCapture("noise")
+        service.onCaptureStarted(interruptPlayback = false)
+        assertEquals(null, service.conversation.snapshot.value.turnId)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(DialogueState.DORMANT, service.conversation.snapshot.value.state)
     }
 
     @Test
