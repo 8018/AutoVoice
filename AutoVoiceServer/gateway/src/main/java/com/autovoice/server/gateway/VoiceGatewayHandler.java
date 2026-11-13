@@ -77,6 +77,8 @@ import org.slf4j.LoggerFactory;
 public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseable {
 
     public static final String PROTOCOL_VERSION = "1.1";
+    private static final String TRIP_DRAFT_PROTOCOL_VERSION = "1.2";
+    private static final String TRIP_DRAFT_CAPABILITY = "navigationTripDraft";
     public static final String DEFAULT_LANGUAGE = "zh-CN";
     private static final long DEFAULT_SAFETY_TIMEOUT_MS = 4000;
     private static final long DEFAULT_ASR_FAIL_WAIT_MS = 2000;
@@ -259,6 +261,14 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
     }
 
     /** D05a:获准输出的候选回复在准入后提交(晚到/落败回复到不了这里)。 */
+    private static boolean requiresTripDraft(Intent intent) {
+        if (intent == null || !"navigation".equals(intent.domain())) return false;
+        if ("draft_trip".equals(intent.intent())) return true;
+        var waypoints = intent.slots().get("waypoints");
+        return "navigate".equals(intent.intent()) && waypoints != null
+                && waypoints.value() instanceof String value && !value.isBlank();
+    }
+
     private void commitNavigationOnAdmit(SessionContext ctx, SegmentPipeline.SegmentResult result) {
         Intent intent = result.intent();
         if (intent == null || ctx == null) return;
@@ -529,6 +539,8 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 st.ctx = ctx;
             }
         }
+        boolean tripDraftSupported = TRIP_DRAFT_PROTOCOL_VERSION.equals(payload.get("protocolVersion"));
+        st.ctx = st.ctx.withAttr(TRIP_DRAFT_CAPABILITY, tripDraftSupported);
         Map<String, Object> ready = new LinkedHashMap<>();
         ready.put("sessionId", st.ctx.sessionId());
         ready.put("language", st.ctx.language());
@@ -537,7 +549,7 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
         // 是否清理待选列表;正常恢复且候选有效时应保留列表
         ready.put("sessionState", sessionState);
         ready.put("navigationCandidatesValid", navigationDialog.hasPending(st.ctx));
-        ready.put("protocolVersion", PROTOCOL_VERSION);
+        ready.put("protocolVersion", tripDraftSupported ? TRIP_DRAFT_PROTOCOL_VERSION : PROTOCOL_VERSION);
         if (textEndpoint.supported()) ready.put("capabilities", java.util.List.of(GatewayTextEndpoint.CAPABILITY));
         // 时钟同步：携带服务器墙钟毫秒，客户端据此估算时钟偏移（设备端 telemetry 统一换算服务器时钟）
         ready.put("serverTime", System.currentTimeMillis());
@@ -937,6 +949,10 @@ public final class VoiceGatewayHandler implements WebSocketHandler, AutoCloseabl
                 // 会话层已撤销输出：不缓存、不下发决策、不回复；候选仍自然完成。
                 drainDecisions(session, st, utteranceId, false);
                 return;
+            }
+            if (!Boolean.TRUE.equals(ctx.attrs().get(TRIP_DRAFT_CAPABILITY)) && requiresTripDraft(result.intent())) {
+                String message = "请更新应用后再确认多地点行程。";
+                result = new SegmentPipeline.SegmentResult(message, message, null, result.asrText());
             }
             if (result.intent() != null && result.actionId() == null) {
                 // Compatibility-only correlation ID for older clients. Current clients authorize

@@ -38,8 +38,24 @@ final class NavigationToolFacade {
                     + "厕所|卫生间|餐厅|饭店|酒店|宾馆|商场|超市|便利店|景区|公园|机场|飞机场)$");
     private static final Pattern GENERIC_RAIL_STATION = Pattern.compile(
             "^(?:请|帮我|带我|我要)?(?:导航到|导航去|导航|去|找)?(?:离我最近的?|附近的?|周边的?|最近的?|就近的?)?(?:火车站|高铁站|动车站|铁路站)$");
+    private static final Pattern DESTINATION_PREFIX = Pattern.compile(
+            "^(?:请)?(?:帮我)?(?:带我去|导航到|导航去|搜索|查找|找|去)(?=.{2,})");
+    private static final Pattern TERMINAL_NUMBER = Pattern.compile(
+            "(?:t([1-9]\\d*)|([一二三四五六七八九1-9][0-9]*)号?航站楼)");
+    private static final Pattern REFERENCE_QUERY = Pattern.compile(
+            "^(.+?)(?:附近|周边|旁边)(?:的)?(.+)$");
+    private static final Pattern CITY_PREFIX = Pattern.compile(
+            "^(北京|上海|天津|重庆)(?:市|的)?(.+)$|^([\\p{IsHan}]{2,10}市)(?:的)?(.+)$"
+            + "|^(杭州|成都|广州|深圳|南京|武汉|西安|长沙|郑州|济南|苏州|宁波|厦门|青岛)的(.+)$");
+    private static final Pattern ENTRANCE = Pattern.compile(
+            "(?:t[1-9]\\d*|[一二三四五六七八九\\d]+号?(?:航站楼|出入口|出口|入口|门)|[东西南北](?:侧)?(?:出入口|出口|入口|门)|航站楼|出入口|出口|入口)");
+    private static final Pattern STREET_ADDRESS = Pattern.compile(
+            ".*(?:路|街|道|巷|弄).*[0-9零一二三四五六七八九十百]+号(?:楼)?$");
+    private static final int SEARCH_RECALL_LIMIT = 20;
     private static final int RAIL_RECALL_LIMIT = 25;
     private static final double MAX_GENERIC_RAIL_DISTANCE_KM = 50;
+    private static final int REFERENCE_RADIUS_METERS = 5_000;
+    private static final int VEHICLE_RADIUS_METERS = 50_000;
     private static final Pattern LOCATION = Pattern.compile(
             "(?<![0-9.])((?:7[3-9]|[89]\\d|1[0-3]\\d|140)(?:\\.\\d+)?)\\s*,\\s*"
                     + "((?:[0-5]?\\d)(?:\\.\\d+)?)(?![0-9.])");
@@ -48,12 +64,16 @@ final class NavigationToolFacade {
     private static final long GEO_QPS_BACKOFF_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     static final FunctionTool TOOL = new FunctionTool(NAME,
-            "一次解析一个或多个地点，返回附近优先、可直接用于 navigate 的候选坐标",
+            "解析地点和明确的搜索范围；每站展示最多三个候选。多地点必须按原顺序完整传入，家和公司分别使用“家”和“公司”。",
             """
             {"type":"object","properties":{
              "destinations":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":5},
              "location":{"type":"string","description":"车辆坐标 lon,lat；有定位时必填"},
-             "city":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":5}},
+             "city":{"type":"string","description":"只填用户明确指定的城市；不要填车辆定位城市"},
+             "district":{"type":"string","description":"用户明确指定的区县"},
+             "reference":{"type":"string","description":"用户要求在其周边检索的参考地点，destinations 只放要找的类别"},
+             "entrance":{"type":"string","description":"用户明确要求的入口或航站楼，例如 T2 或东门"},
+             "limit":{"type":"integer","minimum":1,"maximum":3}},
              "required":["destinations"]}
             """, com.autovoice.server.contracts.ToolExecutionTraits.INDEPENDENT_QUERY);
 
@@ -95,33 +115,66 @@ final class NavigationToolFacade {
             JsonNode args = JSON.readTree(argumentsJson);
             JsonNode destinations = args.path("destinations");
             if (!destinations.isArray() || destinations.isEmpty()) {
-                throw new IllegalArgumentException("destinations must be a non-empty array");
+                throw new IllegalArgumentException("destinations must contain place names");
+            }
+            if (destinations.size() > 5) {
+                return JSON.createObjectNode().put("message", "一次最多安排5个地点，请减少地点后重试。").toString();
+            }
+            for (JsonNode destination : destinations) {
+                if (!destination.isTextual() || destination.asText().isBlank()
+                        || destination.asText().length() > 256) {
+                    throw new IllegalArgumentException("each destination must be a valid place name");
+                }
             }
             String location = args.path("location").asText("");
-            String city = args.path("city").asText("");
-            int limit = Math.max(1, Math.min(5, args.path("limit").asInt(3)));
+            if (parseLocation(location) == null) location = "";
+            int limit = Math.max(1, Math.min(3, args.path("limit").asInt(3)));
             boolean multiStop = destinations.size() > 1;
-            ArrayNode resolved = JSON.createArrayNode();
-            for (JsonNode destination : destinations) {
-                if (!destination.isTextual() || destination.asText().isBlank()) continue;
-                ObjectNode item = resolved.addObject();
-                String query = destination.asText().trim();
-                item.put("query", query);
-                ArrayNode candidates = resolveOne(query, location, city, multiStop ? 1 : limit, multiStop);
-                item.set("candidates", candidates);
-                // Unqualified categories stay relative to the vehicle for every stop.
-                // Route order alone is not evidence that the user meant "near the previous stop".
-            }
+            if (multiStop) limit = 3;
+            Set<CandidateKey> excluded = candidateKeys(args.path("excluded"));
             ObjectNode out = JSON.createObjectNode();
-            out.set("destinations", resolved);
-            boolean incomplete = false;
-            for (JsonNode stop : resolved) {
-                if (stop.path("candidates").isEmpty()) incomplete = true;
+            ArrayNode resolved = out.putArray("destinations");
+            for (JsonNode destination : destinations) {
+                String savedPlace = multiStop ? savedPlace(destination.asText()) : "";
+                if (!savedPlace.isBlank()) {
+                    resolved.addObject().put("query", destination.asText().strip()).put("savedPlace", savedPlace);
+                    continue;
+                }
+                Search search = Search.parse(destination.asText(), args);
+                ObjectNode item = resolved.addObject().put("query", search.query());
+                ArrayNode matches;
+                if (location.isBlank() && search.city().isBlank() && search.reference().isBlank()) {
+                    matches = JSON.createArrayNode();
+                    out.put("message", "请说要查找的城市。");
+                } else if (!search.reference().isBlank()) {
+                    String center = referenceCenter(search);
+                    if (center.isBlank()) {
+                        matches = JSON.createArrayNode();
+                        out.put("message", "请说更具体的参考地点名称或地址。");
+                    } else {
+                        matches = resolveOne(search, center, limit, excluded);
+                    }
+                } else {
+                    matches = resolveOne(search, location, limit, excluded);
+                }
+                item.set("candidates", matches);
+                if (!multiStop) {
+                    out.set("search", search.toJson());
+                    if (!matches.isEmpty() && search.query().contains("充电站")) {
+                        out.put("availabilityNotice", "充电桩空闲状态未知。");
+                    }
+                }
+                if (matches.isEmpty() && !out.has("message")) {
+                    if (!excluded.isEmpty()) out.put("message", "没有找到更多候选。");
+                    else if (!search.entrance().isBlank()) out.put("message", "未找到指定入口，请说完整的入口名称。");
+                    else if (STREET_ADDRESS.matcher(search.query()).matches()) out.put("message", "未找到这个门牌，请确认完整地址。");
+                    else out.put("message", "未找到可靠地点，请说更具体的地点名称。");
+                }
             }
-            out.put("instruction", incomplete
-                    ? "有站点未找到可信的就近坐标；不得打开路线，请询问具体站名或确认定位"
+            out.put("instruction", out.has("message")
+                    ? (multiStop ? "不得打开路线。" : "") + out.path("message").asText()
                     : multiStop
-                        ? "每组已选最优结果；最后一组为目的地，其余按原顺序为 waypoints；打开路线预览，不自动开始导航"
+                        ? "保留每站候选及原有顺序，生成行程草稿并等待用户确认"
                         : "向用户展示候选，等待下一轮确认");
             return JSON.writeValueAsString(out);
         } catch (McpToolException e) {
@@ -131,28 +184,51 @@ final class NavigationToolFacade {
         }
     }
 
-    private ArrayNode resolveOne(String query, String location, String city, int limit,
-                                 boolean forceSingleCandidate) {
-        boolean broadAirportQuery = BROAD_AIRPORT_QUERY.matcher(compact(query)).matches();
+    private static String savedPlace(String query) {
+        return switch (query.strip()) {
+            case "家", "我家", "回家", "家庭地址" -> "home";
+            case "公司", "我的公司", "去公司", "上班" -> "work";
+            default -> "";
+        };
+    }
+
+    private ArrayNode resolveOne(Search criteria, String location, int limit,
+                                 Set<CandidateKey> excluded) {
+        String query = criteria.query();
+        String city = criteria.city();
+        boolean referenced = !criteria.reference().isBlank();
+        boolean cityScoped = !city.isBlank() || !criteria.district().isBlank();
+        boolean broadAirportQuery = BROAD_AIRPORT_QUERY.matcher(compact(query)).matches()
+                && criteria.entrance().isBlank();
         boolean genericRailStation = GENERIC_RAIL_STATION.matcher(compact(query)).matches();
-        if (genericRailStation) return resolveRailStation(location, limit);
-        int effectiveLimit = broadAirportQuery && !forceSingleCandidate ? Math.max(limit, 5) : limit;
-        int recallLimit = broadAirportQuery ? 20 : effectiveLimit;
-        String searchName = !location.isBlank() && tools.containsKey("maps_around_search")
-                && shouldSearchAround(query)
+        if (genericRailStation && !cityScoped && !referenced) {
+            return resolveRailStation(location, limit, excluded);
+        }
+        int recallLimit = SEARCH_RECALL_LIMIT;
+        boolean nearby = referenced || !cityScoped && shouldSearchAround(query);
+        String searchName = nearby && !location.isBlank() && tools.containsKey("maps_around_search")
                 ? "maps_around_search" : "maps_text_search";
+        if (referenced && !"maps_around_search".equals(searchName)) {
+            return JSON.createArrayNode();
+        }
         FunctionTool search = tools.get(searchName);
         if (search == null) search = tools.get("maps_text_search");
         if (search == null) throw new McpToolException("AMap search tool is unavailable");
 
         Map<String, Object> values = new LinkedHashMap<>();
-        values.put("keywords", query);
-        values.put("keyword", query);
-        values.put("query", query);
-        values.put("location", location);
-        values.put("center", location);
+        String keywords = criteria.keywords();
+        values.put("keywords", keywords);
+        values.put("keyword", keywords);
+        values.put("query", keywords);
+        values.put("location", cityScoped && !referenced ? "" : location);
+        values.put("center", cityScoped && !referenced ? "" : location);
         values.put("city", city);
-        values.put("radius", 50_000);
+        values.put("citylimit", !city.isBlank());
+        values.put("offset", recallLimit);
+        int radius = referenced ? REFERENCE_RADIUS_METERS : VEHICLE_RADIUS_METERS;
+        double[] center = nearby ? parseLocation(location) : null;
+        values.put("radius", radius);
+        values.put("sortrule", "distance");
         values.put("limit", recallLimit);
         values.put("page_size", recallLimit);
         values.put("pageSize", recallLimit);
@@ -160,7 +236,7 @@ final class NavigationToolFacade {
         try {
             raw = caller.apply(search.name(), arguments(search, values));
         } catch (McpToolException primaryError) {
-            if (!"maps_around_search".equals(search.name())
+            if (referenced || !"maps_around_search".equals(search.name())
                     || !tools.containsKey("maps_text_search")) {
                 throw primaryError;
             }
@@ -175,7 +251,7 @@ final class NavigationToolFacade {
         // 周边搜索适合“附近咖啡店”这类相对目的地，但某些返回只含名称/地址而没有坐标。
         // 先用文本搜索补一次可直接导航的坐标，避免为每个候选消耗 maps_geo 配额。
         // 这也是 named/跨城地点不应一律以车辆当前位置做周边搜索的兜底。
-        if (direct.isEmpty()
+        if (direct.isEmpty() && !referenced
                 && "maps_around_search".equals(search.name())
                 && tools.containsKey("maps_text_search")) {
             FunctionTool textSearch = tools.get("maps_text_search");
@@ -191,13 +267,15 @@ final class NavigationToolFacade {
             }
         }
 
-        if (broadAirportQuery && !location.isBlank() && tools.containsKey("maps_text_search")) {
+        if (broadAirportQuery && !cityScoped && !referenced
+                && !location.isBlank() && tools.containsKey("maps_text_search")) {
             String resolvedCity = city.isBlank() ? reverseGeocodeCity(location) : city;
             if (!resolvedCity.isBlank()) {
                 city = resolvedCity;
                 FunctionTool textSearch = tools.get("maps_text_search");
                 Map<String, Object> textValues = new LinkedHashMap<>(values);
                 textValues.put("city", resolvedCity);
+                textValues.put("citylimit", true);
                 try {
                     String textRaw = caller.apply(textSearch.name(), arguments(textSearch, textValues));
                     direct = mergeAirportCandidates(direct, candidates(textRaw, recallLimit));
@@ -211,12 +289,16 @@ final class NavigationToolFacade {
                 }
             }
         }
+        direct = direct.stream().filter(NavigationToolFacade::validCoordinates)
+                .filter(candidate -> !candidate.name().isBlank())
+                .filter(candidate -> criteria.matches(candidate.name(), candidate.address(),
+                        candidate.city(), candidate.district()))
+                .filter(candidate -> broadAirportQuery && !referenced || withinRadius(center, candidate, radius))
+                .toList();
+        places = places.stream().filter(place -> criteria.matches(place.name(), place.address(),
+                place.city(), place.district())).toList();
         if (!direct.isEmpty() && !broadAirportQuery) {
-            return toJson(direct.stream()
-                    .map(candidate -> candidate.name().isBlank()
-                            ? new Candidate(query, candidate.lat(), candidate.lon(), candidate.address())
-                            : candidate)
-                    .toList(), limit);
+            return toJson(direct, limit, excluded);
         }
 
         if (broadAirportQuery && !direct.isEmpty()) {
@@ -228,44 +310,58 @@ final class NavigationToolFacade {
             places = places.stream()
                     .filter(place -> !resolvedAirports.contains(airportKey(place.name())))
                     .toList();
-            if (places.isEmpty()) return toJson(rankAirports(direct, location), effectiveLimit);
+            if (places.isEmpty()) return toJson(rankAirports(direct, location), limit, excluded);
         }
 
-        if (places.isEmpty()) places = List.of(new Place(query, query));
+        if (places.isEmpty()) {
+            if (!criteria.entrance().isBlank() || nearby || !criteria.district().isBlank()
+                    || criteria.isStreetAddress() || criteria.isChargingStation()) {
+                return JSON.createArrayNode();
+            }
+            places = List.of(new Place(query, query));
+        }
         if (broadAirportQuery) places = places.stream()
                 .sorted(java.util.Comparator.comparingInt(place -> isRootAirport(place.name()) ? 0 : 1)).toList();
         List<Candidate> geocoded = new ArrayList<>();
         FunctionTool geo = tools.get("maps_geo");
         McpToolException firstGeoError = null;
+        if (geo == null) return toJson(direct, limit, excluded);
         for (Place place : places) {
             if (broadAirportQuery && airportAccessory(place.name())) continue;
             Map<String, Object> geoValues = new LinkedHashMap<>();
-            String address = String.join(" ", city, place.address(), place.name()).trim();
+            String placeCity = city.isBlank() ? place.city() : city;
+            String address = String.join(" ", placeCity, place.address(), place.name()).trim();
             geoValues.put("address", address);
-            geoValues.put("city", city);
+            geoValues.put("city", placeCity);
             try {
                 List<Candidate> points = candidates(
                         callGeocode(geo, arguments(geo, geoValues)), 1);
                 if (!points.isEmpty()) {
                     Candidate point = points.getFirst();
-                    geocoded.add(new Candidate(place.name(), point.lat(), point.lon(), place.address()));
+                    if (!criteria.acceptsGeocode(point)) continue;
+                    Candidate candidate = new Candidate(place.name(), point.lat(), point.lon(), place.address());
+                    if (validCoordinates(candidate)
+                            && (broadAirportQuery && !referenced || withinRadius(center, candidate, radius))
+                            && !excluded.contains(CandidateKey.from(candidate)) && !geocoded.contains(candidate)) {
+                        geocoded.add(candidate);
+                    }
                 }
             } catch (McpToolException error) {
                 if (firstGeoError == null) firstGeoError = error;
                 LOG.warn("AMap geocode failed for one candidate; continuing with remaining candidates: {}",
                         error.getMessage());
             }
-            if (geocoded.size() >= effectiveLimit) break;
+            if (geocoded.size() >= limit) break;
         }
         if (direct.isEmpty() && geocoded.isEmpty() && firstGeoError != null) throw firstGeoError;
         List<Candidate> result = broadAirportQuery
                 ? mergeAirportCandidates(direct, geocoded) : geocoded;
         return toJson(broadAirportQuery ? rankAirports(result, location)
-                : result, effectiveLimit);
+                : result, limit, excluded);
     }
 
     /** Resolve current city before any category search; never use an unbounded national fallback. */
-    private ArrayNode resolveRailStation(String location, int limit) {
+    private ArrayNode resolveRailStation(String location, int limit, Set<CandidateKey> excluded) {
         double[] origin = parseLocation(location);
         if (origin == null) return JSON.createArrayNode();
         String city = reverseGeocodeCity(location);
@@ -331,7 +427,7 @@ final class NavigationToolFacade {
                 }
             }
         }
-        return toJson(nearbyRailCandidates(direct, origin), limit);
+        return toJson(nearbyRailCandidates(direct, origin), limit, excluded);
     }
 
     private static boolean railStationName(String name) {
@@ -469,6 +565,11 @@ final class NavigationToolFacade {
                 .toList();
     }
 
+    private static boolean withinRadius(double[] origin, Candidate point, int radiusMeters) {
+        return origin == null || 2 * 6_371_000 * Math.asin(Math.min(1, Math.sqrt(distanceScore(origin, point))))
+                <= radiusMeters;
+    }
+
     private static double distanceScore(double[] origin, Candidate point) {
         double a = Math.toRadians(origin[1]), b = Math.toRadians(point.lat());
         return Math.pow(Math.sin((b - a) / 2), 2) + Math.cos(a) * Math.cos(b)
@@ -540,7 +641,10 @@ final class NavigationToolFacade {
             String name = foundName.isBlank() ? inheritedName : foundName;
             String address = foundAddress.isBlank() ? inheritedAddress : foundAddress;
             double[] point = point(node);
-            if (point != null) out.add(new Candidate(name, point[1], point[0], address));
+            if (point != null) {
+                out.add(new Candidate(name, point[1], point[0], address,
+                        firstText(node, "cityname", "city"), firstText(node, "adname", "district")));
+            }
             String finalName = name;
             String finalAddress = address;
             node.elements().forEachRemaining(child ->
@@ -578,7 +682,10 @@ final class NavigationToolFacade {
         if (node.isObject()) {
             String name = firstText(node, "name", "poiname", "title");
             String address = firstText(node, "address", "formatted_address");
-            if (!name.isBlank()) out.add(new Place(name, address));
+            if (!name.isBlank()) {
+                out.add(new Place(name, address, firstText(node, "cityname", "city"),
+                        firstText(node, "adname", "district")));
+            }
             node.elements().forEachRemaining(child -> collectPlaces(child, out, limit));
         } else if (node.isArray()) {
             node.forEach(child -> collectPlaces(child, out, limit));
@@ -632,22 +739,215 @@ final class NavigationToolFacade {
         return "";
     }
 
-    private static ArrayNode toJson(List<Candidate> candidates, int limit) {
+    private String referenceCenter(Search criteria) {
+        FunctionTool search = tools.get("maps_text_search");
+        if (search == null) return "";
+        String city = criteria.city();
+        String keywords = (criteria.district() + " " + criteria.reference()).strip();
+        Map<String, Object> values = Map.of("keywords", keywords, "keyword", keywords,
+                "query", keywords, "city", city, "citylimit", !city.isBlank(),
+                "limit", SEARCH_RECALL_LIMIT, "offset", SEARCH_RECALL_LIMIT);
+        String raw = caller.apply(search.name(), arguments(search, values));
+        var exact = candidates(raw, SEARCH_RECALL_LIMIT).stream()
+                .filter(NavigationToolFacade::validCoordinates)
+                .filter(candidate -> criteria.matchesReference(candidate.name(), candidate.address()))
+                .filter(candidate -> criteria.matchesArea(candidate.name(), candidate.address(),
+                        candidate.city(), candidate.district()))
+                .map(candidate -> candidate.lon() + "," + candidate.lat()).distinct().toList();
+        var landmarks = places(raw, SEARCH_RECALL_LIMIT).stream()
+                .filter(place -> criteria.matchesReference(place.name(), place.address()))
+                .filter(place -> criteria.matchesArea(place.name(), place.address(), place.city(), place.district()))
+                .toList();
+        if (exact.size() > 1 || landmarks.size() > 1) return "";
+        if (exact.size() == 1) return exact.getFirst();
+        if (landmarks.size() != 1 || !tools.containsKey("maps_geo")) return "";
+
+        Place place = landmarks.getFirst();
+        String placeCity = city.isBlank() ? place.city() : city;
+        if (placeCity.isBlank() && place.address().isBlank()) return "";
+        FunctionTool geo = tools.get("maps_geo");
+        var point = candidates(callGeocode(geo, arguments(geo, Map.of("city", placeCity, "address",
+                        String.join(" ", placeCity, place.address(), place.name()).trim()))), 2)
+                .stream().filter(NavigationToolFacade::validCoordinates)
+                .filter(candidate -> criteria.matchesArea(place.name(), place.address(),
+                        candidate.city(), candidate.district()))
+                .filter(candidate -> compact(candidate.address()).contains(compact(place.name()))
+                        || !place.address().isBlank()
+                        && compact(candidate.address()).contains(compact(place.address())))
+                .map(candidate -> candidate.lon() + "," + candidate.lat()).distinct().toList();
+        return point.size() == 1 ? point.getFirst() : "";
+    }
+
+    private static boolean validCoordinates(Candidate candidate) {
+        return Double.isFinite(candidate.lat()) && Double.isFinite(candidate.lon())
+                && Math.abs(candidate.lat()) <= 90 && Math.abs(candidate.lon()) <= 180;
+    }
+
+    private static Set<CandidateKey> candidateKeys(JsonNode candidates) {
+        Set<CandidateKey> keys = new LinkedHashSet<>();
+        if (candidates.isArray()) {
+            for (JsonNode candidate : candidates) {
+                if (keys.size() >= 150) break;
+                String name = candidate.path("poiname").asText("");
+                if (name.isBlank() || !candidate.path("lat").isNumber() || !candidate.path("lon").isNumber()) continue;
+                var parsed = new Candidate(name, candidate.path("lat").asDouble(),
+                        candidate.path("lon").asDouble(), "");
+                if (validCoordinates(parsed)) keys.add(CandidateKey.from(parsed));
+            }
+        }
+        return keys;
+    }
+
+    private static ArrayNode toJson(List<Candidate> candidates, int limit, Set<CandidateKey> excluded) {
         ArrayNode out = JSON.createArrayNode();
-        candidates.stream().limit(limit).forEach(candidate -> {
+        Set<CandidateKey> seen = new LinkedHashSet<>(excluded);
+        for (Candidate candidate : candidates) {
+            if (out.size() >= limit) break;
+            if (candidate.name().isBlank() || !validCoordinates(candidate) || !seen.add(CandidateKey.from(candidate))) {
+                continue;
+            }
             ObjectNode item = out.addObject();
             item.put("poiname", candidate.name());
             item.put("lat", candidate.lat());
             item.put("lon", candidate.lon());
             if (!candidate.address().isBlank()) item.put("address", candidate.address());
-        });
+        }
         return out;
     }
 
-    private record Place(String name, String address) {
+    private record CandidateKey(String name, long lat, long lon) {
+        static CandidateKey from(Candidate candidate) {
+            return new CandidateKey(compact(candidate.name()), Math.round(candidate.lat() * 100_000),
+                    Math.round(candidate.lon() * 100_000));
+        }
     }
 
-    private record Candidate(String name, double lat, double lon, String address) {
+    private record Search(String query, String city, String district, String reference, String entrance) {
+        static Search parse(String destination, JsonNode args) {
+            String query = DESTINATION_PREFIX.matcher(destination.strip()).replaceFirst("");
+            String city = args.path("city").asText("").strip();
+            String district = args.path("district").asText("").strip();
+            String reference = args.path("reference").asText("").strip();
+            String entrance = args.path("entrance").asText("").strip();
+            Matcher cityPrefix = CITY_PREFIX.matcher(query);
+            if (cityPrefix.matches()) {
+                for (int group = 1; group <= cityPrefix.groupCount(); group += 2) {
+                    if (cityPrefix.group(group) == null) continue;
+                    city = cityPrefix.group(group);
+                    query = cityPrefix.group(group + 1);
+                    break;
+                }
+            }
+            Matcher relative = REFERENCE_QUERY.matcher(query);
+            if (reference.isBlank() && relative.matches()
+                    && !Set.of("我", "当前位置", "这里", "这儿", "车辆").contains(relative.group(1))) {
+                reference = relative.group(1);
+                query = relative.group(2);
+            }
+            if (entrance.isBlank()) {
+                Matcher component = ENTRANCE.matcher(compact(query));
+                if (component.find()) entrance = component.group();
+            }
+            return new Search(query, city, district, reference, entrance);
+        }
+
+        String keywords() {
+            String keyword = query;
+            if (!entrance.isBlank() && !compact(query).contains(compact(entrance))) keyword += " " + entrance;
+            return district.isBlank() ? keyword : district + " " + keyword;
+        }
+
+        boolean matchesArea(String name, String address, String resultCity, String resultDistrict) {
+            if (!city.isBlank() && !resultCity.isBlank()
+                    && !city.replaceFirst("市$", "").equals(resultCity.replaceFirst("市$", ""))) return false;
+            if (district.isBlank()) return true;
+            if (!resultDistrict.isBlank()) return compact(resultDistrict).equals(compact(district));
+            return compact(name + address).contains(compact(district));
+        }
+
+        boolean matchesReference(String name, String address) {
+            String anchor = compact(reference);
+            return compact(name).equals(anchor) || compact(address).equals(anchor)
+                    || !name.isBlank() && (compact(name + address).equals(anchor)
+                        || compact(address + name).equals(anchor));
+        }
+
+        boolean isStreetAddress() {
+            return STREET_ADDRESS.matcher(query).matches();
+        }
+
+        boolean isChargingStation() {
+            return query.contains("充电站");
+        }
+
+        boolean acceptsGeocode(Candidate point) {
+            if (!city.isBlank() && !point.city().isBlank()
+                    && !city.replaceFirst("市$", "").equals(point.city().replaceFirst("市$", ""))) return false;
+            return entrance.isBlank() && !isStreetAddress()
+                    || matches(point.name().isBlank() ? point.address() : point.name(),
+                        point.address(), point.city(), point.district());
+        }
+
+        boolean matches(String name, String address, String resultCity, String resultDistrict) {
+            if (!matchesArea(name, address, resultCity, resultDistrict)) return false;
+            if (isChargingStation() && !name.matches(".*(?:充电站|充电桩|充电中心|超充|充电场).*")) return false;
+            String normalizedName = compact(name);
+            String normalizedAddress = compact(address);
+            if (!entrance.isBlank()) {
+                String normalizedQuery = compact(query);
+                String requested = entranceKey(compact(entrance));
+                Matcher queryComponent = ENTRANCE.matcher(normalizedQuery);
+                String base = normalizedQuery;
+                String extra = "";
+                if (queryComponent.find()) {
+                    base = normalizedQuery.substring(0, queryComponent.start());
+                    extra = normalizedQuery.substring(queryComponent.end()).replaceFirst("^航站楼", "");
+                }
+
+                Matcher component = ENTRANCE.matcher(normalizedName);
+                boolean matchesEntrance = false;
+                while (component.find()) {
+                    if (!entranceKey(component.group()).equals(requested)) continue;
+                    String tail = normalizedName.substring(component.end()).replaceFirst("^航站楼", "");
+                    if (tail.equals(extra)) {
+                        matchesEntrance = true;
+                        break;
+                    }
+                }
+                if (!matchesEntrance) return false;
+                if (!base.isBlank() && !normalizedName.replace("国际", "").contains(base.replace("国际", ""))) {
+                    return false;
+                }
+            }
+            return !isStreetAddress() || normalizedName.contains(compact(query))
+                    || normalizedAddress.contains(compact(query));
+        }
+
+        private static String entranceKey(String value) {
+            Matcher terminal = TERMINAL_NUMBER.matcher(value);
+            if (!terminal.matches()) return value;
+            String number = terminal.group(1) == null ? terminal.group(2) : terminal.group(1);
+            if (number.length() == 1) {
+                int chinese = "一二三四五六七八九".indexOf(number);
+                if (chinese >= 0) number = Integer.toString(chinese + 1);
+            }
+            return "t" + number;
+        }
+
+        ObjectNode toJson() {
+            return JSON.createObjectNode().put("query", query).put("city", city)
+                    .put("district", district).put("reference", reference).put("entrance", entrance);
+        }
+    }
+
+    private record Place(String name, String address, String city, String district) {
+        Place(String name, String address) { this(name, address, "", ""); }
+    }
+
+    private record Candidate(String name, double lat, double lon, String address, String city, String district) {
+        Candidate(String name, double lat, double lon, String address) {
+            this(name, lat, lon, address, "", "");
+        }
     }
 
     @FunctionalInterface

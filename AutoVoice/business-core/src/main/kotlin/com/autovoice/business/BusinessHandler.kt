@@ -21,8 +21,11 @@ data class BusinessCommand(
 data class BusinessResult(
     val status: Status,
     val speakText: String? = null,
+    val execution: Execution? = null,
 ) {
     enum class Status { APPLIED, FAILED, DUPLICATE, REJECTED }
+
+    data class Execution(val status: String, val errorCode: String?, val durationMs: Long)
 
     companion object {
         fun applied(speakText: String? = null) = BusinessResult(Status.APPLIED, speakText)

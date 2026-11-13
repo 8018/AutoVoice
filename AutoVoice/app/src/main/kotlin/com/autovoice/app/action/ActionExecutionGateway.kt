@@ -20,6 +20,9 @@ class ActionExecutionGateway(private val retainedTurns: Int = 64) {
     }
 
     @Synchronized
+    fun hasClaimed(turnId: String): Boolean = turnId in claimedTurns
+
+    @Synchronized
     private fun claim(turnId: String): Boolean {
         if (!claimedTurns.add(turnId)) return false
         while (claimedTurns.size > retainedTurns) claimedTurns.remove(claimedTurns.first())

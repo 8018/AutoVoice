@@ -94,6 +94,15 @@ class MainActivity : ComponentActivity() {
                         onSubmitText = viewModel::submitText,
                         onDismissNavigationCandidates = viewModel::dismissNavigationCandidates,
                         onSelectNavigationCandidate = viewModel::selectNavigationCandidate,
+                        onSelectDraftStop = viewModel::selectNavigationDraftStop,
+                        onConfirmDraft = viewModel::confirmNavigationDraft,
+                        onDismissDraft = viewModel::dismissNavigationDraft,
+                        onSaveNavigationCandidate = viewModel::saveNavigationCandidate,
+                        onSaveCurrentNavigationPlace = viewModel::saveCurrentNavigationPlace,
+                        onDeleteSavedNavigationPlace = viewModel::deleteSavedNavigationPlace,
+                        onConfirmSavedNavigationPlace = viewModel::confirmSavedNavigationPlace,
+                        onCancelSavedNavigationPlace = viewModel::cancelSavedNavigationPlace,
+                        onRefreshSavedPlaces = viewModel::refreshSavedPlaces,
                         onDismissTravelGuide = viewModel::dismissTravelGuide,
                     )
                 }

@@ -6,5 +6,5 @@
   ],
   "answers": ["第二个", "成都天府国际机场"],
   "expectedCandidateId": "tianfu",
-  "expectedUri": "androidamap://navi?sourceApplication=autovoice&poiname=%E6%88%90%E9%83%BD%E5%A4%A9%E5%BA%9C%E5%9B%BD%E9%99%85%E6%9C%BA%E5%9C%BA&lat=30.312&lon=104.441"
+  "expectedUri": "androidamap://navi?sourceApplication=autovoice&poiname=%E6%88%90%E9%83%BD%E5%A4%A9%E5%BA%9C%E5%9B%BD%E9%99%85%E6%9C%BA%E5%9C%BA&lat=30.312&lon=104.441&dev=0"
 }

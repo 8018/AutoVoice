@@ -9,6 +9,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class NavigationCandidateRepliesTest {
     @Test
+    void forwardsSearchClarificationAndUnknownChargerAvailability() {
+        Reply clarification = NavigationCandidateReplies.fromResolution("""
+                {"destinations":[{"query":"充电站","candidates":[]}],"message":"请说要查找的城市。"}
+                """).orElseThrow();
+        assertEquals("请说要查找的城市。", clarification.text());
+        Reply candidates = NavigationCandidateReplies.fromResolution("""
+                {"destinations":[{"query":"充电站","candidates":[
+                  {"poiname":"充电站","lat":30.1,"lon":120.1}]}],"availabilityNotice":"充电桩空闲状态未知。"}
+                """).orElseThrow();
+        assertTrue(candidates.speakText().startsWith("充电桩空闲状态未知。"));
+    }
+
+    @Test
     void convertsSingleDestinationResolveResultToSelectionAction() {
         AgentToolCall call = new AgentToolCall("1", "resolve_navigation", "{}");
         String content = """
@@ -22,7 +35,7 @@ class NavigationCandidateRepliesTest {
 
         assertEquals("choose_destination", reply.intent().intent());
         assertTrue(((String) reply.intent().slots().get("candidates").value()).contains("人民路8号"));
-        assertEquals("找到2个“万达广场”，请说第几个或具体地址名称", reply.speakText());
+        assertEquals("第1个，万达广场东店，中山路1号；第2个，万达广场西店，人民路8号。请说第几个或具体地址名称。", reply.speakText());
     }
 
     @Test
@@ -35,7 +48,7 @@ class NavigationCandidateRepliesTest {
     }
 
     @Test
-    void convertsMultiStopResultToRoutePreviewUsingBestCandidatePerStop() throws Exception {
+    void convertsMultiStopResultToDraftPreservingEveryCandidate() throws Exception {
         AgentToolCall call = new AgentToolCall("1", "resolve_navigation", "{}");
         String content = """
                 {"destinations":[
@@ -49,13 +62,13 @@ class NavigationCandidateRepliesTest {
         Reply reply = NavigationCandidateReplies.from(
                 List.of(new AgentToolResult(call, content, false, false))).orElseThrow();
 
-        assertEquals("navigate", reply.intent().intent());
-        assertEquals("大旗杆", reply.intent().slots().get("poiname").value());
-        var waypoints = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
-                (String) reply.intent().slots().get("waypoints").value());
-        assertEquals(1, waypoints.size());
-        assertEquals("爱情广场", waypoints.get(0).path("poiname").asText());
-        assertEquals("好的，已为您规划先去爱情广场再去大旗杆的导航", reply.speakText());
+        assertEquals("draft_trip", reply.intent().intent());
+        assertFalse(reply.intent().slots().containsKey("waypoints"));
+        var stops = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                (String) reply.intent().slots().get("stops").value());
+        assertEquals(List.of("爱情广场", "大旗杆"),
+                List.of(stops.get(0).path("query").asText(), stops.get(1).path("query").asText()));
+        assertEquals(2, stops.get(0).path("candidates").size());
     }
 
     @Test
@@ -68,8 +81,8 @@ class NavigationCandidateRepliesTest {
                 """;
         Reply reply = NavigationCandidateReplies.from(
                 List.of(new AgentToolResult(call, content, false, false))).orElseThrow();
-        assertEquals("text", reply.kind());
-        assertNull(reply.intent());
-        assertTrue(reply.speakText().contains("第二站"));
+        assertEquals("draft_trip", reply.intent().intent());
+        assertFalse(reply.intent().slots().containsKey("waypoints"));
+        assertTrue(((String) reply.intent().slots().get("stops").value()).contains("第二站"));
     }
 }

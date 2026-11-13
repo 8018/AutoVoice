@@ -42,6 +42,12 @@ import com.autovoice.app.DemoMode
 import com.autovoice.app.UiState
 import com.autovoice.app.VoiceUiPhase
 import com.autovoice.app.health.ComponentHealthPanel
+import com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate
+import com.autovoice.voicebusiness.navigation.NavigationSnapshot
+import com.autovoice.voicebusiness.navigation.NavigationTripDraft
+import com.autovoice.voicebusiness.navigation.SavedPlaceCommand
+import com.autovoice.voicebusiness.navigation.SavedPlaceEdit
+import com.autovoice.voicebusiness.navigation.SavedPlaceKind
 
 /** 语音交互首页。设置是二级页面，首页只展示真实状态与已有操作。 */
 @Composable
@@ -51,7 +57,16 @@ fun VoiceScreen(
     onWeakNetworkChange: (Boolean) -> Unit,
     onSubmitText: (String) -> Boolean,
     onDismissNavigationCandidates: () -> Unit,
-    onSelectNavigationCandidate: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
+    onSelectNavigationCandidate: (NavigationCandidate) -> Unit,
+    onSelectDraftStop: (Long, String) -> Unit,
+    onConfirmDraft: (Long) -> Unit,
+    onDismissDraft: (Long) -> Unit,
+    onSaveNavigationCandidate: (NavigationSnapshot, NavigationCandidate, SavedPlaceKind) -> Unit,
+    onSaveCurrentNavigationPlace: (SavedPlaceKind) -> Unit,
+    onDeleteSavedNavigationPlace: (SavedPlaceKind) -> Unit,
+    onConfirmSavedNavigationPlace: (SavedPlaceEdit) -> Unit,
+    onCancelSavedNavigationPlace: (SavedPlaceEdit) -> Unit,
+    onRefreshSavedPlaces: () -> Unit,
     onDismissTravelGuide: () -> Unit,
 ) {
     if (!state.assemblyReady) {
@@ -75,7 +90,10 @@ fun VoiceScreen(
             sessionState = state.sessionState,
             cloudPending = state.cloudPending,
             settingsOpen = settingsOpen,
-            onToggleSettings = { settingsOpen = !settingsOpen },
+            onToggleSettings = {
+                settingsOpen = !settingsOpen
+                if (settingsOpen) onRefreshSavedPlaces()
+            },
         )
         if (settingsOpen) {
             SettingsSection(
@@ -83,6 +101,11 @@ fun VoiceScreen(
                 weakNetwork = state.weakNetwork,
                 onModeChange = onModeChange,
                 onWeakNetworkChange = onWeakNetworkChange,
+            )
+            SavedNavigationPlacesSection(
+                state = state.savedPlaces,
+                onSaveCurrent = onSaveCurrentNavigationPlace,
+                onDelete = onDeleteSavedNavigationPlace,
             )
             ComponentHealthPanel(state.componentHealth)
         } else {
@@ -98,11 +121,14 @@ fun VoiceScreen(
             InteractionHeadline(state)
             ConversationCard(state)
             TextInputCard(
-                enabled = state.capabilities.canSubmitText && !state.chatMode && !state.recording,
+                enabled = !state.chatMode && !state.recording,
+                cloudAvailable = state.capabilities.canSubmitText,
                 error = state.textInputError,
                 onSubmit = onSubmitText,
             )
             NavigationStatus(state)
+            if (state.savedPlaces.resolving) Text("正在解析当前位置…", style = MaterialTheme.typography.bodySmall)
+            state.savedPlaces.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             WakeGuidance(state)
         }
         if (state.capabilities.summary.isNotBlank()) {
@@ -110,11 +136,24 @@ fun VoiceScreen(
         }
 
     }
-    if (state.navigationCandidates.isNotEmpty()) {
+    state.savedPlaces.edit?.let { edit ->
+        SavedNavigationPlaceConfirmation(edit, onConfirmSavedNavigationPlace, onCancelSavedNavigationPlace)
+    }
+    val draft = state.navigation.draft
+    if (draft != null && state.savedPlaces.edit == null) {
+        NavigationDraftDialog(
+            draft = draft,
+            candidates = state.navigationCandidates,
+            onSelect = { onSelectDraftStop(draft.revision, it.candidateId) },
+            onConfirm = { onConfirmDraft(draft.revision) },
+            onDismiss = { onDismissDraft(draft.revision) },
+        )
+    } else if (state.navigationCandidates.isNotEmpty() && state.savedPlaces.edit == null) {
         NavigationCandidateDialog(
             candidates = state.navigationCandidates,
             onDismissRequest = onDismissNavigationCandidates,
             onSelect = onSelectNavigationCandidate,
+            onSave = { candidate, kind -> onSaveNavigationCandidate(state.navigation, candidate, kind) },
         )
     }
     if (state.travelGuide.visible) {
@@ -154,21 +193,26 @@ private fun TravelGuideDialog(guide: com.autovoice.app.TravelGuideUiState, onDis
 }
 
 @Composable
-private fun TextInputCard(enabled: Boolean, error: String?, onSubmit: (String) -> Boolean) {
+private fun TextInputCard(
+    enabled: Boolean,
+    cloudAvailable: Boolean,
+    error: String?,
+    onSubmit: (String) -> Boolean,
+) {
     var text by rememberSaveable { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("输入文字指令") },
+                label = { Text(if (cloudAvailable) "输入文字指令" else "输入“回家”或“去公司”") },
                 singleLine = true,
                 enabled = enabled,
                 modifier = Modifier.weight(1f),
             )
             Button(
                 onClick = { if (onSubmit(text)) text = "" },
-                enabled = enabled && text.isNotBlank(),
+                enabled = enabled && text.isNotBlank() && (cloudAvailable || SavedPlaceCommand.parse(text) != null),
             ) { Text("发送") }
         }
         if (error != null) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -257,10 +301,50 @@ private fun WakeGuidance(state: UiState) {
 }
 
 @Composable
+private fun NavigationDraftDialog(
+    draft: NavigationTripDraft,
+    candidates: List<NavigationCandidate>,
+    onSelect: (NavigationCandidate) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("行程草稿") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                draft.stops.forEachIndexed { index, stop ->
+                    val role = if (index == draft.stops.lastIndex) "终点" else "途经点 ${index + 1}"
+                    val place = stop.target?.name ?: "${stop.query}（待确认）"
+                    Text("$role · $place")
+                }
+                draft.nextStopIndex?.let { index ->
+                    Text("请选择第${index + 1}站", fontWeight = FontWeight.SemiBold)
+                    candidates.forEachIndexed { i, candidate ->
+                        TextButton(onClick = { onSelect(candidate) }) {
+                            val address = candidate.address.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+                            Text("${i + 1}. ${candidate.poiname}$address")
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (draft.isReady) Button(onClick = onConfirm) { Text("确认并打开高德") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("放弃行程") } },
+    )
+}
+
+@Composable
 private fun NavigationCandidateDialog(
-    candidates: List<com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate>,
+    candidates: List<NavigationCandidate>,
     onDismissRequest: () -> Unit,
-    onSelect: (com.autovoice.voicebusiness.navigation.NavigationExecutor.NavigationCandidate) -> Unit,
+    onSelect: (NavigationCandidate) -> Unit,
+    onSave: (NavigationCandidate, SavedPlaceKind) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismissRequest,
@@ -288,6 +372,10 @@ private fun NavigationCandidateDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { onSave(candidate, SavedPlaceKind.HOME) }) { Text("设为家") }
+                                TextButton(onClick = { onSave(candidate, SavedPlaceKind.WORK) }) { Text("设为公司") }
                             }
                         }
                     }

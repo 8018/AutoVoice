@@ -14,9 +14,210 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NavigationToolFacadeTest {
+    @Test
+    void terminalSearchAcceptsEquivalentTerminalNameAndRejectsAirportShops() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"虹桥国际机场T2便利店","location":"121.32,31.20"},
+                         {"name":"虹桥国际机场2号航站楼","location":"121.33,31.20"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["虹桥机场 T2"],"city":"上海"}
+                """));
+        var matches = result.path("destinations").get(0).path("candidates");
+        assertEquals(1, matches.size());
+        assertEquals("虹桥国际机场2号航站楼", matches.get(0).path("poiname").asText());
+    }
+
+    @Test
+    void fixedCityDropsOutOfCityProviderResults() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            if (name.equals("maps_geo")) return "{}";
+            return """
+                    {"pois":[{"name":"万象城","cityname":"宁波市","location":"121.55,29.87"}]}
+                    """;
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["万象城"],"city":"杭州","location":"116.30,39.90"}
+                """));
+        assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+    }
+
+    @Test
+    void coordinateLessReferenceUsesVerifiedLandmarkBeforeAroundSearch() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> switch (name) {
+            case "maps_text_search" -> """
+                    {"pois":[{"name":"人民广场","cityname":"上海市","address":"人民大道"}]}
+                    """;
+            case "maps_geo" -> {
+                assertTrue(args.contains("上海"));
+                assertTrue(args.contains("人民大道"));
+                yield """
+                        {"geocodes":[{"formatted_address":"上海市人民大道人民广场","location":"121.47,31.23"}]}
+                        """;
+            }
+            case "maps_around_search" -> {
+                assertTrue(args.contains("121.47,31.23"));
+                yield """
+                        {"pois":[{"name":"咖啡店","location":"121.48,31.23"}]}
+                        """;
+            }
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["咖啡店"],"city":"上海","reference":"人民广场"}
+                """));
+        assertEquals("咖啡店", result.path("destinations").get(0).path("candidates").get(0)
+                .path("poiname").asText());
+    }
+
+    @Test
+    void ambiguousReferenceRequestsAnAddressAndDoesNotUseVehicle() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            assertEquals("maps_text_search", name);
+            return """
+                    {"pois":[{"name":"人民广场","location":"121.47,31.23"},
+                             {"name":"人民广场","location":"121.57,31.20"}]}
+                    """;
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["咖啡店"],"city":"上海","reference":"人民广场","location":"116.30,39.90"}
+                """));
+        assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+        assertTrue(result.path("message").asText().contains("参考地点"));
+    }
+
+    @Test
+    void rejectsInvalidStopInsteadOfSilentlyShorteningRoute() {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            throw new AssertionError("invalid route must be rejected before searching");
+        });
+        org.junit.jupiter.api.Assertions.assertThrows(McpToolException.class, () -> facade.resolve("""
+                {"destinations":["机场"," ","火车站"],"location":"116.30,39.90"}
+                """));
+    }
+
+    @Test
+    void recognizesSpokenHangzhouScopeWithoutModelField() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            assertEquals("maps_text_search", name);
+            assertTrue(args.contains("\"city\":\"杭州\""));
+            return """
+                    {"pois":[{"name":"万象城","location":"120.22,30.25"}]}
+                    """;
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["杭州的万象城"]}
+                """));
+        assertEquals("万象城", result.path("destinations").get(0).path("candidates").get(0)
+                .path("poiname").asText());
+    }
+
+    @Test
+    void specifiedCityAndDistrictTakePrecedenceOverVehicleCoordinates() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            assertEquals("maps_text_search", name);
+            assertTrue(args.contains("杭州"));
+            assertTrue(args.contains("上城区"));
+            return """
+                    {"pois":[{"name":"万象城","address":"上城区富春路","location":"120.22,30.25"}]}
+                    """;
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["万象城"],"city":"杭州","district":"上城区","location":"116.30,39.90"}
+                """));
+        assertEquals("万象城", result.path("destinations").get(0).path("candidates").get(0)
+                .path("poiname").asText());
+    }
+
+    @Test
+    void referenceSearchCentersOnResolvedLandmark() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> switch (name) {
+            case "maps_text_search" -> {
+                assertTrue(args.contains("人民广场"));
+                yield """
+                        {"pois":[{"name":"人民广场","address":"黄浦区","location":"121.47,31.23"}]}
+                        """;
+            }
+            case "maps_around_search" -> {
+                assertTrue(args.contains("121.47,31.23"));
+                assertTrue(args.contains("咖啡店"));
+                yield """
+                        {"pois":[{"name":"咖啡店","address":"黄浦区","location":"121.48,31.23"}]}
+                        """;
+            }
+            default -> throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["人民广场附近的咖啡店"],"city":"上海","location":"116.30,39.90"}
+                """));
+        assertEquals("咖啡店", result.path("destinations").get(0).path("candidates").get(0)
+                .path("poiname").asText());
+    }
+
+    @Test
+    void doesNotSubstituteAirportCenterForRequestedTerminal() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            assertEquals("maps_text_search", name);
+            return """
+                    {"pois":[{"name":"上海虹桥国际机场","location":"121.33,31.20"}]}
+                    """;
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["虹桥机场 T2"],"city":"上海"}
+                """));
+        assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+    }
+
+    @Test
+    void keepsOnlyThreeDistinctUnseenCandidatesInNextBatch() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[
+                  {"name":"门店A","location":"120.1,30.1"},
+                  {"name":"门店B","location":"120.2,30.1"},
+                  {"name":"门店B","location":"120.2,30.1"},
+                  {"name":"门店C","location":"120.3,30.1"},
+                  {"name":"门店D","location":"120.4,30.1"},
+                  {"name":"门店E","location":"120.5,30.1"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["门店"],"city":"杭州","limit":5,
+                 "excluded":[{"poiname":"门店A","lat":30.1,"lon":120.1}]}
+                """));
+        var candidates = result.path("destinations").get(0).path("candidates");
+        assertEquals(3, candidates.size());
+        assertEquals("门店B", candidates.get(0).path("poiname").asText());
+        assertEquals("门店D", candidates.get(2).path("poiname").asText());
+    }
+
+    @Test
+    void missingPositionRequestsCityInsteadOfUnboundedNearbySearch() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> {
+            throw new AssertionError(name);
+        });
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["附近的充电站"]}
+                """));
+        assertTrue(result.path("destinations").get(0).path("candidates").isEmpty());
+        assertTrue(result.path("message").asText().contains("城市"));
+    }
+
+    @Test
+    void chargingSearchReturnsStationWithoutClaimingAvailability() throws Exception {
+        var facade = new NavigationToolFacade(tools(), (name, args) -> """
+                {"pois":[{"name":"新能源充电站","location":"120.1,30.1"}]}
+                """);
+        var result = JSON.readTree(facade.resolve("""
+                {"destinations":["附近的充电站"],"location":"120.1,30.1"}
+                """));
+        assertEquals("新能源充电站", result.path("destinations").get(0).path("candidates").get(0)
+                .path("poiname").asText());
+        assertTrue(result.path("availabilityNotice").asText().contains("未知"));
+    }
+
     @Test
     void airportRecallDoesNotLoseFartherAirportBehindManyTerminals() throws Exception {
         NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
@@ -181,7 +382,7 @@ class NavigationToolFacadeTest {
         });
 
         JsonNode candidates = JSON.readTree(facade.resolve(
-                "{\"destinations\":[\"咖啡店\"],\"location\":\"104.0665,30.5728\",\"city\":\"成都\"}"))
+                "{\"destinations\":[\"咖啡店\"],\"location\":\"104.0665,30.5728\"}"))
                 .path("destinations").get(0).path("candidates");
 
         assertEquals("附近咖啡店", candidates.get(0).path("poiname").asText());
@@ -290,7 +491,7 @@ class NavigationToolFacadeTest {
     }
 
     @Test
-    void multiStopReturnsExactlyOneBestCandidatePerDestination() throws Exception {
+    void multiStopKeepsAlternativesEvenWithALimitOfOne() throws Exception {
         NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
             if (name.equals("maps_regeocode")) return "{\"city\":\"成都\"}";
             if (name.equals("maps_geo")) return "{}";
@@ -307,16 +508,32 @@ class NavigationToolFacadeTest {
         });
 
         JsonNode result = JSON.readTree(facade.resolve(
-                "{\"destinations\":[\"春熙路\",\"机场\"],\"location\":\"104.0665,30.5728\",\"limit\":3}"));
+                "{\"destinations\":[\"春熙路\",\"机场\"],\"location\":\"104.0665,30.5728\",\"limit\":1}"));
 
         assertEquals(2, result.path("destinations").size());
-        assertEquals(1, result.path("destinations").get(0).path("candidates").size());
-        assertEquals(1, result.path("destinations").get(1).path("candidates").size());
-        assertTrue(result.path("instruction").asText().contains("路线预览"));
+        assertEquals(2, result.path("destinations").get(0).path("candidates").size());
+        assertEquals(2, result.path("destinations").get(1).path("candidates").size());
+        assertTrue(result.path("instruction").asText().contains("草稿"));
     }
 
     @Test
-    void genericTrainStationWaypointSelectsNearbyPointInsteadOfFirstRemoteResult() throws Exception {
+    void savedAddressIsASymbolicStopAndNeverSearchedAsAPoi() throws Exception {
+        NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
+            assertFalse(args.contains("回家"), "The maps provider must not receive the saved place name");
+            if (name.equals("maps_geo")) return "{}";
+            return "{\"pois\":[{\"name\":\"机场\",\"location\":\"104.44,30.31\"}]}";
+        });
+
+        JsonNode stops = JSON.readTree(facade.resolve("""
+                {"destinations":["机场","回家"],"location":"104.06,30.65"}
+                """)).path("destinations");
+
+        assertEquals("home", stops.get(1).path("savedPlace").asText());
+        assertFalse(stops.get(1).has("candidates"));
+    }
+
+    @Test
+    void genericTrainStationWaypointRanksNearbyPointFirst() throws Exception {
         List<String> calls = new ArrayList<>();
         NavigationToolFacade facade = new NavigationToolFacade(tools(), (name, args) -> {
             calls.add(name);
@@ -429,7 +646,7 @@ class NavigationToolFacadeTest {
                     """;
         });
         var result = JSON.readTree(facade.resolve("""
-                {"destinations":["导航到最近的火车站"],"location":"104.06,30.65","city":"北京"}
+                {"destinations":["导航到最近的火车站"],"location":"104.06,30.65"}
                 """)).path("destinations").get(0).path("candidates");
         assertEquals(List.of("maps_regeocode", "maps_around_search"), calls);
         assertEquals(2, result.size());

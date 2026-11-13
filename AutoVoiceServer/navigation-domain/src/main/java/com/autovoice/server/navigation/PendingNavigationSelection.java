@@ -7,10 +7,16 @@ record PendingNavigationSelection(
         List<NavigationCandidate> candidates,
         long createdAtMs,
         long expiresAtMs,
-        boolean adopted) {
+        boolean adopted,
+        String searchState) {
 
     PendingNavigationSelection {
         candidates = List.copyOf(candidates);
+    }
+
+    PendingNavigationSelection(String selectionId, List<NavigationCandidate> candidates,
+                               long createdAtMs, long expiresAtMs, boolean adopted) {
+        this(selectionId, candidates, createdAtMs, expiresAtMs, adopted, null);
     }
 
     PendingNavigationSelection(String selectionId, List<NavigationCandidate> candidates,
@@ -19,6 +25,6 @@ record PendingNavigationSelection(
     }
 
     PendingNavigationSelection withAdopted(boolean adopted) {
-        return new PendingNavigationSelection(selectionId, candidates, createdAtMs, expiresAtMs, adopted);
+        return new PendingNavigationSelection(selectionId, candidates, createdAtMs, expiresAtMs, adopted, searchState);
     }
 }

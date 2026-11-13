@@ -412,7 +412,7 @@ class GatewayClientTest {
                 .getAsJsonObject("payload")
             val helloPayload = gateway.frames[0].payload
             assertEquals(helloFixture.get("client").asString, helloPayload.get("client").asString)
-            assertEquals(helloFixture.get("protocolVersion").asString, helloPayload.get("protocolVersion").asString)
+            assertEquals("1.2", helloPayload.get("protocolVersion").asString)
             assertNull(helloPayload.get("sessionId"), "客户端不预生成 sessionId（服务端权威）")
             assertNull(helloPayload.get("deviceId"), "未配置凭据时 hello 不带 deviceId（M5 兼容）")
             assertNull(helloPayload.get("authToken"), "未配置凭据时 hello 不带 authToken（M5 兼容）")
@@ -881,7 +881,7 @@ class GatewayClientTest {
 
             val helloPayload = gateway.frames[0].payload
             assertEquals("autovoice-android", helloPayload.get("client").asString)
-            assertEquals("1.1", helloPayload.get("protocolVersion").asString)
+            assertEquals("1.2", helloPayload.get("protocolVersion").asString)
             assertEquals("demo-1", helloPayload.get("deviceId").asString, "配置了 deviceId 应注入 hello")
             assertEquals("secret-token-1", helloPayload.get("authToken").asString, "配置了 authToken 应注入 hello")
             assertNull(helloPayload.get("sessionId"), "客户端不预生成 sessionId（服务端权威）")

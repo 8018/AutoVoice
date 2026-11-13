@@ -1,8 +1,18 @@
 package com.autovoice.app
 import com.autovoice.voicebusiness.navigation.AppDialogueManager
+import com.autovoice.app.action.ActionExecutionGateway
 import com.autovoice.voicebusiness.navigation.NavigationExecutor
 import com.autovoice.voicebusiness.navigation.NavigationSession
 import com.autovoice.voicebusiness.navigation.NavigationSnapshot
+import com.autovoice.voicebusiness.navigation.NavigationTarget
+import com.autovoice.voicebusiness.navigation.SavedNavigationPlace
+import com.autovoice.voicebusiness.navigation.SavedNavigationPlaceStore
+import com.autovoice.voicebusiness.navigation.SavedNavigationPlaces
+import com.autovoice.voicebusiness.navigation.SavedPlaceCommand
+import com.autovoice.voicebusiness.navigation.SavedPlaceCommit
+import com.autovoice.voicebusiness.navigation.SavedPlaceEdit
+import com.autovoice.voicebusiness.navigation.SavedPlaceKind
+import com.autovoice.voicebusiness.navigation.SavedPlaceProposal
 
 import android.app.Application
 import android.content.Context
@@ -13,6 +23,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
 import com.autovoice.app.audio.AudioRecorder
+import com.autovoice.app.navigation.CurrentNavigationAddress
+import com.autovoice.app.navigation.LocalSavedNavigationPlaceStorage
+import com.autovoice.app.navigation.SavedNavigationCommandRouter
 import com.autovoice.app.channel.SelectedSpeechChannel
 import com.autovoice.app.channel.WakeWordFactory
 import com.autovoice.app.channel.loadChannelConfig
@@ -27,19 +40,23 @@ import com.autovoice.voicecore.StreamingAudioReply
 import com.autovoice.voicecore.arbiter.DecisionSink
 import com.autovoice.voicebusiness.dialog.DialogueSnapshot
 import com.autovoice.voicebusiness.dialog.DialogueState
+import com.autovoice.voicebusiness.dialog.TaskIdentity
 import com.autovoice.voiceengine.api.TextSubmission
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 功能模式。在线环境由构建类型固定：debug → dev，release → production。 */
 enum class DemoMode(val label: String) {
@@ -85,9 +102,18 @@ data class TravelGuideUiState(
     val error: String? = null,
 )
 
+data class SavedPlacesUiState(
+    val addresses: Map<SavedPlaceKind, SavedNavigationPlace> = emptyMap(),
+    val edit: SavedPlaceEdit? = null,
+    val message: String? = null,
+    val resolving: Boolean = false,
+    val readFailed: Boolean = false,
+)
+
 data class UiState(
     val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
+    val savedPlaces: SavedPlacesUiState = SavedPlacesUiState(),
     val sessionState: VoiceUiPhase = VoiceUiPhase.IDLE,
     val vehicle: VehicleUiState = VehicleUiState(),
     val mode: DemoMode = DemoMode.DEMO_OFFLINE,
@@ -189,6 +215,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
         _uiState.update { it.copy(locationHint = hint) }
     }
+    private val savedPlaces = SavedNavigationPlaces(
+        SavedNavigationPlaceStore(LocalSavedNavigationPlaceStorage {
+            application.noBackupFilesDir.resolve("navigation-places")
+        }),
+        currentUserId = { DEVICE_PROFILE_ID },
+    )
+    private val currentNavigationAddress = CurrentNavigationAddress(application)
+    private val draftTurnGate = ActionExecutionGateway()
+    private val savedPlaceCommands = SavedNavigationCommandRouter(::handleSavedNavigationCommand)
+    private var addressResolution: Job? = null
+
     private val dialogueManager = AppDialogueManager(
         interactionIdProvider = { turnId ->
             engine.conversation.snapshot.value.takeIf { it.turnId == turnId }?.interactionId
@@ -205,6 +242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrDefault(false)
         },
         applyChatMode = { enabled -> recordingCoordinator.setChatMode(enabled) },
+        savedPlace = savedPlaces::read,
     )
 
     /**
@@ -222,9 +260,151 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectNavigationCandidate(candidate: NavigationExecutor.NavigationCandidate) {
         if (!::engine.isInitialized) return
         dialogueManager.selectCandidate(candidate, engine.conversation.snapshot.value.turnId ?: "ui-navigation")
+            ?.userFeedback?.let { message -> _uiState.update { it.copy(lastReplyText = message) } }
+    }
+
+    fun selectNavigationDraftStop(revision: Long, candidateId: String) {
+        showDraftFeedback(dialogueManager.selectDraftStop(revision, candidateId))
+    }
+
+    fun confirmNavigationDraft(revision: Long) {
+        showDraftFeedback(dialogueManager.confirmDraft(revision))
+    }
+
+    fun dismissNavigationDraft(revision: Long) {
+        showDraftFeedback(dialogueManager.dismissDraft(revision))
+    }
+
+    private fun showDraftFeedback(message: String?) {
+        message?.let { _uiState.update { state -> state.copy(lastReplyText = it) } }
+    }
+
+    private fun handleDraftCommand(turnId: String, text: String): String? {
+        if (draftTurnGate.hasClaimed(turnId)) return ""
+        val action = dialogueManager.draftCommand(text) ?: return null
+        var message = ""
+        val status = draftTurnGate.execute(turnId) {
+            message = action().orEmpty()
+            true
+        }
+        return when (status) {
+            ActionExecutionGateway.Result.APPLIED -> message
+            ActionExecutionGateway.Result.DUPLICATE -> ""
+            else -> "行程草稿操作未完成，请重试"
+        }
+    }
+
+    fun refreshSavedPlaces() {
+        try {
+            val addresses = SavedPlaceKind.entries.mapNotNull { kind ->
+                savedPlaces.read(kind)?.let { kind to it }
+            }.toMap()
+            updateSavedPlaces { copy(addresses = addresses, readFailed = false) }
+        } catch (_: SavedNavigationPlaceStore.StorageUnavailable) {
+            updateSavedPlaces { copy(addresses = emptyMap(), readFailed = true) }
+        }
+    }
+
+    fun saveCurrentNavigationPlace(kind: SavedPlaceKind) {
+        clearSavedPlaceRequest()
+        val position = vehicleContext.savedAddressPosition()
+        if (position == null) {
+            vehicleContext.refresh(forSavedAddress = true)
+            showSavedPlaceProposal(kind, savedPlaces.prepareSave(kind, null))
+            return
+        }
+
+        updateSavedPlaces { copy(resolving = true, message = null) }
+        addressResolution = viewModelScope.launch {
+            val place = withContext(Dispatchers.IO) { currentNavigationAddress.resolve(position) }
+            if (place == null) {
+                updateSavedPlaces { copy(resolving = false, message = "未能解析当前位置的地址，请稍后重试或从导航候选中选取") }
+            } else {
+                showSavedPlaceProposal(kind, savedPlaces.prepareSave(kind, place))
+            }
+        }
+    }
+
+    fun saveNavigationCandidate(
+        rendered: NavigationSnapshot,
+        candidate: NavigationExecutor.NavigationCandidate,
+        kind: SavedPlaceKind,
+    ) {
+        if (!::engine.isInitialized || candidate !in rendered.candidates) return
+        val identity = TaskIdentity(
+            rendered.interactionId ?: return,
+            rendered.taskId ?: return,
+            rendered.candidateVersion,
+        )
+        val selectionId = rendered.selectionId ?: return
+        if (!dialogueManager.navigationSession.cancelSelection(selectionId, identity)) return
+        engine.onFollowUpExpired(identity.interactionId)
+        clearSavedPlaceRequest()
+        val address = listOf(candidate.poiname, candidate.address)
+            .filter(String::isNotBlank).distinct().joinToString(" · ")
+        val target = NavigationTarget(address, candidate.lat, candidate.lon)
+        showSavedPlaceProposal(kind, savedPlaces.prepareSave(kind, SavedNavigationPlace(target)))
+    }
+
+    fun deleteSavedNavigationPlace(kind: SavedPlaceKind) {
+        clearSavedPlaceRequest()
+        showSavedPlaceProposal(kind, savedPlaces.prepareDelete(kind))
+    }
+
+    fun confirmSavedNavigationPlace(edit: SavedPlaceEdit) {
+        val message = when (savedPlaces.confirm(edit)) {
+            SavedPlaceCommit.SAVED -> "已保存${edit.kind.label}"
+            SavedPlaceCommit.DELETED -> "已删除${edit.kind.label}"
+            SavedPlaceCommit.EXPIRED -> "这项确认已失效，请重新操作"
+            SavedPlaceCommit.STORAGE_UNAVAILABLE -> "未能更新${edit.kind.label}，请稍后重试"
+        }
+        updateSavedPlaces { if (this.edit === edit) copy(edit = null, message = message) else this }
+        refreshSavedPlaces()
+    }
+
+    fun cancelSavedNavigationPlace(edit: SavedPlaceEdit) {
+        savedPlaces.cancel(edit)
+        updateSavedPlaces { if (this.edit === edit) copy(edit = null) else this }
+    }
+
+    private fun clearSavedPlaceRequest() {
+        addressResolution?.cancel()
+        addressResolution = null
+        _uiState.value.savedPlaces.edit?.let(savedPlaces::cancel)
+        updateSavedPlaces { copy(edit = null, resolving = false, message = null) }
+    }
+
+    private fun showSavedPlaceProposal(kind: SavedPlaceKind, proposal: SavedPlaceProposal) {
+        val edit = (proposal as? SavedPlaceProposal.Ready)?.edit
+        val message = when (proposal) {
+            is SavedPlaceProposal.Ready -> null
+            SavedPlaceProposal.UNKNOWN_LOCATION -> "未取得近期精确定位，请稍后重试或从导航候选中选取"
+            SavedPlaceProposal.UNSET -> "还没有设置${kind.label}"
+            SavedPlaceProposal.STORAGE_UNAVAILABLE -> "暂时无法读取${kind.label}，请稍后重试"
+        }
+        updateSavedPlaces { copy(edit = edit, message = message, resolving = false) }
+    }
+
+    private fun updateSavedPlaces(update: SavedPlacesUiState.() -> SavedPlacesUiState) {
+        _uiState.update { it.copy(savedPlaces = it.savedPlaces.update()) }
+    }
+
+    private fun handleSavedNavigationCommand(turnId: String, command: SavedPlaceCommand): String = when (command) {
+        is SavedPlaceCommand.Navigate -> savedPlaces.navigate(command.kind, turnId, dialogueManager)
+        is SavedPlaceCommand.UseCurrentLocation -> {
+            dialogueManager.dismissSelection()
+            viewModelScope.launch { saveCurrentNavigationPlace(command.kind) }
+            "请查看屏幕上的当前位置解析结果"
+        }
+        is SavedPlaceCommand.Delete -> {
+            dialogueManager.dismissSelection()
+            viewModelScope.launch { deleteSavedNavigationPlace(command.kind) }
+            "请查看屏幕上的${command.kind.label}删除提示"
+        }
     }
 
     init {
+        refreshSavedPlaces()
         reporting.registerDefaults()
         viewModelScope.launch {
             healthRegistry.snapshot.collect { health ->
@@ -302,6 +482,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(textInputError = "当前正在语音输入，请稍后再发送文字") }
             return false
         }
+        handleDraftCommand("draft:${UUID.randomUUID()}", text)?.let { reply ->
+            engine.stopPlayback()
+            _uiState.update { it.copy(lastRecognizedText = text, lastReplyText = reply, textInputError = null) }
+            return true
+        }
+        if (SavedPlaceCommand.parse(text) != null) {
+            engine.stopPlayback()
+            engine.resetDialogue()
+            val reply = savedPlaceCommands.handle("saved-place:${UUID.randomUUID()}", text)
+            _uiState.update { it.copy(lastRecognizedText = text, lastReplyText = reply, textInputError = null) }
+            return true
+        }
         val outcome = engine.submitText(text)
         _uiState.update {
             it.copy(textInputError = when (outcome) {
@@ -332,6 +524,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onBackground() {
+        clearSavedPlaceRequest()
         if (!::recordingCoordinator.isInitialized || !::engine.isInitialized) return
         vehicleContext.stopRefresh()
         dialogueManager.abortPendingTask()
@@ -590,6 +783,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             renderSink = recorder,
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
             onNavigationTransportReset = dialogueManager::abortPendingTask,
+            onSavedNavigationCommand = { turnId, text ->
+                handleDraftCommand(turnId, text) ?: savedPlaceCommands.handle(turnId, text)
+            },
         )
         return engine
     }
@@ -657,6 +853,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         /** 模式持久化存储（Task 58：重启保持用户选择，防云端链静默失联）。 */
         const val PREFS_NAME = "autovoice_settings"
         const val KEY_MODE = "demo_mode"
+        const val DEVICE_PROFILE_ID = "device-local"
 
         /** 竞速胜出方 UI 标志文本（Task 61）。 */
         const val WINNER_LOCAL = "端侧"

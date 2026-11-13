@@ -13,6 +13,10 @@ import android.os.SystemClock
 object LocationQuality {
     fun usable(ageMs: Long, accuracyMeters: Float): Boolean =
         ageMs in 0..120_000 && accuracyMeters.isFinite() && accuracyMeters in 0f..500f
+
+    /** A saved address needs a fresher and more precise fix than a nearby search. */
+    fun usableForSavedAddress(ageMs: Long, accuracyMeters: Float): Boolean =
+        ageMs in 0..30_000 && accuracyMeters.isFinite() && accuracyMeters in 0f..50f
 }
 
 data class VehiclePosition(val latitude: Double, val longitude: Double) {
@@ -36,7 +40,17 @@ class PhoneVehicleContextProvider(
 ) : VehicleContextProvider {
     private val handler = Handler(Looper.getMainLooper())
     private var listener: LocationListener? = null
-    private val timeout = Runnable { stopRefresh(); onStatus(if (snapshot().position == null) "未取得有效定位，请在导航中说明城市" else null) }
+    private var requestingAddressFix = false
+    private val timeout = Runnable {
+        val forSavedAddress = requestingAddressFix
+        stopRefresh()
+        val hint = when {
+            latestUsablePosition(forSavedAddress) != null -> null
+            forSavedAddress -> "未取得近期精确定位，请稍后重试"
+            else -> "未取得有效定位，请在导航中说明城市"
+        }
+        onStatus(hint)
+    }
 
     fun stopRefresh() {
         handler.removeCallbacks(timeout)
@@ -44,29 +58,33 @@ class PhoneVehicleContextProvider(
             runCatching { (context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)?.removeUpdates(current) }
         }
         listener = null
+        requestingAddressFix = false
     }
 
     /** Bounded foreground refresh; never delays speech or fabricates a default location. */
     @Suppress("DEPRECATION")
-    fun refresh() {
+    fun refresh(forSavedAddress: Boolean = false) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            handler.post { refresh() }
+            handler.post { refresh(forSavedAddress) }
             return
         }
         // Repeated VAD segments must not keep restarting the bounded location request.
-        if (listener != null) return
+        if (listener != null) {
+            if (!forSavedAddress || requestingAddressFix) return
+            stopRefresh()
+        }
         if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             context.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             onStatus("未授权定位，请开启定位权限，或在导航中说明城市")
             return
         }
-        if (snapshot().position != null) { onStatus(null); return }
+        if (latestUsablePosition(forSavedAddress) != null) { onStatus(null); return }
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
         onStatus("定位不可用或已过期，正在刷新…")
         val current = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 if (listener !== this) return
-                if (usable(location)) { stopRefresh(); onStatus(null) }
+                if (usable(location, forSavedAddress)) { stopRefresh(); onStatus(null) }
             }
             override fun onProviderEnabled(provider: String) = Unit
             override fun onProviderDisabled(provider: String) = Unit
@@ -74,6 +92,7 @@ class PhoneVehicleContextProvider(
             override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
         }
         listener = current
+        requestingAddressFix = forSavedAddress
         var requested = false
         for (provider in listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)) {
             requested = runCatching {
@@ -87,20 +106,29 @@ class PhoneVehicleContextProvider(
         else { stopRefresh(); onStatus("无法获取定位，请开启定位权限与系统定位，或说明城市") }
     }
 
-    private fun usable(location: Location) = location.hasAccuracy() && LocationQuality.usable(
-        (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000,
-        location.accuracy,
-    )
-    override fun snapshot(): VehicleContext {
+    private fun usable(location: Location, forSavedAddress: Boolean): Boolean {
+        if (!location.hasAccuracy()) return false
+        val elapsedNanos = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+        if (elapsedNanos < 0) return false
+        val ageMs = elapsedNanos / 1_000_000
+        return if (forSavedAddress) LocationQuality.usableForSavedAddress(ageMs, location.accuracy)
+            else LocationQuality.usable(ageMs, location.accuracy)
+    }
+
+    override fun snapshot(): VehicleContext = VehicleContext(position = latestUsablePosition())
+
+    fun savedAddressPosition(): VehiclePosition? = latestUsablePosition(forSavedAddress = true)
+
+    private fun latestUsablePosition(forSavedAddress: Boolean = false): VehiclePosition? {
         val granted = context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             context.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!granted) return VehicleContext()
-        val position = runCatching {
+        if (!granted) return null
+        return runCatching {
             val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             manager?.allProviders?.mapNotNull { provider ->
                 runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-            }?.filter { usable(it) }?.maxByOrNull { it.elapsedRealtimeNanos }?.let { VehiclePosition(it.latitude, it.longitude) }
+            }?.filter { usable(it, forSavedAddress) }?.maxByOrNull { it.elapsedRealtimeNanos }
+                ?.let { VehiclePosition(it.latitude, it.longitude) }
         }.getOrNull()
-        return VehicleContext(position = position)
     }
 }

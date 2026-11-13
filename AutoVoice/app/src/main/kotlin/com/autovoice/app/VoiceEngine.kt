@@ -84,6 +84,7 @@ class VoiceEngine(
     onDialogueState: (DialogueSnapshot) -> Unit = {},
     private val onTextInputError: (String) -> Unit = {},
     private val streamingCloud: StreamingCloudRunner? = null,
+    onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
 ) {
     private val realtimeChat = cloud as? RealtimeChatRunner
 
@@ -138,11 +139,16 @@ class VoiceEngine(
                 turnId,
                 TelemetryStages.EXECUTE,
                 "info",
-                mapOf(
-                    "intent" to "${intent.domain}/${intent.intent}",
-                    "result" to result.status.name.lowercase(),
-                    "speakText" to (result.speakText ?: ""),
-                ),
+                buildMap {
+                    put("intent", "${intent.domain}/${intent.intent}")
+                    put("result", result.status.name.lowercase())
+                    if (intent.domain != "navigation") put("speakText", result.speakText.orEmpty())
+                    result.execution?.let { execution ->
+                        put("executionStatus", execution.status)
+                        put("durationMs", execution.durationMs)
+                        execution.errorCode?.let { put("errorCode", it) }
+                    }
+                },
             )
         },
         onExecutionFailure = { turnId ->
@@ -150,6 +156,7 @@ class VoiceEngine(
         },
         onRecognizedText = onLocalRecognized,
         onReplyText = onReplyText,
+        onSavedNavigationCommand = onSavedNavigationCommand,
         onCloudPending = onCloudPending,
         onCloudWon = onCloudWon,
         onDialogueState = { snapshot ->

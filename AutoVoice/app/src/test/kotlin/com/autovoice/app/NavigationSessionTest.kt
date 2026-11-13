@@ -197,6 +197,9 @@ class NavigationSessionTest {
         }
         executor.execute(choose())
         assertTrue(executor.execute(navigate("""[{"poiname":"A","lat":30.5,"lon":104.0},{"poiname":"B","lat":30.4,"lon":104.1}]""")))
+        assertNull(session.snapshot.trip)
+        val revision = session.snapshot.draft!!.revision
+        assertEquals(com.autovoice.voicebusiness.navigation.NavigationActionStatus.ACCEPTED, executor.confirmDraft(revision)?.status)
         assertEquals(listOf("A", "B"), session.snapshot.trip!!.waypoints.map { it.name })
         assertEquals("机场", session.snapshot.trip!!.destination.name)
         assertEquals(NavigationHandoff.ACCEPTED, session.snapshot.handoff)

@@ -1062,6 +1062,40 @@ class VoiceGatewayHandlerTest {
     }
 
     @Test
+    void multiStopDraftIsDeliveredOnlyToCapableClients() throws Exception {
+        JsonNode wireIntent = MAPPER.readTree(TestFixtures.read("gateway-navigation-trip-draft.json"))
+                .path("payload").path("intent");
+        Intent intent = MAPPER.treeToValue(wireIntent, Intent.class);
+        JsonNode stops = MAPPER.readTree((String) intent.slots().get("stops").value());
+        assertEquals(3, stops.size());
+        assertEquals(2, stops.get(1).path("candidates").size());
+        assertEquals("home", stops.get(2).path("savedPlace").asText());
+        try (var handler = newHandler(asr("先去学校，再去超市，最后回家"),
+                (text, ctx) -> CompletableFuture.completedFuture(Reply.ofAction(intent, "请查看行程草稿")),
+                ttsOk())) {
+            for (String version : List.of("1.1", "1.2")) {
+                StubSession socket = open(handler);
+                handler.handleMessage(socket, new TextMessage(hello().replace("1.1", version)));
+                JsonNode ready = awaitType(socket, "ready").path("payload");
+                String sid = ready.path("sessionId").asText();
+                handler.handleMessage(socket, new TextMessage(audioStart(sid)));
+                handler.handleMessage(socket, new BinaryMessage(new byte[]{1}));
+                handler.handleMessage(socket, new TextMessage(audioEnd(sid)));
+
+                JsonNode reply = awaitType(socket, "reply").path("payload");
+                if ("1.2".equals(version)) {
+                    assertEquals("1.2", ready.path("protocolVersion").asText());
+                    assertEquals("draft_trip", reply.path("intent").path("intent").asText());
+                } else {
+                    assertEquals("text", reply.path("kind").asText());
+                    assertTrue(reply.path("text").asText().contains("更新"));
+                    assertFalse(reply.has("intent"));
+                }
+            }
+        }
+    }
+
+    @Test
     void admittedNavigationCandidatesAreCommittedAfterReply() throws Exception {
         com.autovoice.server.navigation.NavigationDialogService dialog =
                 new com.autovoice.server.navigation.NavigationDialogService();

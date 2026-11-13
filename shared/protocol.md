@@ -106,7 +106,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `client` | string | 客户端标识，如 `autovoice-android` |
-| `protocolVersion` | string | 协议版本，当前 `"1.1"`（v1.1：TTS 解耦——reply 不再携带音频，新增 `tts_request`/`tts_response`） |
+| `protocolVersion` | string | 协议版本。1.1 支持独立 TTS 请求，1.2 增加行程草稿 |
 | `sessionId` | string（可选） | 会话 ID，本会话内所有消息复用。**服务端权威**：客户端不预生成（首次连接可不携带，由服务端创建并在 `ready` 中回传采纳值）；重连时回带最近一次 `ready` 的值以恢复 Skills/MCP 上下文；携带时服务端优先采纳，未登记的会话自动创建 |
 | `resumeToken` | string（可选，D02a） | 会话恢复凭据，由 `ready` 签发、独立于可展示的 `sessionId`。网关 `auth-enabled` 时恢复既有会话必须同时携带 `sessionId` + `resumeToken`：跨设备/凭据错误 → `error(SESSION_RECOVER_DENIED)` + 关闭；会话过期 → `error(SESSION_EXPIRED)` + 关闭（客户端清除本地会话上下文后不带 `sessionId` 重连即可新建）。凭据不写入任何日志/遥测。鉴权未启用时忽略本字段（裸连兼容路径） |
 | `deviceId` | string（可选） | 设备标识（多设备加固 M1/M5）。网关 `auth-enabled` 时**必填**（与 `authToken` 一同校验），未启用鉴权时携带亦无副作用 |
@@ -507,11 +507,20 @@ operation:"start"|"delta"|"complete"|"error",text}`。`delta.text` 是新 token�
 | `domain` | string | 领域，如 `climate` |
 | `intent` | string | 意图名，如 `set_temperature` |
 | `slots` | object | 槽位表：`{"<槽名>": {"type": "number|enum|string|boolean", "value": ..., "unit": "可选"}}` |
-| `slots` 特例 | string | 多目的地导航（先去A再去B）：`navigate` 意图加可选 `waypoints` 槽，type=string，value 为 `[{poiname,lat,lon}]` JSON 文本（SlotValue 无数组类型，数组 value 会被端侧 parseSlots 丢弃，故走 string 槽）；端侧据此拼 `amapuri://route/plan` 途经点参数（vian/vialons/vialats/vianames） |
+| `slots` 特例 | string | 多目的地导航（先去A再去B）：`navigate` 意图加可选 `waypoints` 槽，type=string，value 为 `[{poiname,lat,lon}]` JSON 文本（SlotValue 无数组类型，数组 value 会被端侧 parseSlots 丢弃，故走 string 槽）；端侧显示草稿，确认后拼 `amapuri://route/plan` 途经点参数（vian/vialons/vialats/vianames） |
 | `slots` 特例 | string | 导航二轮首轮：`navigation/choose_destination` 的 `query` 为原搜索词，`candidates` 为 `[{poiname,lat,lon,address?}]` JSON 文本。端侧仅显示应用内候选弹窗；第二轮明确说序号或名称后，服务端才下发 `navigation/navigate`。 |
 | `confidence` | number | 置信度，0 ~ 1 |
 | `source` | string（可选） | 诊断来源，如 `nlu.iflytek.api`、`llm.deepseek`；缺失时映射为 `protocol.unspecified`，不参与业务判断 |
 | `rawSemantic` | string | 可选：上游原始语义 JSON 原文，用于排查 |
+
+#### 行程草稿（v1.2）
+
+设备在 `hello.protocolVersion` 声明 `1.2`，支持草稿的网关在 `ready.protocolVersion` 回应 `1.2`。
+`navigation/draft_trip` 使用现有 action 回复。`slots.stops` 是 JSON 文本，包含按用户表达排序的 2 至 5 站。
+每站有 `query` 和最多 3 个 `candidates`，或者有 `query` 和 `savedPlace`（`home` 或 `work`）。
+候选为空表示该站未解析，设备不得交接部分路线。设备在本地读取常用地址，不将私有坐标上传给搜索服务。
+设备展示各站并逐项处理歧义，最终确认后才打开地图。网关对旧设备返回升级提示。
+参见 [多地点草稿样例](fixtures/gateway-navigation-trip-draft.json)。
 
 ### 4.5 error
 

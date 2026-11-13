@@ -29,6 +29,7 @@ data class NavigationSelectionContext(
     val candidates: List<NavigationExecutor.NavigationCandidate>,
     val selectedCandidateId: String? = null,
     val requiresTaskIdentity: Boolean = false,
+    val draft: NavigationTripDraft? = null,
 )
 
 data class NavigationSnapshot(
@@ -43,6 +44,7 @@ data class NavigationSnapshot(
     val handoff: NavigationHandoff = NavigationHandoff.NONE,
     val lastTaskEnd: TaskEnd? = null,
     val requiresTaskIdentity: Boolean = false,
+    val draft: NavigationTripDraft? = null,
 )
 
 /** Navigation adapter for the generic multi-turn task coordinator. */
@@ -77,6 +79,50 @@ class NavigationSession(
         )
     }
 
+    @Synchronized
+    internal fun offerDraft(stops: List<NavigationDraftStop>, turnId: String): NavigationTripDraft? {
+        offerDraft(NavigationTripDraft(stops.toList(), 0), interactionIdProvider(turnId), turnId)
+        return snapshot.draft
+    }
+
+    @Synchronized
+    internal fun selectDraftStop(revision: Long, candidateId: String): NavigationTripDraft? {
+        val task = tasks.waiting(DOMAIN) ?: return null
+        val draft = task.context.draft ?: return null
+        if (task.identity.revision != revision) return null
+        val next = draft.select(candidateId) ?: return null
+        if (tasks.claim(task.identity) == null) return null
+        offerDraft(next, task.identity.interactionId, task.originTurnId)
+        return snapshot.draft
+    }
+
+    @Synchronized
+    internal fun claimDraft(revision: Long): NavigationTripDraft? {
+        val task = tasks.waiting(DOMAIN) ?: return null
+        val draft = task.context.draft?.takeIf { it.isReady } ?: return null
+        if (task.identity.revision != revision || tasks.claim(task.identity) == null) return null
+        return draft.copy(revision = revision)
+    }
+
+    @Synchronized
+    internal fun dismissDraft(revision: Long): Boolean {
+        val task = tasks.waiting(DOMAIN) ?: return false
+        if (task.identity.revision != revision || task.context.draft == null) return false
+        return tasks.finishWaiting(task.identity, TaskEndReason.CANCELLED)
+    }
+
+    private fun offerDraft(draft: NavigationTripDraft, interactionId: String, turnId: String) {
+        handoffGeneration++
+        val choices = draft.nextStopIndex?.let { draft.stops[it].choices }.orEmpty()
+        tasks.offer(
+            interactionId = interactionId,
+            domain = DOMAIN,
+            originTurnId = turnId,
+            expectation = NAVIGATION_EXPECTATION,
+            context = NavigationSelectionContext(selectionId = null, candidates = choices, draft = draft),
+        )
+    }
+
     /** Compatibility/manual expiry entry; version is the task revision. */
     @Synchronized fun expire(version: Long): Boolean {
         val task = tasks.waiting(DOMAIN) ?: return false
@@ -99,6 +145,7 @@ class NavigationSession(
     ): NavigationExecutor.NavigationCandidate? {
         val task = tasks.waiting(DOMAIN) ?: return null
         if (expected != null && expected != task.identity) return null
+        if (task.context.draft != null) return null
         var selected: NavigationExecutor.NavigationCandidate? = null
         val claimed = tasks.claim(
             identity = task.identity,
@@ -180,6 +227,7 @@ class NavigationSession(
             handoff = handoff,
             lastTaskEnd = lastTaskEnd,
             requiresTaskIdentity = task?.context?.requiresTaskIdentity ?: false,
+            draft = waiting?.context?.draft?.copy(revision = waiting.identity.revision),
         )
         publish(snapshot)
     }

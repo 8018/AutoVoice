@@ -77,6 +77,7 @@ internal object VoiceEngineFactory {
         bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
         onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
         renderSink: RenderReferenceSink? = null,
+        onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
     ): VoiceEngine {
         channel.validateConfig(cfg)
         // 时钟同步：telemetry 先于 cloudRunner 创建，offset 提供者延迟绑定（仿
@@ -279,6 +280,7 @@ internal object VoiceEngineFactory {
                 onDialogueState = onDialogueState,
                 onTextInputError = onTextInputError,
                 streamingCloud = cloudRunner,
+                onSavedNavigationCommand = onSavedNavigationCommand,
             )
             engineToClose = engine
             engineRef.set(engine)

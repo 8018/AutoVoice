@@ -5,6 +5,58 @@
   "$comment": "导航二轮协议：首次解析地点返回 domain=navigation、intent=choose_destination，slots.query 为原查询，slots.candidates 为 [{poiname,lat,lon,address?}] JSON 字符串；端侧只展示候选，不拉起地图。下一轮用户明确说序号或地点/地址名称后，服务端返回 intent=navigate，slots 携带 poiname/lat/lon，端侧才执行。多目的地 navigate 可加 waypoints string 槽，内容为 [{poiname,lat,lon}]。",
   "type": "object",
   "required": ["schemaVersion", "domain", "intent", "slots", "confidence"],
+  "$defs": {
+    "draftCandidate": {
+      "type": "object",
+      "required": ["poiname", "lat", "lon"],
+      "properties": {
+        "poiname": { "type": "string", "minLength": 1 },
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "address": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "draftStops": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "candidates": { "type": "array", "maxItems": 3, "items": { "$ref": "#/$defs/draftCandidate" } },
+          "savedPlace": { "enum": ["home", "work"] }
+        },
+        "additionalProperties": false,
+        "oneOf": [{ "required": ["candidates"] }, { "required": ["savedPlace"] }]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "domain": { "const": "navigation" }, "intent": { "const": "draft_trip" } },
+        "required": ["domain", "intent"]
+      },
+      "then": {
+        "properties": {
+          "slots": {
+            "required": ["stops"],
+            "properties": {
+              "stops": {
+                "properties": {
+                  "type": { "const": "string" },
+                  "value": { "type": "string", "contentMediaType": "application/json", "contentSchema": { "$ref": "#/$defs/draftStops" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schemaVersion": { "type": "string", "const": "1.0" },
     "domain": { "type": "string" },

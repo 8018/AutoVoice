@@ -310,15 +310,22 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
                     @Override
                     public Optional<OnlineSpeechResult> terminal(
                             StreamResult message, List<AgentToolCall> calls) {
-                        // Omni must make one final no-tools call to synthesize the spoken confirmation.
+                        // Validate terminal tools before deciding how the client receives the action.
                         return Optional.empty();
                     }
 
                     @Override
                     public Optional<OnlineSpeechResult> terminalAfterTools(
                             StreamResult message, List<AgentToolResult> results) {
-                        return NavigationCandidateReplies.from(results)
+                        Optional<OnlineSpeechResult> navigationReply = NavigationCandidateReplies.from(results)
                                 .map(reply -> new OnlineSpeechResult(reply, ""));
+                        if (navigationReply.isPresent()) return navigationReply;
+                        Intent intent = terminalIntent.get();
+                        if (intent != null && "navigation".equals(intent.domain())) {
+                            // The device speaks only once it knows whether the map accepted the handoff.
+                            return Optional.of(new OnlineSpeechResult(Reply.ofAction(intent, "请查看地图"), ""));
+                        }
+                        return Optional.empty();
                     }
 
                     @Override
@@ -394,10 +401,10 @@ public final class QwenOmniSpeechProvider implements OnlineSpeechProvider, AutoC
     private static String navigationDialogPolicy(List<FunctionTool> enabledTools) {
         return enabledTools.stream().anyMatch(t -> "resolve_navigation".equals(t.name()))
                 ? "\nFor a single destination, call resolve_navigation first to show candidates. "
-                    + "Do not choose one or call navigate in that turn; navigation starts only after "
-                    + "the user's next-turn ordinal or place-name selection. For multiple destinations, "
-                    + "send every stop in spoken order in one resolve_navigation call; the system selects "
-                    + "one best match per stop and opens route preview without starting guidance."
+                    + "Wait for the user's next-turn ordinal or place-name selection before handing off. "
+                    + "For multiple destinations, send every stop in spoken order in one resolve_navigation call. "
+                    + "Use 家 or 公司 for the user's saved home or workplace. Never omit a stop or choose "
+                    + "one of several matches. The device shows a draft and waits for confirmation before opening the map."
                 : "";
     }
 

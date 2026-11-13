@@ -3,7 +3,6 @@ package com.autovoice.server.agentloop;
 import com.autovoice.server.contracts.Intent;
 import com.autovoice.server.contracts.Reply;
 import com.autovoice.server.contracts.SlotValue;
-import com.autovoice.server.contracts.SpeakTexts;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -26,77 +25,103 @@ public final class NavigationCandidateReplies {
     }
 
     /**
-     * Single-destination searches become a dialog action. Multi-stop searches take the best
-     * candidate of every stop and open one route-planning preview, avoiding an ambiguous second
-     * model turn and preserving the spoken stop order.
+     * Single-destination searches become a dialog action. Multi-stop searches keep every stop
+     * in order so the device can resolve ambiguity and ask for confirmation before opening the map.
      */
     public static Optional<Reply> from(List<AgentToolResult> results) {
         for (AgentToolResult result : results) {
             if (!RESOLVE_TOOL.equals(result.call().name()) || result.error()) continue;
-            try {
-                JsonNode destinations = JSON.readTree(result.content()).path("destinations");
-                if (!destinations.isArray() || destinations.isEmpty()) continue;
-                for (JsonNode destination : destinations) {
-                    if (destination.path("candidates").isArray() && destination.path("candidates").isEmpty()) {
-                        return Optional.of(Reply.ofText("未找到“" + destination.path("query").asText("")
-                                + "”的可靠地点，请确认定位或说出具体城市和地点名称。"));
-                    }
-                }
-                if (destinations.size() > 1) {
-                    Optional<Reply> multiStop = multiStopReply(destinations, result.content());
-                    if (multiStop.isPresent()) return multiStop;
-                    continue;
-                }
-                JsonNode destination = destinations.get(0);
-                JsonNode candidates = destination.path("candidates");
-                if (!candidates.isArray() || candidates.isEmpty()) continue;
-                String query = destination.path("query").asText("");
-                Map<String, SlotValue> slots = new LinkedHashMap<>();
-                slots.put(SLOT_QUERY, SlotValue.stringValue(query));
-                slots.put(SLOT_CANDIDATES, SlotValue.stringValue(JSON.writeValueAsString(candidates)));
-                Intent intent = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0,
-                        "navigation.resolve", result.content());
-                String prompt = "找到" + candidates.size() + "个“" + query
-                        + "”，请说第几个或具体地址名称";
-                return Optional.of(Reply.ofAction(intent, prompt));
-            } catch (Exception ignored) {
-                // Malformed third-party tool output remains in the normal model/tool loop.
-            }
+            Optional<Reply> reply = fromResolution(result.content());
+            if (reply.isPresent()) return reply;
         }
         return Optional.empty();
     }
 
-    private static Optional<Reply> multiStopReply(JsonNode destinations, String raw) throws Exception {
-        List<JsonNode> selected = new ArrayList<>();
-        for (JsonNode destination : destinations) {
+    /** Shared adapter for initial tool results and deterministic follow-up searches. */
+    public static Optional<Reply> fromResolution(String content) {
+        try {
+            JsonNode resolution = JSON.readTree(content);
+            JsonNode destinations = resolution.path("destinations");
+            if (!destinations.isArray() || destinations.isEmpty()) {
+                String message = resolution.path("message").asText("");
+                return message.isBlank() ? Optional.empty() : Optional.of(Reply.ofText(message));
+            }
+            if (destinations.size() > 1) return multiStopReply(destinations);
+            for (JsonNode destination : destinations) {
+                if (destination.path("candidates").isArray() && destination.path("candidates").isEmpty()) {
+                    String message = resolution.path("message").asText("");
+                    if (message.isBlank()) {
+                        message = "未找到“" + destination.path("query").asText("")
+                                + "”的可靠地点，请说更具体的地点名称。";
+                    }
+                    return Optional.of(Reply.ofText(message));
+                }
+            }
+            JsonNode destination = destinations.get(0);
             JsonNode candidates = destination.path("candidates");
             if (!candidates.isArray() || candidates.isEmpty()) return Optional.empty();
-            JsonNode candidate = candidates.get(0);
-            if (candidate.path("poiname").asText("").isBlank()
-                    || !candidate.path("lat").isNumber() || !candidate.path("lon").isNumber()) {
-                return Optional.empty();
+            String query = destination.path("query").asText("");
+            var displayed = JSON.createArrayNode();
+            List<String> descriptions = new ArrayList<>();
+            for (JsonNode candidate : candidates) {
+                if (displayed.size() == 3) break;
+                displayed.add(candidate);
+                String name = candidate.path("poiname").asText();
+                String address = candidate.path("address").asText();
+                descriptions.add("第" + displayed.size() + "个，" + name
+                        + (address.isBlank() ? "" : "，" + address));
             }
-            selected.add(candidate);
+            Map<String, SlotValue> slots = new LinkedHashMap<>();
+            slots.put(SLOT_QUERY, SlotValue.stringValue(query));
+            slots.put(SLOT_CANDIDATES, SlotValue.stringValue(displayed.toString()));
+            Intent intent = Intent.of("1.0", DOMAIN, CHOOSE_INTENT, slots, 1.0,
+                    "navigation.resolve", content);
+            String notice = resolution.path("availabilityNotice").asText("");
+            String prompt = (notice.isBlank() ? "" : notice)
+                    + String.join("；", descriptions) + "。请说第几个或具体地址名称。";
+            return Optional.of(Reply.ofAction(intent, prompt));
+        } catch (Exception ignored) {
+            // Malformed third-party tool output remains in the normal model/tool loop.
+            return Optional.empty();
         }
+    }
 
-        JsonNode terminal = selected.get(selected.size() - 1);
-        com.fasterxml.jackson.databind.node.ArrayNode waypoints = JSON.createArrayNode();
-        for (int i = 0; i < selected.size() - 1; i++) {
-            JsonNode candidate = selected.get(i);
-            waypoints.addObject()
-                    .put("poiname", candidate.path("poiname").asText())
-                    .put("lat", candidate.path("lat").asDouble())
-                    .put("lon", candidate.path("lon").asDouble());
+    private static Optional<Reply> multiStopReply(JsonNode destinations) {
+        if (destinations.size() > 5) {
+            return Optional.of(Reply.ofText("一次最多安排5个地点，请减少地点后重试。"));
         }
-
+        var stops = JSON.createArrayNode();
+        for (JsonNode destination : destinations) {
+            String query = destination.path("query").asText("");
+            if (query.isBlank() || query.length() > 256) return Optional.empty();
+            var stop = stops.addObject().put("query", query);
+            String savedPlace = destination.path("savedPlace").asText("");
+            if (savedPlace.equals("home") || savedPlace.equals("work")) {
+                stop.put("savedPlace", savedPlace);
+                continue;
+            }
+            JsonNode candidates = destination.path("candidates");
+            if (!candidates.isArray() || candidates.size() > 3) return Optional.empty();
+            var copied = stop.putArray("candidates");
+            for (JsonNode candidate : candidates) {
+                String name = candidate.path("poiname").asText("");
+                JsonNode lat = candidate.path("lat");
+                JsonNode lon = candidate.path("lon");
+                if (name.isBlank() || !lat.isNumber() || !lon.isNumber()
+                        || !Double.isFinite(lat.asDouble()) || !Double.isFinite(lon.asDouble())
+                        || Math.abs(lat.asDouble()) > 90 || Math.abs(lon.asDouble()) > 180) {
+                    return Optional.empty();
+                }
+                var copy = copied.addObject().put("poiname", name)
+                        .put("lat", lat.asDouble()).put("lon", lon.asDouble());
+                String address = candidate.path("address").asText("");
+                if (!address.isBlank()) copy.put("address", address);
+            }
+        }
         Map<String, SlotValue> slots = new LinkedHashMap<>();
-        slots.put(SpeakTexts.SLOT_POINAME, SlotValue.stringValue(terminal.path("poiname").asText()));
-        slots.put("lat", SlotValue.number(terminal.path("lat").asDouble()));
-        slots.put("lon", SlotValue.number(terminal.path("lon").asDouble()));
-        slots.put(SpeakTexts.SLOT_WAYPOINTS,
-                SlotValue.stringValue(JSON.writeValueAsString(waypoints)));
-        Intent intent = Intent.of("1.0", DOMAIN, "navigate", slots, 1.0,
-                "navigation.resolve.multi_stop", raw);
-        return Optional.of(Reply.ofAction(intent, SpeakTexts.speak(intent)));
+        slots.put("stops", SlotValue.stringValue(stops.toString()));
+        Intent intent = Intent.of("1.0", DOMAIN, "draft_trip", slots, 1.0,
+                "navigation.resolve.multi_stop", null);
+        return Optional.of(Reply.ofAction(intent, "请查看行程草稿"));
     }
 }

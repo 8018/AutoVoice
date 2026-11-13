@@ -1444,10 +1444,10 @@ class VoiceEngineTest {
         assertEquals(1, opened.size, "应拉起一次高德导航")
         assertEquals(
             "androidamap://navi?sourceApplication=autovoice" +
-                "&poiname=%E6%9D%AD%E5%B7%9E%E4%B8%9C%E7%AB%99&lat=30.2896&lon=120.2108",
+                "&poiname=%E6%9D%AD%E5%B7%9E%E4%B8%9C%E7%AB%99&lat=30.2896&lon=120.2108&dev=0",
             opened[0],
         )
-        assertEquals(listOf("好的，已为您规划去杭州东站的导航"), requested, "speakText 走网络 TTS")
+        assertEquals(listOf("已打开高德地图，请查看导航"), requested)
     }
 
     @Test
@@ -1494,9 +1494,10 @@ class VoiceEngineTest {
     }
 
     @Test
-    fun `cloud navigate with waypoints opens amap route plan uri`() {
+    fun `cloud navigate with waypoints waits for confirmation before opening amap route plan uri`() {
         val opened = mutableListOf<String>()
         val requested = mutableListOf<String>()
+        val navigation = NavigationExecutor { uri -> opened += uri; true }
         lateinit var engine: VoiceEngine
         runBlocking {
             val pair = engine(
@@ -1515,11 +1516,15 @@ class VoiceEngineTest {
                     )
                 },
                 tts = TtsRequester { requested.add(it); null },
-                navigation = NavigationExecutor { uri -> opened.add(uri); true },
+                navigation = navigation,
             )
             engine = pair.first
             utter(engine)
         }
+        assertTrue(opened.isEmpty())
+        assertEquals(listOf("途经爱情广场，终点是大旗杆。请确认或放弃行程。"), requested)
+        val revision = navigation.session.snapshot.draft!!.revision
+        assertEquals("已打开高德地图，请查看路线规划", navigation.confirmDraft(revision)?.userFeedback)
         // 多目的地 URI 形状：amapuri://route/plan?…&dlat/dlon/dname=<终点>&vian=N&vialons/vialats/vianames=<途经|分隔>&t=0&dev=0
         assertEquals(1, opened.size, "应拉起一次高德路线规划")
         assertEquals(
@@ -1529,7 +1534,6 @@ class VoiceEngineTest {
                 "&t=0&dev=0",
             opened[0],
         )
-        assertEquals(listOf("好的，已为您规划先去爱情广场再去大旗杆的导航"), requested, "speakText 走网络 TTS")
     }
 
     @Test

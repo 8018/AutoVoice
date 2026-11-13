@@ -462,6 +462,29 @@ class QwenOmniSpeechProviderTest {
     }
 
     @Test
+    void terminalNavigationReturnsActionWithoutStreamingUnverifiedConfirmation() throws Exception {
+        server.enqueue(sse(toolCall("navigate", "{\"poiname\":\"北京站\",\"lat\":39.9,\"lon\":116.4}")));
+        server.enqueue(sse(delta("content", "已开始导航"), audio(new byte[]{1, 2})));
+        AtomicInteger starts = new AtomicInteger();
+
+        try (var provider = provider((name, args) -> "unused")) {
+            var result = provider.process(new byte[]{1, 2}, context(), "nav-handoff", new OnlineAudioSink() {
+                @Override public void onStart(int sampleRate, int channels, String encoding) {
+                    starts.incrementAndGet();
+                }
+                @Override public void onChunk(byte[] pcm) {}
+                @Override public void onComplete(String text, com.autovoice.server.contracts.Intent intent) {}
+                @Override public void onError(Throwable error) {}
+            }).get(2, TimeUnit.SECONDS);
+
+            assertEquals("action", result.reply().kind());
+            assertEquals("navigation", result.reply().intent().domain());
+            assertEquals(0, starts.get());
+            assertEquals(1, server.getRequestCount());
+        }
+    }
+
+    @Test
     void navigationCannotBypassResolverAndMissingModelLocationUsesDeviceFix() throws Exception {
         server.enqueue(sse(toolCall("navigate", "{\"poiname\":\"北京站\",\"lat\":39.9,\"lon\":116.4}")));
         server.enqueue(sse(toolCall("resolve_navigation", "{\"destinations\":[\"火车站\"]}")));

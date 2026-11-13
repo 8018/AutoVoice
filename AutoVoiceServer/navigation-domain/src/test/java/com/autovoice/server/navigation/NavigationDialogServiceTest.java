@@ -26,6 +26,154 @@ class NavigationDialogServiceTest {
             """;
 
     @Test
+    void exactSavedPlaceCommandsSkipModelAndKeepCurrentSelectionIntact() {
+        var dialog = dialog();
+        dialog.remember(CTX, chooseReply());
+        for (String command : java.util.List.of("回家", "带我回家", "去公司", "把这里设为家",
+                "公司换到这里了", "删除我的家庭地址")) {
+            Reply reply = dialog.complete(CTX, command, () -> fail("must not send saved place to POI tools")).join();
+            assertEquals("text", reply.kind());
+            assertTrue(dialog.hasPending(CTX));
+        }
+        assertEquals("regular path", dialog.complete(CTX, "找我家公司附近的停车场", () ->
+                java.util.concurrent.CompletableFuture.completedFuture(Reply.ofText("regular path"))).join().text());
+    }
+
+    @Test
+    void cityCorrectionUsesOriginalSearchAndReplacesSelectionIdentityOnlyAfterAdoption() throws Exception {
+        var json = new ObjectMapper();
+        var calls = new java.util.ArrayList<String>();
+        var dialog = new NavigationDialogService(arguments -> {
+            calls.add(arguments);
+            return java.util.concurrent.CompletableFuture.completedFuture(searchReply("上海", """
+                    [{"poiname":"上海万达广场","lat":31.2,"lon":121.4}]
+                    """));
+        });
+        var initial = dialog.remember(CTX, searchReply("北京", CANDIDATES));
+        String oldId = (String) initial.intent().slots().get("selectionId").value();
+        var oldContext = modern(oldId).withAttr("latitude", 39.9).withAttr("longitude", 116.3);
+        var replacement = dialog.complete(oldContext, "不是北京，是上海", () -> fail("unexpected model call")).join();
+        assertEquals(1, calls.size());
+        var request = json.readTree(calls.getFirst());
+        assertEquals("上海", request.path("city").asText());
+        assertEquals("万达广场", request.path("destinations").get(0).asText());
+        String newId = (String) replacement.intent().slots().get("selectionId").value();
+        assertNotEquals(oldId, newId);
+        assertTrue(dialog.hasAdopted(CTX, oldId));
+        dialog.commit(oldContext, replacement);
+        assertTrue(dialog.adoptExact(CTX, newId));
+        assertNull(dialog.resolve(oldContext, "第二个").orElseThrow().intent());
+        assertEquals("上海万达广场", dialog.resolve(modern(newId), "第一个").orElseThrow()
+                .intent().slots().get("poiname").value());
+    }
+
+    @Test
+    void placeQualifiersPreserveChineseNumeralsDuringResearch() throws Exception {
+        var requests = new java.util.ArrayList<String>();
+        var dialog = new NavigationDialogService(arguments -> {
+            requests.add(arguments);
+            return java.util.concurrent.CompletableFuture.completedFuture(Reply.ofText("没有匹配地点。"));
+        });
+        var offered = dialog.remember(CTX, searchReply("北京", CANDIDATES));
+        var context = modern((String) offered.intent().slots().get("selectionId").value());
+        for (String qualifier : java.util.List.of("不是北京，是三亚", "三河市", "在二七区")) {
+            dialog.complete(context, qualifier, () -> fail("unexpected model call")).join();
+        }
+
+        var json = new ObjectMapper();
+        assertEquals(3, requests.size());
+        assertEquals("三亚", json.readTree(requests.get(0)).path("city").asText());
+        assertEquals("三河市", json.readTree(requests.get(1)).path("city").asText());
+        assertEquals("二七区", json.readTree(requests.get(2)).path("district").asText());
+    }
+
+    @Test
+    void nextBatchCarriesAllPreviouslyDisplayedCandidatesAndReportsExhaustion() throws Exception {
+        var json = new ObjectMapper();
+        var calls = new java.util.ArrayList<String>();
+        var dialog = new NavigationDialogService(arguments -> {
+            calls.add(arguments);
+            return java.util.concurrent.CompletableFuture.completedFuture(calls.size() == 1
+                    ? searchReply("杭州", """
+                            [{"poiname":"万达广场（南店）","lat":30.3,"lon":120.3}]
+                            """)
+                    : Reply.ofText("没有找到更多候选。"));
+        });
+        var initial = dialog.remember(CTX, searchReply("杭州", CANDIDATES));
+        var first = modern((String) initial.intent().slots().get("selectionId").value());
+        var next = dialog.complete(first, "都不是，换一批", () -> fail("unexpected model call")).join();
+        dialog.commit(first, next);
+        var newId = (String) next.intent().slots().get("selectionId").value();
+        assertTrue(dialog.adoptExact(first, newId));
+        var exhausted = dialog.complete(modern(newId), "再换一批", () -> fail("unexpected model call")).join();
+        assertEquals("没有找到更多候选。", exhausted.text());
+        assertEquals(2, json.readTree(calls.get(0)).path("excluded").size());
+        assertEquals(3, json.readTree(calls.get(1)).path("excluded").size());
+    }
+
+    @Test
+    void lateBatchAfterCloseCannotProduceReplacementAction() {
+        var search = new java.util.concurrent.CompletableFuture<Reply>();
+        var dialog = new NavigationDialogService(arguments -> search);
+        var initial = dialog.remember(CTX, searchReply("杭州", CANDIDATES));
+        String oldId = (String) initial.intent().slots().get("selectionId").value();
+        var context = modern(oldId);
+        var future = dialog.complete(context, "换一批", () -> fail("unexpected model call"));
+        dialog.closeExact(context, oldId);
+        search.complete(searchReply("杭州", CANDIDATES));
+        assertNull(future.join().intent());
+        assertFalse(dialog.hasPending(context));
+    }
+
+    private static Reply searchReply(String city, String candidates) {
+        var offer = chooseReply("万达广场", candidates);
+        var intent = offer.intent();
+        return Reply.ofAction(Intent.of("1.0", intent.domain(), intent.intent(), intent.slots(), 1.0,
+                "navigation.resolve", "{\"search\":{\"query\":\"万达广场\",\"city\":\"" + city + "\"}}"), offer.speakText());
+    }
+
+    @Test
+    void exhaustedBatchProvidesRecoveryWithoutPickingOldCandidate() {
+        var dialog = dialog();
+        var offered = dialog.remember(CTX, chooseReply());
+        var context = modern((String) offered.intent().slots().get("selectionId").value());
+        var reply = dialog.complete(context, "都不是，换一批", () -> fail("must not ask the model to choose")).join();
+        assertNull(reply.intent());
+        assertTrue(reply.text().contains("更多候选"));
+    }
+
+    @Test
+    void negatedOrdinalDoesNotSelectOrCancel() {
+        var dialog = dialog();
+        var offered = dialog.remember(CTX, chooseReply());
+        var context = modern((String) offered.intent().slots().get("selectionId").value());
+        var reply = dialog.resolve(context, "不要去第二个").orElseThrow();
+        assertNull(reply.intent());
+        assertTrue(dialog.hasPending(context));
+    }
+
+    @Test
+    void selectsUniqueDistrictDescription() {
+        var dialog = dialog();
+        var offered = dialog.remember(CTX, chooseReply("机场", """
+                [{"poiname":"虹桥机场","address":"上海市闵行区","lat":31.2,"lon":121.3},
+                 {"poiname":"浦东机场","address":"上海市浦东新区","lat":31.1,"lon":121.8}]
+                """));
+        var context = modern((String) offered.intent().slots().get("selectionId").value());
+        assertEquals("浦东机场", dialog.resolve(context, "浦东的那个").orElseThrow()
+                .intent().slots().get("poiname").value());
+    }
+
+    @Test
+    void replacementWithNegationDoesNotCancelOrSelectOldList() {
+        var dialog = dialog();
+        var offered = dialog.remember(CTX, chooseReply());
+        var context = modern((String) offered.intent().slots().get("selectionId").value());
+        assertTrue(dialog.resolve(context, "不去了，去车站").isEmpty());
+        assertTrue(dialog.hasPending(context));
+    }
+
+    @Test
     void sharedAirportScenarioResolvesOrdinalAndNameToSameCoordinates() throws Exception {
         var json = new ObjectMapper();
         try (var input = getClass().getResourceAsStream("/navigation-selection-scenario.json")) {
@@ -88,7 +236,7 @@ class NavigationDialogServiceTest {
         assertTrue(dialog.hasPending(CTX));
         Reply cancel = dialog.resolve(modern, "算了").orElseThrow();
         assertEquals("cancel_navigation", cancel.intent().intent());
-        assertEquals("已取消导航", cancel.speakText());
+        assertEquals("已取消地点搜索", cancel.speakText());
         assertTrue(dialog.hasPending(CTX));
         dialog.adopt(CTX, "");
         assertFalse(dialog.hasPending(CTX));

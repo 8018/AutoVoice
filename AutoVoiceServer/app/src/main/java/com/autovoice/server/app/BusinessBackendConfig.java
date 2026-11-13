@@ -1,6 +1,7 @@
 package com.autovoice.server.app;
 
 import com.autovoice.server.agentloop.AgentExecutionRuntime;
+import com.autovoice.server.agentloop.NavigationCandidateReplies;
 import com.autovoice.server.asrgateway.AliyunAsrProvider;
 import com.autovoice.server.asrgateway.AliyunTokenClient;
 import com.autovoice.server.asrgateway.IflytekIatAsrProvider;
@@ -83,8 +84,10 @@ public class BusinessBackendConfig {
     }
 
     @Bean
-    public NavigationDialog navigationDialog() {
-        return new NavigationDialogService();
+    public NavigationDialog navigationDialog(McpSkillRegistry registry, AgentExecutionRuntime agentRuntime) {
+        return new NavigationDialogService(arguments -> agentRuntime.submitToolRead(() ->
+                NavigationCandidateReplies.fromResolution(registry.callTool(
+                        NavigationCandidateReplies.RESOLVE_TOOL, arguments)).orElseThrow()));
     }
 
     @Bean(destroyMethod = "close")

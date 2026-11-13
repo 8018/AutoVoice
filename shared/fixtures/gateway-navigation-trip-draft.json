@@ -1,0 +1,22 @@
+{
+  "type": "reply",
+  "payload": {
+    "kind": "action",
+    "segmentId": "segment-trip-draft",
+    "asrText": "先去学校，再去超市，最后回家",
+    "speakText": "请查看行程草稿",
+    "intent": {
+      "schemaVersion": "1.0",
+      "domain": "navigation",
+      "intent": "draft_trip",
+      "confidence": 1,
+      "source": "navigation.resolve.multi_stop",
+      "slots": {
+        "stops": {
+          "type": "string",
+          "value": "[{\"query\":\"学校\",\"candidates\":[{\"poiname\":\"育才学校\",\"lat\":30.65,\"lon\":104.06}]},{\"query\":\"超市\",\"candidates\":[{\"poiname\":\"东门超市\",\"lat\":30.62,\"lon\":104.1,\"address\":\"东门路1号\"},{\"poiname\":\"西门超市\",\"lat\":30.64,\"lon\":104.03,\"address\":\"西门路2号\"}]},{\"query\":\"家\",\"savedPlace\":\"home\"}]"
+        }
+      }
+    }
+  }
+}

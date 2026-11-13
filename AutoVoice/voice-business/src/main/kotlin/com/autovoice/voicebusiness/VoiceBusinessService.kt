@@ -45,6 +45,7 @@ class VoiceBusinessService(
     private val finishOpenRounds: (String) -> Unit = {},
     private val endRound: (String, String?) -> Unit = { _, _ -> },
     private val onDialogueIdleTimeout: (DialogueSnapshot) -> Unit = {},
+    onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
 ) {
     private val output = tts
     private var dialogueIdleJob: Job? = null
@@ -66,6 +67,7 @@ class VoiceBusinessService(
         isCurrentTurn = ::isCurrentTurn,
         onRecognized = onRecognizedText,
         onReplyText = onReplyText,
+        onSavedNavigationCommand = onSavedNavigationCommand,
     )
 
     fun onWake() {

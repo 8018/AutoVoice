@@ -58,8 +58,8 @@ class GatewayClient(
         /** protocol.md §3.1 hello 的客户端标识。 */
         const val CLIENT_NAME = "autovoice-android"
 
-        /** protocol.md §3.1 hello 的协议版本（v1.1：TTS 解耦）。 */
-        const val PROTOCOL_VERSION = "1.1"
+        /** protocol.md §3.1 hello 的协议版本（v1.2：支持行程草稿）。 */
+        const val PROTOCOL_VERSION = "1.2"
     }
 
     private val events = MutableSharedFlow<GatewayMessage>(

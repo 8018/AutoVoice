@@ -2,6 +2,9 @@ package com.autovoice.app.business
 
 import com.autovoice.app.MockVehicleState
 import com.autovoice.voicebusiness.navigation.NavigationExecutor
+import com.autovoice.voicebusiness.navigation.NavigationActionError
+import com.autovoice.voicebusiness.navigation.NavigationActionResult
+import com.autovoice.voicebusiness.navigation.NavigationActionStatus
 import com.autovoice.app.action.ActionExecutionGateway
 import com.autovoice.business.BusinessCommand
 import com.autovoice.business.BusinessHandler
@@ -42,20 +45,53 @@ class AppBusinessHandler(
                 ActionExecutionGateway.Result.FAILED -> BusinessResult.failed()
             }
         }
+        if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) return handleNavigation(command)
+
         var appliedText: String? = null
         val result = actionGateway.execute(command.turnId) {
-            if (intent.domain == NavigationExecutor.DOMAIN_NAVIGATION) {
-                navigation?.execute(intent, command.turnId) == true
-            } else {
-                navigation?.abortPendingTask()
-                appliedText = vehicle.apply(intent)
-                appliedText != null
-            }
+            navigation?.abortPendingTask()
+            appliedText = vehicle.apply(intent)
+            appliedText != null
         }
         return when (result) {
+            ActionExecutionGateway.Result.APPLIED -> BusinessResult.applied(appliedText).also { onVehicleApplied() }
+            ActionExecutionGateway.Result.FAILED -> BusinessResult.failed()
+            ActionExecutionGateway.Result.DUPLICATE -> BusinessResult(BusinessResult.Status.DUPLICATE)
+            ActionExecutionGateway.Result.INVALID_TURN -> BusinessResult.rejected()
+        }
+    }
+
+    private fun handleNavigation(command: BusinessCommand): BusinessResult {
+        var navigationResult: NavigationActionResult? = null
+        val started = System.nanoTime()
+        val gate = actionGateway.execute(command.turnId) {
+            navigationResult = navigation?.executeWithResult(command.intent, command.turnId)
+                ?: NavigationActionResult.unsupported(command.intent, command.turnId)
+            true
+        }
+        return when (gate) {
             ActionExecutionGateway.Result.APPLIED -> {
-                if (intent.domain != NavigationExecutor.DOMAIN_NAVIGATION) onVehicleApplied()
-                BusinessResult.applied(appliedText)
+                val result = checkNotNull(navigationResult)
+                val status = when (result.status) {
+                    NavigationActionStatus.PENDING,
+                    NavigationActionStatus.ACCEPTED,
+                    NavigationActionStatus.SUCCEEDED -> BusinessResult.Status.APPLIED
+                    NavigationActionStatus.UNSUPPORTED -> BusinessResult.Status.FAILED
+                    NavigationActionStatus.FAILED -> if (result.error == NavigationActionError.STALE_TASK) {
+                        BusinessResult.Status.REJECTED
+                    } else {
+                        BusinessResult.Status.FAILED
+                    }
+                }
+                BusinessResult(
+                    status,
+                    result.userFeedback,
+                    BusinessResult.Execution(
+                        result.status.name.lowercase(),
+                        result.error?.name?.lowercase(),
+                        (System.nanoTime() - started) / 1_000_000L,
+                    ),
+                )
             }
             ActionExecutionGateway.Result.FAILED -> BusinessResult.failed()
             ActionExecutionGateway.Result.DUPLICATE -> BusinessResult(BusinessResult.Status.DUPLICATE)
