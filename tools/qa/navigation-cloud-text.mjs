@@ -1,9 +1,10 @@
 // Live dev text evaluation. Credentials are read locally and never written to results.
 import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
-import { evaluate, summarize } from './navigation-benchmark.mjs';
+import { evaluate, summarize, productCoverage } from './navigation-benchmark.mjs';
+import { scenarios } from './navigation-scenarios.mjs';
 const suppliedToken=process.env.NAVIGATION_BENCHMARK_TOKEN||(process.env.NAVIGATION_BENCHMARK_TOKEN_FILE?fs.readFileSync(process.env.NAVIGATION_BENCHMARK_TOKEN_FILE,'utf8').trim():null);
 const config=suppliedToken?'':fs.readFileSync(new URL('../../AutoVoice/local.properties',import.meta.url),'utf8');
 const token=suppliedToken||config.split(/\r?\n/).find(x=>x.startsWith('gateway.authToken='))?.slice(18).trim();
@@ -16,25 +17,10 @@ if(!Number.isInteger(repetitions)||repetitions<1||repetitions>10)throw Error('re
 const directory=new URL('../../docs/qa/navigation-benchmark-runs/',import.meta.url);fs.mkdirSync(directory,{recursive:true});
 const output=new URL(`${new Date().toISOString().replaceAll(':','-')}-${revision.slice(0,7)}.json`,directory);
 const endpoint=process.env.NAVIGATION_BENCHMARK_ENDPOINT||'ws://8.153.153.77:8090/ws';
-const report={suiteVersion:1,revision,deployedRelease:release,repetitions,focus:focus??null,startedAt:new Date().toISOString(),environment:'dev',endpoint,protocol:'1.2',measurement:'Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.',results:[]};
-const scenarios=[
- ['name','按名称返回有效候选，选择前不执行',['导航到北京南站']],
- ['city','候选限定在上海',['带我去上海博物馆']],
- ['entrance','保留航站楼限定',['导航到上海虹桥机场T2航站楼']],
- ['numeric_city','三亚地名不能改成数字',['导航到三亚凤凰国际机场']],
- ['brand','保留北京及星巴克品牌条件',['找北京的星巴克']],
- ['opening','不能核验营业时明确未知，不伪称满足',['找北京现在营业的咖啡店']],
- ['charging','返回真实充电站，不编造空闲桩',['找北京南站附近的充电站']],
- ['energy','缺车辆数据不得生成保证可达的补能方案',['到北京南站至少留两成电，帮我规划补能']],
- ['trip','有序两站草稿，先南站后西站',['先去北京南站，再去北京西站']],
- ['home','委派端侧常用地址，不编造家庭地址',['回家']],
- ['live_eta','没有活动路线不能编造剩余时间',['还有多久到']],
- ['readonly','询问耗时只预览；选中后仍不启动',['去北京南站要多久，只查询路线，不开始导航','第一个']],
- ['negative','否定选择不执行；明确选择才输出导航动作',['导航到北京南站','不要去第二个','第一个']],
- ['correction','修正城市后仅保留新城市候选',['导航到北京的博物馆','不是北京，是上海']],
- ['next_batch','换批返回新候选，不重复原候选',['找北京的咖啡店','换一批']],
- ['cancel','取消候选后序号不得触发原目标',['导航到北京南站','取消','第一个']],
-];
+const suiteFingerprint=createHash('sha256').update(fs.readFileSync(new URL('./navigation-cloud-text.mjs',import.meta.url))).update(fs.readFileSync(new URL('./navigation-benchmark.mjs',import.meta.url))).update(fs.readFileSync(new URL('./navigation-scenarios.mjs',import.meta.url))).digest('hex');
+const sourceDirty=execFileSync('git',['status','--porcelain','--untracked-files=no'],{cwd:new URL('../../',import.meta.url),encoding:'utf8'}).trim().length>0;
+const report={suiteVersion:2,suiteFingerprint,sourceDirty,revision,deployedRelease:release,repetitions,focus:focus??null,startedAt:new Date().toISOString(),environment:'dev',endpoint,protocol:'1.2',measurement:'Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.',results:[]};
+
 async function connect(){
  const ws=new WebSocket(endpoint);const pending=[];let active=null;
  ws.onmessage=e=>{const m=JSON.parse(e.data);if(active && ['reply_partial','pending','reply'].includes(m.type) && [m.payload?.requestId,m.payload?.utteranceId,m.payload?.segmentId].includes(active.id)){active.firstMs??=performance.now()-active.start;}
@@ -56,7 +42,7 @@ for(let repetition=1;repetition<=repetitions;repetition++){
   try {
    c=await connect();
    for(let turn=0;turn<inputs.length;turn++){
-    const r={id:`${id}-${turn+1}`,scenario:id,expected,...await c.text(inputs[turn]),repetition};
+    const r={id:`${id}-${turn+1}`,scenario:id,productIds:productCoverage[id]??[],expected,...await c.text(inputs[turn]),repetition};
     Object.assign(r,evaluate(r,history));history.push(r);report.results.push(r);
     fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');
     console.log(JSON.stringify({id:r.id,repetition,elapsedMs:r.elapsedMs,verdict:r.verdict,checks:r.checks,text:r.text,intent:r.intent?.intent,error:r.error}));
@@ -68,7 +54,14 @@ for(let repetition=1;repetition<=repetitions;repetition++){
 report.finishedAt=new Date().toISOString();
 report.summary=summarize(report.results,selected.reduce((n,s)=>n+s[2].length,0)*repetitions);
 report.fullSuite=!focus;
+report.coveredProductIds=[...new Set(report.results.flatMap(r=>r.productIds??[]))].sort();
+report.byScenario=Object.fromEntries(selected.map(([id,,inputs])=>[id,summarize(report.results.filter(r=>r.scenario===id),inputs.length*repetitions)]));
 const baseline=JSON.parse(fs.readFileSync(new URL('../../docs/qa/navigation-cloud-text-results.json',import.meta.url)));
+const baselineIds=new Set(baseline.results.map(r=>r.id));
+const baselineRows=report.results.filter(r=>baselineIds.has(r.id));
+const addedRows=report.results.filter(r=>!baselineIds.has(r.id));
+report.groups={baseline:summarize(baselineRows,selected.reduce((n,[id,,inputs])=>n+(baselineIds.has(`${id}-1`)?inputs.length:0),0)*repetitions),added:summarize(addedRows,selected.reduce((n,[id,,inputs])=>n+(!baselineIds.has(`${id}-1`)?inputs.length:0),0)*repetitions)};
+if(report.fullSuite && (!report.groups.baseline.passed || !report.groups.added.passed)) report.summary.passed=false;
 report.comparison=report.results.map(r=>{const old=baseline.results.find(b=>b.id===r.id);return{id:r.id,repetition:r.repetition,baselineMs:old?.elapsedMs??null,elapsedMs:r.elapsedMs??null,deltaMs:old&&r.elapsedMs!=null?r.elapsedMs-old.elapsedMs:null,baselineVerdict:old?evaluate(old,baseline.results).verdict:null,verdict:r.verdict};});
 fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify({output:output.pathname,fullSuite:report.fullSuite,summary:report.summary}));

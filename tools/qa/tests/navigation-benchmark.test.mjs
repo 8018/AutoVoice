@@ -22,3 +22,13 @@ test('missing requests, errors and slow runs fail the gate',()=>{
  assert.equal(summarize([{verdict:'pass',elapsedMs:6000}],1).passed,false);
  assert.equal(evaluate({id:'name-1',error:'timeout'},[]).verdict,'fail');
 });
+test('expanded terminal expression uses the same exact terminal contract',()=>{
+ const r={id:'entrance_alias-1',type:'reply',text:'找到机场',intent:{intent:'choose_destination',slots:{selectionId:{value:'s'},candidates:{value:JSON.stringify([{poiname:'上海虹桥机场',lat:31.19,lon:121.33}])}}}};
+ assert.equal(evaluate(r,[]).verdict,'fail');
+ r.intent.slots.candidates.value=JSON.stringify([{poiname:'上海虹桥国际机场2号航站楼',lat:31.19,lon:121.33}]);
+ assert.equal(evaluate(r,[]).verdict,'pass');
+});
+test('suite expansion preserves every original input and ordering',async()=>{
+ const {scenarios}=await import('../navigation-scenarios.mjs');
+ for(const old of original.results){const scenario=scenarios.find(s=>s[0]===old.scenario);assert.ok(scenario,old.id);const turn=Number(old.id.split('-').at(-1))-1;assert.equal(scenario[2][turn],old.input,old.id);}
+});

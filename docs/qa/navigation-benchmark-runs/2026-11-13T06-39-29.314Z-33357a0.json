@@ -1,0 +1,324 @@
+{
+  "suiteVersion": 2,
+  "suiteFingerprint": "2636bd431abddb6c65a48fde4b38b5ef38b7cbf517dc9d8c1498859780e40f1c",
+  "sourceDirty": true,
+  "revision": "33357a0307591285e96df51edaf90a0a2cd16af0",
+  "deployedRelease": "33357a0307591285e96df51edaf90a0a2cd16af0",
+  "repetitions": 1,
+  "focus": [
+    "entrance_alias",
+    "airport_city",
+    "brand_named",
+    "reference_named"
+  ],
+  "startedAt": "2026-11-13T06:39:29.332Z",
+  "environment": "dev",
+  "endpoint": "ws://8.153.153.77:8090/ws",
+  "protocol": "1.2",
+  "measurement": "Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.",
+  "results": [
+    {
+      "id": "entrance_alias-1",
+      "scenario": "entrance_alias",
+      "productIds": [
+        "A04"
+      ],
+      "expected": "2号航站楼写法仍精确命中T2",
+      "input": "去上海虹桥机场2号航站楼",
+      "elapsedMs": 1555,
+      "firstResponseMs": 1554,
+      "type": "reply",
+      "text": "第1个，上海虹桥国际机场2号航站楼，申达一路1号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "虹桥机场2号航站楼"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海虹桥国际机场2号航站楼\",\"lat\":31.19418,\"lon\":121.328711,\"address\":\"申达一路1号\",\"candidateId\":\"de5c827b-21b2-4ef0-8218-a366e25d3ad3\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "cdcc6509-4c2f-4782-8c8d-5f12d2246121"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"虹桥机场2号航站楼\",\"city\":\"上海\",\"entrance\":\"T2\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "airport_city-1",
+      "scenario": "airport_city",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "带市后缀仍命中三亚凤凰机场",
+      "input": "导航到三亚市凤凰国际机场",
+      "elapsedMs": 940,
+      "firstResponseMs": 939,
+      "type": "reply",
+      "text": "第1个，三亚凤凰国际机场，机场路。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "凤凰国际机场"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"三亚凤凰国际机场\",\"lat\":18.30341,\"lon\":109.414038,\"address\":\"机场路\",\"candidateId\":\"2926ffd8-6448-445b-b7cd-ac524091bd6a\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "b63ed54d-b4cb-464a-af3c-1899f4ae1ef0"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"凤凰国际机场\",\"city\":\"三亚市\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "brand_named-1",
+      "scenario": "brand_named",
+      "productIds": [
+        "A08"
+      ],
+      "expected": "品牌与咖啡店类别组合均保留",
+      "input": "找北京的星巴克咖啡店",
+      "elapsedMs": 2363,
+      "firstResponseMs": 2362,
+      "type": "reply",
+      "text": "第1个，星巴克(北京太古里臻选旗舰店)，北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013，高德名称含“星巴克”，地图分类为“咖啡厅”；第2个，星巴克(新闻大厦店)，建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)，高德名称含“星巴克”，地图分类为“咖啡厅”；第3个，星巴克(北京凯恒店)，北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)，高德名称含“星巴克”，地图分类为“咖啡厅”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "星巴克"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"星巴克(北京太古里臻选旗舰店)\",\"lat\":39.934478,\"lon\":116.454755,\"address\":\"北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京太古里臻选旗舰店)\",\"retrievedAt\":\"2026-11-13T06:39:34.660568301Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T06:39:34.660568301Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"edd7102f-25a8-4799-a5ef-357baf8f8d09\"},{\"poiname\":\"星巴克(新闻大厦店)\",\"lat\":39.907462,\"lon\":116.421919,\"address\":\"建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(新闻大厦店)\",\"retrievedAt\":\"2026-11-13T06:39:35.039632403Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T06:39:35.039632403Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"7693c289-4a5a-40ac-b4b1-ead2ca350e12\"},{\"poiname\":\"星巴克(北京凯恒店)\",\"lat\":39.92389,\"lon\":116.43271,\"address\":\"北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京凯恒店)\",\"retrievedAt\":\"2026-11-13T06:39:35.450568644Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T06:39:35.450568644Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"4804be04-0ff6-4ce0-b9a5-be14129c8ef3\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "5490879b-9979-474f-8e25-661f27c0ae07"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"星巴克\",\"city\":\"北京\",\"constraints\":[{\"brand\":\"星巴克\",\"category\":\"咖啡厅\"}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "reference_named-1",
+      "scenario": "reference_named",
+      "productIds": [
+        "A06",
+        "H01"
+      ],
+      "expected": "完整市名和参考点仍能查周边充电站",
+      "input": "查找北京市北京南站周边的充电站",
+      "elapsedMs": 2633,
+      "firstResponseMs": 2633,
+      "type": "reply",
+      "text": "充电桩空闲状态未知。第1个，北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)，北京南站立体停车场；第2个，壳牌汽车充电站(静态交通北京南站充电站交流区)，开阳路立体停车楼二层；第3个，小桔充电站(北京壳牌南站立体停车楼)，开阳路与开阳里三街交叉口北60米。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "充电站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)\",\"lat\":39.866047,\"lon\":116.374664,\"address\":\"北京南站立体停车场\",\"candidateId\":\"62e43ac4-6e18-4abe-ac32-06d1d06ea182\"},{\"poiname\":\"壳牌汽车充电站(静态交通北京南站充电站交流区)\",\"lat\":39.866023,\"lon\":116.37463,\"address\":\"开阳路立体停车楼二层\",\"candidateId\":\"a500f120-5ef4-4db0-9221-e2e167a57930\"},{\"poiname\":\"小桔充电站(北京壳牌南站立体停车楼)\",\"lat\":39.866044,\"lon\":116.374305,\"address\":\"开阳路与开阳里三街交叉口北60米\",\"candidateId\":\"4f0e418c-9e8a-45e5-aadf-55dfe8bd1982\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "bced06fa-bfe4-4cf9-a110-66509349c390"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"充电站\",\"city\":\"北京市\",\"reference\":\"北京南站\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-13T06:39:37.314Z",
+  "summary": {
+    "requests": 4,
+    "expected": 4,
+    "pass": 4,
+    "boundary": 0,
+    "fail": 0,
+    "meanMs": 1873,
+    "p95Ms": 2633,
+    "maxMs": 2633,
+    "complete": true,
+    "performancePassed": true,
+    "passed": true
+  },
+  "fullSuite": false,
+  "coveredProductIds": [
+    "A03",
+    "A04",
+    "A06",
+    "A08",
+    "H01"
+  ],
+  "byScenario": {
+    "entrance_alias": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1555,
+      "p95Ms": 1555,
+      "maxMs": 1555,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "airport_city": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 940,
+      "p95Ms": 940,
+      "maxMs": 940,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "brand_named": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2363,
+      "p95Ms": 2363,
+      "maxMs": 2363,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "reference_named": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2633,
+      "p95Ms": 2633,
+      "maxMs": 2633,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    }
+  },
+  "groups": {
+    "baseline": {
+      "requests": 0,
+      "expected": 0,
+      "pass": 0,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": null,
+      "p95Ms": null,
+      "maxMs": null,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "added": {
+      "requests": 4,
+      "expected": 4,
+      "pass": 4,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1873,
+      "p95Ms": 2633,
+      "maxMs": 2633,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    }
+  },
+  "comparison": [
+    {
+      "id": "entrance_alias-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1555,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "airport_city-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 940,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "brand_named-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2363,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "reference_named-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2633,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    }
+  ]
+}

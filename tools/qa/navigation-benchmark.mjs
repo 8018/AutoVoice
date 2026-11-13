@@ -1,3 +1,10 @@
+export const productCoverage = {
+ entrance_alias:['A04'], airport_city:['A03'], brand_named:['A08'], reference_named:['A06','H01'],
+ name:['A01','B01'], city:['A03'], entrance:['A04'], numeric_city:['A03'], brand:['A08'],
+ opening:['A08','I01'], charging:['A06','H01'], energy:['H03','I01'], trip:['D02','D03'],
+ home:['C01','I01'], live_eta:['F01','I01'], readonly:['D07'], negative:['B02','B08'],
+ correction:['B04'], next_batch:['B05'], cancel:['B07','I03'],
+};
 // Semantic gate for the fixed cloud-text suite; no live credentials needed.
 export function candidates(row) {
   try { const a=JSON.parse(row.intent?.slots?.candidates?.value??'[]');return Array.isArray(a)?a:[]; } catch {return [];}
@@ -8,7 +15,8 @@ const inBox=(p,b)=>Number.isFinite(p.lat)&&Number.isFinite(p.lon)&&p.lat>=b[0]&&
 const key=p=>`${p.poiname}|${Number(p.lat).toFixed(5)}|${Number(p.lon).toFixed(5)}`;
 export function evaluate(row,history=[]) {
  const errors=[]; const require=(ok,note)=>{if(!ok)errors.push(note)};
- const id=row.id; const action=row.intent?.intent;const text=row.text??'';
+ const aliases={'entrance_alias-1':'entrance-1','airport_city-1':'numeric_city-1','brand_named-1':'brand-1','reference_named-1':'charging-1'};
+ const id=aliases[row.id]??row.id; const action=row.intent?.intent;const text=row.text??'';
  require(!row.error&&row.type==='reply','未取得正常最终回复');
  const previous=(id)=>history.findLast(r=>r.id===id);
  function choices(city,pattern){const a=candidates(row);require(action==='choose_destination','应返回候选而非拒绝或直接执行');require(a.length>0&&a.length<=3,'候选数量须为1–3');require(a.every(p=>inBox(p,boxes[city])),'候选坐标必须有效且符合城市范围');if(pattern)require(a.some(p=>pattern.test(p.poiname??'')),'候选未包含指定目标');require(Boolean(slot(row,'selectionId')),'缺少候选任务身份');return a;}
