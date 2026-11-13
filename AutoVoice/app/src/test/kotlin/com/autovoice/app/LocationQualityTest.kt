@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class LocationQualityTest {
-    @Test fun `saving an address requires a more recent and accurate fix`() {
+    @Test fun `route origins and saved addresses require a recent precise fix`() {
         assertTrue(LocationQuality.usableForSavedAddress(30_000, 50f))
         assertFalse(LocationQuality.usableForSavedAddress(30_001, 5f))
         assertFalse(LocationQuality.usableForSavedAddress(1_000, 51f))

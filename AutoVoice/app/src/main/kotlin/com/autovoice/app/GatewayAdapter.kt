@@ -15,6 +15,9 @@ import com.autovoice.gatewayclient.GatewayClientFactory
 import com.autovoice.gatewayclient.GatewayConnectionPolicy
 import com.autovoice.gatewayclient.GatewayException
 import com.autovoice.gatewayclient.GatewayPayloadParser
+import com.autovoice.gatewayclient.NavigationRouteCoordinate
+import com.autovoice.gatewayclient.NavigationRoutePreviewResult
+import com.autovoice.gatewayclient.previewNavigationRoutes
 import com.autovoice.messaging.MessageListener
 import com.autovoice.voicecore.GatewayMessage
 import com.autovoice.voicecore.AudioReply
@@ -152,6 +155,18 @@ internal class GatewayCloudRunner(
 
     /** D05b:采用确认上行;ready 前忽略。 */
     fun sendNavigationSelectionStart(context: NavigationTaskContextRef) = navigationChannel.publish(context)
+
+    suspend fun previewNavigationRoutes(
+        operationId: String,
+        origin: NavigationRouteCoordinate?,
+        destination: NavigationRouteCoordinate,
+        waypoints: List<NavigationRouteCoordinate> = emptyList(),
+        preference: String = "DEFAULT",
+    ): NavigationRoutePreviewResult {
+        if (origin == null) return NavigationRoutePreviewResult(operationId, "ORIGIN_REQUIRED")
+        ensureReady()
+        return client.previewNavigationRoutes(operationId, origin, destination, waypoints, preference)
+    }
 
     private data class ReplyTextSnapshot(val text: String, val isFinal: Boolean)
 

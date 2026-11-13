@@ -186,6 +186,7 @@ class GatewayClientTest {
         var readyResumeToken: String? = null
 
         var readyCapabilities: List<String> = emptyList()
+        var onRoutePreview: (WebSocket, GatewayMessage) -> Unit = { _, _ -> }
 
         /** 服务端主动推送下行文本帧（error 等）。 */
         fun sendText(text: String) {
@@ -206,6 +207,7 @@ class GatewayClientTest {
                             "srv-sess-1", readyServerTime, readyResumeToken, readyCapabilities,
                         ))
                         "audio_end" -> onAudioEnd(webSocket, msg)
+                        "navigation_route_preview" -> onRoutePreview(webSocket, msg)
                         else -> Unit
                     }
                 }
@@ -860,6 +862,41 @@ class GatewayClientTest {
         } finally {
             client.disconnect()
             okHttp.dispatcher.executorService.shutdown()
+        }
+    }
+
+    @Test
+    fun `route preview keeps unknown estimates and ignores unrelated operations`() = runBlocking {
+        val gateway = FakeGateway()
+        gateway.readyCapabilities = listOf(NAVIGATION_ROUTE_PREVIEW_CAPABILITY)
+        val coordinates = """{"latitude":39.9,"longitude":116.4,"coordinateSystem":"GCJ02"}"""
+        gateway.onRoutePreview = { socket, _ ->
+            socket.send("""{"type":"navigation_route_preview_result","payload":{
+                "operationId":"old","status":"NO_ROUTE","routes":[],"waypoints":[]}}""")
+            socket.send("""{"type":"navigation_route_preview_result","payload":{
+                "operationId":"route-1","status":"OK","routeSetId":"preview-1","plannedAtMs":100,
+                "source":"AMAP_WEB","preference":"DEFAULT","origin":$coordinates,"destination":$coordinates,
+                "waypoints":[],"routes":[{"id":"preview-1:1","distanceMeters":3000,"tollYuan":null}]}}""")
+        }
+        gateway.start()
+        gateway.server.enqueue(gateway.upgrade())
+        val http = OkHttpClient()
+        val client = GatewayClient("ws://localhost:${gateway.server.port}/", okHttp = http)
+        try {
+            client.connect()
+            val destination = NavigationRouteCoordinate(39.9, 116.4, "GCJ02")
+            val origin = NavigationRouteCoordinate(39.8, 116.3, "WGS84")
+            assertEquals("ORIGIN_REQUIRED", client.previewNavigationRoutes("missing", null, destination).status)
+            val result = client.previewNavigationRoutes("route-1", origin, destination)
+            assertEquals("OK", result.status)
+            assertEquals(3000L, result.routes.single().distanceMeters)
+            assertNull(result.routes.single().durationSeconds)
+            assertNull(result.routes.single().tollYuan)
+            val request = gateway.frames.single { it.type == "navigation_route_preview" }.payload
+            assertEquals("srv-sess-1", request.get("sessionId").asString)
+            assertEquals("WGS84", request.getAsJsonObject("origin").get("coordinateSystem").asString)
+        } finally {
+            gateway.closeAll(client, http)
         }
     }
 

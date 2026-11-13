@@ -51,8 +51,9 @@ import com.autovoice.voicebusiness.navigation.SavedPlaceKind
 
 /** 语音交互首页。设置是二级页面，首页只展示真实状态与已有操作。 */
 @Composable
-fun VoiceScreen(
+internal fun VoiceScreen(
     state: UiState,
+    navigationRuntime: com.autovoice.app.navigation.NavigationRuntime,
     onModeChange: (DemoMode) -> Unit,
     onWeakNetworkChange: (Boolean) -> Unit,
     onSubmitText: (String) -> Boolean,
@@ -75,6 +76,10 @@ fun VoiceScreen(
             Text(state.capabilities.summary)
             ComponentHealthPanel(state.componentHealth, alwaysExpanded = true)
         }
+        return
+    }
+    if (state.navigationRuntime.showMap) {
+        EmbeddedNavigationMap(state.navigationRuntime, navigationRuntime)
         return
     }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
@@ -127,6 +132,13 @@ fun VoiceScreen(
                 onSubmit = onSubmitText,
             )
             NavigationStatus(state)
+            NavigationRuntimePanel(state.navigationRuntime, navigationRuntime)
+            val lastTrip = state.navigation.trip
+            if (lastTrip != null) {
+                TextButton(onClick = { navigationRuntime.previewTrip(lastTrip, state.navigation.destinationIsGps) }) {
+                    Text("预览到${lastTrip.destination.name}的路线")
+                }
+            }
             if (state.savedPlaces.resolving) Text("正在解析当前位置…", style = MaterialTheme.typography.bodySmall)
             state.savedPlaces.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             WakeGuidance(state)
@@ -143,6 +155,7 @@ fun VoiceScreen(
     if (draft != null && state.savedPlaces.edit == null) {
         NavigationDraftDialog(
             draft = draft,
+            embeddedEnabled = state.navigationRuntime.embeddedEnabled,
             candidates = state.navigationCandidates,
             onSelect = { onSelectDraftStop(draft.revision, it.candidateId) },
             onConfirm = { onConfirmDraft(draft.revision) },
@@ -303,6 +316,7 @@ private fun WakeGuidance(state: UiState) {
 @Composable
 private fun NavigationDraftDialog(
     draft: NavigationTripDraft,
+    embeddedEnabled: Boolean,
     candidates: List<NavigationCandidate>,
     onSelect: (NavigationCandidate) -> Unit,
     onConfirm: () -> Unit,
@@ -326,14 +340,17 @@ private fun NavigationDraftDialog(
                     candidates.forEachIndexed { i, candidate ->
                         TextButton(onClick = { onSelect(candidate) }) {
                             val address = candidate.address.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
-                            Text("${i + 1}. ${candidate.poiname}$address")
+                            val evidence = candidate.matchSummary.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+                            Text("${i + 1}. ${candidate.poiname}$address$evidence")
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            if (draft.isReady) Button(onClick = onConfirm) { Text("确认并打开高德") }
+            if (draft.isReady) Button(onClick = onConfirm) {
+                Text(if (draft.previewPreference != null || embeddedEnabled) "确认并查询路线" else "确认并打开高德")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("放弃行程") } },
     )
@@ -372,6 +389,9 @@ private fun NavigationCandidateDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                            if (candidate.matchSummary.isNotBlank()) {
+                                Text(candidate.matchSummary, style = MaterialTheme.typography.bodySmall)
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 TextButton(onClick = { onSave(candidate, SavedPlaceKind.HOME) }) { Text("设为家") }

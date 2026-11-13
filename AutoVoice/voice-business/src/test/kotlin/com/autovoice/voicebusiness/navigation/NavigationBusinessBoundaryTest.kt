@@ -10,6 +10,45 @@ import org.junit.jupiter.api.Test
 /** Domain behavior runs without Android, a gateway, or an App ViewModel. */
 class NavigationBusinessBoundaryTest {
     @Test
+    fun `selecting a preview candidate never falls back to opening a map`() {
+        val requested = mutableListOf<RoutePreference>()
+        var opens = 0
+        val manager = AppDialogueManager({ "i" }, {}, { opens++; true }, mapRequest = { _, id, _, preference ->
+            if (preference != null) requested += preference
+            NavigationActionResult(id, NavigationActionStatus.PENDING, "正在查询路线")
+        })
+        val command = Intent(
+            schemaVersion = "1.0",
+            domain = "navigation",
+            intent = "choose_destination",
+            slots = mapOf(
+                "routePreviewPreference" to SlotValue.StringValue("LESS_TOLLS"),
+                "selectionId" to SlotValue.StringValue("selection"),
+                "candidates" to SlotValue.StringValue(
+                    """[{"poiname":"机场","lat":30.31,"lon":104.44,"candidateId":"airport","matchSummary":"分类匹配"}]""",
+                ),
+            ),
+            confidence = 1.0,
+            source = "navigation.dialog",
+        )
+        assertTrue(manager.navigationExecutor.execute(command, "offer"))
+        val candidate = manager.navigationSession.snapshot.candidates.single()
+        assertEquals("分类匹配", candidate.matchSummary)
+        val wrongPurpose = navigate("机场", 30.31, 104.44).let { action ->
+            action.copy(slots = action.slots + mapOf(
+                "selectionId" to SlotValue.StringValue("selection"),
+                "candidateId" to SlotValue.StringValue("airport"),
+            ))
+        }
+        assertEquals(NavigationActionError.STALE_TASK,
+            manager.navigationExecutor.executeWithResult(wrongPurpose, "late").error)
+        assertEquals(NavigationActionStatus.PENDING, manager.selectCandidate(candidate, "choice")?.status)
+        assertEquals(listOf(RoutePreference.LESS_TOLLS), requested)
+        assertEquals(0, opens)
+        assertEquals(NavigationHandoff.NONE, manager.navigationSession.snapshot.handoff)
+    }
+
+    @Test
     fun `single destination is opened and handoff is recorded`() {
         val opened = mutableListOf<String>()
         val executor = NavigationExecutor(opener = { uri -> opened += uri; true })

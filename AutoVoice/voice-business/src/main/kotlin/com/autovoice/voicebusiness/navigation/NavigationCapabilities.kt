@@ -7,11 +7,14 @@ class NavigationCapabilities internal constructor(operations: Set<String>) {
     fun supports(operation: String): Boolean = operation in supported
 
     companion object {
-        internal val URI_HANDOFF = NavigationCapabilities(setOf(
+        internal fun forExecutor(preview: Boolean) = NavigationCapabilities(URI_OPERATIONS +
+            if (preview) setOf(NavigationExecutor.INTENT_PREVIEW_ROUTES) else emptySet())
+
+        private val URI_OPERATIONS = setOf(
             NavigationExecutor.INTENT_NAVIGATE,
             NavigationExecutor.INTENT_DRAFT_TRIP,
             NavigationExecutor.INTENT_CHOOSE_DESTINATION,
             NavigationExecutor.INTENT_CANCEL_NAVIGATION,
-        ))
+        )
     }
 }

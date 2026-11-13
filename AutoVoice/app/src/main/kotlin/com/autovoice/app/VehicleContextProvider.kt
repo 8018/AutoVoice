@@ -119,6 +119,9 @@ class PhoneVehicleContextProvider(
 
     fun savedAddressPosition(): VehiclePosition? = latestUsablePosition(forSavedAddress = true)
 
+    /** Routing and saved addresses use the same precise, recent device fix. */
+    fun routeOriginPosition(): VehiclePosition? = savedAddressPosition()
+
     private fun latestUsablePosition(forSavedAddress: Boolean = false): VehiclePosition? {
         val granted = context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             context.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED

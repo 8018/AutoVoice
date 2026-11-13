@@ -30,6 +30,7 @@ data class NavigationSelectionContext(
     val selectedCandidateId: String? = null,
     val requiresTaskIdentity: Boolean = false,
     val draft: NavigationTripDraft? = null,
+    val routePreviewPreference: RoutePreference? = null,
 )
 
 data class NavigationSnapshot(
@@ -41,10 +42,12 @@ data class NavigationSnapshot(
     val candidates: List<NavigationExecutor.NavigationCandidate> = emptyList(),
     val expectation: InputExpectation? = null,
     val trip: NavigationTrip? = null,
+    val destinationIsGps: Boolean = false,
     val handoff: NavigationHandoff = NavigationHandoff.NONE,
     val lastTaskEnd: TaskEnd? = null,
     val requiresTaskIdentity: Boolean = false,
     val draft: NavigationTripDraft? = null,
+    val routePreviewPreference: RoutePreference? = null,
 )
 
 /** Navigation adapter for the generic multi-turn task coordinator. */
@@ -53,6 +56,7 @@ class NavigationSession(
     private val publish: (NavigationSnapshot) -> Unit = {},
 ) {
     private var trip: NavigationTrip? = null
+    private var destinationIsGps = false
     private var handoff = NavigationHandoff.NONE
     private var handoffGeneration = 0L
     private var handoffTask: TaskIdentity? = null
@@ -67,6 +71,7 @@ class NavigationSession(
         selectionId: String? = null,
         originTurnId: String,
         requiresTaskIdentity: Boolean = false,
+        routePreviewPreference: RoutePreference? = null,
     ) {
         require(candidates.isNotEmpty() && originTurnId.isNotBlank())
         handoffGeneration++
@@ -75,13 +80,15 @@ class NavigationSession(
             domain = DOMAIN,
             originTurnId = originTurnId,
             expectation = NAVIGATION_EXPECTATION,
-            context = NavigationSelectionContext(selectionId, candidates.toList(), requiresTaskIdentity = requiresTaskIdentity),
+            context = NavigationSelectionContext(selectionId, candidates.toList(), requiresTaskIdentity = requiresTaskIdentity, routePreviewPreference = routePreviewPreference),
         )
     }
 
     @Synchronized
-    internal fun offerDraft(stops: List<NavigationDraftStop>, turnId: String): NavigationTripDraft? {
-        offerDraft(NavigationTripDraft(stops.toList(), 0), interactionIdProvider(turnId), turnId)
+    internal fun offerDraft(
+        stops: List<NavigationDraftStop>, turnId: String, preference: RoutePreference? = null,
+    ): NavigationTripDraft? {
+        offerDraft(NavigationTripDraft(stops.toList(), 0, preference), interactionIdProvider(turnId), turnId)
         return snapshot.draft
     }
 
@@ -119,7 +126,7 @@ class NavigationSession(
             domain = DOMAIN,
             originTurnId = turnId,
             expectation = NAVIGATION_EXPECTATION,
-            context = NavigationSelectionContext(selectionId = null, candidates = choices, draft = draft),
+            context = NavigationSelectionContext(selectionId = null, candidates = choices, draft = draft, routePreviewPreference = draft.previewPreference),
         )
     }
 
@@ -180,9 +187,15 @@ class NavigationSession(
         }
     }
 
-    @Synchronized fun beginHandoff(value: NavigationTrip): Long {
+    @Synchronized internal fun finishClaimed(accepted: Boolean) {
+        val task = tasks.active?.takeIf { it.status == TaskStatus.EXECUTING } ?: return
+        tasks.finish(task.identity, if (accepted) TaskEndReason.COMPLETED else TaskEndReason.FAILED)
+    }
+
+    @Synchronized fun beginHandoff(value: NavigationTrip, gps: Boolean = false): Long {
         handoffTask = tasks.active?.takeIf { it.status == TaskStatus.EXECUTING }?.identity
         val generation = ++handoffGeneration
+        destinationIsGps = gps
         trip = value.copy(waypoints = value.waypoints.toList())
         handoff = NavigationHandoff.OPENING
         publishSnapshot(tasks.active, null)
@@ -224,10 +237,12 @@ class NavigationSession(
             candidates = waiting?.context?.candidates ?: emptyList(),
             expectation = waiting?.expectation,
             trip = trip,
+            destinationIsGps = destinationIsGps,
             handoff = handoff,
             lastTaskEnd = lastTaskEnd,
             requiresTaskIdentity = task?.context?.requiresTaskIdentity ?: false,
             draft = waiting?.context?.draft?.copy(revision = waiting.identity.revision),
+            routePreviewPreference = waiting?.context?.routePreviewPreference,
         )
         publish(snapshot)
     }

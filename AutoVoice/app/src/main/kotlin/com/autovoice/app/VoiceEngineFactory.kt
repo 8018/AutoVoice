@@ -1,4 +1,6 @@
 package com.autovoice.app
+import com.autovoice.gatewayclient.NavigationRouteCoordinate
+import com.autovoice.gatewayclient.NavigationRoutePreviewResult
 import com.autovoice.voicebusiness.navigation.NavigationExecutor
 import com.autovoice.voicebusiness.navigation.NavigationTaskContextRef
 
@@ -75,6 +77,10 @@ internal object VoiceEngineFactory {
         vehicleContext: VehicleContextProvider = PhoneVehicleContextProvider(context),
         /** Business-side navigation selection acknowledgement binding; VoiceEngine never sees it. */
         bindNavigationAdoptionSender: ((NavigationTaskContextRef) -> Unit) -> Unit = {},
+        bindNavigationRoutePreview: (
+            suspend (String, NavigationRouteCoordinate?, NavigationRouteCoordinate, List<NavigationRouteCoordinate>, String) ->
+                NavigationRoutePreviewResult
+        ) -> Unit = {},
         onNavigationTransportReset: () -> Unit = { navigation?.abortPendingTask() },
         renderSink: RenderReferenceSink? = null,
         onSavedNavigationCommand: (String, String) -> String? = { _, _ -> null },
@@ -317,6 +323,7 @@ internal object VoiceEngineFactory {
             bindNavigationAdoptionSender { context ->
                 cloudRunner.sendNavigationSelectionStart(context)
             }
+            bindNavigationRoutePreview(cloudRunner::previewNavigationRoutes)
             return engine
         } catch (error: Throwable) {
             if (engineToClose != null) runCatching { engineToClose.close() }

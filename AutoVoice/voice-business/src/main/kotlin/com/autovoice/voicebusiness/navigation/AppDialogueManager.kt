@@ -11,6 +11,7 @@ class AppDialogueManager(
     private val onNavigation: (NavigationSnapshot) -> Unit,
     launchNavigation: (String) -> Boolean,
     savedPlace: (SavedPlaceKind) -> SavedNavigationPlace? = { null },
+    mapRequest: ((NavigationTrip, String, Boolean, RoutePreference?) -> NavigationActionResult?)? = null,
     private val applyChatMode: (Boolean) -> Boolean = { true },
 ) {
     private var sendContext: (NavigationTaskContextRef) -> Unit = {}
@@ -46,7 +47,7 @@ class AppDialogueManager(
         }
     }
     val navigationExecutor = NavigationExecutor(
-        session = navigationSession, savedPlace = savedPlace, opener = launchNavigation,
+        session = navigationSession, savedPlace = savedPlace, mapRequest = mapRequest, opener = launchNavigation,
     )
 
     fun bindNavigationContextSender(sender: (NavigationTaskContextRef) -> Unit) {
@@ -83,6 +84,7 @@ class AppDialogueManager(
                 "candidateId" to SlotValue.StringValue(candidate.candidateId),
             ),
             source = "ui.navigation_candidate",
+            preference = snapshot.routePreviewPreference,
         )
     }
 
@@ -142,17 +144,18 @@ class AppDialogueManager(
         slots: Map<String, SlotValue>,
         source: String,
         isGpsCoordinate: Boolean = false,
+        preference: RoutePreference? = null,
     ): NavigationActionResult = navigationExecutor.executeWithResult(
         Intent(
             schemaVersion = "1.0",
             domain = NavigationExecutor.DOMAIN_NAVIGATION,
-            intent = NavigationExecutor.INTENT_NAVIGATE,
+            intent = if (preference == null) NavigationExecutor.INTENT_NAVIGATE else NavigationExecutor.INTENT_PREVIEW_ROUTES,
             slots = slots + mapOf(
                 "navigationOperation" to SlotValue.StringValue(operation),
                 NavigationExecutor.SLOT_POINAME to SlotValue.StringValue(target.name),
                 NavigationExecutor.SLOT_LAT to SlotValue.Number(target.latitude),
                 NavigationExecutor.SLOT_LON to SlotValue.Number(target.longitude),
-            ),
+            ) + if (preference == null) emptyMap() else mapOf("routePreviewPreference" to SlotValue.StringValue(preference.name)),
             confidence = 1.0,
             source = source,
         ),

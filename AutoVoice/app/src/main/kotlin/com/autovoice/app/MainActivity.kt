@@ -68,6 +68,8 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 val permissions = buildList {
                     add(Manifest.permission.RECORD_AUDIO)
+                    // Android 12+ requires the coarse/fine pair in the same request.
+                    add(Manifest.permission.ACCESS_COARSE_LOCATION)
                     add(Manifest.permission.ACCESS_FINE_LOCATION)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         add(Manifest.permission.READ_MEDIA_IMAGES)
@@ -89,6 +91,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     VoiceScreen(
                         state = state,
+                        navigationRuntime = viewModel.navigationRuntime,
                         onModeChange = viewModel::setMode,
                         onWeakNetworkChange = viewModel::setWeakNetwork,
                         onSubmitText = viewModel::submitText,

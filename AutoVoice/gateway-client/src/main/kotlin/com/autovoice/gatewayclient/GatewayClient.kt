@@ -228,6 +228,7 @@ class GatewayClient(
                 "payload" to buildMap {
                     put("client", CLIENT_NAME)
                     put("protocolVersion", PROTOCOL_VERSION)
+                    put("capabilities", listOf(NAVIGATION_ROUTE_PREVIEW_CAPABILITY))
                     // 仅回带服务端此前签发的 ID；首次连接仍不由客户端预生成。
                     serverSessionId?.let { put("sessionId", it) }
                     // D02b：会话恢复凭据随 sessionId 一同回带（凭据绝不进日志/遥测）

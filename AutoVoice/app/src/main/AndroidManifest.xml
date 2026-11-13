@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 
     <!-- 录音（Task 19 运行时申请）；INTERNET 给 Task 20 的网关 WebSocket 用，现在无害 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -21,8 +28,7 @@
          READ_MEDIA_*，demo 的 XXPermissions 申请照片+视频，这里等价声明 + 运行时请求） -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <!-- 定位（高德导航 §4.2）：导航启动参数/附近搜索上下文；运行时申请（Manifest 编译期
-         不需要 ACCESS_COARSE_LOCATION 也能用 FINE，但语义上二者并列声明，精确/粗略随授权粒度） -->
+    <!-- 定位用于导航和附近搜索。Android 12+ 同时声明并请求粗略/精确权限，尊重用户选择。 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
@@ -34,6 +40,12 @@
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="${usesCleartextTraffic}"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- This class exists only when the optional AMap Navigation SDK is included. -->
+        <service
+            android:name="com.amap.api.location.APSService"
+            android:enabled="${amapLocationServiceEnabled}"
+            android:exported="false"
+            tools:ignore="MissingClass" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

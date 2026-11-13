@@ -2,7 +2,9 @@
 
 2026-11-13，适用范围为当前 AutoVoice Android 应用及服务端。仓库结果基于代码走查和已有测试证据。供应方能力基于高德官方接口文档。本次未连接开发服务、读取凭据、安装 SDK 或执行真机导航。
 
-## 仓库已接入
+本页保留首次审计时的能力边界。后续已接入 Web 路线查询及选配 Android SDK，最新证据见[路线服务报告](navigation-route-service-report.md)、[地图运行报告](navigation-map-runtime-report.md)和[逐项交付状态](navigation-delivery-status.md)。
+
+## 首次审计时的仓库
 
 | 边界 | 当前代码路径 | 证据和范围 |
 | --- | --- | --- |

@@ -23,9 +23,10 @@ class NavigationExecutor(
     private val onCandidates: (List<NavigationCandidate>) -> Unit = {},
     val session: NavigationSession = NavigationSession(),
     private val savedPlace: (SavedPlaceKind) -> SavedNavigationPlace? = { null },
+    private val mapRequest: ((NavigationTrip, String, Boolean, RoutePreference?) -> NavigationActionResult?)? = null,
     private val opener: (String) -> Boolean,
 ) {
-    val capabilities: NavigationCapabilities = NavigationCapabilities.URI_HANDOFF
+    val capabilities: NavigationCapabilities = NavigationCapabilities.forExecutor(mapRequest != null)
     private val dialoguePolicy = NavigationDialoguePolicy()
 
     fun abortPendingTask() = session.abortSelection()
@@ -55,6 +56,10 @@ class NavigationExecutor(
         val stale = NavigationActionResult(
             operationId, NavigationActionStatus.FAILED, "", NavigationActionError.STALE_TASK,
         )
+        val preferenceSlot = intent.slots["routePreviewPreference"]
+        val preference = if (preferenceSlot != null) {
+            RoutePreference.entries.singleOrNull { it.name == preferenceSlot.value } ?: return invalid
+        } else null
         val operation = intent.slots["navigationOperation"]?.value as? String
         val current = session.snapshot
         if (current.requiresTaskIdentity && operation == null &&
@@ -63,7 +68,7 @@ class NavigationExecutor(
             if (operation !in setOf("start_new", "select", "cancel")) return invalid
             val taskId = intent.slots["taskId"]?.value as? String
             if (operation != "start_new" && taskId.isNullOrBlank()) return invalid
-            if (operation == "select" && intent.intent != INTENT_NAVIGATE) return invalid
+            if (operation == "select" && intent.intent !in setOf(INTENT_NAVIGATE, INTENT_PREVIEW_ROUTES)) return invalid
             // A response cannot act on a replacement task, nor revive an already ended task.
             if (taskId != null || current.taskId != null) {
                 if (taskId != current.taskId ||
@@ -74,7 +79,7 @@ class NavigationExecutor(
         }
         if (intent.intent == INTENT_DRAFT_TRIP) {
             val payload = intent.slots["stops"]?.value as? String ?: return invalid
-            return stageDraft(payload, turnId, operationId)
+            return stageDraft(payload, turnId, operationId, preference)
         }
         if (intent.intent == INTENT_CANCEL_NAVIGATION) {
             val selectionId = intent.slots["selectionId"]?.value as? String
@@ -98,7 +103,8 @@ class NavigationExecutor(
             val selectionId = intent.slots["selectionId"]?.value as? String
             if (!dialoguePolicy.acceptsOffer(selectionId, candidates)) return invalid
             session.offer(candidates, selectionId, turnId,
-                requiresTaskIdentity = (intent.slots["taskDialogVersion"]?.value as? Number)?.toInt() == 1)
+                requiresTaskIdentity = (intent.slots["taskDialogVersion"]?.value as? Number)?.toInt() == 1,
+                routePreviewPreference = preference)
             onCandidates(candidates)
             return NavigationActionResult(operationId, NavigationActionStatus.PENDING, "")
         }
@@ -118,6 +124,8 @@ class NavigationExecutor(
         val selectionId = slots["selectionId"]?.value as? String
         val candidateId = slots["candidateId"]?.value as? String
         val pending = current
+        if (intent.intent == INTENT_PREVIEW_ROUTES && preference == null) return invalid
+        if (intent.intent == INTENT_NAVIGATE && preference != null) return invalid
         if (operation == "start_new") {
             if (selectionId != null || candidateId != null) return invalid
             if (pending.taskId != null && !session.abortSelection(
@@ -131,6 +139,7 @@ class NavigationExecutor(
                 trip.destination,
                 waypoints.isNotEmpty(),
             ) ?: return stale
+            if (pending.routePreviewPreference != preference) return stale
             if (session.claimSelection(selectionId, candidateId, pending.identity()) != candidate) return stale
         } else if (pending.taskStatus == com.autovoice.voicebusiness.dialog.TaskStatus.WAITING_INPUT) {
             // A fully resolved navigation intent without candidate identity is a fresh request.
@@ -138,10 +147,10 @@ class NavigationExecutor(
         }
         if (trip.waypoints.isNotEmpty()) {
             val stops = (trip.waypoints + trip.destination).map { NavigationDraftStop(it.name, it) }
-            val draft = session.offerDraft(stops, turnId) ?: return stale
+            val draft = session.offerDraft(stops, turnId, preference) ?: return stale
             return draftPending(operationId, draft)
         }
-        return handoff(trip, operationId, isGpsCoordinate)
+        return executeTrip(trip, operationId, isGpsCoordinate, preference)
     }
 
     @Synchronized
@@ -158,10 +167,29 @@ class NavigationExecutor(
             }
         }
         if (session.claimDraft(revision) == null) return null
-        return handoff(trip, operationId)
+        return executeTrip(trip, operationId, false, current.previewPreference)
     }
 
-    private fun stageDraft(payload: String, turnId: String, operationId: String): NavigationActionResult {
+    private fun executeTrip(
+        trip: NavigationTrip, operationId: String, gps: Boolean, preference: RoutePreference?,
+    ): NavigationActionResult {
+        val result = mapRequest?.invoke(trip, operationId, gps, preference)
+        if (result != null) {
+            session.finishClaimed(result.status in setOf(NavigationActionStatus.PENDING, NavigationActionStatus.ACCEPTED,
+                NavigationActionStatus.SUCCEEDED))
+            return result
+        }
+        if (preference != null) {
+            session.finishClaimed(false)
+            return NavigationActionResult(operationId, NavigationActionStatus.UNSUPPORTED,
+                "当前无法预览路线", NavigationActionError.UNSUPPORTED)
+        }
+        return handoff(trip, operationId, gps)
+    }
+
+    private fun stageDraft(
+        payload: String, turnId: String, operationId: String, preference: RoutePreference?,
+    ): NavigationActionResult {
         val parsed = runCatching { com.google.gson.JsonParser.parseString(payload).asJsonArray }.getOrNull()
             ?: return draftFailure(operationId, "行程草稿无效，请重新说出所有地点")
         if (parsed.size() > NavigationTripDraft.MAX_STOPS) return tooManyStops(operationId)
@@ -199,7 +227,7 @@ class NavigationExecutor(
                 stops += NavigationDraftStop(query, resolved, choices)
             }
         }
-        val draft = session.offerDraft(stops, turnId)
+        val draft = session.offerDraft(stops, turnId, preference)
             ?: return NavigationActionResult(operationId, NavigationActionStatus.FAILED, "", NavigationActionError.STALE_TASK)
         return draftPending(operationId, draft)
     }
@@ -224,7 +252,7 @@ class NavigationExecutor(
         val waypoints = trip.waypoints.map { Waypoint(it.name, it.latitude, it.longitude) }
         val uri = if (waypoints.isEmpty()) buildNaviUri(target.name, target.latitude, target.longitude, isGpsCoordinate)
             else buildRoutePlanUri(target.name, target.latitude, target.longitude, waypoints)
-        val handoffGeneration = session.beginHandoff(trip)
+        val handoffGeneration = session.beginHandoff(trip, isGpsCoordinate)
         clearCandidatesBeforeOpen()
         val opened = runCatching { opener(uri) }.getOrDefault(false)
         session.finishHandoff(handoffGeneration, opened)
@@ -262,7 +290,9 @@ class NavigationExecutor(
                 val point = NavigationTarget(item["poiname"].asString, item["lat"].asDouble, item["lon"].asDouble)
                 NavigationCandidate(point.name, point.latitude, point.longitude,
                     item.get("address")?.takeUnless { it.isJsonNull }?.asString ?: "",
-                    item.get("candidateId")?.takeUnless { it.isJsonNull }?.asString ?: "")
+                    item.get("candidateId")?.takeUnless { it.isJsonNull }?.asString ?: "",
+                    item.get("matchSummary")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+                        ?.asString?.take(240).orEmpty())
             }
             // Reject the whole list on malformed items; filtering would change spoken ordinals.
         }.getOrNull()
@@ -305,11 +335,13 @@ class NavigationExecutor(
         val lon: Double,
         val address: String = "",
         val candidateId: String = "",
+        val matchSummary: String = "",
     )
 
     companion object {
         const val DOMAIN_NAVIGATION = "navigation"
         const val INTENT_NAVIGATE = "navigate"
+        const val INTENT_PREVIEW_ROUTES = "preview_routes"
         const val INTENT_DRAFT_TRIP = "draft_trip"
         const val INTENT_CHOOSE_DESTINATION = "choose_destination"
         const val INTENT_CANCEL_NAVIGATION = "cancel_navigation"

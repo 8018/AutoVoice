@@ -1,0 +1,93 @@
+{
+  "environment": "dev",
+  "serverCommit": "5097c6532547da8f226568177ec84dee6131062c",
+  "recordedAt": "2026-11-13T02:18:46.680639+00:00",
+  "scope": "真实dev网关与地图查询；公开地点；没有设备执行或驾驶验收",
+  "cases": [
+    {
+      "case": "new client negotiation",
+      "status": "passed",
+      "protocol": "1.2"
+    },
+    {
+      "case": "DEFAULT",
+      "status": "passed",
+      "routes": [
+        {
+          "distanceMeters": 3219,
+          "durationSeconds": 1130,
+          "tollYuan": 0
+        },
+        {
+          "distanceMeters": 3417,
+          "durationSeconds": 1051,
+          "tollYuan": 0
+        },
+        {
+          "distanceMeters": 3442,
+          "durationSeconds": 1185,
+          "tollYuan": 0
+        }
+      ]
+    },
+    {
+      "case": "AVOID_HIGHWAYS",
+      "status": "passed",
+      "routes": [
+        {
+          "distanceMeters": 3219,
+          "durationSeconds": 1130,
+          "tollYuan": 0
+        },
+        {
+          "distanceMeters": 3417,
+          "durationSeconds": 1051,
+          "tollYuan": 0
+        },
+        {
+          "distanceMeters": 3442,
+          "durationSeconds": 1185,
+          "tollYuan": 0
+        }
+      ]
+    },
+    {
+      "case": "missing origin rejected",
+      "status": "passed"
+    },
+    {
+      "case": "explicit read-only destination query",
+      "status": "passed",
+      "intent": "choose_destination",
+      "text": "第1个，北京南站，永外大街车站路12号；第2个，北京南站(地铁站)，14号线;4号线/大兴线；第3个，北海南站(公交站)，5路;5路加车德胜门区间。请说第几个或具体地址名称。"
+    },
+    {
+      "case": "selection stays read-only",
+      "status": "passed",
+      "intent": "preview_routes"
+    },
+    {
+      "case": "new client negotiation",
+      "status": "passed",
+      "protocol": "1.2"
+    },
+    {
+      "case": "ordered trip draft",
+      "status": "passed",
+      "intent": "draft_trip",
+      "text": "请查看行程草稿"
+    },
+    {
+      "case": "opening condition unknown",
+      "status": "passed",
+      "intent": null,
+      "text": "地图无法核验“当前营业”。请补充地点名称，或说明可以放宽哪些条件。"
+    },
+    {
+      "case": "charging data missing",
+      "status": "passed",
+      "intent": null,
+      "text": "暂时缺少可核验的行驶路线、带采样时间的车辆荷电状态、车辆与充电桩兼容数据以及经验证的能耗，无法规划这次补能。"
+    }
+  ]
+}

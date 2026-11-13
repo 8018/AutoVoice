@@ -18,6 +18,38 @@ fun quoted(value: String): String = "\"" + value.replace("\\", "\\\\").replace("
 fun gatewayAuthToken(): String = System.getenv("AUTOVOICE_GATEWAY_AUTH_TOKEN")
     ?: localProps.getProperty("gateway.authToken", "")
 
+// The navigation SDK is opt-in so the external-map build stays small and builds offline.
+val amapAndroidKey = System.getenv("AUTOVOICE_AMAP_ANDROID_KEY")
+    ?: localProps.getProperty("amap.androidKey", "")
+val amapLocalJar = providers.gradleProperty("amapNavigationSdkJar").orNull
+val amapEnabled = amapAndroidKey.isNotBlank() ||
+    providers.gradleProperty("includeAmapNavigationSdk").orNull == "true" || amapLocalJar != null
+val amapSdkArchive = configurations.create("amapNavigationSdkArchive") {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val amapBuildDir = layout.buildDirectory.dir("generated/amapNavigationSdk")
+if (amapEnabled) {
+    dependencies.add(
+        amapSdkArchive.name,
+        amapLocalJar?.let { files(it) }
+            ?: "com.amap.api:navi-3dmap-location-search:11.3.100_3dmap11.3.100_loc11.3.101_sea9.8.1",
+    )
+}
+val extractAmapSdk by tasks.registering(Sync::class) {
+    from({ zipTree(amapSdkArchive.singleFile) }) { include("assets/**", "lib/arm64-v8a/**") }
+    into(amapBuildDir)
+}
+if (amapEnabled) tasks.named("preBuild").configure { dependsOn(extractAmapSdk) }
+
+val amapSdkClasses by tasks.registering(Jar::class) {
+    from({ zipTree(amapSdkArchive.singleFile) }) {
+        exclude("assets/**", "lib/**", "META-INF/**", ".DS_Store")
+    }
+    archiveFileName.set("amap-navigation-classes.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("intermediates/amapNavigationSdk"))
+}
+
 // 本地 debug 默认属于开发环境；CI 可为 main 明确生成连接生产的验收 APK。
 // release 无条件绑定生产，不能被环境变量切到 dev。
 fun debugOnlineConfigAsset(): String =
@@ -44,6 +76,8 @@ android {
         buildConfigField("String", "XFYUN_API_SECRET", xfyunProp("xfyun.apiSecret"))
         // 接入令牌不进入配置资产；本地从 local.properties 注入，CI/发行从环境变量注入。
         buildConfigField("String", "GATEWAY_AUTH_TOKEN", quoted(gatewayAuthToken()))
+        buildConfigField("String", "AMAP_ANDROID_KEY", quoted(amapAndroidKey))
+        manifestPlaceholders["amapLocationServiceEnabled"] = amapAndroidKey.isNotBlank().toString()
 
     }
 
@@ -84,6 +118,14 @@ android {
         }
     }
 
+    sourceSets.getByName("main").apply {
+        java.srcDir(if (amapEnabled) "src/amap/kotlin" else "src/uriOnly/kotlin")
+        if (amapEnabled) {
+            assets.srcDir(extractAmapSdk.map { amapBuildDir.get().dir("assets") })
+            jniLibs.srcDir(extractAmapSdk.map { amapBuildDir.get().dir("lib") })
+        }
+    }
+
     sourceSets.getByName("test").resources.srcDir("../../shared/fixtures")
 
     testOptions {
@@ -119,6 +161,7 @@ tasks.matching { it.name == "packageOpenRelease" || it.name == "packageOpenRelea
 }
 
 dependencies {
+    if (amapEnabled) implementation(files(amapSdkClasses.flatMap { it.archiveFile }))
     implementation(project(":voice-core"))
     implementation(project(":voice-engine"))
     implementation(project(":gateway-client"))

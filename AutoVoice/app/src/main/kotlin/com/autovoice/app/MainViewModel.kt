@@ -24,6 +24,10 @@ import androidx.lifecycle.viewModelScope
 import com.autovoice.app.BuildConfig
 import com.autovoice.app.audio.AudioRecorder
 import com.autovoice.app.navigation.CurrentNavigationAddress
+import com.autovoice.app.navigation.NavigationRuntime
+import com.autovoice.app.navigation.NavigationRuntimeUi
+import com.autovoice.gatewayclient.NavigationRouteCoordinate
+import com.autovoice.voicebusiness.navigation.MapRoute
 import com.autovoice.app.navigation.LocalSavedNavigationPlaceStorage
 import com.autovoice.app.navigation.SavedNavigationCommandRouter
 import com.autovoice.app.channel.SelectedSpeechChannel
@@ -113,6 +117,7 @@ data class SavedPlacesUiState(
 data class UiState(
     val locationHint: String? = null,
     val navigation: NavigationSnapshot = NavigationSnapshot(),
+    val navigationRuntime: NavigationRuntimeUi = NavigationRuntimeUi(),
     val savedPlaces: SavedPlacesUiState = SavedPlacesUiState(),
     val sessionState: VoiceUiPhase = VoiceUiPhase.IDLE,
     val vehicle: VehicleUiState = VehicleUiState(),
@@ -210,7 +215,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 唯一麦克风使用权与音频流路由；不参与 ASR/NLU、仲裁或对话状态转换。 */
     private lateinit var recordingCoordinator: RecordingCoordinator
 
-    private val _uiState = MutableStateFlow(UiState(assemblyReady = false))
+    private val _uiState = MutableStateFlow(UiState(
+        assemblyReady = false, navigationRuntime = NavigationRuntimeUi(sdkConfigured = BuildConfig.AMAP_ANDROID_KEY.isNotBlank()),
+    ))
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val vehicleContext = PhoneVehicleContextProvider(getApplication()) { hint ->
         _uiState.update { it.copy(locationHint = hint) }
@@ -225,6 +232,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val draftTurnGate = ActionExecutionGateway()
     private val savedPlaceCommands = SavedNavigationCommandRouter(::handleSavedNavigationCommand)
     private var addressResolution: Job? = null
+
+    internal val navigationRuntime = NavigationRuntime(
+        application, BuildConfig.AMAP_ANDROID_KEY, viewModelScope,
+        position = { vehicleContext.routeOriginPosition()?.let { NavigationTarget("当前位置", it.latitude, it.longitude) } },
+        refreshPosition = { vehicleContext.refresh(forSavedAddress = true) },
+        publish = { runtime -> _uiState.update { it.copy(navigationRuntime = runtime) } },
+    )
+    private val navigationControlTurnGate = ActionExecutionGateway()
 
     private val dialogueManager = AppDialogueManager(
         interactionIdProvider = { turnId ->
@@ -243,6 +258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         },
         applyChatMode = { enabled -> recordingCoordinator.setChatMode(enabled) },
         savedPlace = savedPlaces::read,
+        mapRequest = navigationRuntime::handleTrip,
     )
 
     /**
@@ -484,6 +500,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         handleDraftCommand("draft:${UUID.randomUUID()}", text)?.let { reply ->
             engine.stopPlayback()
+            _uiState.update { it.copy(lastRecognizedText = text, lastReplyText = reply, textInputError = null) }
+            return true
+        }
+        handleRuntimeNavigationCommand("runtime:${UUID.randomUUID()}", text)?.let { reply ->
             _uiState.update { it.copy(lastRecognizedText = text, lastReplyText = reply, textInputError = null) }
             return true
         }
@@ -783,11 +803,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             renderSink = recorder,
             bindNavigationAdoptionSender = dialogueManager::bindNavigationContextSender,
             onNavigationTransportReset = dialogueManager::abortPendingTask,
+            bindNavigationRoutePreview = { request ->
+                navigationRuntime.previewRoutes = { plan ->
+                    fun NavigationTarget.coordinate(gps: Boolean = false) =
+                        NavigationRouteCoordinate(latitude, longitude, if (gps) "WGS84" else "GCJ02")
+                    val response = request(plan.id, plan.origin?.coordinate(gps = true),
+                        plan.trip.destination.coordinate(plan.destinationIsGps),
+                        plan.trip.waypoints.map { it.coordinate() }, plan.preference.name)
+                    require(response.operationId == plan.id)
+                    require(response.status in setOf("OK", "NO_ROUTE"))
+                    fun Long?.boundedInt() = this?.takeIf { it in 0L..Int.MAX_VALUE.toLong() }?.toInt()
+                    response.routes.map { MapRoute(it.id, it.distanceMeters.boundedInt(), it.durationSeconds.boundedInt(), it.tollYuan) }
+                }
+            },
             onSavedNavigationCommand = { turnId, text ->
-                handleDraftCommand(turnId, text) ?: savedPlaceCommands.handle(turnId, text)
+                handleDraftCommand(turnId, text) ?: handleRuntimeNavigationCommand(turnId, text) ?:
+                    savedPlaceCommands.handle(turnId, text)
             },
         )
         return engine
+    }
+
+    private fun handleRuntimeNavigationCommand(turnId: String, text: String): String? {
+        if (navigationControlTurnGate.hasClaimed(turnId)) return ""
+        val action = navigationRuntime.resolveVoiceCommand(text) ?: return null
+        var message = ""
+        navigationControlTurnGate.execute(turnId) { message = action(); true }
+        return message
     }
 
     fun dismissTravelGuide() {
@@ -833,6 +875,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         vehicleContext.stopRefresh()
         dialogueManager.close()
+        navigationRuntime.close()
         if (::recordingCoordinator.isInitialized) recordingCoordinator.close()
         else {
             if (::wakeObserver.isInitialized) wakeObserver.close()

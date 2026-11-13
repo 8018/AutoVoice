@@ -1,6 +1,6 @@
 # 导航产品逐项清单
 
-日期：2026 年 11 月 12 日。依据：[竞品调研与产品需求](navigation-product-research-prd.md)。实施安排见[分类实施计划](superpowers/plans/2026-11-12-navigation.md)。
+日期：2026 年 11 月 12 日。依据：[竞品调研与产品需求](navigation-product-research-prd.md)。实施安排见[分类实施计划](superpowers/plans/2026-11-12-navigation.md)。最新实际状态见[逐项交付状态](navigation-delivery-status.md)。
 
 本清单将原 N01—N16 拆成可单独验收的产品项，不表示全部已经实现或全部品牌均支持。话术为 AutoVoice 设计样例；品牌证据仍以调研文档为准。状态“完善”表示已有部分代码基础，尚待端到端验收；“新增”表示本轮规划新增能力；“依赖地图”表示必须先取得对应执行接口和真实回执。优先级与交付批次分开：同为 P1 的能力可以分批上线。
 

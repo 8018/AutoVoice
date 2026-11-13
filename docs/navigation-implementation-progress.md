@@ -31,3 +31,9 @@ Flash dev部署完成（用户批准后）：独立0e09865网关安装包已于2
 最终Android验证通过：test、lint、Iflytek/Open Debug测试/lint/assemble及androidUnitTestCoverage全部通过（CI stub配置）。XML合计1317项，0失败0错误0跳过；包含不同构建变体重复执行的用例。原生工具29项测试通过，两种CI APK布局检查通过。覆盖率：四个业务基础模块合计82.63%，voice-business79.98%，voice-engine96.00%，Iflytek app55.95%，Open app56.25%，均满足对应门槛。NDK真实编译此前已通过。CI APK不等于完整离线/开源语音资源可运行，真机地图及语音验收仍未完成。
 
 当前交付：导航任务1—4代码及任务5能力审计；M1未经过真机验收，不标记产品正式完成。任务6—9等待地图授权、实时回执、目标设备及车辆/充电数据。导航变更未部署，dev仅更新Flash。
+
+2026-11-13 第二批交付：用户要求继续自主完成，M1 checkpoint d09969e；路线服务及条件搜索提交5097c65已发布dev，生产未动。dev健康检查UP，旧网关备份在对应gateway release目录。新包保留Flash和管理页。
+最终端云验证：协议1.2+路线能力协商、真实3路线、偏好请求、WGS→GCJ官方转换、缺起点拒绝、只读目的地查询及选择、按序多站草稿、未知营业、缺补能数据均通过，详见docs/qa/navigation-dev-smoke-results.json。
+Android：真实高德SDK可选集成、运行状态身份/新鲜度、沿途搜索、专用播报及视图代码完成并以供应方artifact编译/打包。缺Android key，默认保留外部高德；行中提交/可靠停止确认/绕行/实车补能与说话人冲突仍有未满足条件，状态逐项见navigation-delivery-status.md，不宣称58项全部完成。
+最终全server636项通过；Android全CI后对最后语音口令和并发身份保护再跑两Debug及lint，当前合计1341项0失败。最后修复Android12粗略/精确定位同时申请，重新lint/真实Iflytek打包通过。真实APK约49.25MB，含既有私有运行库（资源与凭据不入库）；校验和9b9a74743b5b3d192853acf9d06bae243f8de9e13b8c77f97590daeeef2246f0。当前无连接设备，本机也没有模拟器可执行程序，尚未实际安装/驾驶验收。
+交付：docs/navigation-evening-validation.md、208条标记未执行的真机语料、明确设备序列号的安装脚本。等待Android授权及真实车辆数据；不新增收费服务或伪造供应方回执。

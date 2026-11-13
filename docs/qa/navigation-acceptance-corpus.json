@@ -1,0 +1,3749 @@
+{
+  "description": "208条人工端到端验收表达。未运行不计通过，自动单测结果另记。",
+  "cases": [
+    {
+      "caseId": "A01-01",
+      "productId": "A01",
+      "input": "导航到虹桥机场",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回真实地点与坐标",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A01-02",
+      "productId": "A01",
+      "input": "带我去上海博物馆",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回真实地点与坐标",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A01-03",
+      "productId": "A01",
+      "input": "去北京南站",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回真实地点与坐标",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A01-04",
+      "productId": "A01",
+      "input": "找苏州中心",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回真实地点与坐标",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A02-01",
+      "productId": "A02",
+      "input": "去上海市南京西路1266号",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "地址不足时澄清，不猜门牌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A02-02",
+      "productId": "A02",
+      "input": "导航到北京市复兴路9号",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "地址不足时澄清，不猜门牌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A02-03",
+      "productId": "A02",
+      "input": "去人民路",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "地址不足时澄清，不猜门牌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A02-04",
+      "productId": "A02",
+      "input": "去这个地址，门牌我不记得了",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "地址不足时澄清，不猜门牌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A03-01",
+      "productId": "A03",
+      "input": "找杭州的万象城",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "不因当前位置覆盖明确城市",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A03-02",
+      "productId": "A03",
+      "input": "不是北京，是上海",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "不因当前位置覆盖明确城市",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A03-03",
+      "productId": "A03",
+      "input": "只找三亚的酒店",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "不因当前位置覆盖明确城市",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A03-04",
+      "productId": "A03",
+      "input": "找郑州二七区的停车场",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "不因当前位置覆盖明确城市",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A04-01",
+      "productId": "A04",
+      "input": "去虹桥机场T2",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "匹配对应地点，找不到则说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A04-02",
+      "productId": "A04",
+      "input": "导航到首都机场三号航站楼",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "匹配对应地点，找不到则说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A04-03",
+      "productId": "A04",
+      "input": "找公园东门",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "匹配对应地点，找不到则说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A04-04",
+      "productId": "A04",
+      "input": "我要进站口，不是站前商场",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "匹配对应地点，找不到则说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A05-01",
+      "productId": "A05",
+      "input": "附近的停车场",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "依有效位置检索，无定位时引导补充",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A05-02",
+      "productId": "A05",
+      "input": "找离我近的便利店",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "依有效位置检索，无定位时引导补充",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A05-03",
+      "productId": "A05",
+      "input": "周边有咖啡店吗",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "依有效位置检索，无定位时引导补充",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A05-04",
+      "productId": "A05",
+      "input": "现在没有定位，帮我找附近医院",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "依有效位置检索，无定位时引导补充",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A06-01",
+      "productId": "A06",
+      "input": "人民广场附近的咖啡店",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "以人民广场为中心，不用车辆位置替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A06-02",
+      "productId": "A06",
+      "input": "北京南站旁边的酒店",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "以人民广场为中心，不用车辆位置替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A06-03",
+      "productId": "A06",
+      "input": "虹桥机场周边的停车场",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "以人民广场为中心，不用车辆位置替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A06-04",
+      "productId": "A06",
+      "input": "在学校附近找超市",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "以人民广场为中心，不用车辆位置替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A07-01",
+      "productId": "A07",
+      "input": "去那个有摩天轮的商场",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回可解释候选，不直接猜中后导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A07-02",
+      "productId": "A07",
+      "input": "找上次说的那个公园",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回可解释候选，不直接猜中后导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A07-03",
+      "productId": "A07",
+      "input": "我要去魔都那个很高的楼",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回可解释候选，不直接猜中后导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A07-04",
+      "productId": "A07",
+      "input": "那个名字记不清的购物中心在哪",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "返回可解释候选，不直接猜中后导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A08-01",
+      "productId": "A08",
+      "input": "找现在营业的餐厅",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "只按有来源的属性筛选，未知条件明确说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A08-02",
+      "productId": "A08",
+      "input": "找适合带孩子的饭店",
+      "environment": "quiet",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "只按有来源的属性筛选，未知条件明确说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A08-03",
+      "productId": "A08",
+      "input": "找有停车场的星巴克",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "只按有来源的属性筛选，未知条件明确说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "A08-04",
+      "productId": "A08",
+      "input": "找评分高而且现在有空位的充电站",
+      "environment": "cabin-noise",
+      "setup": "使用公开地点；分别验证位置可用、权限拒绝和地图搜索失败。",
+      "expected": "只按有来源的属性筛选，未知条件明确说明",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B01-01",
+      "productId": "B01",
+      "input": "有哪些结果",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "同屏最多 3 个，名称、地址、编号一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B01-02",
+      "productId": "B01",
+      "input": "把候选地点念一下",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "同屏最多 3 个，名称、地址、编号一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B01-03",
+      "productId": "B01",
+      "input": "告诉我这三个地点的地址",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "同屏最多 3 个，名称、地址、编号一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B01-04",
+      "productId": "B01",
+      "input": "再说一下可以选哪些地点",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "同屏最多 3 个，名称、地址、编号一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B02-01",
+      "productId": "B02",
+      "input": "第二个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "只选择当前有效列表第二项",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B02-02",
+      "productId": "B02",
+      "input": "选第一个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "只选择当前有效列表第二项",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B02-03",
+      "productId": "B02",
+      "input": "第三个吧",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "只选择当前有效列表第二项",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B02-04",
+      "productId": "B02",
+      "input": "第九个",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "只选择当前有效列表第二项",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B03-01",
+      "productId": "B03",
+      "input": "浦东的那个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "唯一匹配才选择，否则继续澄清",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B03-02",
+      "productId": "B03",
+      "input": "选人民广场那家",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "唯一匹配才选择，否则继续澄清",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B03-03",
+      "productId": "B03",
+      "input": "我要这个同名地点",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "唯一匹配才选择，否则继续澄清",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B03-04",
+      "productId": "B03",
+      "input": "选地址在南京西路的那个",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "唯一匹配才选择，否则继续澄清",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B04-01",
+      "productId": "B04",
+      "input": "不是北京，是上海",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "更新搜索条件并替换旧候选",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B04-02",
+      "productId": "B04",
+      "input": "只看朝阳区",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "更新搜索条件并替换旧候选",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B04-03",
+      "productId": "B04",
+      "input": "换成三河市",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "更新搜索条件并替换旧候选",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B04-04",
+      "productId": "B04",
+      "input": "在二七区找",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "更新搜索条件并替换旧候选",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B05-01",
+      "productId": "B05",
+      "input": "都不是，换一批",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "返回新候选，不循环播报原列表",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B05-02",
+      "productId": "B05",
+      "input": "还有别的吗",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "返回新候选，不循环播报原列表",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B05-03",
+      "productId": "B05",
+      "input": "再找一些",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "返回新候选，不循环播报原列表",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B05-04",
+      "productId": "B05",
+      "input": "这些都不对",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "返回新候选，不循环播报原列表",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B06-01",
+      "productId": "B06",
+      "input": "不去机场了，去车站",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "旧搜索失效，新目的地重新解析",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B06-02",
+      "productId": "B06",
+      "input": "改去博物馆",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "旧搜索失效，新目的地重新解析",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B06-03",
+      "productId": "B06",
+      "input": "算了，还是去医院",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "旧搜索失效，新目的地重新解析",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B06-04",
+      "productId": "B06",
+      "input": "我想换个目的地，去公园",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "旧搜索失效，新目的地重新解析",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B07-01",
+      "productId": "B07",
+      "input": "算了，不找了",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "结束搜索，不影响已交接行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B07-02",
+      "productId": "B07",
+      "input": "取消搜索",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "结束搜索，不影响已交接行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B07-03",
+      "productId": "B07",
+      "input": "关闭地点列表",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "结束搜索，不影响已交接行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B07-04",
+      "productId": "B07",
+      "input": "不去了",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "结束搜索，不影响已交接行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B08-01",
+      "productId": "B08",
+      "input": "不要去第二个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "不误触发选择或取消",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B08-02",
+      "productId": "B08",
+      "input": "别选第一个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "不误触发选择或取消",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B08-03",
+      "productId": "B08",
+      "input": "不是第三个",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "不误触发选择或取消",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B08-04",
+      "productId": "B08",
+      "input": "第二个不要",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "不误触发选择或取消",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B09-01",
+      "productId": "B09",
+      "input": "第二个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "要求重新查找，不沿用旧序号",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B09-02",
+      "productId": "B09",
+      "input": "选刚才那个",
+      "environment": "quiet",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "要求重新查找，不沿用旧序号",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B09-03",
+      "productId": "B09",
+      "input": "还是上次那个地址",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "要求重新查找，不沿用旧序号",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "B09-04",
+      "productId": "B09",
+      "input": "选择之前列表的第一项",
+      "environment": "cabin-noise",
+      "setup": "先建立当前候选列表；B09先替换列表或使其过期。",
+      "expected": "要求重新查找，不沿用旧序号",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C01-01",
+      "productId": "C01",
+      "input": "带我回家",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户家庭地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C01-02",
+      "productId": "C01",
+      "input": "回家",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户家庭地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C01-03",
+      "productId": "C01",
+      "input": "导航到家",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户家庭地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C01-04",
+      "productId": "C01",
+      "input": "去我家",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户家庭地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C02-01",
+      "productId": "C02",
+      "input": "去公司",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户公司地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C02-02",
+      "productId": "C02",
+      "input": "去上班",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户公司地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C02-03",
+      "productId": "C02",
+      "input": "导航到公司",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户公司地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C02-04",
+      "productId": "C02",
+      "input": "带我去我的公司",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "读取当前用户公司地址，未设则引导设置",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C03-01",
+      "productId": "C03",
+      "input": "把这里设为家",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "展示解析后的地址并确认保存",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C03-02",
+      "productId": "C03",
+      "input": "把当前位置保存为家庭地址",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "展示解析后的地址并确认保存",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C03-03",
+      "productId": "C03",
+      "input": "把这里设置为公司",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "展示解析后的地址并确认保存",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C03-04",
+      "productId": "C03",
+      "input": "把当前位置设成公司地址",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "展示解析后的地址并确认保存",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C04-01",
+      "productId": "C04",
+      "input": "家搬到这里了",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "覆盖前确认，取消时保留旧值",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C04-02",
+      "productId": "C04",
+      "input": "公司换到这里了",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "覆盖前确认，取消时保留旧值",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C04-03",
+      "productId": "C04",
+      "input": "把这里设置为我的家",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "覆盖前确认，取消时保留旧值",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C04-04",
+      "productId": "C04",
+      "input": "把当前位置保存为我的公司",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "覆盖前确认，取消时保留旧值",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C05-01",
+      "productId": "C05",
+      "input": "删除我的家庭地址",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "确认后删除，后续不可继续解析旧地址",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C05-02",
+      "productId": "C05",
+      "input": "清除公司地址",
+      "environment": "quiet",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "确认后删除，后续不可继续解析旧地址",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C05-03",
+      "productId": "C05",
+      "input": "删除家庭地址",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "确认后删除，后续不可继续解析旧地址",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "C05-04",
+      "productId": "C05",
+      "input": "清除我的公司地址",
+      "environment": "cabin-noise",
+      "setup": "按用例分别准备地址已设置/未设置、覆盖/删除确认与取消。",
+      "expected": "确认后删除，后续不可继续解析旧地址",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D01-01",
+      "productId": "D01",
+      "input": "就去这里",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只交接一次，话术与地图打开结果一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D01-02",
+      "productId": "D01",
+      "input": "导航到这个地点",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只交接一次，话术与地图打开结果一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D01-03",
+      "productId": "D01",
+      "input": "选好了，出发",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只交接一次，话术与地图打开结果一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D01-04",
+      "productId": "D01",
+      "input": "确认去第二个地点",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只交接一次，话术与地图打开结果一致",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D02-01",
+      "productId": "D02",
+      "input": "先去学校，再去机场",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "保留顺序，逐点消歧，最终地点为终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D02-02",
+      "productId": "D02",
+      "input": "先去便利店，再去公园，最后回家",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "保留顺序，逐点消歧，最终地点为终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D02-03",
+      "productId": "D02",
+      "input": "先去学校再去同名酒店",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "保留顺序，逐点消歧，最终地点为终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D02-04",
+      "productId": "D02",
+      "input": "先去学校，再去一个查不到的地方，最后去机场",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "保留顺序，逐点消歧，最终地点为终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D03-01",
+      "productId": "D03",
+      "input": "看看准备去哪几个地方",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示终点与途经点，并允许确认或放弃",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D03-02",
+      "productId": "D03",
+      "input": "查看行程草稿",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示终点与途经点，并允许确认或放弃",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D03-03",
+      "productId": "D03",
+      "input": "确认行程",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示终点与途经点，并允许确认或放弃",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D03-04",
+      "productId": "D03",
+      "input": "放弃草稿",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示终点与途经点，并允许确认或放弃",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D04-01",
+      "productId": "D04",
+      "input": "有几条路线",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示真实时间、里程和可用收费信息",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D04-02",
+      "productId": "D04",
+      "input": "看看其他路线",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示真实时间、里程和可用收费信息",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D04-03",
+      "productId": "D04",
+      "input": "给我预览路线",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示真实时间、里程和可用收费信息",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D04-04",
+      "productId": "D04",
+      "input": "每条路线要花多长时间",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "展示真实时间、里程和可用收费信息",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D05-01",
+      "productId": "D05",
+      "input": "走第二条路线",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "使用路线候选上下文，与地点序号隔离",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D05-02",
+      "productId": "D05",
+      "input": "选第一条路线",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "使用路线候选上下文，与地点序号隔离",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D05-03",
+      "productId": "D05",
+      "input": "换第三条路线",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "使用路线候选上下文，与地点序号隔离",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D05-04",
+      "productId": "D05",
+      "input": "选上一份路线列表的第二条",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "使用路线候选上下文，与地点序号隔离",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D06-01",
+      "productId": "D06",
+      "input": "不走高速",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "重新规划并说明无法满足的条件",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D06-02",
+      "productId": "D06",
+      "input": "少收费",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "重新规划并说明无法满足的条件",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D06-03",
+      "productId": "D06",
+      "input": "躲避拥堵",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "重新规划并说明无法满足的条件",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D06-04",
+      "productId": "D06",
+      "input": "走最快的路线",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "重新规划并说明无法满足的条件",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D07-01",
+      "productId": "D07",
+      "input": "去机场要多久",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只查询，不启动导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D07-02",
+      "productId": "D07",
+      "input": "去车站有多少公里",
+      "environment": "quiet",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只查询，不启动导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D07-03",
+      "productId": "D07",
+      "input": "先看看这趟路要多少钱",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只查询，不启动导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "D07-04",
+      "productId": "D07",
+      "input": "只算一下路线，先别导航",
+      "environment": "cabin-noise",
+      "setup": "准备真实已确认目的地；草稿包含歧义、失败及重复确认。",
+      "expected": "只查询，不启动导航",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E01-01",
+      "productId": "E01",
+      "input": "沿途找个厕所",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "基于当前路线搜索，展示额外绕行成本",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E01-02",
+      "productId": "E01",
+      "input": "顺路找个服务区",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "基于当前路线搜索，展示额外绕行成本",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E01-03",
+      "productId": "E01",
+      "input": "当前路线上有咖啡店吗",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "基于当前路线搜索，展示额外绕行成本",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E01-04",
+      "productId": "E01",
+      "input": "沿途的充电站要绕多远",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "基于当前路线搜索，展示额外绕行成本",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E02-01",
+      "productId": "E02",
+      "input": "加个咖啡店",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认后修改行程，保留原终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E02-02",
+      "productId": "E02",
+      "input": "中途先去便利店",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认后修改行程，保留原终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E02-03",
+      "productId": "E02",
+      "input": "增加一个停车场途经点",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认后修改行程，保留原终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E02-04",
+      "productId": "E02",
+      "input": "把这个地点加到途中，终点不变",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认后修改行程，保留原终点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E03-01",
+      "productId": "E03",
+      "input": "不去超市了",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "仅删除指定途经点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E03-02",
+      "productId": "E03",
+      "input": "删掉第二个途经点",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "仅删除指定途经点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E03-03",
+      "productId": "E03",
+      "input": "跳过学校这一站",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "仅删除指定途经点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E03-04",
+      "productId": "E03",
+      "input": "删除一个不在路线里的地点",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "仅删除指定途经点",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E04-01",
+      "productId": "E04",
+      "input": "先去医院再去学校",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "按新顺序重新规划，不自行排序",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E04-02",
+      "productId": "E04",
+      "input": "把前两站顺序交换",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "按新顺序重新规划，不自行排序",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E04-03",
+      "productId": "E04",
+      "input": "先去超市再去停车场，最后回家",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "按新顺序重新规划，不自行排序",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E04-04",
+      "productId": "E04",
+      "input": "把最后一个途经点放到第一站",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "按新顺序重新规划，不自行排序",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E05-01",
+      "productId": "E05",
+      "input": "改去另一家酒店",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认目标后更新，失败保留原路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E05-02",
+      "productId": "E05",
+      "input": "终点改成机场",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认目标后更新，失败保留原路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E05-03",
+      "productId": "E05",
+      "input": "不回家了，去公司",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认目标后更新，失败保留原路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E05-04",
+      "productId": "E05",
+      "input": "把目的地换成医院",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "确认目标后更新，失败保留原路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E06-01",
+      "productId": "E06",
+      "input": "不找咖啡店了",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "关闭候选，当前导航继续",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E06-02",
+      "productId": "E06",
+      "input": "取消这次沿途搜索",
+      "environment": "quiet",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "关闭候选，当前导航继续",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E06-03",
+      "productId": "E06",
+      "input": "关掉沿途候选",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "关闭候选，当前导航继续",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "E06-04",
+      "productId": "E06",
+      "input": "先按原路线走",
+      "environment": "cabin-noise",
+      "setup": "分别在SDK活动路线与外部地图交接模式验证；缺能力时不得修改原行程。",
+      "expected": "关闭候选，当前导航继续",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F01-01",
+      "productId": "F01",
+      "input": "还有多久",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回当前行程的有效预计时长",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F01-02",
+      "productId": "F01",
+      "input": "还要开多长时间",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回当前行程的有效预计时长",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F01-03",
+      "productId": "F01",
+      "input": "剩余时间是多少",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回当前行程的有效预计时长",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F01-04",
+      "productId": "F01",
+      "input": "网络断了，现在还能确认还要多久吗",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回当前行程的有效预计时长",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F02-01",
+      "productId": "F02",
+      "input": "几点到",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "基于当前行程预计到达时刻回答",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F02-02",
+      "productId": "F02",
+      "input": "预计什么时候到",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "基于当前行程预计到达时刻回答",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F02-03",
+      "productId": "F02",
+      "input": "还能按时到吗",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "基于当前行程预计到达时刻回答",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F02-04",
+      "productId": "F02",
+      "input": "导航信息过期了，还能确认到达时间吗",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "基于当前行程预计到达时刻回答",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F03-01",
+      "productId": "F03",
+      "input": "还剩多远",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回路线剩余里程，不用直线距离替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F03-02",
+      "productId": "F03",
+      "input": "还有多少公里",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回路线剩余里程，不用直线距离替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F03-03",
+      "productId": "F03",
+      "input": "距离目的地还有多远",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回路线剩余里程，不用直线距离替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F03-04",
+      "productId": "F03",
+      "input": "剩余路程是多少",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "返回路线剩余里程，不用直线距离替代",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F04-01",
+      "productId": "F04",
+      "input": "结束导航",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "地图确认结束后再播报成功",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F04-02",
+      "productId": "F04",
+      "input": "停止当前导航",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "地图确认结束后再播报成功",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F04-03",
+      "productId": "F04",
+      "input": "退出导航",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "地图确认结束后再播报成功",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F04-04",
+      "productId": "F04",
+      "input": "取消实际导航",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "地图确认结束后再播报成功",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F05-01",
+      "productId": "F05",
+      "input": "继续刚才的导航",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "区分恢复活动行程与按旧目的地重新规划",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F05-02",
+      "productId": "F05",
+      "input": "恢复上次行程",
+      "environment": "quiet",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "区分恢复活动行程与按旧目的地重新规划",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F05-03",
+      "productId": "F05",
+      "input": "还是去刚才的目的地",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "区分恢复活动行程与按旧目的地重新规划",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "F05-04",
+      "productId": "F05",
+      "input": "重新规划到上个终点",
+      "environment": "cabin-noise",
+      "setup": "分别验证活动路线有效更新、过期更新和没有活动路线。",
+      "expected": "区分恢复活动行程与按旧目的地重新规划",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G01-01",
+      "productId": "G01",
+      "input": "导航别说话",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅关闭导航播报",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G01-02",
+      "productId": "G01",
+      "input": "导航静音",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅关闭导航播报",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G01-03",
+      "productId": "G01",
+      "input": "关闭导航播报",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅关闭导航播报",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G01-04",
+      "productId": "G01",
+      "input": "把导航声音关掉",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅关闭导航播报",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G02-01",
+      "productId": "G02",
+      "input": "恢复导航语音",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "恢复导航通道，不改变媒体音量",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G02-02",
+      "productId": "G02",
+      "input": "打开导航播报",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "恢复导航通道，不改变媒体音量",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G02-03",
+      "productId": "G02",
+      "input": "导航可以说话了",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "恢复导航通道，不改变媒体音量",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G02-04",
+      "productId": "G02",
+      "input": "取消导航静音",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "恢复导航通道，不改变媒体音量",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G03-01",
+      "productId": "G03",
+      "input": "导航声音小一点",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "调整指定通道并反馈结果",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G03-02",
+      "productId": "G03",
+      "input": "导航声音大一点",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "调整指定通道并反馈结果",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G03-03",
+      "productId": "G03",
+      "input": "把导航音量调到一半",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "调整指定通道并反馈结果",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G03-04",
+      "productId": "G03",
+      "input": "导航音量调到最大",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "调整指定通道并反馈结果",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G04-01",
+      "productId": "G04",
+      "input": "放大地图",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "按方向缩放，不改变路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G04-02",
+      "productId": "G04",
+      "input": "缩小地图",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "按方向缩放，不改变路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G04-03",
+      "productId": "G04",
+      "input": "地图再放大一点",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "按方向缩放，不改变路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G04-04",
+      "productId": "G04",
+      "input": "地图缩小一级",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "按方向缩放，不改变路线",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G05-01",
+      "productId": "G05",
+      "input": "看看全程",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "展示当前路线全貌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G05-02",
+      "productId": "G05",
+      "input": "显示整条路线",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "展示当前路线全貌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G05-03",
+      "productId": "G05",
+      "input": "全程概览",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "展示当前路线全貌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G05-04",
+      "productId": "G05",
+      "input": "把整个行程显示出来",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "展示当前路线全貌",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G06-01",
+      "productId": "G06",
+      "input": "显示路况",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "切换显示状态，不等于口头路况查询",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G06-02",
+      "productId": "G06",
+      "input": "打开路况图",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "切换显示状态，不等于口头路况查询",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G06-03",
+      "productId": "G06",
+      "input": "关掉路况",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "切换显示状态，不等于口头路况查询",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G06-04",
+      "productId": "G06",
+      "input": "隐藏路况图层",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "切换显示状态，不等于口头路况查询",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G07-01",
+      "productId": "G07",
+      "input": "打开卫星图",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅在地图支持时切换",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G07-02",
+      "productId": "G07",
+      "input": "关闭卫星图",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅在地图支持时切换",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G07-03",
+      "productId": "G07",
+      "input": "切换成卫星地图",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅在地图支持时切换",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G07-04",
+      "productId": "G07",
+      "input": "恢复普通地图",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "仅在地图支持时切换",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G08-01",
+      "productId": "G08",
+      "input": "清除导航搜索记录",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "确认后清除所声明范围，不结束行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G08-02",
+      "productId": "G08",
+      "input": "删除本应用的搜索历史",
+      "environment": "quiet",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "确认后清除所声明范围，不结束行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G08-03",
+      "productId": "G08",
+      "input": "取消清除历史记录",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "确认后清除所声明范围，不结束行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "G08-04",
+      "productId": "G08",
+      "input": "清除高德里的全部历史",
+      "environment": "cabin-noise",
+      "setup": "分别验证授权SDK与URI模式；拒绝/失败不得伪报成功或影响媒体。",
+      "expected": "确认后清除所声明范围，不结束行程",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H01-01",
+      "productId": "H01",
+      "input": "找附近充电站",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "返回真实站点；无桩态时不保证有空位",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H01-02",
+      "productId": "H01",
+      "input": "周边有充电桩吗",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "返回真实站点；无桩态时不保证有空位",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H01-03",
+      "productId": "H01",
+      "input": "找最近的超充站",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "返回真实站点；无桩态时不保证有空位",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H01-04",
+      "productId": "H01",
+      "input": "这个充电站现在有空位吗",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "返回真实站点；无桩态时不保证有空位",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H02-01",
+      "productId": "H02",
+      "input": "找顺路适配我的车的快充",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "路线、接口兼容性和数据时间可核验",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H02-02",
+      "productId": "H02",
+      "input": "沿途找兼容充电接口的站点",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "路线、接口兼容性和数据时间可核验",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H02-03",
+      "productId": "H02",
+      "input": "找不用绕路的快充站",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "路线、接口兼容性和数据时间可核验",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H02-04",
+      "productId": "H02",
+      "input": "我的车型不清楚，可以确认兼容吗",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "路线、接口兼容性和数据时间可核验",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H03-01",
+      "productId": "H03",
+      "input": "到目的地至少留两成电",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "基于 SOC、能耗及站点数据规划并展示假设",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H03-02",
+      "productId": "H03",
+      "input": "剩下这点电能到吗",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "基于 SOC、能耗及站点数据规划并展示假设",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H03-03",
+      "productId": "H03",
+      "input": "帮我规划长途补能",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "基于 SOC、能耗及站点数据规划并展示假设",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H03-04",
+      "productId": "H03",
+      "input": "按当前电量安排充电，不要猜电量",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "基于 SOC、能耗及站点数据规划并展示假设",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H04-01",
+      "productId": "H04",
+      "input": "中间充一次电，再休息一下",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "生成可修改草稿，确认后才提交",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H04-02",
+      "productId": "H04",
+      "input": "安排充电和吃饭",
+      "environment": "quiet",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "生成可修改草稿，确认后才提交",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H04-03",
+      "productId": "H04",
+      "input": "充电时找个休息的地方",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "生成可修改草稿，确认后才提交",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    },
+    {
+      "caseId": "H04-04",
+      "productId": "H04",
+      "input": "先看补能草稿，不要直接导航",
+      "environment": "cabin-noise",
+      "setup": "分别验证有效定位及缺少SOC/车型/实时桩态，不以示例数值代替实测。",
+      "expected": "生成可修改草稿，确认后才提交",
+      "invariants": [
+        "只有明确确认且目标有效时才交接",
+        "没有能力或证据时说明未知/不可用",
+        "旧结果和重复回复不能执行新动作"
+      ],
+      "status": "not_run",
+      "actual": null,
+      "device": null,
+      "providerVersion": null,
+      "latencyMs": null
+    }
+  ]
+}
