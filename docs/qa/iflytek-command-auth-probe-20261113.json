@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-13",
+  "package": "com.autovoice.commandprobe",
+  "scope": "Original command-only SDK; public fixture only; no microphone or vehicle actions; main application and auth caches preserved",
+  "abilityId": "e75f07b62",
+  "credentialsMatchSdkLicenseFiles": true,
+  "credentialsMatchApplicationConfig": true,
+  "phoneUtcDate": "2026-11-13",
+  "result": {
+    "auth": 18707,
+    "passed": false,
+    "stage": "auth",
+    "authEvents": [
+      "AUTH:18707"
+    ]
+  },
+  "meaning": "Authorization expired; engine initialization and recognition were not reached",
+  "officialSource": "https://www.xfyun.cn/doc/asr/AIkit_commandWord/Android-SDK.html",
+  "remaining": [
+    "Renew command capability authorization in the vendor account",
+    "Rerun original command SDK test",
+    "Resolve main-package wake/command SDK compatibility and validate both abilities"
+  ]
+}

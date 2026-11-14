@@ -191,6 +191,10 @@ class AudioRecorder(
     private val mainHistory = ArrayDeque<VadObservation>()
     private var pendingAuxiliaryConfirmation: Long? = null
     private var pendingProcessedStart: Long? = null
+    private var pendingRequiresEchoReference = false
+    private var protectedHistoryStart: Long? = null
+    // This is an acoustic VAD onset, not proof that speech belongs to the near-end user.
+    private var protectedAcousticOnset: Long? = null
     init { require(frontendQueueCapacity in 1..256) }
     private fun rememberProcessed(batch: FrontendBatch) {
         for (block in batch.processedBlocks) {
@@ -203,6 +207,27 @@ class AudioRecorder(
             while (mainHistory.firstOrNull()?.let { it.startSample+it.validSamples <= first.startSample } == true) mainHistory.removeFirst()
         }
     }
+    private fun protectedBargeStart(batch: FrontendBatch, referenceValid: Boolean): Long? {
+        if (!referenceValid) {
+            protectedHistoryStart = null
+            protectedAcousticOnset = null
+            if (bargeInListening && !turnActive) frontend.resetVad(VadPurpose.BARGE_IN)
+            return null
+        }
+        if (protectedHistoryStart == null) protectedHistoryStart = batch.processedBlocks.firstOrNull()?.startSample
+        val protectedStart = protectedHistoryStart ?: return null
+        var triggeredStart: Long? = null
+        for (observation in batch.vadObservations.filter { it.purpose == VadPurpose.BARGE_IN }) {
+            if (observation.speechDetected == true) {
+                if (protectedAcousticOnset == null) protectedAcousticOnset = observation.startSample
+                if (VadEvent.SpeechStart in observation.events) {
+                    triggeredStart = maxOf(protectedStart, requireNotNull(protectedAcousticOnset) - 320L)
+                }
+            } else protectedAcousticOnset = null
+        }
+        return triggeredStart
+    }
+
     private fun selectedProcessedPreRoll(): AudioInputHistory {
         val start = requireNotNull(pendingProcessedStart) { "processed pre-roll has no auxiliary confirmation" }
         val selected = processedHistory.mapNotNull { block ->
@@ -223,7 +248,15 @@ class AudioRecorder(
         }
         if (!eligible || event.batch.vadObservations.none { it.purpose == purpose && VadEvent.SpeechStart in it.events }) return@synchronized false
         val end = event.batch.processedBlocks.lastOrNull()?.let { it.startSample+it.validSamples } ?: return@synchronized false
-        pendingProcessedStart = maxOf(processedHistory.firstOrNull()?.startSample ?: end,end-BARGE_IN_PRE_ROLL_BLOCKS*AudioFormat.BLOCK_SAMPLES)
+        val historyStart = processedHistory.firstOrNull()?.startSample ?: end
+        val selectedStart = if (purpose == VadPurpose.BARGE_IN) {
+            val start = event.bargeInPreRollStartSample ?: return@synchronized false
+            val stillProtectedFrom = protectedHistoryStart ?: return@synchronized false
+            if (!event.echoReferenceValid || start < stillProtectedFrom) return@synchronized false
+            maxOf(historyStart, start)
+        } else maxOf(historyStart,end-BARGE_IN_PRE_ROLL_BLOCKS*AudioFormat.BLOCK_SAMPLES)
+        pendingProcessedStart = selectedStart
+        pendingRequiresEchoReference = purpose == VadPurpose.BARGE_IN
         val confirmation = event.batch.vadObservations.first { it.purpose == purpose && VadEvent.SpeechStart in it.events }
         pendingAuxiliaryConfirmation = confirmation.startSample+confirmation.validSamples
         if (purpose == VadPurpose.FOLLOW_UP) followUpListening = false else bargeInListening = false
@@ -254,16 +287,25 @@ class AudioRecorder(
         followUpListening = false;bargeInListening = false
         if (preRoll != null && preRoll.processedBlocks.isNotEmpty()) {
             check(orderedBatches.size < frontendQueueCapacity) { "capture queue overflow" }
-            orderedBatches.addLast(CaptureFrontendBatch(inputEpoch,preRoll,speechConfirmedForInput = true))
+            orderedBatches.addLast(CaptureFrontendBatch(inputEpoch,preRoll,speechConfirmedForInput = true,
+                echoReferenceValid = pendingRequiresEchoReference))
         }
         pendingProcessedStart = null;pendingAuxiliaryConfirmation = null
     }
-    private fun tryBeginFrontendInput(includeProcessedPreRoll: Boolean): Boolean = try {
-        beginFrontendInput(includeProcessedPreRoll);true
-    } catch (error: Throwable) {
-        error.rethrowCancellationOrFatal()
-        if (!frontend.continuousProcessing) throw error
-        failOpenInput(error);false
+    private fun tryBeginFrontendInput(includeProcessedPreRoll: Boolean): Boolean {
+        // Called under turnProcessingLock: do not let a recovered future reference certify old
+        // history, or turn an ordinary rejected barge candidate into a sticky frontend failure.
+        if (includeProcessedPreRoll && pendingRequiresEchoReference &&
+            (!openMicBargeInAvailable || protectedHistoryStart == null ||
+                pendingProcessedStart?.let { it < requireNotNull(protectedHistoryStart) } != false)
+        ) return false
+        return try {
+            beginFrontendInput(includeProcessedPreRoll);true
+        } catch (error: Throwable) {
+            error.rethrowCancellationOrFatal()
+            if (!frontend.continuousProcessing) throw error
+            failOpenInput(error);false
+        }
     }
     private fun activePcm(batch: FrontendBatch): FrontendBatch =
         batch.inSampleRange(inputStartSample,frontend.diagnostics.observedInputEndSample ?: Long.MAX_VALUE)
@@ -353,6 +395,7 @@ class AudioRecorder(
             orderedBatches.clear();processedHistory.clear();mainHistory.clear();historySamples = 0
             completedTail = ByteArray(0);completedSegments = emptyList()
             pendingProcessedStart = null;pendingAuxiliaryConfirmation = null
+            pendingRequiresEchoReference = false;protectedHistoryStart = null;protectedAcousticOnset = null
             followUpEpoch++;bargeInEpoch++;followUpListening = false;bargeInListening = false
         }
         pendingFrontendReporting = null
@@ -426,7 +469,7 @@ class AudioRecorder(
             synchronized(turnProcessingLock) {
                 if (closed) return
                 bargeInEpoch++;bargeInListening = enabled && frontendFailure == null && frontend.unavailabilityReason == null && frontend.vadAvailable
-                if (bargeInListening) frontend.resetVad(VadPurpose.BARGE_IN)
+                if (bargeInListening) { protectedAcousticOnset = null;frontend.resetVad(VadPurpose.BARGE_IN) }
             }
             return
         }
@@ -715,13 +758,17 @@ class AudioRecorder(
             if (frontend.continuousProcessing) {
                 if (frontendFailure != null || frontend.unavailabilityReason != null) false else {
                     try {
+                        val referenceBefore = openMicBargeInAvailable
                         val result = frontend.process(block);capturedSamples += block.size/2
+                        val referenceValid = referenceBefore && openMicBargeInAvailable
+                        val protectedStart = protectedBargeStart(result, referenceValid)
                         rememberProcessed(result)
                         val streaming = streamingInput
                         val event = CaptureFrontendBatch(streaming?.inputEpoch ?: if (turnActive) inputEpoch else null,
                             if (streaming != null) result.inSampleRange(streaming.startSample,Long.MAX_VALUE)
                             else if (turnActive) activePcm(result) else result,
-                            if (followUpListening) followUpEpoch else null,if (bargeInListening && openMicBargeInAvailable) bargeInEpoch else null)
+                            if (followUpListening) followUpEpoch else null,if (bargeInListening && referenceValid) bargeInEpoch else null,
+                            echoReferenceValid = referenceValid, bargeInPreRollStartSample = protectedStart)
                         check(orderedBatches.size < frontendQueueCapacity) { "capture queue overflow" }
                         orderedBatches.addLast(event)
                     } catch (error: Throwable) {

@@ -48,16 +48,18 @@ class ModelResourceLoader internal constructor(private val root: File,private va
             fail(ErrorCode.MODEL_HASH_MISMATCH)
         }
     }
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().buffered(1 shl 20).use { input ->
-            val buffer = ByteArray(1 shl 20)
-            while (true) { val n = input.read(buffer);if (n < 0) break;digest.update(buffer,0,n) }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
-    }
     private fun fail(code: ErrorCode): Nothing = throw ModelResourceException(ComponentError(code))
 }
+
+internal fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered(1 shl 20).use { input ->
+        val buffer = ByteArray(1 shl 20)
+        while (true) { val n = input.read(buffer);if (n < 0) break;digest.update(buffer,0,n) }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+}
+
 object FireRedModelCatalog {
     const val RESOURCE = "/firered-model-catalog.json"
     fun read(): JsonObject = requireNotNull(FireRedModelCatalog::class.java.getResourceAsStream(RESOURCE)).bufferedReader().use {

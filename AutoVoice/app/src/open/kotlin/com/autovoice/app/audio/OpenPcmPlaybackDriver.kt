@@ -245,16 +245,13 @@ internal class OpenPcmPlaybackDriver(
                 while (timing == null && nowMs()-waitStart < 100 && output.active.get()) {
                     delay(5);timing = runCatching { track.renderTiming(start) }.getOrNull()
                 }
-                if (timing == null || !timing.gain.isFinite() || timing.gain !in 0f..1f ||
+                if (timing == null || !timing.gain.isFinite() || timing.gain <= 0f || timing.gain > 1f ||
                     output.route?.let { it != timing.route } == true || output.gain?.let { it != timing.gain } == true) revokeReference(output)
                 else if (output.active.get()) {
                     output.route = timing.route;output.gain = timing.gain
+                    // WebRTC estimates attenuation along the speaker-to-mic path. Feed the exact
+                    // PCM written to AudioTrack; the hardware gain only validates output continuity.
                     val reference = pcm.copyOfRange(offset,offset+n)
-                    for (i in reference.indices step 2) {
-                        val sample = ((reference[i].toInt() and 255) or (reference[i+1].toInt() shl 8)).toShort()
-                        val scaled = (sample*timing.gain).toInt().coerceIn(-32768,32767)
-                        reference[i] = scaled.toByte();reference[i+1] = (scaled shr 8).toByte()
-                    }
                     if (runCatching { render?.acceptRender(RenderReferenceFrame(output.epoch,start,timing.timestampNanos,reference)) }.getOrNull() != true) revokeReference(output)
                     else if (!output.referenceRevoked && output.active.get()) referenceReporter.report(referenceToken,ComponentUpdate.health(Health.DEGRADED)) // Own-app reference, not complete physical mix.
                 }

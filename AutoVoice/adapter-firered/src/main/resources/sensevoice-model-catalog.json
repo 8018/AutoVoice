@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "modelId": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+  "provider": "sensevoice.int8",
+  "sourceRevision": "2365baeacb507f821a0c8120fcee3d484dba7a07",
+  "vadSourceRevision": "066409f3d9db45a30d21dfcbf9147826ffdd7052",
+  "runtimeVersion": "2.0.1",
+  "ortVersion": "1.28.2",
+  "files": {
+    "model": {
+      "path": "models/sensevoice/model.int8.onnx",
+      "bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+    },
+    "tokens": {
+      "path": "models/sensevoice/tokens.txt",
+      "bytes": 315894,
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+    },
+    "modelLicense": {
+      "path": "models/sensevoice/sensevoice-model-license.txt",
+      "bytes": 5306,
+      "sha256": "7dba975a2069691db4992b0592d70828b330d2f8a30a71450f4e152a554e84f8"
+    },
+    "vad": {
+      "path": "models/vad/silero_vad.onnx",
+      "bytes": 2327524,
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "vadLicense": {
+      "path": "models/vad/LICENSE",
+      "bytes": 1075,
+      "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b"
+    }
+  }
+}

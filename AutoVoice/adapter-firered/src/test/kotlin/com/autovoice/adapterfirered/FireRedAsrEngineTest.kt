@@ -21,9 +21,9 @@ class FireRedAsrEngineTest {
         override fun close() { closed.countDown() }
     }
     private val admitted = FireRedAdmissionProvider { FireRedAdmission(Long.MAX_VALUE,{ true },{ false }) }
-    private fun runtime(f: ModelFixture,d: Decoder,loads: AtomicInteger = AtomicInteger()) = FireRedRuntime({ f.loader().load() },{ loads.incrementAndGet();d },{})
-    private fun engine(r: FireRedRuntime,p: FireRedAdmissionProvider = admitted, timeout: Long = 5000) = FireRedAsrEngine(r,p,ComponentReporter.none(),timeout)
-    private fun awaitPendingRequests(runtime: FireRedRuntime, expected: Int) {
+    private fun runtime(f: ModelFixture,d: Decoder,loads: AtomicInteger = AtomicInteger()) = FireRedRuntime({ f.loader().load() },{ loads.incrementAndGet();d },{},ValidatedFireRedModel::metadata)
+    private fun engine(r: FireRedRuntime<*>,p: FireRedAdmissionProvider = admitted, timeout: Long = 5000) = FireRedAsrEngine(r,p,ComponentReporter.none(),timeout)
+    private fun awaitPendingRequests(runtime: FireRedRuntime<*>, expected: Int) {
         val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
         while (runtime.pendingRequests != expected && System.nanoTime() < until) Thread.sleep(1)
         assertEquals(expected, runtime.pendingRequests)
@@ -110,7 +110,7 @@ class FireRedAsrEngineTest {
     @Test fun `initialization timeout cannot be revived by late successful native construction or duplicate model load`() {
         ModelFixture().use { f ->
             val events = java.util.concurrent.CopyOnWriteArrayList<ComponentStatusEvent>();val entered = CountDownLatch(1);val proceed = CountDownLatch(1);val d = Decoder();val loads = AtomicInteger()
-            val r = FireRedRuntime({ f.loader().load() },{ loads.incrementAndGet();entered.countDown();proceed.await(2,TimeUnit.SECONDS);d },{})
+            val r = FireRedRuntime({ f.loader().load() },{ loads.incrementAndGet();entered.countDown();proceed.await(2,TimeUnit.SECONDS);d },{},ValidatedFireRedModel::metadata)
             val reporter = ComponentReporter(ComponentDescriptor("local.asr","firered","open"),1,ComponentStatusSink { events.add(it) })
             val old = FireRedAsrEngine(r,admitted,reporter,30);assertTrue(entered.await(2,TimeUnit.SECONDS));assertFalse(old.awaitReady(200))
             val next = engine(r);proceed.countDown();assertTrue(next.awaitReady(2000))
@@ -134,7 +134,7 @@ class FireRedAsrEngineTest {
     @Test fun `initialization timeout cancels queued caller without waiting for blocked native constructor`() {
         ModelFixture().use { f ->
             val entered = CountDownLatch(1);val proceed = CountDownLatch(1);val d = Decoder()
-            val r = FireRedRuntime({ f.loader().load() },{ entered.countDown();proceed.await(2,TimeUnit.SECONDS);d },{})
+            val r = FireRedRuntime({ f.loader().load() },{ entered.countDown();proceed.await(2,TimeUnit.SECONDS);d },{},ValidatedFireRedModel::metadata)
             val e = engine(r,timeout = 150);assertTrue(entered.await(1,TimeUnit.SECONDS))
             val pending = async { e.recognize("pending-init",byteArrayOf(0,0),Sink()) }
             try { assertNull(pending.get(500,TimeUnit.MILLISECONDS));assertEquals(0,d.calls.get()) }

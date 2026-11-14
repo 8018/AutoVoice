@@ -28,6 +28,7 @@ class DemoConfigAssetsTest {
     fun `demo-dev points to the dedicated dev gateway`() {
         val cfg = DemoConfig.fromJson(readAsset("demo-dev.json"))
         assertEquals("dev", cfg.mode)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "sensevoice.int8", cfg.local.asr)
         assertTrue(cfg.cloud.enabled)
         assertEquals("ws://8.153.153.77:8090/ws", cfg.cloud.gatewayUrl)
     }
@@ -45,7 +46,7 @@ class DemoConfigAssetsTest {
             "demo-full 的 gatewayUrl 不得为空（占位符 ws://10.0.2.2:8080/ws，真机演示时改网关地址）",
         )
         // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
-        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "firered.ctc.int8", cfg.local.asr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "sensevoice.int8", cfg.local.asr)
         assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rule.nlu" else "rule.text", cfg.local.nlu)
         assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rnnoise" else "none", cfg.ecnr)
         assertFalse(cfg.mock.executor)
@@ -60,7 +61,7 @@ class DemoConfigAssetsTest {
         assertEquals(3000L, cfg.cloud.waitMs)
         assertEquals("", cfg.cloud.gatewayUrl)
         // Task 34 接线后：服务已开通 + 凭据已注入（local.properties），真实离线命令词
-        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "firered.ctc.int8", cfg.local.asr)
+        assertEquals(if (BuildConfig.FLAVOR == "iflytek") "iflytek.offline" else "sensevoice.int8", cfg.local.asr)
         assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rule.nlu" else "rule.text", cfg.local.nlu)
         assertEquals(if (BuildConfig.FLAVOR == "iflytek") "rnnoise" else "none", cfg.ecnr)
         assertFalse(cfg.mock.executor)

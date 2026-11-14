@@ -9,7 +9,7 @@ internal class ChannelComponentReporting(val registry: ComponentStatusRegistry, 
         "wake" to "iflytek.ivw", "frontend" to if (channel == "open") "webrtc.apm" else "rnnoise",
         "vad" to if (channel == "open") "webrtc.vad" else "silero",
         "vad.aux" to if (channel == "open") "webrtc.vad" else "silero", "render_reference" to "pcm.render",
-        "aec" to if (channel == "open") "webrtc.apm" else "system.aec", "local.asr" to if (channel == "open") "firered.ctc.int8" else "iflytek.offline",
+        "aec" to if (channel == "open") "webrtc.apm" else "system.aec", "local.asr" to if (channel == "open") "sensevoice.int8" else "iflytek.offline",
         "local.nlu" to if (channel == "open") "rule.text" else "rule.nlu", "cloud" to "gateway", "playback" to "android")
     fun registerDefaults() { providers.keys.forEach { reporter(it) } }
     fun reporter(id: String, provider: String? = null): ComponentReporter {

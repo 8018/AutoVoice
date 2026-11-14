@@ -19,9 +19,15 @@ internal class SherpaDecoder(private val recognizer: FireRedRecognizer) : FireRe
             if (VersionInfo.version != "2.0.1" || VersionInfo.onnxruntimeVersion != "1.28.2") throw ModelResourceException(ComponentError(ErrorCode.NATIVE_SYMBOL_MISMATCH))
         }
         fun create(model: ValidatedFireRedModel): SherpaDecoder {
-            val recognizer = OfflineRecognizer(config = OfflineRecognizerConfig(modelConfig = OfflineModelConfig(
+            return create(OfflineModelConfig(
                 fireRedAsrCtc = OfflineFireRedAsrCtcModelConfig(model = model.modelFile.absolutePath),
-                tokens = model.tokensFile.absolutePath,numThreads = 1,provider = "cpu"),decodingMethod = "greedy_search"))
+                tokens = model.tokensFile.absolutePath,numThreads = 1,provider = "cpu"))
+        }
+
+        fun create(config: OfflineModelConfig): SherpaDecoder {
+            val recognizer = OfflineRecognizer(config = OfflineRecognizerConfig(
+                modelConfig = config, decodingMethod = "greedy_search",
+            ))
             class Stream(val value: OfflineStream) : FireRedStream {
                 override fun accept(samples: FloatArray) = value.acceptWaveform(samples,sampleRate = 16000)
                 override fun close() = value.release()

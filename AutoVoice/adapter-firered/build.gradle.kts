@@ -16,6 +16,7 @@ android {
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21) } }
 dependencies {
     implementation(project(":voice-core"))
+    implementation(project(":audio-frontend"))
     implementation(libs.gson)
     testImplementation(libs.junit)
     androidTestImplementation(libs.junit4)

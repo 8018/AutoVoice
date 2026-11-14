@@ -4,7 +4,7 @@ import android.content.Context
 import android.media.MediaRecorder
 import com.autovoice.app.health.ChannelComponentReporting
 import com.autovoice.voicecore.health.*
-import com.autovoice.adapterfirered.FireRedAsrEngine
+import com.autovoice.adapterfirered.SenseVoiceAsrEngine
 import com.autovoice.adapterfirered.FireRedAdmissionProvider
 import com.autovoice.adapterfirered.ModelResourceException
 import com.autovoice.voiceengine.local.TextRuleNluEngine
@@ -50,7 +50,7 @@ private class OpenSpeechChannel : SpeechChannel {
     )
     override fun validateConfig(config: DemoConfig) = config.validateProviders(
         frontend = setOf("webrtc.apm"), vad = setOf("webrtc.vad"), ecnr = setOf("none"),
-        asr = setOf("firered.ctc.int8"), nlu = setOf("rule.text"),
+        asr = setOf("sensevoice.int8"), nlu = setOf("rule.text"),
     ).also { WebRtcFrontend.validateVadConfig(it.vad) }
     override fun missingAssetConfig(asset: String, onlineAsset: String): DemoConfig =
         throw IllegalStateException("Open channel asset '$asset' is missing; no fallback is permitted")
@@ -70,7 +70,7 @@ private class OpenSpeechChannel : SpeechChannel {
         val asr = try {
             val modelRoot = context.getExternalFilesDir("speech-models")
                 ?: throw ModelResourceException(ComponentError(ErrorCode.MODEL_MISSING))
-            FireRedAsrEngine.create(modelRoot, admission.nativeProvider, asrReporter)
+            SenseVoiceAsrEngine.create(modelRoot, admission.nativeProvider, asrReporter)
         } catch (error: Exception) {
             error.rethrowCancellationOrFatal()
             val failure = (error as? ModelResourceException)?.error ?: ComponentError(ErrorCode.RESOURCE_MISSING)

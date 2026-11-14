@@ -1,0 +1,16 @@
+{
+  "phase": "before",
+  "date": "2026-11-13",
+  "apkSha256": "344cdaf1ef45e9e29e3665a7bb6d5363c0d4377dd4f553413205fbfef113ab3e",
+  "sourceRevision": "dc2e930",
+  "fixture": "public command-24k-mono.wav repeated 13 times",
+  "measurement": "OpenAcousticEchoProbe speaker_only elapsedMs=13782 playback=[rawSamples=219136 processedSamples=219040 rawToProcessedDb=9.58 segmentationStarts=1 bargeInStarts=1 bargeInSpeechFrames=1301 bargeInFrames=1369 aecActiveBlocks=428] post_warmup=[rawSamples=187392 processedSamples=187296 rawToProcessedDb=11.75 segmentationStarts=0 bargeInStarts=0 bargeInSpeechFrames=1133 bargeInFrames=1171 aecActiveBlocks=366]",
+  "probeCompleted": true,
+  "acousticAcceptancePassed": false,
+  "limitations": [
+    "User was asked to stay quiet; ambient conditions not independently controlled.",
+    "No microphone PCM is retained.",
+    "Aggregate energy ratio is not isolated AEC ERLE and cannot prove near-end speech preservation.",
+    "Probe completion is not an acoustic acceptance pass."
+  ]
+}

@@ -57,6 +57,7 @@ class OpenModelStorageAssemblyTest {
                 try {
                     val snapshot = registry.snapshot.value
                     val asr = snapshot.components.getValue("local.asr")
+                    assertEquals("sensevoice.int8", asr.descriptor.provider)
                     assertEquals(Lifecycle.FAILED, asr.lifecycle)
                     assertEquals(failure, asr.error?.code)
                     assertEquals("resource_validate", asr.stage)

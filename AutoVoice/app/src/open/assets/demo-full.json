@@ -8,7 +8,7 @@
   },
   "ecnr": "none",
   "local": {
-    "asr": "firered.ctc.int8",
+    "asr": "sensevoice.int8",
     "nlu": "rule.text"
   },
   "cloud": {

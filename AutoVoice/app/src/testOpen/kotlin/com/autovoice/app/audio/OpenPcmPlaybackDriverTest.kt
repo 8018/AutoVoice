@@ -118,6 +118,45 @@ class OpenPcmPlaybackDriverTest {
         d.play(AudioReply("audio/pcm",ByteArray(320)),PlaybackIdentity("stop"));runCurrent();d.stop();runCurrent()
         assertEquals(listOf("interrupted"),events.map { it.first });assertEquals(1,track.closed);d.close()
     }
+    @Test fun `render reference matches PCM accepted by AudioTrack at low hardware volume`() = runTest {
+        val track = Track().apply { gain = 0.11481537f; partials.addAll(listOf(14, 0, 32)) }
+        val reference = Reference()
+        val events = mutableListOf<Pair<String, Map<String, Any?>>>()
+        val d = driver(Platform(track), reference, events)
+        try {
+            val pcm = ByteArray(640) { it.toByte() }
+            d.play(AudioReply("audio/pcm", pcm), PlaybackIdentity("low-volume"))
+            advanceTimeBy(20)
+            runCurrent()
+
+            assertEquals(listOf("start", "completed"), events.map { it.first })
+            assertArrayEquals(pcm, track.pcm.toByteArray())
+            val rendered = ByteArrayOutputStream()
+            reference.frames.forEach { rendered.write(it.pcm) }
+            assertArrayEquals(track.pcm.toByteArray(), rendered.toByteArray())
+        } finally {
+            d.close()
+        }
+    }
+
+    @Test fun `muted output plays without exposing an echo protected reference`() = runTest {
+        val track = Track().apply { gain = 0f }
+        val reference = Reference()
+        val events = mutableListOf<Pair<String, Map<String, Any?>>>()
+        val d = driver(Platform(track), reference, events)
+        try {
+            d.play(AudioReply("audio/pcm", ByteArray(640) { it.toByte() }), PlaybackIdentity("muted"))
+            runCurrent()
+
+            assertEquals(listOf("start", "completed"), events.map { it.first })
+            assertEquals(640, track.pcm.size())
+            assertTrue(reference.frames.isEmpty())
+            assertTrue(reference.cutoff > 0)
+        } finally {
+            d.close()
+        }
+    }
+
     @Test fun `gain route and recreated driver generations invalidate old reference without retiring new output`() = runTest {
         val r = Reference();val first = Platform();val events = mutableListOf<Pair<String,Map<String,Any?>>>()
         first.track.autoDrain = false

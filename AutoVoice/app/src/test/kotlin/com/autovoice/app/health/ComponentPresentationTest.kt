@@ -120,4 +120,18 @@ class ComponentPresentationTest {
         assertFalse(diagnostics("/private/track").contains("/private/track"))
     }
 
+    @Test fun `SenseVoice and Silero identity survive diagnostics without private metadata`() {
+        val descriptor = ComponentDescriptor("local.asr", "sensevoice.int8", "open")
+        val hash = "c".repeat(64)
+        val versions = mapOf("modelId" to "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+            "vadSha256" to hash, "vadSourceRevision" to "d".repeat(40), "path" to "/private/model")
+        val json = ComponentLogSink.diagnosticsJson(ComponentHealthSnapshot(components = mapOf(
+            "local.asr" to ComponentStatus(descriptor, 1, versions = versions))))
+        assertTrue(json.contains("sensevoice.int8"))
+        assertTrue(json.contains(versions.getValue("modelId")))
+        assertTrue(json.contains(hash))
+        assertTrue(json.contains(versions.getValue("vadSourceRevision")))
+        assertFalse(json.contains("/private/model"))
+    }
+
 }

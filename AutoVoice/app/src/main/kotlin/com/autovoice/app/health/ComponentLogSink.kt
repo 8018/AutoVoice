@@ -24,13 +24,13 @@ internal class ComponentLogSink(private val write: (String) -> Unit = { Log.i("C
         private val gson = Gson()
         private val ids = setOf("config", "capture", "iflytek.runtime", "wake", "frontend", "vad", "vad.aux", "render_reference", "aec", "local.asr", "local.nlu", "cloud", "playback")
         private fun id(v: String) = v.takeIf { it in ids } ?: "other"
-        private fun provider(v: String) = v.takeIf { it in setOf("application", "aikit", "iflytek.ivw", "iflytek.offline", "iflytek.fake-cmd", "rnnoise", "none", "silero", "webrtc.apm", "webrtc.vad", "firered.ctc.int8", "rule.nlu", "rule.text", "gateway", "android", "system.aec", "pcm.render") } ?: "other"
+        private fun provider(v: String) = v.takeIf { it in setOf("application", "aikit", "iflytek.ivw", "iflytek.offline", "iflytek.fake-cmd", "rnnoise", "none", "silero", "webrtc.apm", "webrtc.vad", "firered.ctc.int8", "sensevoice.int8", "rule.nlu", "rule.text", "gateway", "android", "system.aec", "pcm.render") } ?: "other"
         private fun stage(v: String) = v.takeIf { it in setOf("not_started", "config_validate", "native_load", "resource_validate", "model_create", "authorize", "initialize", "create", "capture_open", "waiting_permission", "connect", "idle", "disabled", "process", "effects", "parameters", "resource_load", "reuse_existing", "model_ready", "audio_track_create", "audio_track_retry", "awaiting_playback") } ?: "other"
         private fun error(e: ComponentError?) = e?.sanitized()?.let { mapOf("code" to it.code.name, "message" to it.message, "vendorCode" to it.vendorCode, "retryable" to it.retryable, "suggestion" to it.suggestion) }
         private fun versions(values: Map<String,String>) = values.filter { (key,value) -> when (key) {
-            "modelId" -> value == "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25"
-            "modelSha256", "tokensSha256" -> value.matches(Regex("[0-9a-f]{64}"))
-            "runtime", "model", "sourceRevision", "ort", "ndk", "sdk" -> value.matches(Regex("[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:[-._][A-Za-z0-9]+)*")) || value.matches(Regex("[0-9a-f]{40}"))
+            "modelId" -> value in setOf("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17")
+            "modelSha256", "tokensSha256", "vadSha256" -> value.matches(Regex("[0-9a-f]{64}"))
+            "runtime", "model", "sourceRevision", "vadSourceRevision", "ort", "ndk", "sdk" -> value.matches(Regex("[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:[-._][A-Za-z0-9]+)*")) || value.matches(Regex("[0-9a-f]{40}"))
             else -> false
         } }
         private fun descriptor(d: ComponentDescriptor) = mapOf("componentId" to id(d.componentId), "provider" to provider(d.provider), "channel" to d.channel.takeIf { it in setOf("iflytek", "open", "shared") }, "scope" to d.scope.name)

@@ -1,0 +1,146 @@
+{
+  "suite": "navigation-cloud-voice-v1",
+  "suiteVersion": 1,
+  "suiteFingerprint": "1115b90de5185db5b1372e5b29e41b4fafc997e4cee17df2a2faf88755437cb0",
+  "revision": "8221fd52f6e5b7f0cdec92904bc6b239538e35de",
+  "deployedRelease": "b8a9f275b7792a4e0ff68b20741ea313654e7c47",
+  "sourceDirty": true,
+  "startedAt": "2026-11-13T17:06:07.169Z",
+  "environment": "dev",
+  "channel": "synthetic-cloud-voice",
+  "protocol": "1.2",
+  "readOnly": true,
+  "measurement": "Voice audio_start to final reply, including paced 16 kHz upload, cloud ASR, model/search and network. Fixture TTS and candidate-reply TTS measured separately.",
+  "limitations": [
+    "Synthetic speech only; not microphone, device playback or driving acceptance.",
+    "TTS response text is an echo; audio duration does not prove all candidate names are audible.",
+    "Navigation selection is inspected only; no action is executed."
+  ],
+  "results": [
+    {
+      "id": "voice-candidates",
+      "productIds": [
+        "A03",
+        "B01"
+      ],
+      "input": "找北京的博物馆",
+      "fixtureTtsMs": 1314,
+      "fixtureDurationMs": 1100,
+      "elapsedMs": 3530,
+      "firstResponseMs": 1136,
+      "audioDurationMs": 1100,
+      "type": "reply",
+      "asrText": "找北京的博物馆。",
+      "text": "第1个，中国国家博物馆，东长安街16号天安门广场东侧，高德地图分类为“博物馆”；第2个，故宫博物院，景山前街4号，高德地图分类为“博物馆”；第3个，中央礼品文物管理中心，西兴隆街1号，高德地图分类为“博物馆”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"中国国家博物馆\",\"lat\":39.905374,\"lon\":116.401304,\"address\":\"东长安街16号天安门广场东侧\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T17:06:11.513490720Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"99dc6d09-92dd-4437-be8f-5e80083ad54f\"},{\"poiname\":\"故宫博物院\",\"lat\":39.917839,\"lon\":116.397029,\"address\":\"景山前街4号\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"风景名胜;风景名胜;世界遗产|科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T17:06:12.731768770Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"4c0b6b23-7ebc-428a-bc17-216631e953ef\"},{\"poiname\":\"中央礼品文物管理中心\",\"lat\":39.897847,\"lon\":116.410901,\"address\":\"西兴隆街1号\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T17:06:12.809451759Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"ae9a0f89-989d-472e-8414-8eb8227aa262\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "0eb0f35c-6b20-4b5d-8bd5-fd348c018567"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"北京\",\"constraints\":[{\"category\":\"博物馆\"}]}"
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "voice-select-second",
+      "productIds": [
+        "B02"
+      ],
+      "input": "第二个",
+      "fixtureTtsMs": 297,
+      "fixtureDurationMs": 550,
+      "elapsedMs": 743,
+      "firstResponseMs": 587,
+      "audioDurationMs": 550,
+      "type": "reply",
+      "asrText": "第2个。",
+      "text": "好的，开始导航去故宫博物院",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "navigate",
+        "slots": {
+          "selectionId": {
+            "type": "string",
+            "value": "0eb0f35c-6b20-4b5d-8bd5-fd348c018567"
+          },
+          "candidateId": {
+            "type": "string",
+            "value": "4c0b6b23-7ebc-428a-bc17-216631e953ef"
+          },
+          "poiname": {
+            "type": "string",
+            "value": "故宫博物院"
+          },
+          "lat": {
+            "type": "number",
+            "value": 39.917839
+          },
+          "lon": {
+            "type": "number",
+            "value": 116.397029
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"poiname\":\"故宫博物院\",\"lat\":39.917839,\"lon\":116.397029,\"address\":\"景山前街4号\",\"conditionEvidence\":[{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"风景名胜;风景名胜;世界遗产|科教文化服务;博物馆;博物馆\",\"retrievedAt\":\"2026-11-13T17:06:12.731768770Z\"}],\"matchSummary\":\"高德地图分类为“博物馆”\",\"candidateId\":\"4c0b6b23-7ebc-428a-bc17-216631e953ef\"}"
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "candidate-reply-tts",
+      "productIds": [
+        "B01"
+      ],
+      "channel": "tts",
+      "requestedText": "第1个，中国国家博物馆，东长安街16号天安门广场东侧，高德地图分类为“博物馆”；第2个，故宫博物院，景山前街4号，高德地图分类为“博物馆”；第3个，中央礼品文物管理中心，西兴隆街1号，高德地图分类为“博物馆”。请说第几个或具体地址名称。",
+      "elapsedMs": 1358,
+      "audioDurationMs": 20335,
+      "audioBytes": 650758,
+      "mime": "audio/wav",
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "finishedAt": "2026-11-13T17:06:14.593Z",
+  "passed": true,
+  "coveredProductIds": [
+    "A03",
+    "B01",
+    "B02"
+  ],
+  "byChannel": {
+    "synthetic-cloud-voice": {
+      "total": 2,
+      "passed": 2,
+      "elapsedMs": [
+        3530,
+        743
+      ]
+    },
+    "tts": {
+      "total": 1,
+      "passed": 1,
+      "elapsedMs": [
+        1358
+      ]
+    }
+  }
+}

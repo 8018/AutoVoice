@@ -1,0 +1,17 @@
+{
+  "phase": "diagnostic_unity_reference_gain",
+  "date": "2026-11-13",
+  "apkSha256": "42e94be6e5bb2bd138a0995807436a90e26b131b05897aac365e43ec4aeb5a92",
+  "sourceRevision": "2dc82d8 plus uncommitted render/capture fixes",
+  "fixture": "public command-24k-mono.wav repeated 13 times",
+  "measurement": "OpenAcousticEchoProbe speaker_only referenceGain=unity originalGain=0.11481537..0.11481537 elapsedMs=13800 playback=[rawSamples=219136 processedSamples=219040 rawToProcessedDb=29.50 segmentationStarts=3 bargeInStarts=3 bargeInSpeechFrames=232 bargeInFrames=1369 aecActiveBlocks=428] post_warmup=[rawSamples=187904 processedSamples=187808 rawToProcessedDb=33.09 segmentationStarts=2 bargeInStarts=2 bargeInSpeechFrames=160 bargeInFrames=1174 aecActiveBlocks=367]",
+  "probeCompleted": true,
+  "acousticAcceptancePassed": false,
+  "limitations": [
+    "User was asked to stay quiet; ambient conditions not independently controlled.",
+    "No microphone PCM is retained.",
+    "Aggregate energy ratio is not isolated AEC ERLE and cannot prove near-end speech preservation.",
+    "Probe completion is not an acoustic acceptance pass.",
+    "Diagnostic-only gain override; device output volume unchanged. Not a production acceptance result."
+  ]
+}

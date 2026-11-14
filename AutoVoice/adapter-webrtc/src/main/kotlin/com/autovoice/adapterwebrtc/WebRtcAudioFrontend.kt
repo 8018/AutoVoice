@@ -20,6 +20,8 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     private var invalidatedThrough = -1L
     private var nextRenderSample: Long? = null
     private var renderPending = ShortArray(0)
+    private var renderHeadOffset = 0
+    private var renderPendingStartNanos: Long? = null
     private var lastReferenceNanos: Long? = null
     private var playbackStartedNanos = 0L
     private var referenceBroken = false
@@ -28,7 +30,7 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
     override val echoCancellationActive: Boolean
         @Synchronized get() = !closed && processingFailure == null && !referenceBroken &&
             aecHealth == Health.HEALTHY && playbackId != null &&
-            lastReferenceNanos?.let { clockNanos() - it <= 200_000_000L } == true
+            lastReferenceNanos?.let { clockNanos() - it in 0..200_000_000L } == true
     var renderFailure: ErrorCode? = null
         private set
     private var frontendToken: ComponentToken? = null
@@ -195,7 +197,7 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
         }
         if (referenceBroken) return false
         if (renderQueue.size >= renderQueueCapacity) {
-            renderQueue.clear();renderPending = ShortArray(0)
+            renderQueue.clear();renderPending = ShortArray(0);renderHeadOffset = 0;renderPendingStartNanos = null
             referenceBroken = true;renderFailure = ErrorCode.RENDER_QUEUE_OVERFLOW;aecHealth = Health.UNAVAILABLE
             reportAec();return false
         }
@@ -207,24 +209,35 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
         if (this.playbackId?.let { it <= invalidatedThrough } == true) { clearReference();this.playbackId = null;reportAec() }
     }
     private fun clearReference() {
-        renderQueue.clear();renderPending = ShortArray(0);nextRenderSample = null;lastReferenceNanos = null
+        renderQueue.clear();renderPending = ShortArray(0);renderHeadOffset = 0;renderPendingStartNanos = null;nextRenderSample = null;lastReferenceNanos = null
         referenceBroken = false;renderFailure = null;aecHealth = Health.UNKNOWN
     }
     private fun consumeRender(): Int {
         val now = clockNanos()
-        while (renderQueue.firstOrNull()?.let { it.timestampNanos <= now } == true) {
-            val frame = renderQueue.removeFirst()
-            if (nextRenderSample != null && nextRenderSample != frame.startSample) {
-                renderQueue.clear();renderPending = ShortArray(0)
+        while (renderQueue.isNotEmpty()) {
+            val frame = renderQueue.first()
+            val sliceStartNanos = frame.timestampNanos + renderHeadOffset * 62_500L
+            // A queued 100ms AudioTrack write is not 100ms of already rendered sound.
+            // Advance APM only when each 10ms slice's first sample is due. Multiple
+            // capture calls from the same 32ms input block cannot replay a slice.
+            if (sliceStartNanos > now) break
+            val sliceStartSample = frame.startSample + renderHeadOffset
+            if (nextRenderSample != null && nextRenderSample != sliceStartSample) {
+                renderQueue.clear();renderPending = ShortArray(0);renderHeadOffset = 0;renderPendingStartNanos = null
                 referenceBroken = true;renderFailure = ErrorCode.RENDER_REFERENCE_STALE;aecHealth = Health.UNAVAILABLE
                 break
             }
-            nextRenderSample = frame.startSample + frame.validSamples
-            renderPending += decode(frame.pcm)
-            while (renderPending.size >= 160) {
-                backend.processRender(renderPending.copyOfRange(0,160))
-                renderPending = renderPending.copyOfRange(160,renderPending.size)
-                lastReferenceNanos = frame.timestampNanos + frame.validSamples * 1_000_000_000L / 16000
+            if (renderPending.isEmpty()) renderPendingStartNanos = sliceStartNanos
+            val count = minOf(160 - renderPending.size,frame.validSamples - renderHeadOffset)
+            renderPending += decode(frame.pcm.copyOfRange(renderHeadOffset * 2,(renderHeadOffset + count) * 2))
+            renderHeadOffset += count
+            nextRenderSample = sliceStartSample + count
+            if (renderHeadOffset == frame.validSamples) { renderQueue.removeFirst();renderHeadOffset = 0 }
+            if (renderPending.size == 160) {
+                backend.processRender(renderPending)
+                // Freshness refers to the presented first sample, never a future packet end.
+                lastReferenceNanos = requireNotNull(renderPendingStartNanos)
+                renderPending = ShortArray(0);renderPendingStartNanos = null
             }
         }
         if (playbackId == null) aecHealth = Health.UNKNOWN
@@ -232,6 +245,9 @@ class WebRtcAudioFrontend internal constructor(private val backend: WebRtcBacken
         else if (now - (lastReferenceNanos ?: playbackStartedNanos) > 200_000_000L) {
             renderFailure = ErrorCode.RENDER_REFERENCE_STALE;aecHealth = Health.UNAVAILABLE
         } else if (lastReferenceNanos != null) { renderFailure = null;aecHealth = Health.HEALTHY }
+        // This is the age of the last presented reference, not a hardware latency
+        // measurement. Capture currently carries no AudioRecord timestamp; its
+        // buffering latency still needs device calibration before claiming AEC quality.
         return ((now - (lastReferenceNanos ?: now)) / 1_000_000L).toInt().coerceIn(0,500)
     }
     @Synchronized override fun finishBatch(): FrontendBatch {

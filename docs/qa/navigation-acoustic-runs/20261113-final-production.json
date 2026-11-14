@@ -1,0 +1,20 @@
+{
+  "phase": "final_production_render_pcm",
+  "date": "2026-11-13",
+  "apkSha256": "29f389383d5edb30a693d5675c8526fe9b3c792e67370ac15a35bdd61d9be6ad",
+  "sourceRevision": "2dc82d8 plus uncommitted render/capture/reference-PCM fixes",
+  "fixture": "public command-24k-mono.wav repeated 13 times",
+  "measurement": "OpenAcousticEchoProbe speaker_only referenceGain=production originalGain=unobserved elapsedMs=13832 localTranscriptChars=0 playback=[rawSamples=219648 processedSamples=219520 rawToProcessedDb=30.95 segmentationStarts=1 bargeInStarts=1 bargeInSpeechFrames=150 bargeInFrames=1372 aecActiveBlocks=429] post_warmup=[rawSamples=187904 processedSamples=187776 rawToProcessedDb=32.02 segmentationStarts=0 bargeInStarts=0 bargeInSpeechFrames=105 bargeInFrames=1174 aecActiveBlocks=367]",
+  "probeCompleted": true,
+  "acousticAcceptancePassed": false,
+  "limitations": [
+    "User was asked to stay quiet; ambient conditions not independently controlled.",
+    "No microphone PCM is retained.",
+    "Aggregate energy ratio is not isolated AEC ERLE and cannot prove near-end speech preservation.",
+    "Probe completion is not an acoustic acceptance pass.",
+    "Local ASR returned no text for this pure-playback capture. Cloud ASR on microphone audio and user double-talk selection remain unverified."
+  ],
+  "localEchoTranscriptChars": 0,
+  "deviceDoubleTalkStatus": "failed_user_report_echo_still_mixed",
+  "deliveryStatus": "user_requested_switch_back_to_existing_iflytek_app"
+}

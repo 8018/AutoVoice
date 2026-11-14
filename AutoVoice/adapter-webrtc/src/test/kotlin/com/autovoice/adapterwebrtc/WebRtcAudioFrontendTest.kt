@@ -12,11 +12,12 @@ class WebRtcAudioFrontendTest {
         val capture = mutableListOf<ShortArray>()
         val valid = mutableListOf<Int>()
         val renders = mutableListOf<ShortArray>()
+        val delays = mutableListOf<Int>()
         val resets = mutableListOf<VadPurpose>()
         var closes = 0
         var speech: (Int, VadPurpose) -> Boolean = { _, _ -> true }
         override fun processCapture(input: ShortArray, delayMs: Int, validSamples: Int): CaptureResult {
-            capture += input.copyOf();valid += validSamples
+            capture += input.copyOf();valid += validSamples;delays += delayMs
             return CaptureResult(ShortArray(160) { (input[it] + 1).toShort() },
                 if (validSamples == 160) VadPurpose.entries.associateWith { speech(capture.size - 1, it) } else emptyMap())
         }
@@ -217,6 +218,57 @@ class WebRtcAudioFrontendTest {
             assertEquals(before,backend.capture.size);assertTrue(backend.resets.isEmpty());f.close()
         }
     }
+    @Test fun `hundred millisecond packet advances render only at each ten millisecond presentation time`() {
+        val backend = FakeBackend()
+        var now = 1_000_000_000L
+        val f = WebRtcAudioFrontend(backend, config(), clockNanos = { now })
+        try {
+            f.acceptRender(RenderReferenceFrame(1,0,now,pcm(ShortArray(1600) { (it / 160).toShort() })))
+            f.process(ByteArray(1024)) // Three capture calls share the same clock instant.
+            assertEquals(1,backend.renders.size)
+            assertEquals(listOf(0,0,0),backend.delays)
+            now += 9_000_000
+            f.process(ByteArray(1024))
+            assertEquals(1,backend.renders.size)
+            assertEquals(9,backend.delays.last())
+            now += 1_000_000
+            f.process(ByteArray(1024))
+            assertEquals(2,backend.renders.size)
+            now += 80_000_000
+            f.process(ByteArray(1024))
+            assertEquals(10,backend.renders.size)
+            backend.renders.forEachIndexed { index, samples -> assertArrayEquals(ShortArray(160) { index.toShort() },samples) }
+            f.process(ByteArray(1024))
+            assertEquals(10,backend.renders.size)
+        } finally { f.close() }
+    }
+    @Test fun `future reference never grants healthy echo protection and partial tails retain their presentation time`() {
+        val backend = FakeBackend()
+        var now = 1_000_000_000L
+        val f = WebRtcAudioFrontend(backend, config(), clockNanos = { now })
+        try {
+            val start = now + 10_000_000
+            f.acceptRender(RenderReferenceFrame(1,0,start,pcm(ShortArray(240) { 4 })))
+            f.process(ByteArray(1024))
+            assertTrue(backend.renders.isEmpty())
+            assertFalse(f.echoCancellationActive)
+            now = start
+            f.process(ByteArray(1024))
+            assertEquals(1,backend.renders.size)
+            f.acceptRender(RenderReferenceFrame(1,240,start + 15_000_000,pcm(ShortArray(80) { 5 })))
+            now = start + 10_000_000
+            f.process(ByteArray(1024))
+            assertEquals(1,backend.renders.size)
+            now = start + 15_000_000
+            f.process(ByteArray(1024))
+            assertEquals(2,backend.renders.size)
+            assertArrayEquals(ShortArray(80) { 4 } + ShortArray(80) { 5 },backend.renders.last())
+            assertEquals(5,backend.delays.last())
+            now = start + 211_000_000
+            f.process(ByteArray(1024))
+            assertFalse(f.echoCancellationActive)
+        } finally { f.close() }
+    }
     @Test fun `render queue consumes each real frame once and rejects old playback generation`() {
         val backend = FakeBackend()
         var now = 1_000_000_000L
@@ -225,6 +277,9 @@ class WebRtcAudioFrontendTest {
         f.invalidateRender(4)
         assertFalse(f.acceptRender(RenderReferenceFrame(4,160,now,ByteArray(320))))
         assertTrue(f.acceptRender(RenderReferenceFrame(5,0,now,pcm(ShortArray(320) { 5 }))))
+        f.process(ByteArray(1024))
+        assertEquals(1, backend.renders.size)
+        now += 10_000_000
         f.process(ByteArray(1024))
         assertEquals(2, backend.renders.size)
         assertTrue(backend.renders.all { it.contentEquals(ShortArray(160) { 5 }) })
@@ -337,7 +392,7 @@ class WebRtcAudioFrontendTest {
         val f = WebRtcAudioFrontend(backend,config(),clockNanos = { 0 },aecReporter = reporter)
         try {
             f.acceptRender(RenderReferenceFrame(5,0,0,pcm(ShortArray(240) { 5 })))
-            f.process(ByteArray(1024)) // One rendered frame plus80 pending real samples.
+            f.process(ByteArray(1024)) // One rendered frame plus80 queued future samples.
             assertEquals(com.autovoice.voicecore.health.Health.HEALTHY,f.aecHealth)
             f.acceptRender(RenderReferenceFrame(5,240,0,pcm(ShortArray(80) { 5 })))
             f.invalidateRender(6)

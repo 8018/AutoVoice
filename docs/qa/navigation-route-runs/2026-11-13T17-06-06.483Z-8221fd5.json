@@ -1,0 +1,187 @@
+{
+  "suite": "navigation-route-v1",
+  "revision": "8221fd52f6e5b7f0cdec92904bc6b239538e35de",
+  "deployedRelease": "b8a9f275b7792a4e0ff68b20741ea313654e7c47",
+  "readOnly": true,
+  "measurement": "client send-to-result including network, official coordinate conversion and route service",
+  "results": [
+    {
+      "id": "D02-route-mixed",
+      "input": {
+        "origin": {
+          "latitude": 39.907291,
+          "longitude": 116.391317,
+          "coordinateSystem": "WGS84"
+        },
+        "destination": {
+          "latitude": 39.865246,
+          "longitude": 116.378517,
+          "coordinateSystem": "GCJ02"
+        },
+        "waypoints": [
+          {
+            "latitude": 39.894,
+            "longitude": 116.315,
+            "coordinateSystem": "WGS84"
+          }
+        ],
+        "preference": "DEFAULT"
+      },
+      "operationId": "46bf4477-cb2c-4f40-b437-72358a54fbea",
+      "elapsedMs": 147,
+      "payload": {
+        "operationId": "46bf4477-cb2c-4f40-b437-72358a54fbea",
+        "status": "OK",
+        "routeSetId": "ddf7674e-93b5-40ca-b821-08df81c813df",
+        "plannedAtMs": 1794589567429,
+        "source": "AMAP_WEB",
+        "origin": {
+          "latitude": 39.90869140625,
+          "longitude": 116.397556966146,
+          "coordinateSystem": "GCJ02"
+        },
+        "destination": {
+          "latitude": 39.865246,
+          "longitude": 116.378517,
+          "coordinateSystem": "GCJ02"
+        },
+        "waypoints": [
+          {
+            "latitude": 39.895285101997,
+            "longitude": 116.321101888021,
+            "coordinateSystem": "GCJ02"
+          }
+        ],
+        "preference": "DEFAULT",
+        "routes": [
+          {
+            "id": "ddf7674e-93b5-40ca-b821-08df81c813df:1",
+            "distanceMeters": 22066,
+            "durationSeconds": 2084,
+            "tollYuan": 0
+          },
+          {
+            "id": "ddf7674e-93b5-40ca-b821-08df81c813df:2",
+            "distanceMeters": 20827,
+            "durationSeconds": 2051,
+            "tollYuan": 0
+          },
+          {
+            "id": "ddf7674e-93b5-40ca-b821-08df81c813df:3",
+            "distanceMeters": 22710,
+            "durationSeconds": 2243,
+            "tollYuan": 0
+          }
+        ]
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "D02-route-mixed-order",
+      "input": {
+        "origin": {
+          "latitude": 39.907291,
+          "longitude": 116.391317,
+          "coordinateSystem": "WGS84"
+        },
+        "destination": {
+          "latitude": 39.894,
+          "longitude": 116.315,
+          "coordinateSystem": "WGS84"
+        },
+        "waypoints": [
+          {
+            "latitude": 39.865246,
+            "longitude": 116.378517,
+            "coordinateSystem": "GCJ02"
+          },
+          {
+            "latitude": 39.902753,
+            "longitude": 116.410886,
+            "coordinateSystem": "GCJ02"
+          }
+        ],
+        "preference": "AVOID_HIGHWAYS"
+      },
+      "operationId": "1519f6ec-2e04-4222-93d1-2d155b8b1b5d",
+      "elapsedMs": 213,
+      "payload": {
+        "operationId": "1519f6ec-2e04-4222-93d1-2d155b8b1b5d",
+        "status": "OK",
+        "routeSetId": "0db64b4d-09f4-4cef-9eeb-4159cdf6b17c",
+        "plannedAtMs": 1794589567591,
+        "source": "AMAP_WEB",
+        "origin": {
+          "latitude": 39.90869140625,
+          "longitude": 116.397556966146,
+          "coordinateSystem": "GCJ02"
+        },
+        "destination": {
+          "latitude": 39.895285101997,
+          "longitude": 116.321101888021,
+          "coordinateSystem": "GCJ02"
+        },
+        "waypoints": [
+          {
+            "latitude": 39.865246,
+            "longitude": 116.378517,
+            "coordinateSystem": "GCJ02"
+          },
+          {
+            "latitude": 39.902753,
+            "longitude": 116.410886,
+            "coordinateSystem": "GCJ02"
+          }
+        ],
+        "preference": "AVOID_HIGHWAYS",
+        "routes": [
+          {
+            "id": "0db64b4d-09f4-4cef-9eeb-4159cdf6b17c:1",
+            "distanceMeters": 27432,
+            "durationSeconds": 3347,
+            "tollYuan": 0
+          },
+          {
+            "id": "0db64b4d-09f4-4cef-9eeb-4159cdf6b17c:2",
+            "distanceMeters": 28780,
+            "durationSeconds": 3515,
+            "tollYuan": 0
+          },
+          {
+            "id": "0db64b4d-09f4-4cef-9eeb-4159cdf6b17c:3",
+            "distanceMeters": 28347,
+            "durationSeconds": 3315,
+            "tollYuan": 0
+          }
+        ]
+      },
+      "passed": true,
+      "failures": []
+    },
+    {
+      "id": "I02-route-missing-origin",
+      "input": {
+        "origin": null,
+        "destination": {
+          "latitude": 39.865246,
+          "longitude": 116.378517,
+          "coordinateSystem": "GCJ02"
+        },
+        "waypoints": [],
+        "preference": "DEFAULT"
+      },
+      "operationId": "224441ac-725e-42b5-a40b-31b63f1f4d1c",
+      "elapsedMs": 35,
+      "payload": {
+        "operationId": "224441ac-725e-42b5-a40b-31b63f1f4d1c",
+        "status": "ORIGIN_REQUIRED",
+        "waypoints": [],
+        "routes": []
+      },
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "passed": true
+}

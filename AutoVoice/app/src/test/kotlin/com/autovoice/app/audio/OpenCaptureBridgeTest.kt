@@ -39,6 +39,9 @@ class OpenCaptureBridgeTest {
         var retentionBudget = Int.MAX_VALUE
         val resets = mutableListOf<VadPurpose>()
         var auxiliary = emptySet<VadPurpose>()
+        var auxiliarySpeech = true
+        var auxiliaryStart = true
+        var duringProcess: () -> Unit = {}
         var mainEndAt: Long? = null
         var seed = emptyList<PositionedPcmBlock>()
         override fun resetVad(purpose: VadPurpose) { resets.add(purpose) }
@@ -51,12 +54,13 @@ class OpenCaptureBridgeTest {
         private val input = java.io.ByteArrayOutputStream()
         override fun startTurn() { starts++;tracking = true;observedEnd = null;input.reset() }
         override fun process(block: ByteArray): FrontendBatch {
+            duringProcess()
             calls++;check(!fail) { "controlled native failure" }
             val processed = ByteArray(block.size) { (block[it]+1).toByte() }
             val first = tracking && input.size() == 0
             if (tracking) { check(input.size()+processed.size <= retentionBudget);input.write(processed) }
             val observations = (if (first) listOf(VadObservation(position,512,true,events = listOf(VadEvent.SpeechStart))) else emptyList()) +
-                auxiliary.map { VadObservation(position,512,true,events = listOf(VadEvent.SpeechStart),purpose = it) } +
+                auxiliary.map { VadObservation(position,512,auxiliarySpeech,events = if (auxiliaryStart) listOf(VadEvent.SpeechStart) else emptyList(),purpose = it) } +
                 (if (position+512 == mainEndAt) listOf(VadObservation(position,512,false,events = listOf(VadEvent.SpeechEnd))) else emptyList())
             return FrontendBatch(listOf(PositionedPcmBlock(position,processed)),observations).also { position += block.size/2 }
         }
@@ -119,7 +123,7 @@ class OpenCaptureBridgeTest {
         r.close()
     }
     private class Pipeline : RecordingPipeline {
-        override val dialogueSnapshot = DialogueSnapshot()
+        override var dialogueSnapshot = DialogueSnapshot()
         val local = mutableListOf<ByteArray>();val cloud = mutableListOf<ByteArray>()
         val streamed = java.io.ByteArrayOutputStream();var finish = 0;var cancels = 0
         override fun onWake() = Unit
@@ -137,7 +141,8 @@ class OpenCaptureBridgeTest {
         override fun startRealtimeChat() { chatStarts++ }
         override fun finishRealtimeChat() { chatFinishes++ }
         override fun onInteractionExpired(interactionId: String) = Unit
-        override fun resetDialogue() = Unit
+        var resets = 0
+        override fun resetDialogue() { resets++ }
     }
     private fun wake() = object : WakeWordPort {
         override val keyword = "test"
@@ -196,6 +201,105 @@ class OpenCaptureBridgeTest {
         assertEquals(6,f.calls);assertEquals(listOf(VadPurpose.FOLLOW_UP),f.resets)
         r.close()
     }
+    @Test fun `barge pre roll excludes unprotected history and caps acoustic onset lead to twenty milliseconds`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);auxiliaryStart = false;auxiliarySpeech = false }
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        r.setOpenMicBargeInListening(true)
+        repeat(3) { sourceBlock(r,1) }
+        f.echoCancellationActive = true
+        sourceBlock(r,2)
+        f.auxiliarySpeech = true
+        sourceBlock(r,3)
+        f.auxiliaryStart = true
+        sourceBlock(r,4)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().last(),VadPurpose.BARGE_IN))
+        assertTrue(r.start(true))
+        assertEquals(2048L-320L,f.seed.first().startSample)
+        assertTrue(f.seed.flatMap { it.pcm.asIterable() }.none { it == 2.toByte() })
+        r.close()
+    }
+
+    @Test fun `reference that becomes ready during a batch cannot certify earlier samples`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN) }
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        r.setOpenMicBargeInListening(true)
+        f.duringProcess = { f.echoCancellationActive = true }
+        sourceBlock(r,1)
+        assertFalse(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN))
+        r.close()
+    }
+
+    @Test fun `barge capture cancels before uploading lost reference batch and keeps current dialogue`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);echoCancellationActive = true }
+        val p = Pipeline().apply { dialogueSnapshot = DialogueSnapshot(com.autovoice.voicebusiness.dialog.DialogueState.SPEAKING,"interaction","choices") }
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{true},{})
+        c.onForeground()
+        c.onDialogueState(p.dialogueSnapshot)
+        r.setOpenMicBargeInListening(true);sourceBlock(r,1)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN))
+        val start = RecordingCoordinator::class.java.getDeclaredMethod("startTurn",Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType)
+        start.isAccessible = true;start.invoke(c,true,true,false)
+        f.echoCancellationActive = false;sourceBlock(r,99)
+        f.echoCancellationActive = true;sourceBlock(r,88)
+        c.stopTurn()
+        assertFalse(c.isRecording)
+        assertEquals(1,p.cancels)
+        assertEquals(0,p.resets)
+        assertEquals("choices",p.dialogueSnapshot.turnId)
+        assertTrue(p.cloud.isEmpty());assertTrue(p.local.isEmpty());assertEquals(0,p.finish)
+        assertTrue(p.streamed.toByteArray().none { it == 100.toByte() || it == 89.toByte() })
+        sourceBlock(r,7)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN),
+            "reference recovery must allow another interruption without a new wake")
+        c.close()
+    }
+
+    @Test fun `admission terminal retires old playback guard even if replacement output starts before user tail drains`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);echoCancellationActive = true }
+        val p = Pipeline()
+        var speaking = true
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{speaking},{})
+        r.setOpenMicBargeInListening(true);sourceBlock(r,1)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN))
+        val start = RecordingCoordinator::class.java.getDeclaredMethod("startTurn",Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType)
+        start.isAccessible = true;start.invoke(c,true,true,false)
+        speaking = false;f.echoCancellationActive = false
+        c.onPlaybackStage(com.autovoice.tts.PlaybackStage.INTERRUPTED)
+        speaking = true
+        c.onPlaybackStage(com.autovoice.tts.PlaybackStage.STARTED)
+        repeat(10) { sourceBlock(r,9) }
+        c.stopTurn()
+        assertEquals(0,p.cancels);assertEquals(1,p.finish)
+        assertTrue(p.streamed.toByteArray().contains(10.toByte()))
+        assertEquals(1,p.cloud.size)
+        c.close()
+    }
+
+    @Test fun `reference loss between barge detection and capture start rejects candidate without resetting dialogue`() = runTest {
+        val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);echoCancellationActive = true }
+        val p = Pipeline().apply { dialogueSnapshot = DialogueSnapshot(com.autovoice.voicebusiness.dialog.DialogueState.SPEAKING,"interaction","choices") }
+        val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
+            frontendFactory = { _,_,_ -> f },vadFactory = { null },captureEffectsFactory = { effects() })
+        val c = RecordingCoordinator(r,wake(),p,backgroundScope,{true},{})
+        c.onDialogueState(p.dialogueSnapshot)
+        r.setOpenMicBargeInListening(true);sourceBlock(r,1)
+        assertTrue(r.detectAuxiliarySpeech(r.drainFrontendBatches().single(),VadPurpose.BARGE_IN))
+        f.echoCancellationActive = false
+        val start = RecordingCoordinator::class.java.getDeclaredMethod("startTurn",Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType,Boolean::class.javaPrimitiveType)
+        start.isAccessible = true;start.invoke(c,true,true,false)
+        assertFalse(c.isRecording)
+        assertEquals(0,p.resets)
+        assertNull(r.frontendFailure)
+        assertEquals("choices",p.dialogueSnapshot.turnId)
+        c.close()
+    }
+
     @Test fun `native echo protection permits barge in and revoked protection rejects queued speech`() = runTest {
         val f = Front().apply { auxiliary = setOf(VadPurpose.BARGE_IN);echoCancellationActive = true }
         val r = AudioRecorder(ContextWrapper(null),testAudioSource = TestAudioSource(ByteArray(1024)),scope = backgroundScope,
@@ -221,7 +325,7 @@ class OpenCaptureBridgeTest {
         r.setOpenMicBargeInListening(true);sourceBlock(r,2);val fresh = r.drainFrontendBatches().single()
         assertFalse(r.openMicBargeInAvailable);assertFalse(r.detectAuxiliarySpeech(fresh,VadPurpose.BARGE_IN))
         assertTrue(r.detectAuxiliarySpeech(fresh,VadPurpose.FOLLOW_UP))
-        assertEquals(listOf(VadPurpose.FOLLOW_UP,VadPurpose.FOLLOW_UP,VadPurpose.BARGE_IN),f.resets)
+        assertEquals(listOf(VadPurpose.FOLLOW_UP,VadPurpose.FOLLOW_UP,VadPurpose.BARGE_IN,VadPurpose.BARGE_IN),f.resets)
         r.close()
     }
 

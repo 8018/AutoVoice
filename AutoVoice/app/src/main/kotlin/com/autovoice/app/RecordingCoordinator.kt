@@ -15,7 +15,9 @@ import kotlinx.coroutines.launch
 
 /** Recorder-owned input epoch; null means idle DSP. Positions remain original capture samples. */
 data class CaptureFrontendBatch(val inputEpoch: Long?, val batch: com.autovoice.audiofrontend.FrontendBatch,
-    val followUpEpoch: Long? = null, val bargeInEpoch: Long? = null, val speechConfirmedForInput: Boolean = false)
+    val followUpEpoch: Long? = null, val bargeInEpoch: Long? = null, val speechConfirmedForInput: Boolean = false,
+    /** Evidence from production time, never inferred later from a recovered render reference. */
+    val echoReferenceValid: Boolean = false, val bargeInPreRollStartSample: Long? = null)
 data class CaptureFrontendFailure(val inputEpoch: Long?, val error: com.autovoice.voicecore.health.ComponentError)
 data class CaptureCompletion(val inputEpoch: Long?, val batches: List<CaptureFrontendBatch>,
     val tail: ByteArray, val segments: List<ByteArray>, val failure: CaptureFrontendFailure? = null)
@@ -123,6 +125,7 @@ internal class RecordingCoordinator(
     @Volatile private var recording = false
     @Volatile private var chatLocked = false
     @Volatile private var wakeTurn = false
+    @Volatile private var playbackCandidateCapture = false
     @Volatile private var startingTurn = false
     @Volatile private var cloudVadActive = false
     @Volatile private var dialogueSnapshot = DialogueSnapshot()
@@ -172,6 +175,7 @@ internal class RecordingCoordinator(
             onLog("检测到新轮录音，停止旧轮播放（barge-in）")
         }
         recording = true
+        playbackCandidateCapture = !interruptPlayback && includeBargeInPreRoll && isPlaybackSpeaking()
         resetCloudStreamGate()
         wakeTurn = fromWake
         synchronized(denoisedBlocks) { denoisedBlocks.clear() }
@@ -180,8 +184,16 @@ internal class RecordingCoordinator(
             recording = false
             wakeTurn = false
             pipeline.onListeningStop()
-            pipeline.resetDialogue()
-            updateState { it.copy(recording = false, permissionRequired = true) }
+            if (playbackCandidateCapture) {
+                // Reference can disappear between the VAD observation and opening the capture.
+                // Reject this candidate without ending the navigation task or blaming permission.
+                playbackCandidateCapture = false
+                updateState { it.copy(recording = false) }
+                rearmBargeInAfterCapture()
+            } else {
+                pipeline.resetDialogue()
+                updateState { it.copy(recording = false, permissionRequired = true) }
+            }
             rearmWakeWhenIdle()
             return
         }
@@ -254,6 +266,9 @@ internal class RecordingCoordinator(
 
     private fun stopTurnAfterDrain() {
         if (!recording || chatLocked) return
+        if (playbackCandidateCapture && isPlaybackSpeaking() && capture.frontendBatchSignal != null &&
+            !capture.openMicBargeInAvailable
+        ) { cancelTurn();return }
         val completion = capture.stopAndSnapshot()
         if (completion != null) {
             if (completion.inputEpoch != activeInputEpoch || completion.failure != null) {
@@ -262,8 +277,13 @@ internal class RecordingCoordinator(
             }
             // Snapshot owns its accepted range even if ongoing idle capture fails now.
             consumeCapturedBatches(completion.batches,allowStop = false)
+            if (!recording) return // An unprotected batch rejected the candidate during draining.
+            if (playbackCandidateCapture && isPlaybackSpeaking() && !capture.openMicBargeInAvailable) {
+                cancelTurn();return
+            }
         }
         recording = false
+        playbackCandidateCapture = false
         if (capture.frontendBatchSignal == null) resetCloudStreamGate()
         wakeTurn = false
         if (completion == null) capture.stop()
@@ -309,6 +329,7 @@ internal class RecordingCoordinator(
     fun cancelTurn(rearm: Boolean = true) {
         if (!recording || chatLocked) return
         recording = false
+        playbackCandidateCapture = false
         resetCloudStreamGate()
         wakeTurn = false
         capture.abortInput()
@@ -323,6 +344,9 @@ internal class RecordingCoordinator(
     }
 
     fun onPlaybackStage(stage: PlaybackStage) {
+        // Identity-filtered terminal events retire this old-output guard permanently. A later
+        // reply must not reinstate it while the admitted user's remaining input is draining.
+        if (stage != PlaybackStage.STARTED) playbackCandidateCapture = false
         // Once sound starts, only echo-protected detection may establish a candidate capture.
         // Invalidate queued silent-preparation observations before arming the playback gate.
         if (stage == PlaybackStage.STARTED) capture.setFollowUpListening(false)
@@ -394,6 +418,12 @@ internal class RecordingCoordinator(
                 continue
             }
             if (!recording || event.inputEpoch != activeInputEpoch) continue
+            if (playbackCandidateCapture && isPlaybackSpeaking() && !event.echoReferenceValid) {
+                // Never label or upload this batch as user speech. cancelTurn rejects admission,
+                // discards retained segments, and rearms protected detection for the same reply.
+                cancelTurn()
+                continue
+            }
             if (event.speechConfirmedForInput && !cloudVadActive) onVadEvent(VadEvent.SpeechStart)
             for (block in event.batch.processedBlocks) {
                 val observations = event.batch.vadObservations.filter {

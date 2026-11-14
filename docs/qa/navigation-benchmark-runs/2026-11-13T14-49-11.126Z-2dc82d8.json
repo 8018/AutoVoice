@@ -1,0 +1,1944 @@
+{
+  "suiteVersion": 3,
+  "suiteFingerprint": "514258fd8661a1d6e5a680ebb8d88a7521df7dde52b855555e33a48cf367ba49",
+  "sourceDirty": true,
+  "revision": "2dc82d8fb1c8f8636c345f0985b6043518b3c574",
+  "deployedRelease": "b8a9f275b7792a4e0ff68b20741ea313654e7c47",
+  "repetitions": 1,
+  "focus": null,
+  "startedAt": "2026-11-13T14:49:11.150Z",
+  "environment": "dev",
+  "endpoint": "ws://127.0.0.1:18090/ws",
+  "protocol": "1.2",
+  "measurement": "Client monotonic send-to-final-reply; includes network, model and search. Excludes handshake, ASR, TTS and device execution.",
+  "results": [
+    {
+      "id": "name-1",
+      "scenario": "name",
+      "productIds": [
+        "A01",
+        "B01"
+      ],
+      "expected": "按名称返回有效候选，选择前不执行",
+      "input": "导航到北京南站",
+      "elapsedMs": 1060,
+      "firstResponseMs": 1059,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"6efedfa9-3c3e-4ccd-a05a-d0c1287ff4d8\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "70872267-cadd-45e6-b7c5-dd0c0c0ed983"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "city-1",
+      "scenario": "city",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "候选限定在上海",
+      "input": "带我去上海博物馆",
+      "elapsedMs": 1816,
+      "firstResponseMs": 1816,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号；第2个，上海博物馆(东馆)，世纪大道1952号(上海科技馆地铁站8号口步行480米)。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "上海博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"candidateId\":\"90267f59-0226-4519-849d-7c4d0b38388a\"},{\"poiname\":\"上海博物馆(东馆)\",\"lat\":31.219913,\"lon\":121.538745,\"address\":\"世纪大道1952号(上海科技馆地铁站8号口步行480米)\",\"candidateId\":\"e226c141-f17d-4d33-8373-eb5a1a1260d6\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "df8b507a-b9cd-43a3-acaa-e1f504b4c111"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"上海博物馆\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "entrance-1",
+      "scenario": "entrance",
+      "productIds": [
+        "A04"
+      ],
+      "expected": "保留航站楼限定",
+      "input": "导航到上海虹桥机场T2航站楼",
+      "elapsedMs": 1107,
+      "firstResponseMs": 1107,
+      "type": "reply",
+      "text": "第1个，上海虹桥国际机场2号航站楼，申达一路1号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "上海虹桥机场T2航站楼"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海虹桥国际机场2号航站楼\",\"lat\":31.19418,\"lon\":121.328711,\"address\":\"申达一路1号\",\"candidateId\":\"f3769535-ad89-4a81-b1e8-2cc8f733df0c\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "f0e94d41-a114-4287-b81a-52dd7a25cae4"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"上海虹桥机场T2航站楼\",\"city\":\"上海\",\"entrance\":\"T2\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "numeric_city-1",
+      "scenario": "numeric_city",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "三亚地名不能改成数字",
+      "input": "导航到三亚凤凰国际机场",
+      "elapsedMs": 913,
+      "firstResponseMs": 913,
+      "type": "reply",
+      "text": "第1个，三亚凤凰国际机场，机场路。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "三亚凤凰国际机场"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"三亚凤凰国际机场\",\"lat\":18.30341,\"lon\":109.414038,\"address\":\"机场路\",\"candidateId\":\"d2878c6e-1c07-4d2b-9367-4d7447e7959a\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "bacb875c-5a0a-43ab-952a-b643d62da6cc"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"三亚凤凰国际机场\",\"city\":\"三亚\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "brand-1",
+      "scenario": "brand",
+      "productIds": [
+        "A08"
+      ],
+      "expected": "保留北京及星巴克品牌条件",
+      "input": "找北京的星巴克",
+      "elapsedMs": 2411,
+      "firstResponseMs": 2410,
+      "type": "reply",
+      "text": "第1个，星巴克(北京太古里臻选旗舰店)，北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013，高德名称含“星巴克”；第2个，星巴克(新闻大厦店)，建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)，高德名称含“星巴克”；第3个，星巴克(北京凯恒店)，北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)，高德名称含“星巴克”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "星巴克"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"星巴克(北京太古里臻选旗舰店)\",\"lat\":39.934478,\"lon\":116.454755,\"address\":\"北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京太古里臻选旗舰店)\",\"retrievedAt\":\"2026-11-13T14:49:19.636184254Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"243ce262-0ad9-49f4-9448-2a9443bbb687\"},{\"poiname\":\"星巴克(新闻大厦店)\",\"lat\":39.907462,\"lon\":116.421919,\"address\":\"建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(新闻大厦店)\",\"retrievedAt\":\"2026-11-13T14:49:19.993267138Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"eb430010-1aed-40bc-86a7-120b63a485cd\"},{\"poiname\":\"星巴克(北京凯恒店)\",\"lat\":39.92389,\"lon\":116.43271,\"address\":\"北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京凯恒店)\",\"retrievedAt\":\"2026-11-13T14:49:20.398466055Z\"}],\"matchSummary\":\"高德名称含“星巴克”\",\"candidateId\":\"6ded3ff4-9f96-43b4-b495-fbf0078e93eb\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "fdde6d1e-b405-4a8d-9214-160a3d930f3d"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"星巴克\",\"city\":\"北京\",\"constraints\":[{\"brand\":\"星巴克\"}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "opening-1",
+      "scenario": "opening",
+      "productIds": [
+        "A08",
+        "I01"
+      ],
+      "expected": "不能核验营业时明确未知，不伪称满足",
+      "input": "找北京现在营业的咖啡店",
+      "elapsedMs": 988,
+      "firstResponseMs": 988,
+      "type": "reply",
+      "text": "地图无法核验“当前营业”。请补充地点名称，或说明可以放宽哪些条件。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "boundary_pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "charging-1",
+      "scenario": "charging",
+      "productIds": [
+        "A06",
+        "H01"
+      ],
+      "expected": "返回真实充电站，不编造空闲桩",
+      "input": "找北京南站附近的充电站",
+      "elapsedMs": 2630,
+      "firstResponseMs": 2630,
+      "type": "reply",
+      "text": "充电桩空闲状态未知。第1个，北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)，北京南站立体停车场；第2个，壳牌汽车充电站(静态交通北京南站充电站交流区)，开阳路立体停车楼二层；第3个，小桔充电站(北京壳牌南站立体停车楼)，开阳路与开阳里三街交叉口北60米。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "充电站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)\",\"lat\":39.866047,\"lon\":116.374664,\"address\":\"北京南站立体停车场\",\"candidateId\":\"437efa0e-c2e6-4778-ba1c-b463cb50bfd8\"},{\"poiname\":\"壳牌汽车充电站(静态交通北京南站充电站交流区)\",\"lat\":39.866023,\"lon\":116.37463,\"address\":\"开阳路立体停车楼二层\",\"candidateId\":\"1a3066ad-5f1b-4e70-a762-1c1ef488abe5\"},{\"poiname\":\"小桔充电站(北京壳牌南站立体停车楼)\",\"lat\":39.866044,\"lon\":116.374305,\"address\":\"开阳路与开阳里三街交叉口北60米\",\"candidateId\":\"3bd9e014-a2cd-4666-825d-312362309c9f\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "798313e6-6cd1-4ffc-86c8-6a33e05e9946"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"充电站\",\"city\":\"北京\",\"reference\":\"北京南站\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "energy-1",
+      "scenario": "energy",
+      "productIds": [
+        "H03",
+        "I01"
+      ],
+      "expected": "缺车辆数据不得生成保证可达的补能方案",
+      "input": "到北京南站至少留两成电，帮我规划补能",
+      "elapsedMs": 919,
+      "firstResponseMs": 919,
+      "type": "reply",
+      "text": "暂时缺少可核验的行驶路线、带采样时间的车辆荷电状态、车辆与充电桩兼容数据以及经验证的能耗，无法规划这次补能。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "boundary_pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "trip-1",
+      "scenario": "trip",
+      "productIds": [
+        "D02",
+        "D03"
+      ],
+      "expected": "有序两站草稿，先南站后西站",
+      "input": "先去北京南站，再去北京西站",
+      "elapsedMs": 1547,
+      "firstResponseMs": 1547,
+      "type": "reply",
+      "text": "请查看行程草稿",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "draft_trip",
+        "slots": {
+          "stops": {
+            "type": "string",
+            "value": "[{\"query\":\"北京南站\",\"candidates\":[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\"}]},{\"query\":\"北京西站\",\"candidates\":[{\"poiname\":\"北京西站\",\"lat\":39.894912,\"lon\":116.322033,\"address\":\"莲花池东路118号\"}]}]"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.resolve.multi_stop"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "home-1",
+      "scenario": "home",
+      "productIds": [
+        "C01",
+        "I01"
+      ],
+      "expected": "委派端侧常用地址，不编造家庭地址",
+      "input": "回家",
+      "elapsedMs": 33,
+      "firstResponseMs": 32,
+      "type": "reply",
+      "text": "请在支持常用地址的设备上设置和使用家或公司地址。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "boundary_pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "live_eta-1",
+      "scenario": "live_eta",
+      "productIds": [
+        "F01",
+        "I01"
+      ],
+      "expected": "没有活动路线不能编造剩余时间",
+      "input": "还有多久到",
+      "elapsedMs": 36,
+      "firstResponseMs": 36,
+      "type": "reply",
+      "text": "当前行程的实时剩余时间和距离请在地图导航中查看。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "boundary_pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "readonly-1",
+      "scenario": "readonly",
+      "productIds": [
+        "D07"
+      ],
+      "expected": "询问耗时只预览；选中后仍不启动",
+      "input": "去北京南站要多久，只查询路线，不开始导航",
+      "elapsedMs": 1108,
+      "firstResponseMs": 1108,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "routePreviewPreference": {
+            "type": "string",
+            "value": "DEFAULT"
+          },
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"de865243-911a-418f-9db8-030fd0c71b19\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "ab7f4b32-2862-43c2-acab-71d9dd850fa0"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\",\"routePreviewPreference\":\"DEFAULT\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "readonly-2",
+      "scenario": "readonly",
+      "productIds": [
+        "D07"
+      ],
+      "expected": "询问耗时只预览；选中后仍不启动",
+      "input": "第一个",
+      "elapsedMs": 31,
+      "firstResponseMs": 31,
+      "type": "reply",
+      "text": "正在查询去北京南站的路线。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "preview_routes",
+        "slots": {
+          "selectionId": {
+            "type": "string",
+            "value": "ab7f4b32-2862-43c2-acab-71d9dd850fa0"
+          },
+          "candidateId": {
+            "type": "string",
+            "value": "de865243-911a-418f-9db8-030fd0c71b19"
+          },
+          "poiname": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "lat": {
+            "type": "number",
+            "value": 39.865246
+          },
+          "lon": {
+            "type": "number",
+            "value": 116.378517
+          },
+          "routePreviewPreference": {
+            "type": "string",
+            "value": "DEFAULT"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "negative-1",
+      "scenario": "negative",
+      "productIds": [
+        "B02",
+        "B08"
+      ],
+      "expected": "否定选择不执行；明确选择才输出导航动作",
+      "input": "导航到北京南站",
+      "elapsedMs": 1302,
+      "firstResponseMs": 1302,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"8340fd79-ff0c-4a03-b634-525a9c0c3f45\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "b593a09c-7b0d-444f-be5c-78b0f0f3e399"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "negative-2",
+      "scenario": "negative",
+      "productIds": [
+        "B02",
+        "B08"
+      ],
+      "expected": "否定选择不执行；明确选择才输出导航动作",
+      "input": "不要去第二个",
+      "elapsedMs": 31,
+      "firstResponseMs": 31,
+      "type": "reply",
+      "text": "请说其他候选的名称或序号，也可以换一批",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "negative-3",
+      "scenario": "negative",
+      "productIds": [
+        "B02",
+        "B08"
+      ],
+      "expected": "否定选择不执行；明确选择才输出导航动作",
+      "input": "第一个",
+      "elapsedMs": 32,
+      "firstResponseMs": 32,
+      "type": "reply",
+      "text": "好的，开始导航去北京南站",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "navigate",
+        "slots": {
+          "selectionId": {
+            "type": "string",
+            "value": "b593a09c-7b0d-444f-be5c-78b0f0f3e399"
+          },
+          "candidateId": {
+            "type": "string",
+            "value": "8340fd79-ff0c-4a03-b634-525a9c0c3f45"
+          },
+          "poiname": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "lat": {
+            "type": "number",
+            "value": 39.865246
+          },
+          "lon": {
+            "type": "number",
+            "value": 116.378517
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"8340fd79-ff0c-4a03-b634-525a9c0c3f45\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "correction-1",
+      "scenario": "correction",
+      "productIds": [
+        "B04"
+      ],
+      "expected": "修正城市后仅保留新城市候选",
+      "input": "导航到北京的博物馆",
+      "elapsedMs": 1858,
+      "firstResponseMs": 1858,
+      "type": "reply",
+      "text": "第1个，中国国家博物馆，东长安街16号天安门广场东侧；第2个，故宫博物院，景山前街4号；第3个，中央礼品文物管理中心，西兴隆街1号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"中国国家博物馆\",\"lat\":39.905374,\"lon\":116.401304,\"address\":\"东长安街16号天安门广场东侧\",\"candidateId\":\"fabb5687-5a14-48dc-9e43-89ccb1affd3e\"},{\"poiname\":\"故宫博物院\",\"lat\":39.917839,\"lon\":116.397029,\"address\":\"景山前街4号\",\"candidateId\":\"8f0ac6d5-e7f3-4388-aef2-9fa6b64fabee\"},{\"poiname\":\"中央礼品文物管理中心\",\"lat\":39.897847,\"lon\":116.410901,\"address\":\"西兴隆街1号\",\"candidateId\":\"14984c78-d157-4f6d-84a3-0d9228b02f0b\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "2fb5efef-c9c2-435b-8e20-315edddf4931"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "correction-2",
+      "scenario": "correction",
+      "productIds": [
+        "B04"
+      ],
+      "expected": "修正城市后仅保留新城市候选",
+      "input": "不是北京，是上海",
+      "elapsedMs": 1201,
+      "firstResponseMs": 1201,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号；第2个，上海市历史博物馆，南京西路325号(人民广场地铁站11号口步行200米)；第3个，上海自然博物馆，北京西路510号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"candidateId\":\"49f9277f-d2c1-43aa-8af4-c7a77586935c\"},{\"poiname\":\"上海市历史博物馆\",\"lat\":31.230594,\"lon\":121.470891,\"address\":\"南京西路325号(人民广场地铁站11号口步行200米)\",\"candidateId\":\"d50099e1-7cbc-4df6-acc3-cf00ad7ff9df\"},{\"poiname\":\"上海自然博物馆\",\"lat\":31.235021,\"lon\":121.462672,\"address\":\"北京西路510号\",\"candidateId\":\"da1b5e1a-d82f-4c60-9073-4eb900b0d9d1\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "d1651a85-4742-4a78-8e85-139aa377a0d8"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "next_batch-1",
+      "scenario": "next_batch",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "换批返回新候选，不重复原候选",
+      "input": "找北京的咖啡店",
+      "elapsedMs": 2314,
+      "firstResponseMs": 2314,
+      "type": "reply",
+      "text": "第1个，糖房咖啡(什刹海店)，北京城区什刹海街道前海东沿22号3层-4层；第2个，喜岸咖啡，朝阳公园南路1号朝阳公园(东南角)；第3个，% Arabica阿拉比卡咖啡(白塔寺店)，白塔寺东夹道72号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "咖啡店"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"糖房咖啡(什刹海店)\",\"lat\":39.938976,\"lon\":116.394115,\"address\":\"北京城区什刹海街道前海东沿22号3层-4层\",\"candidateId\":\"778e4129-ee68-4fb1-b7f6-19e494e89154\"},{\"poiname\":\"喜岸咖啡\",\"lat\":39.940044,\"lon\":116.48233,\"address\":\"朝阳公园南路1号朝阳公园(东南角)\",\"candidateId\":\"844df5e3-8668-4253-95c2-780fd9e9bc60\"},{\"poiname\":\"% Arabica阿拉比卡咖啡(白塔寺店)\",\"lat\":39.925204,\"lon\":116.363803,\"address\":\"白塔寺东夹道72号\",\"candidateId\":\"195152ff-23f7-45cf-9d36-c17941f4a97d\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "83328494-f306-4140-9443-0b28f3203f85"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"咖啡店\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "next_batch-2",
+      "scenario": "next_batch",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "换批返回新候选，不重复原候选",
+      "input": "换一批",
+      "elapsedMs": 2409,
+      "firstResponseMs": 2409,
+      "type": "reply",
+      "text": "第1个，云朵咖啡，五四大街33号一层；第2个，星巴克咖啡(北投新奥购物中心店)，北京城区湖景东路9、11号2幢-1层-101内B1-05单元；第3个，瑞幸咖啡(什刹海新地佰店)，地安门外大街31号1号楼新地佰商场负一层B1-21号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "咖啡店"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"云朵咖啡\",\"lat\":39.924299,\"lon\":116.40349,\"address\":\"五四大街33号一层\",\"candidateId\":\"ecff1a4b-60ca-4c10-a9cb-ddd61f73b8a6\"},{\"poiname\":\"星巴克咖啡(北投新奥购物中心店)\",\"lat\":40.000854,\"lon\":116.395073,\"address\":\"北京城区湖景东路9、11号2幢-1层-101内B1-05单元\",\"candidateId\":\"d528f1c4-c302-4163-9ef4-63a8377fa010\"},{\"poiname\":\"瑞幸咖啡(什刹海新地佰店)\",\"lat\":39.940596,\"lon\":116.386203,\"address\":\"地安门外大街31号1号楼新地佰商场负一层B1-21号\",\"candidateId\":\"7f6092e7-1c97-40cb-8753-56f444244201\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "b3d03698-304f-4379-9409-5e5113fea2de"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"咖啡店\",\"city\":\"北京\",\"excluded\":[{\"poiname\":\"糖房咖啡(什刹海店)\",\"lat\":39.938976,\"lon\":116.394115},{\"poiname\":\"喜岸咖啡\",\"lat\":39.940044,\"lon\":116.48233},{\"poiname\":\"% Arabica阿拉比卡咖啡(白塔寺店)\",\"lat\":39.925204,\"lon\":116.363803}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "cancel-1",
+      "scenario": "cancel",
+      "productIds": [
+        "B07",
+        "I03"
+      ],
+      "expected": "取消候选后序号不得触发原目标",
+      "input": "导航到北京南站",
+      "elapsedMs": 994,
+      "firstResponseMs": 994,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"36246ca6-ae4e-42f7-9059-e9fb6c1c7792\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "2bb2e1b8-f4cd-4634-bace-1e370cabc8c9"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "cancel-2",
+      "scenario": "cancel",
+      "productIds": [
+        "B07",
+        "I03"
+      ],
+      "expected": "取消候选后序号不得触发原目标",
+      "input": "取消",
+      "elapsedMs": 33,
+      "firstResponseMs": 33,
+      "type": "reply",
+      "text": "已取消地点搜索",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "cancel_navigation",
+        "slots": {
+          "selectionId": {
+            "type": "string",
+            "value": "2bb2e1b8-f4cd-4634-bace-1e370cabc8c9"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "取消"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "cancel-3",
+      "scenario": "cancel",
+      "productIds": [
+        "B07",
+        "I03"
+      ],
+      "expected": "取消候选后序号不得触发原目标",
+      "input": "第一个",
+      "elapsedMs": 1168,
+      "firstResponseMs": 1168,
+      "type": "reply",
+      "text": "抱歉，我还不知道您指的是哪个候选列表里的第一个，麻烦您说一下要去哪里。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "entrance_alias-1",
+      "scenario": "entrance_alias",
+      "productIds": [
+        "A04"
+      ],
+      "expected": "2号航站楼写法仍精确命中T2",
+      "input": "去上海虹桥机场2号航站楼",
+      "elapsedMs": 1343,
+      "firstResponseMs": 1343,
+      "type": "reply",
+      "text": "第1个，上海虹桥国际机场2号航站楼，申达一路1号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "上海虹桥机场2号航站楼"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海虹桥国际机场2号航站楼\",\"lat\":31.19418,\"lon\":121.328711,\"address\":\"申达一路1号\",\"candidateId\":\"77c6baee-35a5-4202-b0cf-3423854e172c\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "837fcda2-147c-4c0d-881d-2be6a70e15fe"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"上海虹桥机场2号航站楼\",\"city\":\"上海\",\"entrance\":\"T2\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "airport_city-1",
+      "scenario": "airport_city",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "带市后缀仍命中三亚凤凰机场",
+      "input": "导航到三亚市凤凰国际机场",
+      "elapsedMs": 2099,
+      "firstResponseMs": 2099,
+      "type": "reply",
+      "text": "第1个，三亚凤凰国际机场，机场路。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "三亚凤凰国际机场"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"三亚凤凰国际机场\",\"lat\":18.30341,\"lon\":109.414038,\"address\":\"机场路\",\"candidateId\":\"71ba7051-2f05-4043-b828-76f127e2d771\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "4a43e084-dca6-4364-8f30-aeca3e492993"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"三亚凤凰国际机场\",\"city\":\"三亚\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "brand_named-1",
+      "scenario": "brand_named",
+      "productIds": [
+        "A08"
+      ],
+      "expected": "品牌与咖啡店类别组合均保留",
+      "input": "找北京的星巴克咖啡店",
+      "elapsedMs": 1951,
+      "firstResponseMs": 1951,
+      "type": "reply",
+      "text": "第1个，星巴克(北京太古里臻选旗舰店)，北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013，高德名称含“星巴克”，地图分类为“咖啡厅”；第2个，星巴克(新闻大厦店)，建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)，高德名称含“星巴克”，地图分类为“咖啡厅”；第3个，星巴克(北京凯恒店)，北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)，高德名称含“星巴克”，地图分类为“咖啡厅”。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "星巴克"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"星巴克(北京太古里臻选旗舰店)\",\"lat\":39.934478,\"lon\":116.454755,\"address\":\"北京城区三里屯路19号三里屯太古里南区1层S10-10、2层SF2-013\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京太古里臻选旗舰店)\",\"retrievedAt\":\"2026-11-13T14:49:46.865314641Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T14:49:46.865314641Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"88c775e2-4796-4020-b885-c802912555b3\"},{\"poiname\":\"星巴克(新闻大厦店)\",\"lat\":39.907462,\"lon\":116.421919,\"address\":\"建内大街19号新闻大厦1层(东单地铁站C东南口步行200米)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(新闻大厦店)\",\"retrievedAt\":\"2026-11-13T14:49:47.249877183Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T14:49:47.249877183Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"d64055fb-20f5-4f5c-b1b1-8cf1926e6222\"},{\"poiname\":\"星巴克(北京凯恒店)\",\"lat\":39.92389,\"lon\":116.43271,\"address\":\"北京城区朝阳门内大街2号B座一层04单元(朝阳门地铁站G东南口旁)\",\"conditionEvidence\":[{\"condition\":\"brand\",\"field\":\"name\",\"source\":\"amap_poi\",\"value\":\"星巴克(北京凯恒店)\",\"retrievedAt\":\"2026-11-13T14:49:47.652960045Z\"},{\"condition\":\"category\",\"field\":\"type\",\"source\":\"amap_poi\",\"value\":\"餐饮服务;咖啡厅;星巴克咖啡\",\"retrievedAt\":\"2026-11-13T14:49:47.652960045Z\"}],\"matchSummary\":\"高德名称含“星巴克”，地图分类为“咖啡厅”\",\"candidateId\":\"7b73f4dc-72c7-4548-96fe-4e9858b73986\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "1e8e0a59-d926-4498-8ca3-ac947dd37614"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"星巴克\",\"city\":\"北京\",\"constraints\":[{\"brand\":\"星巴克\",\"category\":\"咖啡厅\"}]}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "reference_named-1",
+      "scenario": "reference_named",
+      "productIds": [
+        "A06",
+        "H01"
+      ],
+      "expected": "完整市名和参考点仍能查周边充电站",
+      "input": "查找北京市北京南站周边的充电站",
+      "elapsedMs": 2742,
+      "firstResponseMs": 2742,
+      "type": "reply",
+      "text": "充电桩空闲状态未知。第1个，北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)，北京南站立体停车场；第2个，壳牌汽车充电站(静态交通北京南站充电站交流区)，开阳路立体停车楼二层；第3个，小桔充电站(北京壳牌南站立体停车楼)，开阳路与开阳里三街交叉口北60米。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "充电站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京静交超级充电站(北京南站立体停车场超充站·华为超充技术支持)\",\"lat\":39.866047,\"lon\":116.374664,\"address\":\"北京南站立体停车场\",\"candidateId\":\"b8b2553b-e58a-44b7-8c4c-5fc7e4d6c7d7\"},{\"poiname\":\"壳牌汽车充电站(静态交通北京南站充电站交流区)\",\"lat\":39.866023,\"lon\":116.37463,\"address\":\"开阳路立体停车楼二层\",\"candidateId\":\"cf0e752a-89b8-471d-b1f0-ce6c0a0cfdf1\"},{\"poiname\":\"小桔充电站(北京壳牌南站立体停车楼)\",\"lat\":39.866044,\"lon\":116.374305,\"address\":\"开阳路与开阳里三街交叉口北60米\",\"candidateId\":\"eda02f96-5635-4574-a0d4-e796ad378d79\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "029082a3-2689-4aab-8009-d92b821596e5"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"充电站\",\"city\":\"北京市\",\"reference\":\"北京南站\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "exact_station-1",
+      "scenario": "exact_station",
+      "productIds": [
+        "A01",
+        "B01"
+      ],
+      "expected": "指定车站不得混入公交站、地铁站或相似名字",
+      "input": "导航到北京南站",
+      "elapsedMs": 1267,
+      "firstResponseMs": 1267,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"8cf8014a-4041-4894-bdb3-074a69839aff\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "708f7766-d33f-4759-8860-ab843132c727"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "exact_museum-1",
+      "scenario": "exact_museum",
+      "productIds": [
+        "A01",
+        "A03"
+      ],
+      "expected": "指定博物馆只返回其本馆或分馆",
+      "input": "带我去上海博物馆",
+      "elapsedMs": 2129,
+      "firstResponseMs": 2129,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号；第2个，上海博物馆(东馆)，世纪大道1952号(上海科技馆地铁站8号口步行480米)。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "上海博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"candidateId\":\"80b46c88-93d4-4c0c-903f-7d5cba0c01c9\"},{\"poiname\":\"上海博物馆(东馆)\",\"lat\":31.219913,\"lon\":121.538745,\"address\":\"世纪大道1952号(上海科技馆地铁站8号口步行480米)\",\"candidateId\":\"8141a664-db50-4543-a666-9b8e67e79ed1\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "25bbc288-c615-4521-9054-fb9875d85904"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"上海博物馆\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "generic_museum-1",
+      "scenario": "generic_museum",
+      "productIds": [
+        "A03"
+      ],
+      "expected": "城市加类别查询仍可返回不同博物馆",
+      "input": "找上海的博物馆",
+      "elapsedMs": 1937,
+      "firstResponseMs": 1937,
+      "type": "reply",
+      "text": "第1个，上海博物馆(人民广场馆)，人民大道201号；第2个，上海市历史博物馆，南京西路325号(人民广场地铁站11号口步行200米)；第3个，上海自然博物馆，北京西路510号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "博物馆"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海博物馆(人民广场馆)\",\"lat\":31.228231,\"lon\":121.47548,\"address\":\"人民大道201号\",\"candidateId\":\"a274c2ba-5369-4475-b3f2-768342a3c0af\"},{\"poiname\":\"上海市历史博物馆\",\"lat\":31.230594,\"lon\":121.470891,\"address\":\"南京西路325号(人民广场地铁站11号口步行200米)\",\"candidateId\":\"d5f078f9-ae6c-4f16-9b4e-aa6218dd2730\"},{\"poiname\":\"上海自然博物馆\",\"lat\":31.235021,\"lon\":121.462672,\"address\":\"北京西路510号\",\"candidateId\":\"34d6b66d-6541-449e-9e2e-63413083fd7c\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "448d2b12-fc05-4afd-bb4a-ba1fd7e43c9a"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"博物馆\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "airport_short-1",
+      "scenario": "airport_short",
+      "productIds": [
+        "A01",
+        "A04"
+      ],
+      "expected": "机场简称通过真实身份匹配，不落到停车场或航站楼",
+      "input": "导航到上海虹桥机场",
+      "elapsedMs": 1370,
+      "firstResponseMs": 1370,
+      "type": "reply",
+      "text": "第1个，上海虹桥国际机场，虹桥路2550号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "上海虹桥机场"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"上海虹桥国际机场\",\"lat\":31.196029,\"lon\":121.339775,\"address\":\"虹桥路2550号\",\"candidateId\":\"62e49cae-2141-45ec-922f-f44354a6bea8\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "0dd67021-4fee-42f2-a710-9cc275d15f66"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"上海虹桥机场\",\"city\":\"上海\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "exact_next-1",
+      "scenario": "exact_next",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "精确目标换批不得拿无关地点凑数",
+      "input": "导航到北京南站",
+      "elapsedMs": 1048,
+      "firstResponseMs": 1048,
+      "type": "reply",
+      "text": "第1个，北京南站，永外大街车站路12号。请说第几个或具体地址名称。",
+      "intent": {
+        "schemaVersion": "1.0",
+        "domain": "navigation",
+        "intent": "choose_destination",
+        "slots": {
+          "query": {
+            "type": "string",
+            "value": "北京南站"
+          },
+          "candidates": {
+            "type": "string",
+            "value": "[{\"poiname\":\"北京南站\",\"lat\":39.865246,\"lon\":116.378517,\"address\":\"永外大街车站路12号\",\"candidateId\":\"15218974-6951-46ec-9529-7d986462a478\"}]"
+          },
+          "selectionId": {
+            "type": "string",
+            "value": "00ee32e4-0721-4f5c-ad2f-aecbff8e2a49"
+          }
+        },
+        "confidence": 1,
+        "source": "navigation.dialog",
+        "rawSemantic": "{\"query\":\"北京南站\",\"city\":\"北京\"}"
+      },
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    },
+    {
+      "id": "exact_next-2",
+      "scenario": "exact_next",
+      "productIds": [
+        "B05"
+      ],
+      "expected": "精确目标换批不得拿无关地点凑数",
+      "input": "换一批",
+      "elapsedMs": 741,
+      "firstResponseMs": 741,
+      "type": "reply",
+      "text": "没有找到更多候选。",
+      "intent": null,
+      "repetition": 1,
+      "verdict": "pass",
+      "checks": [
+        "本步固定规则通过；不代表设备执行或实车验收"
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-13T14:49:59.276Z",
+  "summary": {
+    "requests": 33,
+    "expected": 33,
+    "pass": 29,
+    "boundary": 4,
+    "fail": 0,
+    "meanMs": 1290,
+    "p95Ms": 2630,
+    "maxMs": 2742,
+    "complete": true,
+    "performancePassed": true,
+    "passed": true
+  },
+  "fullSuite": true,
+  "coveredProductIds": [
+    "A01",
+    "A03",
+    "A04",
+    "A06",
+    "A08",
+    "B01",
+    "B02",
+    "B04",
+    "B05",
+    "B07",
+    "B08",
+    "C01",
+    "D02",
+    "D03",
+    "D07",
+    "F01",
+    "H01",
+    "H03",
+    "I01",
+    "I03"
+  ],
+  "byScenario": {
+    "name": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1060,
+      "p95Ms": 1060,
+      "maxMs": 1060,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "city": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1816,
+      "p95Ms": 1816,
+      "maxMs": 1816,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "entrance": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1107,
+      "p95Ms": 1107,
+      "maxMs": 1107,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "numeric_city": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 913,
+      "p95Ms": 913,
+      "maxMs": 913,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "brand": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2411,
+      "p95Ms": 2411,
+      "maxMs": 2411,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "opening": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 1,
+      "fail": 0,
+      "meanMs": 988,
+      "p95Ms": 988,
+      "maxMs": 988,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "charging": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2630,
+      "p95Ms": 2630,
+      "maxMs": 2630,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "energy": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 1,
+      "fail": 0,
+      "meanMs": 919,
+      "p95Ms": 919,
+      "maxMs": 919,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "trip": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1547,
+      "p95Ms": 1547,
+      "maxMs": 1547,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "home": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 1,
+      "fail": 0,
+      "meanMs": 33,
+      "p95Ms": 33,
+      "maxMs": 33,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "live_eta": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 0,
+      "boundary": 1,
+      "fail": 0,
+      "meanMs": 36,
+      "p95Ms": 36,
+      "maxMs": 36,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "readonly": {
+      "requests": 2,
+      "expected": 2,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 570,
+      "p95Ms": 1108,
+      "maxMs": 1108,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "negative": {
+      "requests": 3,
+      "expected": 3,
+      "pass": 3,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 455,
+      "p95Ms": 1302,
+      "maxMs": 1302,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "correction": {
+      "requests": 2,
+      "expected": 2,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1530,
+      "p95Ms": 1858,
+      "maxMs": 1858,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "next_batch": {
+      "requests": 2,
+      "expected": 2,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2362,
+      "p95Ms": 2409,
+      "maxMs": 2409,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "cancel": {
+      "requests": 3,
+      "expected": 3,
+      "pass": 3,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 732,
+      "p95Ms": 1168,
+      "maxMs": 1168,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "entrance_alias": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1343,
+      "p95Ms": 1343,
+      "maxMs": 1343,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "airport_city": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2099,
+      "p95Ms": 2099,
+      "maxMs": 2099,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "brand_named": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1951,
+      "p95Ms": 1951,
+      "maxMs": 1951,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "reference_named": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2742,
+      "p95Ms": 2742,
+      "maxMs": 2742,
+      "complete": true,
+      "performancePassed": false,
+      "passed": false
+    },
+    "exact_station": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1267,
+      "p95Ms": 1267,
+      "maxMs": 1267,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "exact_museum": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2129,
+      "p95Ms": 2129,
+      "maxMs": 2129,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "generic_museum": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1937,
+      "p95Ms": 1937,
+      "maxMs": 1937,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "airport_short": {
+      "requests": 1,
+      "expected": 1,
+      "pass": 1,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1370,
+      "p95Ms": 1370,
+      "maxMs": 1370,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "exact_next": {
+      "requests": 2,
+      "expected": 2,
+      "pass": 2,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 895,
+      "p95Ms": 1048,
+      "maxMs": 1048,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    }
+  },
+  "groups": {
+    "baseline": {
+      "requests": 23,
+      "expected": 23,
+      "pass": 19,
+      "boundary": 4,
+      "fail": 0,
+      "meanMs": 1128,
+      "p95Ms": 2411,
+      "maxMs": 2630,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "added": {
+      "requests": 10,
+      "expected": 10,
+      "pass": 10,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1663,
+      "p95Ms": 2742,
+      "maxMs": 2742,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    }
+  },
+  "byIntroductionVersion": {
+    "1": {
+      "requests": 23,
+      "expected": 23,
+      "pass": 19,
+      "boundary": 4,
+      "fail": 0,
+      "meanMs": 1128,
+      "p95Ms": 2411,
+      "maxMs": 2630,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "2": {
+      "requests": 4,
+      "expected": 4,
+      "pass": 4,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 2034,
+      "p95Ms": 2742,
+      "maxMs": 2742,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    },
+    "3": {
+      "requests": 6,
+      "expected": 6,
+      "pass": 6,
+      "boundary": 0,
+      "fail": 0,
+      "meanMs": 1415,
+      "p95Ms": 2129,
+      "maxMs": 2129,
+      "complete": true,
+      "performancePassed": true,
+      "passed": true
+    }
+  },
+  "comparison": [
+    {
+      "id": "name-1",
+      "repetition": 1,
+      "baselineMs": 2026,
+      "elapsedMs": 1060,
+      "deltaMs": -966,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "city-1",
+      "repetition": 1,
+      "baselineMs": 2232,
+      "elapsedMs": 1816,
+      "deltaMs": -416,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "entrance-1",
+      "repetition": 1,
+      "baselineMs": 1114,
+      "elapsedMs": 1107,
+      "deltaMs": -7,
+      "baselineVerdict": "fail",
+      "verdict": "pass"
+    },
+    {
+      "id": "numeric_city-1",
+      "repetition": 1,
+      "baselineMs": 765,
+      "elapsedMs": 913,
+      "deltaMs": 148,
+      "baselineVerdict": "fail",
+      "verdict": "pass"
+    },
+    {
+      "id": "brand-1",
+      "repetition": 1,
+      "baselineMs": 1654,
+      "elapsedMs": 2411,
+      "deltaMs": 757,
+      "baselineVerdict": "fail",
+      "verdict": "pass"
+    },
+    {
+      "id": "opening-1",
+      "repetition": 1,
+      "baselineMs": 1206,
+      "elapsedMs": 988,
+      "deltaMs": -218,
+      "baselineVerdict": "boundary_pass",
+      "verdict": "boundary_pass"
+    },
+    {
+      "id": "charging-1",
+      "repetition": 1,
+      "baselineMs": 1631,
+      "elapsedMs": 2630,
+      "deltaMs": 999,
+      "baselineVerdict": "fail",
+      "verdict": "pass"
+    },
+    {
+      "id": "energy-1",
+      "repetition": 1,
+      "baselineMs": 1119,
+      "elapsedMs": 919,
+      "deltaMs": -200,
+      "baselineVerdict": "boundary_pass",
+      "verdict": "boundary_pass"
+    },
+    {
+      "id": "trip-1",
+      "repetition": 1,
+      "baselineMs": 3386,
+      "elapsedMs": 1547,
+      "deltaMs": -1839,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "home-1",
+      "repetition": 1,
+      "baselineMs": 35,
+      "elapsedMs": 33,
+      "deltaMs": -2,
+      "baselineVerdict": "boundary_pass",
+      "verdict": "boundary_pass"
+    },
+    {
+      "id": "live_eta-1",
+      "repetition": 1,
+      "baselineMs": 36,
+      "elapsedMs": 36,
+      "deltaMs": 0,
+      "baselineVerdict": "boundary_pass",
+      "verdict": "boundary_pass"
+    },
+    {
+      "id": "readonly-1",
+      "repetition": 1,
+      "baselineMs": 2166,
+      "elapsedMs": 1108,
+      "deltaMs": -1058,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "readonly-2",
+      "repetition": 1,
+      "baselineMs": 33,
+      "elapsedMs": 31,
+      "deltaMs": -2,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "negative-1",
+      "repetition": 1,
+      "baselineMs": 1762,
+      "elapsedMs": 1302,
+      "deltaMs": -460,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "negative-2",
+      "repetition": 1,
+      "baselineMs": 40,
+      "elapsedMs": 31,
+      "deltaMs": -9,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "negative-3",
+      "repetition": 1,
+      "baselineMs": 37,
+      "elapsedMs": 32,
+      "deltaMs": -5,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "correction-1",
+      "repetition": 1,
+      "baselineMs": 2455,
+      "elapsedMs": 1858,
+      "deltaMs": -597,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "correction-2",
+      "repetition": 1,
+      "baselineMs": 1223,
+      "elapsedMs": 1201,
+      "deltaMs": -22,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "next_batch-1",
+      "repetition": 1,
+      "baselineMs": 2294,
+      "elapsedMs": 2314,
+      "deltaMs": 20,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "next_batch-2",
+      "repetition": 1,
+      "baselineMs": 2410,
+      "elapsedMs": 2409,
+      "deltaMs": -1,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "cancel-1",
+      "repetition": 1,
+      "baselineMs": 2349,
+      "elapsedMs": 994,
+      "deltaMs": -1355,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "cancel-2",
+      "repetition": 1,
+      "baselineMs": 32,
+      "elapsedMs": 33,
+      "deltaMs": 1,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "cancel-3",
+      "repetition": 1,
+      "baselineMs": 986,
+      "elapsedMs": 1168,
+      "deltaMs": 182,
+      "baselineVerdict": "pass",
+      "verdict": "pass"
+    },
+    {
+      "id": "entrance_alias-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1343,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "airport_city-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2099,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "brand_named-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1951,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "reference_named-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2742,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "exact_station-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1267,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "exact_museum-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 2129,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "generic_museum-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1937,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "airport_short-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1370,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "exact_next-1",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 1048,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "exact_next-2",
+      "repetition": 1,
+      "baselineMs": null,
+      "elapsedMs": 741,
+      "deltaMs": null,
+      "baselineVerdict": null,
+      "verdict": "pass"
+    }
+  ]
+}
